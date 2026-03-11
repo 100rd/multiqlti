@@ -1,93 +1,114 @@
-import { Card, CardContent } from "@/components/ui/card";
+import { useState } from "react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Plus, Play, Database, FileCode, Search, Settings } from "lucide-react";
+import { Plus, Settings } from "lucide-react";
+import MultiAgentPipeline from "@/components/workflow/MultiAgentPipeline";
 
 export default function Workflow() {
+  const [activeTab, setActiveTab] = useState("pipeline");
+
   return (
     <div className="flex flex-col h-full bg-background">
       <div className="h-16 border-b border-border flex items-center justify-between px-6 bg-card shrink-0">
         <div>
-          <h2 className="text-sm font-semibold">Workflow Builder</h2>
-          <p className="text-xs text-muted-foreground">Configure agent routing and sandbox execution</p>
+          <h2 className="text-sm font-semibold">Workflow Manager</h2>
+          <p className="text-xs text-muted-foreground">Build multi-agent pipelines for complex tasks</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" className="h-8 text-xs">
-            <Settings className="h-3 w-3 mr-2" /> Load Config
-          </Button>
-          <Button variant="outline" size="sm" className="h-8 text-xs">
-            <Plus className="h-3 w-3 mr-2" /> Add Node
+            <Settings className="h-3 w-3 mr-2" /> Settings
           </Button>
           <Button size="sm" className="h-8 text-xs">
-            <Play className="h-3 w-3 mr-2" /> Run Workflow
+            <Plus className="h-3 w-3 mr-2" /> New Pipeline
           </Button>
         </div>
       </div>
 
-      <div className="flex-1 bg-muted/30 p-8 relative overflow-hidden flex items-center justify-center">
-        {/* Abstract Grid Background */}
-        <div className="absolute inset-0 bg-[linear-gradient(to_right,hsl(var(--border))_1px,transparent_1px),linear-gradient(to_bottom,hsl(var(--border))_1px,transparent_1px)] bg-[size:24px_24px] opacity-20"></div>
-        
-        {/* Mock Workflow Nodes */}
-        <div className="relative z-10 flex flex-col md:flex-row items-center justify-center gap-12 w-full max-w-5xl">
-          
-          <Card className="w-64 border-border shadow-sm bg-card relative z-20">
-            <div className="p-3 border-b border-border flex items-center gap-2">
-              <Search className="h-4 w-4 text-blue-500" />
-              <span className="text-sm font-medium">Local Knowledge</span>
+      <div className="flex-1 overflow-y-auto p-8">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full max-w-4xl">
+          <TabsList className="grid w-full grid-cols-3 mb-8">
+            <TabsTrigger value="pipeline" className="text-xs">Pipeline Builder</TabsTrigger>
+            <TabsTrigger value="templates" className="text-xs">Templates</TabsTrigger>
+            <TabsTrigger value="history" className="text-xs">Execution History</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="pipeline" className="space-y-6">
+            <MultiAgentPipeline />
+          </TabsContent>
+
+          <TabsContent value="templates" className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {[
+                {
+                  name: "Code Generation Pipeline",
+                  desc: "Plan → Design → Implement → Review",
+                  agents: ["Planner", "Designer", "Developer", "Reviewer"],
+                  icon: "💻"
+                },
+                {
+                  name: "Content Creation",
+                  desc: "Plan → Write → Fact Check → Optimize",
+                  agents: ["Planner", "Writer", "Fact Checker", "Reviewer"],
+                  icon: "📝"
+                },
+                {
+                  name: "Research & Analysis",
+                  desc: "Plan → Research → Synthesize → Validate",
+                  agents: ["Planner", "Researcher", "Analyst", "Fact Checker"],
+                  icon: "🔍"
+                },
+                {
+                  name: "System Architecture",
+                  desc: "Design → Architect → Implement → Audit",
+                  agents: ["Designer", "Architect", "Developer", "Reviewer"],
+                  icon: "🏗️"
+                },
+              ].map((template, idx) => (
+                <Card key={idx} className="border-border p-4 hover:shadow-md transition-shadow cursor-pointer hover:bg-accent/50">
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="text-2xl">{template.icon}</div>
+                    <Button variant="outline" size="sm" className="h-7 text-xs">Use</Button>
+                  </div>
+                  <h4 className="font-medium text-sm mb-1">{template.name}</h4>
+                  <p className="text-xs text-muted-foreground mb-3">{template.desc}</p>
+                  <div className="flex flex-wrap gap-1">
+                    {template.agents.map((agent, i) => (
+                      <span key={i} className="px-2 py-1 rounded-full bg-muted text-xs font-medium">
+                        {agent}
+                      </span>
+                    ))}
+                  </div>
+                </Card>
+              ))}
             </div>
-            <CardContent className="p-4 space-y-2">
-              <div className="text-xs text-muted-foreground">Source: Vector DB</div>
-              <div className="bg-muted p-2 rounded text-xs font-mono">Query: user_context</div>
-            </CardContent>
-            {/* Connection dot */}
-            <div className="hidden md:block absolute right-[-6px] top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-border border-2 border-background"></div>
-            <div className="md:hidden absolute bottom-[-6px] left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-border border-2 border-background"></div>
-          </Card>
+          </TabsContent>
 
-          {/* Line Horizontal */}
-          <div className="hidden md:block h-[2px] w-12 bg-border absolute left-[calc(50%-10rem)] top-1/2 -translate-y-1/2 z-10"></div>
-          {/* Line Vertical */}
-          <div className="md:hidden w-[2px] h-12 bg-border absolute top-[calc(50%-10rem)] left-1/2 -translate-x-1/2 z-10"></div>
-
-          <Card className="w-64 border-primary/50 shadow-md bg-card relative z-20 ring-1 ring-primary/20">
-            {/* Connection dots */}
-            <div className="hidden md:block absolute left-[-6px] top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-primary border-2 border-background"></div>
-            <div className="md:hidden absolute top-[-6px] left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-primary border-2 border-background"></div>
-            
-            <div className="hidden md:block absolute right-[-6px] top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-border border-2 border-background"></div>
-            <div className="md:hidden absolute bottom-[-6px] left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-border border-2 border-background"></div>
-            
-            <div className="p-3 border-b border-border flex items-center gap-2">
-              <Database className="h-4 w-4 text-primary" />
-              <span className="text-sm font-medium">Llama-3-70b Planner</span>
+          <TabsContent value="history" className="space-y-4">
+            <div className="space-y-3">
+              {[
+                { task: "Build React Dashboard UI", status: "Completed", time: "2h 34m", agents: 4 },
+                { task: "Analyze API Performance Report", status: "Running", time: "45m", agents: 3 },
+                { task: "Design Authentication Flow", status: "Completed", time: "1h 12m", agents: 3 },
+              ].map((run, idx) => (
+                <Card key={idx} className="border-border p-4 flex items-center justify-between hover:bg-accent/50 transition-colors">
+                  <div className="flex-1">
+                    <h4 className="font-medium text-sm">{run.task}</h4>
+                    <p className="text-xs text-muted-foreground mt-1">{run.agents} agents • {run.time}</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                      run.status === 'Completed' ? 'bg-emerald-500/20 text-emerald-700' : 'bg-blue-500/20 text-blue-700'
+                    }`}>
+                      {run.status}
+                    </span>
+                    <Button variant="outline" size="sm" className="h-7 text-xs">Review</Button>
+                  </div>
+                </Card>
+              ))}
             </div>
-            <CardContent className="p-4 space-y-2">
-              <div className="text-xs text-muted-foreground">Action: Synthesize</div>
-              <div className="bg-primary/10 text-primary p-2 rounded text-xs font-mono">Status: Processing...</div>
-            </CardContent>
-          </Card>
-
-          {/* Line Horizontal */}
-          <div className="hidden md:block h-[2px] w-12 bg-border absolute right-[calc(50%-10rem)] top-1/2 -translate-y-1/2 z-10"></div>
-          {/* Line Vertical */}
-          <div className="md:hidden w-[2px] h-12 bg-border absolute bottom-[calc(50%-10rem)] left-1/2 -translate-x-1/2 z-10"></div>
-
-          <Card className="w-64 border-border shadow-sm bg-card relative z-20 opacity-70">
-            {/* Connection dot */}
-            <div className="hidden md:block absolute left-[-6px] top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-border border-2 border-background"></div>
-            <div className="md:hidden absolute top-[-6px] left-1/2 -translate-x-1/2 w-3 h-3 rounded-full bg-border border-2 border-background"></div>
-            
-            <div className="p-3 border-b border-border flex items-center gap-2">
-              <FileCode className="h-4 w-4 text-emerald-500" />
-              <span className="text-sm font-medium">Python Sandbox</span>
-            </div>
-            <CardContent className="p-4 space-y-2">
-              <div className="text-xs text-muted-foreground">Environment: Isolated</div>
-              <div className="bg-muted p-2 rounded text-xs font-mono">Awaiting input</div>
-            </CardContent>
-          </Card>
-
-        </div>
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );
