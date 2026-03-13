@@ -9,6 +9,8 @@ import MainLayout from "@/components/layout/MainLayout";
 import Dashboard from "@/pages/Dashboard";
 import Chat from "@/pages/Chat";
 import Workflow from "@/pages/Workflow";
+import PipelineRun from "@/pages/PipelineRun";
+import Settings from "@/pages/Settings";
 
 function Router() {
   return (
@@ -17,6 +19,8 @@ function Router() {
         <Route path="/" component={Dashboard}/>
         <Route path="/chat" component={Chat}/>
         <Route path="/workflow" component={Workflow}/>
+        <Route path="/runs/:runId" component={PipelineRun}/>
+        <Route path="/settings" component={Settings}/>
         <Route component={NotFound} />
       </Switch>
     </MainLayout>

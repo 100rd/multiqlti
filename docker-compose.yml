@@ -1,0 +1,54 @@
+services:
+  multiqlti:
+    build: .
+    ports:
+      - "5050:5000"
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+      - VLLM_ENDPOINT=http://vllm:8000
+      - OLLAMA_ENDPOINT=http://ollama:11434
+    networks:
+      - internal
+    depends_on:
+      - vllm
+      - ollama
+    restart: unless-stopped
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    # No host ports — only reachable via internal network
+    volumes:
+      - vllm_cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command:
+      - "--model"
+      - "meta-llama/Meta-Llama-3-70B-Instruct"
+      - "--tensor-parallel-size"
+      - "1"
+    networks:
+      - internal
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    # No host ports — only reachable via internal network
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - internal
+    restart: unless-stopped
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  vllm_cache:
+  ollama_data:

@@ -1,90 +1,111 @@
-import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Plus, Play, Save, Copy } from "lucide-react";
+import { Play, Save, RotateCcw } from "lucide-react";
 import AgentNode from "./AgentNode";
-import { cn } from "@/lib/utils";
-
-interface Agent {
-  id: string;
-  role: string;
-  model: string;
-}
+import { usePipelines, useUpdatePipeline, useModels } from "@/hooks/use-pipeline";
+import { SDLC_TEAMS, TEAM_ORDER } from "@shared/constants";
+import type { PipelineStageConfig } from "@shared/types";
+import { useState, useEffect } from "react";
 
 export default function MultiAgentPipeline() {
-  const [agents, setAgents] = useState<Agent[]>([
-    { id: "1", role: "planner", model: "gpt4-turbo" },
-    { id: "2", role: "designer", model: "claude-opus" },
-    { id: "3", role: "fact_checker", model: "grok-2" },
-  ]);
+  const { data: pipelines } = usePipelines();
+  const { data: models } = useModels();
+  const updatePipeline = useUpdatePipeline();
 
-  const addAgent = () => {
-    const newId = String(Math.max(...agents.map(a => parseInt(a.id)), 0) + 1);
-    setAgents([...agents, { id: newId, role: "reviewer", model: "llama3-70b" }]);
-  };
+  const pipeline = Array.isArray(pipelines) ? pipelines[0] : null;
+  const pipelineStages: PipelineStageConfig[] = pipeline?.stages ?? [];
 
-  const removeAgent = (id: string) => {
-    if (agents.length > 1) {
-      setAgents(agents.filter(a => a.id !== id));
+  const [localStages, setLocalStages] = useState<PipelineStageConfig[]>(pipelineStages);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    if (pipelineStages.length > 0) {
+      setLocalStages(pipelineStages);
+      setDirty(false);
     }
+  }, [pipeline?.id, JSON.stringify(pipelineStages)]);
+
+  const updateStageModel = (teamId: string, modelSlug: string) => {
+    setLocalStages(prev => prev.map(s => s.teamId === teamId ? { ...s, modelSlug } : s));
+    setDirty(true);
   };
 
-  const updateRole = (id: string, role: string) => {
-    setAgents(agents.map(a => a.id === id ? { ...a, role } : a));
+  const toggleStage = (teamId: string) => {
+    setLocalStages(prev => prev.map(s => s.teamId === teamId ? { ...s, enabled: !s.enabled } : s));
+    setDirty(true);
   };
 
-  const updateModel = (id: string, model: string) => {
-    setAgents(agents.map(a => a.id === id ? { ...a, model } : a));
+  const handleSave = () => {
+    if (!pipeline) return;
+    updatePipeline.mutate(
+      { id: pipeline.id, stages: localStages },
+      { onSuccess: () => setDirty(false) },
+    );
   };
+
+  const handleReset = () => {
+    setLocalStages(pipelineStages);
+    setDirty(false);
+  };
+
+  const modelList = Array.isArray(models)
+    ? models.filter((m: any) => m.isActive).map((m: any) => ({
+        label: m.name,
+        value: m.slug,
+        provider: m.provider,
+      }))
+    : [];
 
   return (
     <div className="space-y-6">
       {/* Pipeline Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-lg font-semibold">Multi-Agent Pipeline</h3>
-          <p className="text-sm text-muted-foreground mt-1">Chain models to work on complex tasks collaboratively</p>
+          <h3 className="text-lg font-semibold">SDLC Pipeline</h3>
+          <p className="text-sm text-muted-foreground mt-1">
+            7-stage software development lifecycle — configure models per team
+          </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="text-xs h-8">
-            <Copy className="h-3 w-3 mr-1" /> Template
-          </Button>
-          <Button variant="outline" size="sm" className="text-xs h-8">
+          {dirty && (
+            <Button variant="ghost" size="sm" className="text-xs h-8" onClick={handleReset}>
+              <RotateCcw className="h-3 w-3 mr-1" /> Reset
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs h-8"
+            onClick={handleSave}
+            disabled={!dirty || updatePipeline.isPending}
+          >
             <Save className="h-3 w-3 mr-1" /> Save
-          </Button>
-          <Button size="sm" className="text-xs h-8">
-            <Play className="h-3 w-3 mr-1" /> Execute
           </Button>
         </div>
       </div>
 
-      {/* Agent Pipeline */}
+      {/* Stage Pipeline */}
       <div className="relative">
         <div className="space-y-6">
-          {agents.map((agent, idx) => (
-            <AgentNode
-              key={agent.id}
-              id={agent.id}
-              role={agent.role}
-              model={agent.model}
-              description=""
-              onRemove={removeAgent}
-              onRoleChange={updateRole}
-              onModelChange={updateModel}
-              isLast={idx === agents.length - 1}
-            />
-          ))}
-        </div>
-
-        {/* Add Agent Button */}
-        <div className="mt-6 pt-6 border-t border-border">
-          <Button
-            variant="outline"
-            className="w-full h-9 border-dashed text-muted-foreground hover:text-foreground"
-            onClick={addAgent}
-          >
-            <Plus className="h-4 w-4 mr-2" /> Add Agent Role
-          </Button>
+          {localStages.map((stage, idx) => {
+            const team = SDLC_TEAMS[stage.teamId as keyof typeof SDLC_TEAMS];
+            if (!team) return null;
+            return (
+              <AgentNode
+                key={stage.teamId}
+                id={stage.teamId}
+                role={stage.teamId}
+                model={stage.modelSlug}
+                description={team.description}
+                enabled={stage.enabled}
+                color={team.color}
+                models={modelList}
+                onModelChange={(_, model) => updateStageModel(stage.teamId, model)}
+                onToggle={() => toggleStage(stage.teamId)}
+                isLast={idx === localStages.length - 1}
+              />
+            );
+          })}
         </div>
       </div>
 
@@ -92,55 +113,46 @@ export default function MultiAgentPipeline() {
       <Card className="border-border bg-muted/30 p-4">
         <div className="space-y-3">
           <div className="text-sm font-medium">Pipeline Behavior</div>
-          
           <div className="grid grid-cols-2 gap-4 text-xs">
             <div className="p-2 rounded border border-border bg-card">
               <div className="font-medium mb-1">Sequential Execution</div>
-              <div className="text-muted-foreground">Each agent processes the output of the previous one</div>
+              <div className="text-muted-foreground">Each team processes the output of the previous one</div>
             </div>
-            
             <div className="p-2 rounded border border-border bg-card">
-              <div className="font-medium mb-1">Sandbox Isolation</div>
-              <div className="text-muted-foreground">Each agent runs in an isolated sandbox</div>
+              <div className="font-medium mb-1">Clarification Queue</div>
+              <div className="text-muted-foreground">Agents can pause to ask questions — you answer in the side panel</div>
             </div>
-
             <div className="p-2 rounded border border-border bg-card">
               <div className="font-medium mb-1">Context Passing</div>
-              <div className="text-muted-foreground">Full task context passed to each agent</div>
+              <div className="text-muted-foreground">Full task context and prior outputs passed to each team</div>
             </div>
-
             <div className="p-2 rounded border border-border bg-card">
-              <div className="font-medium mb-1">Output Collection</div>
-              <div className="text-muted-foreground">All agent outputs logged for review</div>
+              <div className="font-medium mb-1">Model Flexibility</div>
+              <div className="text-muted-foreground">Assign any registered model to any team stage</div>
             </div>
           </div>
         </div>
       </Card>
 
-      {/* Example Task */}
+      {/* SDLC Flow Description */}
       <Card className="border-border bg-card p-4 space-y-3">
-        <div className="text-sm font-medium">Example: Build a Web Dashboard</div>
+        <div className="text-sm font-medium">SDLC Pipeline Flow</div>
         <div className="space-y-2 text-xs text-muted-foreground">
-          <div className="flex gap-2">
-            <span className="font-mono text-blue-500">→</span>
-            <span><span className="font-medium text-foreground">Planner (GPT-4)</span> breaks down requirements into subtasks</span>
-          </div>
-          <div className="flex gap-2">
-            <span className="font-mono text-blue-500">→</span>
-            <span><span className="font-medium text-foreground">Designer (Claude)</span> creates UI mockups & data structures</span>
-          </div>
-          <div className="flex gap-2">
-            <span className="font-mono text-blue-500">→</span>
-            <span><span className="font-medium text-foreground">Developer (DeepSeek)</span> implements the code</span>
-          </div>
-          <div className="flex gap-2">
-            <span className="font-mono text-blue-500">→</span>
-            <span><span className="font-medium text-foreground">Fact Checker (Grok)</span> validates outputs & identifies issues</span>
-          </div>
-          <div className="flex gap-2">
-            <span className="font-mono text-blue-500">→</span>
-            <span><span className="font-medium text-foreground">Output</span> delivered to you with full audit trail</span>
-          </div>
+          {TEAM_ORDER.map((teamId) => {
+            const team = SDLC_TEAMS[teamId];
+            const stage = localStages.find(s => s.teamId === teamId);
+            const model = modelList.find(m => m.value === stage?.modelSlug);
+            return (
+              <div key={teamId} className="flex gap-2">
+                <span className="font-mono text-blue-500">→</span>
+                <span>
+                  <span className="font-medium text-foreground">{team.name}</span>
+                  {model && <span className="ml-1">({model.label})</span>}
+                  {' — '}{team.description}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </Card>
     </div>

@@ -1,0 +1,298 @@
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+
+async function apiRequest(method: string, url: string, body?: unknown) {
+  const res = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ message: res.statusText }));
+    throw new Error(err.message || res.statusText);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+// ─── Models ─────────────────────────────────────
+
+export function useModels() {
+  return useQuery({
+    queryKey: ["/api/models"],
+    queryFn: () => apiRequest("GET", "/api/models"),
+  });
+}
+
+export function useActiveModels() {
+  return useQuery({
+    queryKey: ["/api/models/active"],
+    queryFn: () => apiRequest("GET", "/api/models/active"),
+  });
+}
+
+export function useUpdateModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...updates }: { id: string } & Record<string, unknown>) =>
+      apiRequest("PATCH", `/api/models/${id}`, updates),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/models"] });
+    },
+  });
+}
+
+export function useCreateModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Record<string, unknown>) =>
+      apiRequest("POST", "/api/models", data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/models"] });
+    },
+  });
+}
+
+// ─── Teams ──────────────────────────────────────
+
+export function useTeams() {
+  return useQuery({
+    queryKey: ["/api/teams"],
+    queryFn: () => apiRequest("GET", "/api/teams"),
+  });
+}
+
+// ─── Pipelines ──────────────────────────────────
+
+export function usePipelines() {
+  return useQuery({
+    queryKey: ["/api/pipelines"],
+    queryFn: () => apiRequest("GET", "/api/pipelines"),
+  });
+}
+
+export function usePipeline(id: string) {
+  return useQuery({
+    queryKey: ["/api/pipelines", id],
+    queryFn: () => apiRequest("GET", `/api/pipelines/${id}`),
+    enabled: !!id,
+  });
+}
+
+export function useCreatePipeline() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Record<string, unknown>) =>
+      apiRequest("POST", "/api/pipelines", data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/pipelines"] });
+    },
+  });
+}
+
+export function useUpdatePipeline() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...updates }: { id: string } & Record<string, unknown>) =>
+      apiRequest("PATCH", `/api/pipelines/${id}`, updates),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/pipelines"] });
+    },
+  });
+}
+
+export function useDeletePipeline() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiRequest("DELETE", `/api/pipelines/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/pipelines"] });
+    },
+  });
+}
+
+// ─── Runs ───────────────────────────────────────
+
+export function useRuns(pipelineId?: string) {
+  const url = pipelineId
+    ? `/api/runs?pipelineId=${pipelineId}`
+    : "/api/runs";
+  return useQuery({
+    queryKey: ["/api/runs", pipelineId],
+    queryFn: () => apiRequest("GET", url),
+    refetchInterval: 5000,
+  });
+}
+
+export function usePipelineRun(runId: string) {
+  return useQuery({
+    queryKey: ["/api/runs", runId],
+    queryFn: () => apiRequest("GET", `/api/runs/${runId}`),
+    enabled: !!runId,
+    refetchInterval: 3000,
+  });
+}
+
+export function useStartRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { pipelineId: string; input: string }) =>
+      apiRequest("POST", "/api/runs", data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/runs"] });
+    },
+  });
+}
+
+export function useCancelRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (runId: string) =>
+      apiRequest("POST", `/api/runs/${runId}/cancel`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/runs"] });
+    },
+  });
+}
+
+// ─── Questions ──────────────────────────────────
+
+export function usePendingQuestions() {
+  return useQuery({
+    queryKey: ["/api/questions/pending"],
+    queryFn: () => apiRequest("GET", "/api/questions/pending"),
+    refetchInterval: 5000,
+  });
+}
+
+export function useAnswerQuestion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      runId,
+      questionId,
+      answer,
+    }: {
+      runId: string;
+      questionId: string;
+      answer: string;
+    }) =>
+      apiRequest(
+        "POST",
+        `/api/runs/${runId}/questions/${questionId}/answer`,
+        { answer },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/questions/pending"] });
+      qc.invalidateQueries({ queryKey: ["/api/runs"] });
+    },
+  });
+}
+
+export function useDismissQuestion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      runId,
+      questionId,
+    }: {
+      runId: string;
+      questionId: string;
+    }) =>
+      apiRequest(
+        "POST",
+        `/api/runs/${runId}/questions/${questionId}/dismiss`,
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/questions/pending"] });
+      qc.invalidateQueries({ queryKey: ["/api/runs"] });
+    },
+  });
+}
+
+// ─── Chat ───────────────────────────────────────
+
+export function useChatMessages(runId?: string) {
+  return useQuery({
+    queryKey: ["/api/chat", runId, "messages"],
+    queryFn: () => apiRequest("GET", `/api/chat/${runId}/messages`),
+    enabled: !!runId,
+    refetchInterval: 3000,
+  });
+}
+
+export function useSendChatMessage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { runId: string; content: string; modelSlug?: string }) =>
+      apiRequest("POST", `/api/chat/${data.runId}/messages`, data),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({
+        queryKey: ["/api/chat", vars.runId, "messages"],
+      });
+    },
+  });
+}
+
+export function useStandaloneChat() {
+  return useMutation({
+    mutationFn: (data: {
+      content: string;
+      modelSlug?: string;
+      history?: Array<{ role: string; content: string }>;
+    }) => apiRequest("POST", "/api/chat/standalone", data),
+  });
+}
+
+// ─── Gateway ────────────────────────────────────
+
+export function useGatewayStatus() {
+  return useQuery({
+    queryKey: ["/api/gateway/status"],
+    queryFn: () => apiRequest("GET", "/api/gateway/status"),
+  });
+}
+
+// ─── Provider Discovery ─────────────────────────
+
+export function useDiscoverProviderModels() {
+  return useQuery({
+    queryKey: ["/api/providers/discover"],
+    queryFn: () => apiRequest("GET", "/api/providers/discover"),
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useProbeEndpoint() {
+  return useMutation({
+    mutationFn: (data: { endpoint: string; providerType: "vllm" | "ollama" }) =>
+      apiRequest("POST", "/api/providers/probe", data),
+  });
+}
+
+export function useImportModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      name: string;
+      slug: string;
+      provider: string;
+      endpoint: string | null;
+      contextLimit: number;
+      capabilities: string[];
+      isActive: boolean;
+    }) => apiRequest("POST", "/api/models", data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/models"] });
+    },
+  });
+}
+
+export function useDeleteModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiRequest("DELETE", `/api/models/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/models"] });
+    },
+  });
+}
