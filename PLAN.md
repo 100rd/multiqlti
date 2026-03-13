@@ -75,9 +75,9 @@
 
 ### 3.1 — MCP, Tools & Knowledge Bases
 
-> Цель: дать pipeline stages доступ к инструментам — веб-поиск, базы знаний, код, инфраструктура — через MCP протокол и встроенные tools. Модель сама решает когда и какой инструмент вызвать (agentic loop).
+> Goal: give pipeline stages access to tools — web search, knowledge bases, code, infrastructure — via the MCP protocol and built-in tools. The model decides when and which tool to call (agentic loop).
 
-#### 3.1.0 — Архитектура: Agentic Tool Loop
+#### 3.1.0 — Architecture: Agentic Tool Loop
 
 ```
 ┌──────────────┐
@@ -87,7 +87,7 @@
        │ messages + tools[]
        ▼
 ┌──────────────────────────┐
-│  Gateway.completeWithTools()  │  ← НОВЫЙ метод
+│  Gateway.completeWithTools()  │  ← NEW method
 │                               │
 │  loop {                       │
 │    response = provider.complete(messages, tools)  │
@@ -111,71 +111,71 @@
 └──────────────┘
 ```
 
-**Ключевой принцип**: модель решает вызывать ли инструмент. Мы даём ей список доступных tools, она возвращает `tool_use` блоки. Gateway исполняет их и передаёт результат обратно. Цикл до финального текстового ответа (max 10 итераций).
+**Key principle**: the model decides whether to call a tool. We provide it with the list of available tools, it returns `tool_use` blocks. The Gateway executes them and passes the result back. The loop continues until a final text response (max 10 iterations).
 
-#### 3.1.1 — Расширение ILLMProvider для Tool Calling
+#### 3.1.1 — Extending ILLMProvider for Tool Calling
 
-- [ ] **Новый тип `ToolDefinition`**:
+- [ ] **New type `ToolDefinition`**:
   ```typescript
   // shared/types.ts
   export interface ToolDefinition {
-    name: string;                              // unique ID: "web_search", "mcp__github__search_code"
-    description: string;                       // для модели: когда вызывать
-    inputSchema: Record<string, unknown>;      // JSON Schema параметров
-    source: "builtin" | "mcp";                 // откуда инструмент
-    mcpServer?: string;                        // имя MCP сервера (если source=mcp)
+    name: string;                              // unique call ID
+    description: string;                       // for the model: when to call
+    inputSchema: Record<string, unknown>;      // JSON Schema of parameters
+    source: "builtin" | "mcp";                 // where the tool comes from
+    mcpServer?: string;                        // MCP server name (if source=mcp)
   }
 
   export interface ToolCall {
-    id: string;                                // уникальный ID вызова
-    name: string;                              // имя инструмента
-    arguments: Record<string, unknown>;        // аргументы от модели
+    id: string;                                // unique call ID
+    name: string;                              // tool name
+    arguments: Record<string, unknown>;        // arguments from the model
   }
 
   export interface ToolResult {
     toolCallId: string;
-    content: string;                           // результат исполнения
+    content: string;                           // execution result
     isError?: boolean;
   }
 
-  // Расширенный ProviderMessage для tool calling
+  // Extended ProviderMessage for tool calling
   export type ProviderMessage =
     | { role: "system" | "user" | "assistant"; content: string }
     | { role: "assistant"; content: string; toolCalls?: ToolCall[] }
     | { role: "tool"; toolCallId: string; content: string };
   ```
 
-- [ ] **Расширить `ILLMProviderOptions`**:
+- [ ] **Extend `ILLMProviderOptions`**:
   ```typescript
   export interface ILLMProviderOptions {
     maxTokens?: number;
     temperature?: number;
-    tools?: ToolDefinition[];                  // ← НОВОЕ: доступные инструменты
-    toolChoice?: "auto" | "none" | "required"; // ← НОВОЕ: стратегия вызова
+    tools?: ToolDefinition[];                  // ← NEW: available tools
+    toolChoice?: "auto" | "none" | "required"; // ← NEW: calling strategy
   }
   ```
 
-- [ ] **Расширить return type `complete()`**:
+- [ ] **Extend return type of `complete()`**:
   ```typescript
   complete(...): Promise<{
     content: string;
     tokensUsed: number;
     inputTokens?: number;
     outputTokens?: number;
-    toolCalls?: ToolCall[];                    // ← НОВОЕ: если модель хочет вызвать инструмент
-    finishReason: "stop" | "tool_use";         // ← НОВОЕ
+    toolCalls?: ToolCall[];                    // ← NEW: if the model wants to call a tool
+    finishReason: "stop" | "tool_use";         // ← NEW
   }>
   ```
 
-- [ ] **Имплементация в каждом провайдере**:
-  - **ClaudeProvider**: Anthropic API нативно поддерживает tools — `tools` param + `tool_use` content blocks
-  - **GeminiProvider**: Google API поддерживает `functionDeclarations` + `functionCall` response parts
-  - **GrokProvider**: xAI OpenAI-compatible — `tools` param + `tool_calls` в response (как OpenAI)
-  - **VllmProvider/OllamaProvider**: зависит от модели, но OpenAI-compatible format поддерживается vLLM
+- [ ] **Implementation in each provider**:
+  - **ClaudeProvider**: Anthropic API natively supports tools — `tools` param + `tool_use` content blocks
+  - **GeminiProvider**: Google API supports `functionDeclarations` + `functionCall` response parts
+  - **GrokProvider**: xAI OpenAI-compatible — `tools` param + `tool_calls` in response (like OpenAI)
+  - **VllmProvider/OllamaProvider**: depends on the model, but OpenAI-compatible format is supported by vLLM
 
 #### 3.1.2 — Tool Registry (`server/tools/registry.ts`)
 
-- [ ] **Единый реестр всех доступных инструментов**:
+- [ ] **Unified registry of all available tools**:
   ```typescript
   class ToolRegistry {
     private tools: Map<string, ToolHandler> = new Map();
@@ -192,57 +192,57 @@
   }
   ```
 
-- [ ] **Категории инструментов**:
+- [ ] **Tool categories**:
   ```
   ToolRegistry
-  ├── builtin/          — встроенные инструменты (web search, RAG, code)
-  │   ├── web_search        — поиск в интернете
-  │   ├── url_reader        — извлечение контента из URL
-  │   ├── knowledge_search  — RAG по llm_requests + docs
-  │   ├── code_search       — поиск по codebase (grep/ast)
-  │   ├── file_read         — чтение файла из workspace
-  │   └── calculator        — вычисления
+  ├── builtin/          — built-in tools (web search, RAG, code)
+  │   ├── web_search        — internet search
+  │   ├── url_reader        — extract content from a URL
+  │   ├── knowledge_search  — RAG over llm_requests + docs
+  │   ├── code_search       — search the codebase (grep/ast)
+  │   ├── file_read         — read a file from the workspace
+  │   └── calculator        — calculations
   │
-  └── mcp/              — инструменты из подключённых MCP серверов
-      ├── github__*         — GitHub операции
+  └── mcp/              — tools from connected MCP servers
+      ├── github__*         — GitHub operations
       ├── terraform__*      — Terraform docs/commands
       ├── kubernetes__*     — K8s cluster operations
       ├── notion__*         — Notion pages/databases
-      └── {custom}__*       — любой пользовательский MCP сервер
+      └── {custom}__*       — any user-provided MCP server
   ```
 
 #### 3.1.3 — MCP Client Manager (`server/tools/mcp-client.ts`)
 
-- [ ] **Подключение к внешним MCP серверам** через `@modelcontextprotocol/sdk`:
+- [ ] **Connect to external MCP servers** via `@modelcontextprotocol/sdk`:
   ```typescript
   class McpClientManager {
     private connections: Map<string, McpConnection> = new Map();
 
-    // Подключить MCP сервер
+    // Connect an MCP server
     async connect(config: McpServerConfig): Promise<void>;
-    // Отключить
+    // Disconnect
     async disconnect(serverName: string): Promise<void>;
-    // Получить все tools от всех подключённых серверов
+    // Get all tools from all connected servers
     getTools(): ToolDefinition[];
-    // Вызвать tool на конкретном сервере
+    // Call a tool on a specific server
     async callTool(serverName: string, toolName: string, args: Record<string, unknown>): Promise<string>;
-    // Статус подключений
+    // Connection status
     getStatus(): Record<string, { connected: boolean; tools: number; error?: string }>;
   }
 
   interface McpServerConfig {
-    name: string;                             // уникальное имя: "github", "terraform", "my-notion"
+    name: string;                             // unique name: "github", "terraform", "my-notion"
     transport: "stdio" | "sse" | "streamable-http";
-    command?: string;                         // для stdio: путь к бинарнику
-    args?: string[];                          // аргументы команды
-    url?: string;                             // для sse/http: URL сервера
-    env?: Record<string, string>;             // переменные окружения (API ключи и т.д.)
+    command?: string;                         // for stdio: path to binary
+    args?: string[];                          // command arguments
+    url?: string;                             // for sse/http: server URL
+    env?: Record<string, string>;             // environment variables (API keys, etc.)
     enabled: boolean;
-    autoConnect: boolean;                     // подключать при старте приложения
+    autoConnect: boolean;                     // connect on application start
   }
   ```
 
-- [ ] **DB: таблица `mcp_servers`** — хранение конфигураций:
+- [ ] **DB: `mcp_servers` table** — storing configurations:
   ```typescript
   export const mcpServers = pgTable("mcp_servers", {
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -260,24 +260,24 @@
   });
   ```
 
-#### 3.1.4 — Встроенные инструменты (Built-in Tools)
+#### 3.1.4 — Built-in Tools
 
 ##### Web Search
 
-- [ ] **`web_search`** — поиск в интернете:
+- [ ] **`web_search`** — internet search:
   ```typescript
   // server/tools/builtin/web-search.ts
-  // Поддержка нескольких провайдеров через абстракцию:
+  // Multiple providers supported via abstraction:
 
   interface SearchProvider {
     search(query: string, options?: { limit?: number; domain?: string }): Promise<SearchResult[]>;
   }
 
-  // Реализации:
-  class TavilySearch implements SearchProvider { }   // TAVILY_API_KEY — лучшее качество, платный
-  class BraveSearch implements SearchProvider { }    // BRAVE_API_KEY — бесплатный tier
+  // Implementations:
+  class TavilySearch implements SearchProvider { }   // TAVILY_API_KEY — best quality, paid
+  class BraveSearch implements SearchProvider { }    // BRAVE_API_KEY — free tier
   class ExaSearch implements SearchProvider { }      // EXA_API_KEY — semantic search
-  class DuckDuckGoSearch implements SearchProvider { } // бесплатный, без API ключа
+  class DuckDuckGoSearch implements SearchProvider { } // free, no API key required
 
   // Tool definition:
   {
@@ -294,9 +294,9 @@
   }
   ```
 
-- [ ] **`url_reader`** — извлечение контента из URL:
+- [ ] **`url_reader`** — extract content from a URL:
   ```typescript
-  // Jina AI Reader (https://r.jina.ai/{url}) или Firecrawl
+  // Jina AI Reader (https://r.jina.ai/{url}) or Firecrawl
   {
     name: "url_reader",
     description: "Read and extract content from a web page URL. Returns clean markdown text.",
@@ -311,7 +311,7 @@
 
 ##### Knowledge Base / RAG
 
-- [ ] **`knowledge_search`** — поиск по внутренней базе знаний (RAG из `llm_requests` таблицы из Phase 3.2):
+- [ ] **`knowledge_search`** — search the internal knowledge base (RAG from the `llm_requests` table from Phase 3.2):
   ```typescript
   {
     name: "knowledge_search",
@@ -325,12 +325,12 @@
     }
   }
   ```
-  **Реализация**:
-  - Phase 1: PostgreSQL full-text search по `llm_requests.responseContent` (pg_trgm)
+  **Implementation**:
+  - Phase 1: PostgreSQL full-text search over `llm_requests.responseContent` (pg_trgm)
   - Phase 2: pgvector embeddings — `CREATE EXTENSION vector` + embedding column + cosine similarity
-  - Phase 3: External vector store (Qdrant/Pinecone) для масштабирования
+  - Phase 3: External vector store (Qdrant/Pinecone) for scaling
 
-- [ ] **`memory_search`** — поиск по памяти системы (из Phase 3.3):
+- [ ] **`memory_search`** — search the system memory (from Phase 3.3):
   ```typescript
   {
     name: "memory_search",
@@ -346,7 +346,7 @@
 
 ##### Code & Files
 
-- [ ] **`code_search`** — поиск по кодовой базе workspace (Phase 4 dependency):
+- [ ] **`code_search`** — search the workspace codebase (Phase 4 dependency):
   ```typescript
   {
     name: "code_search",
@@ -361,7 +361,7 @@
   }
   ```
 
-- [ ] **`file_read`** — чтение файла из workspace:
+- [ ] **`file_read`** — read a file from the workspace:
   ```typescript
   {
     name: "file_read",
@@ -377,9 +377,9 @@
   }
   ```
 
-#### 3.1.5 — Рекомендуемые MCP серверы
+#### 3.1.5 — Recommended MCP Servers
 
-| MCP сервер | Что даёт | Какие stages используют | Env vars |
+| MCP server | What it provides | Which stages use it | Env vars |
 |------------|----------|------------------------|----------|
 | **GitHub** (`@modelcontextprotocol/server-github`) | Repos, issues, PRs, code search | Development, Code Review, Monitoring | `GITHUB_TOKEN` |
 | **Terraform** (`hashicorp/terraform-mcp-server`) | Provider docs, module search | Architecture, Deployment | — |
@@ -394,7 +394,7 @@
 
 #### 3.1.6 — Per-Stage Tool Assignment
 
-- [ ] **Расширить `PipelineStageConfig`**:
+- [ ] **Extend `PipelineStageConfig`**:
   ```typescript
   export interface PipelineStageConfig {
     teamId: TeamId;
@@ -402,19 +402,19 @@
     systemPromptOverride?: string;
     enabled: boolean;
     sandbox?: SandboxConfig;
-    tools?: StageToolConfig;              // ← НОВОЕ
+    tools?: StageToolConfig;              // ← NEW
   }
 
   export interface StageToolConfig {
-    enabled: boolean;                     // вкл/выкл tools для stage
+    enabled: boolean;                     // enable/disable tools for stage
     allowedTools?: string[];              // whitelist tool names (null = all available)
     blockedTools?: string[];              // blacklist (useful for security)
-    maxToolCalls?: number;                // лимит вызовов за stage (default: 10)
+    maxToolCalls?: number;                // call limit per stage (default: 10)
     toolChoice?: "auto" | "none" | "required";
   }
   ```
 
-- [ ] **Default tool assignments по team type**:
+- [ ] **Default tool assignments by team type**:
   ```typescript
   export const DEFAULT_TEAM_TOOLS: Record<TeamId, string[]> = {
     planning:     ["web_search", "knowledge_search", "memory_search"],
@@ -429,7 +429,7 @@
 
 #### 3.1.7 — Gateway: completeWithTools()
 
-- [ ] **Новый метод в Gateway** — agentic tool loop:
+- [ ] **New method in Gateway** — agentic tool loop:
   ```typescript
   async completeWithTools(request: GatewayRequest & {
     tools: ToolDefinition[];
@@ -449,12 +449,12 @@
 
       totalTokens += result.tokensUsed;
 
-      // Модель вернула финальный ответ
+      // Model returned a final response
       if (result.finishReason === "stop" || !result.toolCalls?.length) {
         return { content: result.content, tokensUsed: totalTokens, toolCallLog, ... };
       }
 
-      // Модель хочет вызвать инструменты
+      // Model wants to call tools
       messages.push({ role: "assistant", content: result.content, toolCalls: result.toolCalls });
 
       for (const call of result.toolCalls) {
@@ -469,10 +469,10 @@
   }
   ```
 
-- [ ] **BaseTeam обновление** — использовать `completeWithTools` если tools включены:
+- [ ] **BaseTeam update** — use `completeWithTools` when tools are enabled:
   ```typescript
   // base.ts — execute()
-  const tools = this.getAvailableTools(context);  // из StageToolConfig + defaults
+  const tools = this.getAvailableTools(context);  // from StageToolConfig + defaults
 
   const response = tools.length > 0
     ? await this.gateway.completeWithTools({ modelSlug, messages, tools })
@@ -483,75 +483,75 @@
 
 - [ ] **MCP Server management**:
   ```
-  GET    /api/mcp/servers              — список подключённых MCP серверов
-  POST   /api/mcp/servers              — добавить MCP сервер
-  PUT    /api/mcp/servers/:id          — обновить конфигурацию
-  DELETE /api/mcp/servers/:id          — удалить
-  POST   /api/mcp/servers/:id/connect  — подключиться
-  POST   /api/mcp/servers/:id/disconnect — отключиться
-  GET    /api/mcp/servers/:id/tools    — список tools от сервера
-  POST   /api/mcp/servers/:id/test     — тестовый вызов
+  GET    /api/mcp/servers              — list connected MCP servers
+  POST   /api/mcp/servers              — add an MCP server
+  PUT    /api/mcp/servers/:id          — update configuration
+  DELETE /api/mcp/servers/:id          — delete
+  POST   /api/mcp/servers/:id/connect  — connect
+  POST   /api/mcp/servers/:id/disconnect — disconnect
+  GET    /api/mcp/servers/:id/tools    — list tools from server
+  POST   /api/mcp/servers/:id/test     — test call
   ```
 
 - [ ] **Tools**:
   ```
-  GET    /api/tools                    — все доступные инструменты (builtin + mcp)
-  GET    /api/tools/builtin            — только встроенные
-  GET    /api/tools/status             — статус провайдеров (какие API ключи настроены)
-  POST   /api/tools/:name/test         — тестовый вызов инструмента
+  GET    /api/tools                    — all available tools (builtin + mcp)
+  GET    /api/tools/builtin            — built-in tools only
+  GET    /api/tools/status             — provider status (which API keys are configured)
+  POST   /api/tools/:name/test         — test tool call
   ```
 
 #### 3.1.9 — Frontend
 
-- [ ] **Settings → Tools & MCP** — новая секция:
-  - Встроенные инструменты: статус (configured/not), env var hints
-  - MCP серверы: список, add/remove, connect/disconnect, test
-  - Каждый сервер: иконка, имя, transport, tool count, status badge
+- [ ] **Settings → Tools & MCP** — new section:
+  - Built-in tools: status (configured/not), env var hints
+  - MCP servers: list, add/remove, connect/disconnect, test
+  - Each server: icon, name, transport, tool count, status badge
 
 - [ ] **Pipeline Builder → Stage config → Tools tab**:
   - Toggle "Enable tool calling" per stage
-  - Checklist доступных tools (pre-selected по DEFAULT_TEAM_TOOLS)
+  - Checklist of available tools (pre-selected per DEFAULT_TEAM_TOOLS)
   - Max iterations slider
   - Tool choice selector (auto/none/required)
 
 - [ ] **Stage output → Tool calls section**:
-  - Collapsible log tool вызовов: tool name, args, result, duration
-  - Иконки по типу tool (search, code, file, mcp)
+  - Collapsible tool call log: tool name, args, result, duration
+  - Icons by tool type (search, code, file, mcp)
 
-#### 3.1.10 — Пакеты
+#### 3.1.10 — Packages
 
 ```bash
 npm install @modelcontextprotocol/sdk                # MCP client
-npm install @anthropic-ai/sdk                         # уже есть — поддерживает tools
+npm install @anthropic-ai/sdk                         # already present — supports tools
 npm install @tavily/core                              # Tavily search (optional)
 ```
 
-#### 3.1.11 — Порядок реализации
+#### 3.1.11 — Implementation Order
 
-1. Types: `ToolDefinition`, `ToolCall`, `ToolResult`, расширение `ProviderMessage`
-2. `ToolRegistry` — базовый registry + execute
-3. Расширить `ILLMProvider.complete()` для tool calling
-4. Имплементация tool calling в ClaudeProvider (Anthropic API нативно)
+1. Types: `ToolDefinition`, `ToolCall`, `ToolResult`, extend `ProviderMessage`
+2. `ToolRegistry` — basic registry + execute
+3. Extend `ILLMProvider.complete()` for tool calling
+4. Tool calling implementation in ClaudeProvider (Anthropic API natively)
 5. `Gateway.completeWithTools()` — agentic loop
 6. Built-in tools: `web_search` (Tavily/DuckDuckGo), `url_reader`
 7. Built-in tools: `knowledge_search` (PostgreSQL full-text)
-8. `McpClientManager` — подключение внешних MCP серверов
-9. Per-stage tool config в `PipelineStageConfig`
-10. `BaseTeam` обновление — автовыбор completeWithTools
-11. DB: `mcp_servers` таблица
+8. `McpClientManager` — connect external MCP servers
+9. Per-stage tool config in `PipelineStageConfig`
+10. `BaseTeam` update — auto-select completeWithTools
+11. DB: `mcp_servers` table
 12. API endpoints
 13. Frontend: Settings → Tools & MCP
 14. Frontend: Pipeline Builder → tool config per stage
 15. Frontend: Stage output → tool call log
 
-#### Связи с другими фазами
+#### Dependencies on other phases
 
-| Зависит от | Что даёт |
+| Depends on | What it provides |
 |------------|----------|
-| Phase 3.2 (llm_requests) | `knowledge_search` ищет по сохранённым ответам |
-| Phase 3.3 (memory) | `memory_search` ищет по памяти проекта |
-| Phase 3.5 (sandbox) | Sandbox может вызываться как tool (`code_execute`) |
-| Phase 4 (workspace) | `code_search` и `file_read` работают с workspace файлами |
+| Phase 3.2 (llm_requests) | `knowledge_search` searches over stored responses |
+| Phase 3.3 (memory) | `memory_search` searches project memory |
+| Phase 3.5 (sandbox) | Sandbox can be called as a tool (`code_execute`) |
+| Phase 4 (workspace) | `code_search` and `file_read` work with workspace files |
 
 ### 3.1b — Other DeerFlow-Inspired Features
 
@@ -561,46 +561,46 @@ npm install @tavily/core                              # Tavily search (optional)
 
 ### 3.2 — Statistics, Request Log & Cost Tracking
 
-> Цель: детальная статистика использования моделей, хранение всех запросов/ответов для последующего RAG и fine-tuning inference.
+> Goal: detailed model usage statistics, storing all requests/responses for subsequent RAG and fine-tuning inference.
 
-#### 3.2.1 — DB: таблица `llm_requests` (лог всех LLM-вызовов)
+#### 3.2.1 — DB: `llm_requests` table (log of all LLM calls)
 
-- [ ] **Новая таблица `llm_requests`** — каждый вызов к провайдеру записывается:
+- [ ] **New `llm_requests` table** — every provider call is recorded:
   ```typescript
   // shared/schema.ts
   export const llmRequests = pgTable("llm_requests", {
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-    // Контекст вызова
-    runId: varchar("run_id").references(() => pipelineRuns.id),       // nullable — standalone chat тоже логируется
+    // Call context
+    runId: varchar("run_id").references(() => pipelineRuns.id),       // nullable — standalone chat is also logged
     stageExecutionId: varchar("stage_execution_id").references(() => stageExecutions.id),
-    // Модель и провайдер
+    // Model and provider
     modelSlug: text("model_slug").notNull(),
     modelId: text("model_id").notNull(),                              // provider-side ID (claude-sonnet-4-6, grok-3, etc.)
     provider: text("provider").notNull(),                              // anthropic, google, xai, vllm, ollama
-    // Запрос
-    messages: jsonb("messages").notNull(),                             // полный массив messages (для RAG/replay)
-    systemPrompt: text("system_prompt"),                               // system prompt отдельно для удобства поиска
+    // Request
+    messages: jsonb("messages").notNull(),                             // full messages array (for RAG/replay)
+    systemPrompt: text("system_prompt"),                               // system prompt separately for easy search
     temperature: real("temperature"),
     maxTokens: integer("max_tokens"),
-    // Ответ
-    responseContent: text("response_content").notNull(),               // полный текст ответа
-    responseRaw: jsonb("response_raw"),                                // raw provider response (для debug)
-    // Метрики
+    // Response
+    responseContent: text("response_content").notNull(),               // full response text
+    responseRaw: jsonb("response_raw"),                                // raw provider response (for debug)
+    // Metrics
     inputTokens: integer("input_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
     totalTokens: integer("total_tokens").notNull().default(0),
-    latencyMs: integer("latency_ms").notNull().default(0),             // время от запроса до полного ответа
-    estimatedCostUsd: real("estimated_cost_usd"),                      // расчёт по прайсу модели
-    // Мета
+    latencyMs: integer("latency_ms").notNull().default(0),             // time from request to full response
+    estimatedCostUsd: real("estimated_cost_usd"),                      // calculated per model pricing
+    // Meta
     status: text("status").notNull().default("success"),               // success | error | timeout
     errorMessage: text("error_message"),
     teamId: text("team_id"),                                           // planning, development, testing, etc.
-    tags: jsonb("tags").default(sql`'[]'::jsonb`),                     // произвольные теги для фильтрации
+    tags: jsonb("tags").default(sql`'[]'::jsonb`),                     // arbitrary tags for filtering
     createdAt: timestamp("created_at").defaultNow(),
   });
   ```
 
-- [ ] **Индексы** для быстрой аналитики:
+- [ ] **Indexes** for fast analytics:
   ```sql
   CREATE INDEX idx_llm_requests_model ON llm_requests(model_slug, created_at);
   CREATE INDEX idx_llm_requests_provider ON llm_requests(provider, created_at);
@@ -608,11 +608,11 @@ npm install @tavily/core                              # Tavily search (optional)
   CREATE INDEX idx_llm_requests_created ON llm_requests(created_at);
   ```
 
-#### 3.2.2 — Gateway: логирование запросов
+#### 3.2.2 — Gateway: Request Logging
 
-- [ ] **Обернуть `Gateway.complete()` и `Gateway.stream()`** — записывать каждый вызов в `llm_requests`:
+- [ ] **Wrap `Gateway.complete()` and `Gateway.stream()`** — record every call to `llm_requests`:
   ```typescript
-  // Gateway.complete() — после получения результата
+  // Gateway.complete() — after receiving the result
   const startTime = Date.now();
   const result = await provider.complete(modelId, messages, options);
   const latencyMs = Date.now() - startTime;
@@ -630,14 +630,14 @@ npm install @tavily/core                              # Tavily search (optional)
   });
   ```
 
-- [ ] **Расширить `GatewayRequest`** — добавить optional `runId`, `stageExecutionId`, `teamId` для связки с контекстом pipeline
+- [ ] **Extend `GatewayRequest`** — add optional `runId`, `stageExecutionId`, `teamId` for linking to pipeline context
 
-- [ ] **`ILLMProvider` возвращает раздельные токены** — расширить return type:
+- [ ] **`ILLMProvider` returns separate token counts** — extend return type:
   ```typescript
   complete(...): Promise<{ content: string; tokensUsed: number; inputTokens?: number; outputTokens?: number }>
   ```
 
-- [ ] **Таблица цен `MODEL_PRICING`** в `shared/constants.ts`:
+- [ ] **`MODEL_PRICING` table** in `shared/constants.ts`:
   ```typescript
   export const MODEL_PRICING: Record<string, { inputPer1M: number; outputPer1M: number }> = {
     "claude-sonnet-4-6":  { inputPer1M: 3.00,  outputPer1M: 15.00 },
@@ -650,41 +650,41 @@ npm install @tavily/core                              # Tavily search (optional)
   };
   ```
 
-#### 3.2.3 — API: эндпоинты статистики
+#### 3.2.3 — API: Statistics Endpoints
 
-- [ ] **`GET /api/stats/overview`** — общая сводка:
+- [ ] **`GET /api/stats/overview`** — overall summary:
   ```json
   { "totalRequests": 1234, "totalTokens": { "input": 890000, "output": 340000 }, "totalCostUsd": 4.56, "totalRuns": 42 }
   ```
 
-- [ ] **`GET /api/stats/by-model`** — статистика по каждой модели:
+- [ ] **`GET /api/stats/by-model`** — statistics per model:
   ```json
   [{ "modelSlug": "claude-sonnet-4-6", "provider": "anthropic", "requests": 456, "tokens": { "input": 320000, "output": 120000 }, "costUsd": 2.76, "avgLatencyMs": 2340, "errorRate": 0.02 }]
   ```
 
-- [ ] **`GET /api/stats/by-provider`** — агрегация по провайдерам
+- [ ] **`GET /api/stats/by-provider`** — aggregation by provider
 
-- [ ] **`GET /api/stats/by-team`** — агрегация по SDLC team (planning, development, testing, ...)
+- [ ] **`GET /api/stats/by-team`** — aggregation by SDLC team (planning, development, testing, ...)
 
-- [ ] **`GET /api/stats/by-run/:runId`** — стоимость и токены конкретного run'а
+- [ ] **`GET /api/stats/by-run/:runId`** — cost and tokens for a specific run
 
-- [ ] **`GET /api/stats/timeline`** — временной ряд для графиков:
+- [ ] **`GET /api/stats/timeline`** — time series for charts:
   ```
   ?granularity=hour|day|week  &from=...  &to=...  &groupBy=model|provider|team
   ```
 
-- [ ] **`GET /api/stats/requests`** — пагинированный лог запросов:
+- [ ] **`GET /api/stats/requests`** — paginated request log:
   ```
   ?page=1  &limit=50  &model=...  &provider=...  &runId=...  &from=...  &to=...
   ```
 
-- [ ] **`GET /api/stats/requests/:id`** — полный запрос с messages и response (для replay/debug)
+- [ ] **`GET /api/stats/requests/:id`** — full request with messages and response (for replay/debug)
 
-- [ ] **`POST /api/stats/export`** — экспорт в CSV/JSON/JSONL
+- [ ] **`POST /api/stats/export`** — export to CSV/JSON/JSONL
 
-#### 3.2.4 — Frontend: страница `/stats`
+#### 3.2.4 — Frontend: `/stats` page
 
-- [ ] **Новая страница Statistics** (`client/src/pages/Statistics.tsx`):
+- [ ] **New Statistics page** (`client/src/pages/Statistics.tsx`):
   ```
   ┌──────────────────────────────────────────────────────────────────┐
   │  Statistics                              [Export CSV] [Export JSON]│
@@ -716,52 +716,213 @@ npm install @tavily/core                              # Tavily search (optional)
   └──────────────────────────────────────────────────────────────────┘
   ```
 
-- [ ] **Router** — добавить `/stats` в `App.tsx`, навигация в sidebar
+- [ ] **Router** — add `/stats` to `App.tsx`, navigation in sidebar
 
-- [ ] **Hooks** — `useStatsOverview()`, `useStatsTimeline()`, `useStatsRequests()` в `use-pipeline.ts`
+- [ ] **Hooks** — `useStatsOverview()`, `useStatsTimeline()`, `useStatsRequests()` in `use-pipeline.ts`
 
-- [ ] **Dashboard обновление** — заменить mock traffic chart на реальные данные из `/api/stats/timeline`
+- [ ] **Dashboard update** — replace mock traffic chart with real data from `/api/stats/timeline`
 
-#### 3.2.5 — Хранение для будущего RAG и Inference
+#### 3.2.5 — Storage for Future RAG and Inference
 
-- [ ] **Полные messages в `llm_requests.messages`** (JSONB) — training data:
+- [ ] **Full messages in `llm_requests.messages`** (JSONB) — training data:
   - system prompt + user messages + assistant response
-  - Полный контекст каждого вызова для replay
+  - Full context of every call for replay
   - Fine-tuning: prompt → response pairs
-  - RAG: поиск по прошлым ответам, similar questions
+  - RAG: search over past responses, similar questions
 
-- [ ] **`responseContent` как text** — для полнотекстового поиска:
+- [ ] **`responseContent` as text** — for full-text search:
   - Trigram index: `CREATE INDEX ... USING gin(response_content gin_trgm_ops)`
-  - Или pg_tsvector для полнотекстового поиска
+  - Or pg_tsvector for full-text search
 
 - [ ] **Tags** — `llm_requests.tags` (JSONB array):
   - Auto-tags: `["pipeline:web-app", "stage:testing", "lang:typescript"]`
-  - User tags через UI
-  - Фильтрация в `/api/stats/requests`
+  - User tags via UI
+  - Filtering in `/api/stats/requests`
 
-- [ ] **Export для training** — `POST /api/stats/export-training`:
-  - Format: JSONL (для fine-tuning)
-  - Фильтры: model, status=success, date range
-  - Выход: пары prompt/completion
+- [ ] **Export for training** — `POST /api/stats/export-training`:
+  - Format: JSONL (for fine-tuning)
+  - Filters: model, status=success, date range
+  - Output: prompt/completion pairs
 
-- [ ] **Embeddings-ready** — структура готова для Phase 5 RAG:
+- [ ] **Embeddings-ready** — structure prepared for Phase 5 RAG:
   - `messages` + `responseContent` → embed → vector store
-  - Semantic cache: поиск похожих прошлых запросов → reuse ответа
-  - Снижает повторные вызовы LLM
+  - Semantic cache: search for similar past requests → reuse response
+  - Reduces repeated LLM calls
 
-#### 3.2.6 — Порядок реализации
+#### 3.2.6 — Implementation Order
 
-1. Таблица `llm_requests` + миграция + индексы
+1. `llm_requests` table + migration + indexes
 2. Storage methods (`createLlmRequest`, `getLlmRequests`, `getLlmRequestStats`)
 3. Gateway logging wrapper
 4. `MODEL_PRICING` + `estimateCost()`
 5. API endpoints `/api/stats/*`
 6. Frontend: `/stats` page
-7. Dashboard: замена mock данных
+7. Dashboard: replace mock data
 8. Export (CSV/JSON/JSONL)
-9. Полнотекстовый поиск + trigram индекс
+9. Full-text search + trigram index
 
-### 3.3 — Governance & Gates
+
+#### 3.2.7 — Thought Tree (Reasoning Tree Visualization)
+
+> Users need to see HOW the agent reached a decision, not just WHAT it produced. Thought Tree shows the chain of reasoning, tool calls, delegation and branching decisions as an interactive tree.
+
+- [ ] **Thought Tree model**:
+  ```typescript
+  export interface ThoughtNode {
+    id: string;
+    parentId: string | null;
+    type: "reasoning" | "tool_call" | "tool_result" | "delegation" | "decision" | "guardrail" | "memory_recall";
+    label: string;                       // "Analyzing security requirements"
+    content: string;                     // full text
+    timestamp: number;
+    durationMs?: number;
+    metadata?: {
+      model?: string;
+      tokensUsed?: number;
+      toolName?: string;
+      delegatedTo?: string;
+      decision?: string;                 // "chose PostgreSQL over MongoDB"
+      confidence?: number;
+    };
+    children: ThoughtNode[];
+  }
+  ```
+
+- [ ] **ThoughtTreeCollector** (`server/pipeline/thought-tree-collector.ts`):
+  - Parses reasoning from LLM response:
+    - `<thinking>` blocks (Claude extended thinking)
+    - Markdown headings (`## Step N:`)
+    - Tool call → tool result pairs from agentic loop
+    - Delegation chains
+    - Guardrail results
+    - Memory recall events
+  - Methods: `addFromLlmResponse()`, `addToolCall()`, `addToolResult()`, `addDelegation()`, `addDecision()`
+  - `getTree()` → full tree, `serialize()` → JSON for storage
+
+- [ ] **Extraction heuristics**:
+
+  | Source | What we extract | Node type |
+  |----------|---------------|----------|
+  | Claude `<thinking>` blocks | Internal reasoning | `reasoning` |
+  | Markdown headings | Structured steps | `reasoning` |
+  | Agentic tool loop | Tool name + args → result | `tool_call` → `tool_result` |
+  | `delegate_to_team` tool | Team, task, response | `delegation` |
+  | Guardrail validation | Pass/fail + issues | `guardrail` |
+  | Memory injection | Which memories used | `memory_recall` |
+  | Explicit `"decision"` in output | Approach + alternatives | `decision` |
+
+- [ ] **DB storage** — `thought_tree` JSONB column in `stage_executions` (or a separate table)
+
+- [ ] **Frontend: Thought Tree viewer** (`ThoughtTree.tsx`):
+  ```
+  ┌─────────────────────────────────────────────────────────────┐
+  │  Planning Stage — Thought Tree                    [Collapse]│
+  ├─────────────────────────────────────────────────────────────┤
+  │  🧠 Analyzing project requirements              2.3s  340tk│
+  │  ├── 🔍 web_search("React auth best practices") 1.1s      │
+  │  │   └── 📄 Found 5 results, top: Auth0 docs              │
+  │  ├── 💭 Evaluating auth approaches                0.8s     │
+  │  │   ├── Option A: JWT + refresh tokens                    │
+  │  │   ├── Option B: Session-based auth                      │
+  │  │   └── ✅ Decision: JWT (stateless, better for SPA)      │
+  │  ├── 🧠 Designing component architecture          1.2s     │
+  │  │   ├── 🔍 memory_recall("preferred frameworks")          │
+  │  │   │   └── 📝 User prefers TypeScript + Zustand          │
+  │  │   └── 💭 Mapping components to pages                    │
+  │  └── 📋 Generating task breakdown                  0.9s     │
+  │      ├── Task 1: Auth provider setup (high)                │
+  │      ├── Task 2: Login/Register pages (high)               │
+  │      └── Task 3: Protected routes (medium)                 │
+  │                                                             │
+  │  Total: 6.3s │ 1,240 tokens │ 2 tool calls │ 1 decision   │
+  └─────────────────────────────────────────────────────────────┘
+  ```
+  - Collapsible/expandable nodes
+  - Color coding: 🧠 reasoning, 🔍 tool, ✅ decision, ⚠️ guardrail
+  - Click node → full content in side panel
+  - Token count and timing per node
+  - Filter: all / reasoning only / decisions only / tools only
+
+- [ ] **API**: `GET /api/runs/:runId/stages/:stageIndex/thought-tree`
+- [ ] **WS events**: `stage:thought_node` — stream nodes in real-time for live rendering
+
+#### 3.2.8 — Automatic Model Downgrade for Trivial Tasks
+
+> Not every task requires a powerful model. If a stage task is trivial (formatting, boilerplate, simple refactoring), automatically switch to a cheaper model. Savings of 80-95%.
+
+- [ ] **Task complexity classifier** (`server/pipeline/complexity-classifier.ts`):
+  ```typescript
+  export type TaskComplexity = "trivial" | "standard" | "complex";
+
+  class ComplexityClassifier {
+    classify(input: StageInput): TaskComplexity;  // pure heuristics, no LLM
+  }
+  ```
+
+  **Heuristics** (rules, ~0ms):
+
+  | Signal | Trivial | Standard | Complex |
+  |--------|---------|----------|---------|
+  | Input length (chars) | < 500 | 500–5000 | > 5000 |
+  | Files mentioned | 0–1 | 2–5 | > 5 |
+  | Keywords | "format", "rename", "boilerplate", "simple" | — | "architecture", "security", "migration", "distributed" |
+  | Previous stage output | < 1KB | 1–10KB | > 10KB |
+  | Stage type | monitoring | development, testing | architecture, code_review |
+  | Acceptance criteria | 0–2 | 3–5 | > 5 |
+  | Explicit user flag | `complexity: "trivial"` | — | `complexity: "complex"` |
+
+- [ ] **Model tier mapping**:
+  ```typescript
+  export const MODEL_TIERS: Record<string, Record<TaskComplexity, string>> = {
+    anthropic: {
+      trivial:  "claude-haiku-4-5",      // /bin/zsh.80/.00 per 1M
+      standard: "claude-sonnet-4-6",     // .00/.00
+      complex:  "claude-sonnet-4-6",
+    },
+    google: {
+      trivial:  "gemini-2.0-flash",      // /bin/zsh.075//bin/zsh.30
+      standard: "gemini-2.0-flash",
+      complex:  "gemini-2.5-pro",        // .25/.00
+    },
+    xai: {
+      trivial:  "grok-3-mini",           // /bin/zsh.30//bin/zsh.50
+      standard: "grok-3",               // .00/.00
+      complex:  "grok-3",
+    },
+  };
+  ```
+
+- [ ] **Auto-downgrade logic** in Pipeline Controller:
+  ```typescript
+  if (stage.autoModelRouting?.enabled !== false) {  // on by default
+    const complexity = this.complexityClassifier.classify(stageInput);
+    if (complexity === "trivial") {
+      const cheapModel = MODEL_TIERS[provider]?.trivial;
+      if (cheapModel && cheapModel !== configuredModel) {
+        stage.modelSlug = cheapModel;
+        broadcast("stage:model_downgraded", { from: configuredModel, to: cheapModel });
+      }
+    }
+  }
+  ```
+
+- [ ] **Per-stage override**:
+  ```typescript
+  autoModelRouting?: {
+    enabled: boolean;                  // default: true
+    minComplexity?: TaskComplexity;    // min complexity for configured model
+    trivialModel?: string;            // explicit override for trivial tasks
+  };
+  ```
+
+- [ ] **Frontend**:
+  - Badge `⚡ Auto: claude-haiku (trivial)` in StageProgress on downgrade
+  - Toggle "Auto model routing" per stage in pipeline builder
+  - Stats: `"Saved $2.73 by routing 8 trivial tasks to cheaper models (87% saving)"`
+
+- [ ] **Logging** — extend `llm_requests`: `autoRouted: boolean`, `originalModelSlug: text`, `routingReason: text`
+
+### 3.4 — Governance & Gates
 
 - [ ] **Approval gates per stage** — configurable human-in-the-loop checkpoints. Before a stage executes, optionally require user approval of the previous stage's output. More granular than current pause-on-question
 - [ ] **Run export & reports** — generate downloadable report from pipeline run: executive summary, per-stage outputs, code files as ZIP, cost breakdown, timeline. PDF or Markdown
@@ -1071,60 +1232,60 @@ DELETE /api/memories/stale                   — bulk delete stale memories (con
 
 ## Phase 3.5 — Docker Sandbox Execution (Isolated Stage Runtime)
 
-> Цель: дать пайплайну возможность не только генерировать код/тесты через LLM, но и **реально исполнять** их в изолированном Docker-контейнере. Каждый stage может опционально запустить сгенерированный артефакт (сборку, тесты, линтинг, произвольные команды) внутри эфемерного контейнера — без доступа к хост-системе.
+> Goal: give the pipeline the ability to not only generate code/tests via LLM, but to **actually execute** them inside an isolated Docker container. Each stage can optionally run a generated artifact (build, tests, linting, arbitrary commands) inside an ephemeral container — with no access to the host system.
 
-### Архитектура
+### Architecture
 
 ```
 Pipeline Stage (e.g. Development / Testing)
     │
     ▼
 ┌───────────────────────┐
-│ 1. LLM генерирует код │  ← team.execute() — как сейчас
+│ 1. LLM generates code │  ← team.execute() — as before
 └──────────┬────────────┘
-           │ result.output содержит код / файлы / команды
+           │ result.output contains code / files / commands
            ▼
 ┌───────────────────────┐
-│ 2. SandboxExecutor    │  ← НОВЫЙ компонент
-│    (если sandbox      │
-│     включён для       │
-│     этого stage)      │
+│ 2. SandboxExecutor    │  ← NEW component
+│    (if sandbox is     │
+│     enabled for       │
+│     this stage)       │
 │                       │
-│  • Создаёт tmp dir    │
-│  • Записывает файлы   │
+│  • Creates tmp dir    │
+│  • Writes files       │
 │  • docker run ...     │
-│  • Собирает stdout/   │
+│  • Collects stdout/   │
 │    stderr/exitCode    │
-│  • Удаляет контейнер  │
+│  • Removes container  │
 └──────────┬────────────┘
            │ SandboxResult: { exitCode, stdout, stderr, artifacts[] }
            ▼
 ┌───────────────────────┐
-│ 3. Результат          │
-│    объединяется с     │
-│    output stage'а     │
-│    → идёт дальше      │
-│    по пайплайну       │
+│ 3. Result             │
+│    merged with        │
+│    stage output       │
+│    → passed forward   │
+│    through pipeline   │
 └───────────────────────┘
 ```
 
-### 3.5.1 — Типы и конфигурация
+### 3.5.1 — Types and Configuration
 
-- [ ] **`SandboxConfig` в `PipelineStageConfig`** — расширить тип stage:
+- [ ] **`SandboxConfig` in `PipelineStageConfig`** — extend stage type:
   ```typescript
-  // shared/types.ts — расширение PipelineStageConfig
+  // shared/types.ts — PipelineStageConfig extension
   export interface SandboxConfig {
     enabled: boolean;
     image: string;                      // Docker image, e.g. "node:20-alpine", "python:3.12-slim", "golang:1.22"
-    command: string;                    // Команда для исполнения, e.g. "npm test", "pytest", "go build ./..."
-    workdir?: string;                   // Рабочая директория внутри контейнера (default: /workspace)
-    timeout?: number;                   // Timeout в секундах (default: 120, max: 600)
+    command: string;                    // Command to execute, e.g. "npm test", "pytest", "go build ./..."
+    workdir?: string;                   // Working directory inside the container (default: /workspace)
+    timeout?: number;                   // Timeout in seconds (default: 120, max: 600)
     memoryLimit?: string;               // Docker memory limit, e.g. "512m", "1g"
     cpuLimit?: number;                  // CPU limit, e.g. 1.0
-    networkDisabled?: boolean;          // Отключить сеть (default: true — безопасность)
-    env?: Record<string, string>;       // Переменные окружения для контейнера
-    extractArtifacts?: string[];        // Glob-паттерны файлов для извлечения из контейнера (e.g. ["dist/**", "coverage/**"])
-    installCommand?: string;            // Команда установки зависимостей перед основной (e.g. "npm install", "pip install -r requirements.txt")
+    networkDisabled?: boolean;          // Disable network (default: true — security)
+    env?: Record<string, string>;       // Environment variables for the container
+    extractArtifacts?: string[];        // Glob patterns for files to extract from the container (e.g. ["dist/**", "coverage/**"])
+    installCommand?: string;            // Dependency install command before the main one (e.g. "npm install", "pip install -r requirements.txt")
   }
 
   export interface PipelineStageConfig {
@@ -1132,26 +1293,26 @@ Pipeline Stage (e.g. Development / Testing)
     modelSlug: string;
     systemPromptOverride?: string;
     enabled: boolean;
-    sandbox?: SandboxConfig;            // ← НОВОЕ опциональное поле
+    sandbox?: SandboxConfig;            // ← NEW optional field
   }
   ```
 
-- [ ] **`SandboxResult` тип** — результат исполнения:
+- [ ] **`SandboxResult` type** — execution result:
   ```typescript
   export interface SandboxResult {
     exitCode: number;
     stdout: string;
     stderr: string;
     durationMs: number;
-    artifacts: SandboxArtifact[];       // Извлечённые файлы
+    artifacts: SandboxArtifact[];       // Extracted files
     containerImage: string;
     command: string;
     timedOut: boolean;
   }
 
   export interface SandboxArtifact {
-    path: string;                       // Относительный путь внутри контейнера
-    content: string;                    // Base64 для бинарных, plain text для текстовых
+    path: string;                       // Relative path inside the container
+    content: string;                    // Base64 for binary, plain text for text files
     sizeBytes: number;
     isBinary: boolean;
   }
@@ -1159,7 +1320,7 @@ Pipeline Stage (e.g. Development / Testing)
 
 ### 3.5.2 — SandboxExecutor (Backend Service)
 
-- [ ] **Создать `server/sandbox/executor.ts`** — основной сервис:
+- [ ] **Create `server/sandbox/executor.ts`** — main service:
   ```
   class SandboxExecutor {
     async execute(config: SandboxConfig, files: SandboxFile[]): Promise<SandboxResult>
@@ -1169,11 +1330,11 @@ Pipeline Stage (e.g. Development / Testing)
   }
   ```
 
-  Алгоритм `execute()`:
-  1. Создать временную директорию (`os.tmpdir()` + random suffix)
-  2. Записать файлы из `files[]` в tmp dir (код сгенерированный LLM)
-  3. Если `installCommand` — запустить `docker run` с install command первым
-  4. Запустить `docker run` с основной `command`:
+  `execute()` algorithm:
+  1. Create a temporary directory (`os.tmpdir()` + random suffix)
+  2. Write files from `files[]` into tmp dir (LLM-generated code)
+  3. If `installCommand` — run `docker run` with install command first
+  4. Run `docker run` with the main `command`:
      ```
      docker run --rm \
        --name multiqlti-sandbox-{runId}-{stageIndex} \
@@ -1186,19 +1347,19 @@ Pipeline Stage (e.g. Development / Testing)
        {image} \
        sh -c "{command}"
      ```
-  5. Дождаться завершения с timeout (kill контейнер при превышении)
-  6. Собрать stdout/stderr через `docker logs` или pipe
-  7. Извлечь артефакты по `extractArtifacts` glob-паттернам
-  8. Удалить tmp dir и контейнер
-  9. Вернуть `SandboxResult`
+  5. Wait for completion with timeout (kill container if exceeded)
+  6. Collect stdout/stderr via `docker logs` or pipe
+  7. Extract artifacts matching `extractArtifacts` glob patterns
+  8. Delete tmp dir and container
+  9. Return `SandboxResult`
 
-- [ ] **Docker API через `dockerode`** — использовать npm пакет `dockerode` вместо spawn'а CLI:
-  - Прямой доступ к Docker Engine API через Unix socket
-  - Стриминг логов в реальном времени
-  - Программное управление жизненным циклом контейнера
-  - Fallback на CLI (`child_process.exec("docker ...")`) если dockerode недоступен
+- [ ] **Docker API via `dockerode`** — use the `dockerode` npm package instead of spawning CLI:
+  - Direct access to Docker Engine API via Unix socket
+  - Real-time log streaming
+  - Programmatic container lifecycle management
+  - Fallback to CLI (`child_process.exec("docker ...")`) if dockerode is unavailable
 
-- [ ] **Предустановленные образы (image presets)**:
+- [ ] **Preset images (image presets)**:
   ```typescript
   // shared/constants.ts
   export const SANDBOX_IMAGE_PRESETS: Record<string, { image: string; installCmd: string; buildCmd: string; testCmd: string }> = {
@@ -1211,16 +1372,16 @@ Pipeline Stage (e.g. Development / Testing)
   };
   ```
 
-### 3.5.3 — Интеграция в Pipeline Controller
+### 3.5.3 — Integration into Pipeline Controller
 
-- [ ] **Post-LLM execution hook** — после `team.execute()` в `PipelineController.executeStages()`:
+- [ ] **Post-LLM execution hook** — after `team.execute()` in `PipelineController.executeStages()`:
   ```typescript
-  // pipeline-controller.ts — внутри цикла стейджей, после result = await team.execute(...)
+  // pipeline-controller.ts — inside stage loop, after result = await team.execute(...)
 
   let sandboxResult: SandboxResult | null = null;
 
   if (stage.sandbox?.enabled) {
-    // Извлечь файлы из LLM output
+    // Extract files from LLM output
     const files = this.extractFilesFromOutput(result.output);
 
     this.broadcast(run.id, {
@@ -1230,7 +1391,7 @@ Pipeline Stage (e.g. Development / Testing)
 
     sandboxResult = await this.sandboxExecutor.execute(stage.sandbox, files);
 
-    // Дополнить output stage'а результатом sandbox
+    // Augment stage output with sandbox result
     result.output = {
       ...result.output,
       sandboxResult: {
@@ -1249,135 +1410,135 @@ Pipeline Stage (e.g. Development / Testing)
       payload: { stageIndex: i, exitCode: sandboxResult.exitCode, passed: sandboxResult.exitCode === 0 },
     });
 
-    // Опционально: фейлить stage если sandbox вернул ≠ 0
+    // Optional: fail stage if sandbox returned ≠ 0
     if (stage.sandbox.failOnNonZero !== false && sandboxResult.exitCode !== 0) {
       throw new Error(`Sandbox execution failed (exit code ${sandboxResult.exitCode}): ${sandboxResult.stderr.slice(0, 500)}`);
     }
   }
   ```
 
-- [ ] **Метод `extractFilesFromOutput()`** — парсить сгенерированные файлы из LLM output:
-  - Ищет markdown code blocks с именами файлов (```typescript // filename: src/index.ts)
-  - Ищет JSON-массив `files` в output (если team форматирует output как `{ files: [{ path, content }], ... }`)
-  - Ищет поле `code` / `sourceCode` / `testCode` в output
+- [ ] **`extractFilesFromOutput()` method** — parse generated files from LLM output:
+  - Looks for markdown code blocks with file names (```typescript // filename: src/index.ts)
+  - Looks for a JSON `files` array in output (if team formats output as `{ files: [{ path, content }], ... }`)
+  - Looks for `code` / `sourceCode` / `testCode` fields in output
 
 ### 3.5.4 — WebSocket Events
 
-- [ ] **Новые WS event типы**:
+- [ ] **New WS event types**:
   ```typescript
-  // shared/types.ts — расширить WsEventType
-  | "stage:sandbox_started"       // Sandbox запущен
-  | "stage:sandbox_progress"      // Стриминг stdout/stderr в реальном времени
-  | "stage:sandbox_completed"     // Sandbox завершён (exitCode, passed)
+  // shared/types.ts — extend WsEventType
+  | "stage:sandbox_started"       // Sandbox started
+  | "stage:sandbox_progress"      // Streaming stdout/stderr in real time
+  | "stage:sandbox_completed"     // Sandbox completed (exitCode, passed)
   ```
 
-### 3.5.5 — DB Schema (опционально)
+### 3.5.5 — DB Schema (optional)
 
-- [ ] **Таблица `sandbox_executions`** — для аудита и отладки:
+- [ ] **`sandbox_executions` table** — for audit and debugging:
   ```
   id, stageExecutionId, image, command, exitCode, stdout (text), stderr (text),
   durationMs, timedOut, artifacts (jsonb), createdAt
   ```
-  Связь: `sandbox_executions.stageExecutionId → stage_executions.id` (1:1)
+  Relation: `sandbox_executions.stageExecutionId → stage_executions.id` (1:1)
 
 ### 3.5.6 — Frontend: Sandbox UI
 
-- [ ] **Sandbox config в Pipeline Builder** (`AgentNode.tsx` или `StageConfig`):
+- [ ] **Sandbox config in Pipeline Builder** (`AgentNode.tsx` or `StageConfig`):
   - Toggle "Enable sandbox execution" per stage
-  - Image selector (dropdown из presets + custom input)
-  - Command input (pre-filled из preset: build/test)
+  - Image selector (dropdown from presets + custom input)
+  - Command input (pre-filled from preset: build/test)
   - Timeout slider (30s — 600s)
   - Resource limits (memory, CPU)
   - Network toggle (on/off)
   - Artifact extraction patterns
 
-- [ ] **Sandbox output в StageProgress/StageOutput**:
-  - Индикатор "Sandbox running..." с таймером
-  - Встроенный терминал-подобный блок для stdout/stderr (стриминг через WS)
-  - Бейдж Pass/Fail с exit code
-  - Скачивание артефактов
+- [ ] **Sandbox output in StageProgress/StageOutput**:
+  - "Sandbox running..." indicator with timer
+  - Built-in terminal-like block for stdout/stderr (streaming via WS)
+  - Pass/Fail badge with exit code
+  - Artifact download
 
 ### 3.5.7 — API Endpoints
 
-- [ ] **`GET /api/sandbox/status`** — проверка доступности Docker на хосте
-- [ ] **`GET /api/sandbox/presets`** — список доступных image presets
-- [ ] **`POST /api/sandbox/test`** — тестовый запуск (`echo "hello"` в выбранном образе)
-- [ ] **`GET /api/sandbox/executions/:stageExecutionId`** — получить результат sandbox для stage
-- [ ] **`GET /api/sandbox/executions/:id/artifacts/:path`** — скачать конкретный артефакт
+- [ ] **`GET /api/sandbox/status`** — check Docker availability on host
+- [ ] **`GET /api/sandbox/presets`** — list available image presets
+- [ ] **`POST /api/sandbox/test`** — test run (`echo "hello"` in selected image)
+- [ ] **`GET /api/sandbox/executions/:stageExecutionId`** — get sandbox result for stage
+- [ ] **`GET /api/sandbox/executions/:id/artifacts/:path`** — download a specific artifact
 
-### 3.5.8 — Безопасность
+### 3.5.8 — Security
 
-- [ ] **Контейнер запускается без привилегий** — `--security-opt=no-new-privileges`, `--cap-drop=ALL`
-- [ ] **Read-only root filesystem** — `--read-only` + tmpfs для `/tmp`
-- [ ] **Сеть отключена по умолчанию** — `--network=none`. Включается явно если stage'у нужен `npm install` из registry
-- [ ] **Memory + CPU limits обязательны** — fallback на `512m` / `1.0 CPU` если не указаны
-- [ ] **Timeout обязателен** — kill контейнер через `timeout` секунд (default 120, max 600)
-- [ ] **Нет bind mounts к хост-системе** — только tmpdir с сгенерированными файлами
-- [ ] **Whitelist образов** (опционально) — admin может ограничить допустимые images в конфиге
-- [ ] **Логирование** — все sandbox-запуски пишутся в `sandbox_executions` для аудита
-- [ ] **Контейнер всегда `--rm`** — автоудаление после завершения, никаких "зависших" контейнеров
+- [ ] **Container runs without privileges** — `--security-opt=no-new-privileges`, `--cap-drop=ALL`
+- [ ] **Read-only root filesystem** — `--read-only` + tmpfs for `/tmp`
+- [ ] **Network disabled by default** — `--network=none`. Enabled explicitly if stage needs `npm install` from registry
+- [ ] **Memory + CPU limits required** — fallback to `512m` / `1.0 CPU` if not specified
+- [ ] **Timeout required** — kill container after `timeout` seconds (default 120, max 600)
+- [ ] **No bind mounts to host system** — only tmpdir with generated files
+- [ ] **Image whitelist** (optional) — admin can restrict allowed images in config
+- [ ] **Logging** — all sandbox runs are written to `sandbox_executions` for audit
+- [ ] **Container always `--rm`** — auto-removed after completion, no "stuck" containers
 
-### 3.5.9 — Docker-in-Docker (DinD) для продакшена
+### 3.5.9 — Docker-in-Docker (DinD) for Production
 
-- [ ] **docker-compose.yml** — добавить sandbox-ready конфигурацию:
+- [ ] **docker-compose.yml** — add sandbox-ready configuration:
   ```yaml
   services:
     multiqlti:
       volumes:
-        - /var/run/docker.sock:/var/run/docker.sock  # Доступ к Docker Engine хоста
-        - sandbox-tmp:/tmp/multiqlti-sandbox          # Shared tmpdir для файлов
+        - /var/run/docker.sock:/var/run/docker.sock  # Access to host Docker Engine
+        - sandbox-tmp:/tmp/multiqlti-sandbox          # Shared tmpdir for files
       environment:
         - SANDBOX_ENABLED=true
-        - SANDBOX_MAX_CONCURRENT=3          # Макс. параллельных контейнеров
+        - SANDBOX_MAX_CONCURRENT=3          # Max concurrent containers
         - SANDBOX_DEFAULT_TIMEOUT=120
         - SANDBOX_ALLOWED_IMAGES=node:20-alpine,python:3.12-slim,golang:1.22-alpine
   ```
 
-- [ ] **Альтернатива: sysbox runtime** — для полной изоляции без проброса docker.sock:
-  - `docker run --runtime=sysbox-runc` — контейнер с собственным Docker daemon
-  - Безопаснее для multi-tenant, но сложнее настройка
+- [ ] **Alternative: sysbox runtime** — for full isolation without docker.sock mount:
+  - `docker run --runtime=sysbox-runc` — container with its own Docker daemon
+  - Safer for multi-tenant, but more complex setup
 
-### 3.5.10 — Сценарии использования
+### 3.5.10 — Use Cases
 
-| Сценарий | Stage | Image | Command | Сеть |
+| Scenario | Stage | Image | Command | Network |
 |----------|-------|-------|---------|------|
-| Сборка Node.js проекта | Development | `node:20-alpine` | `npm install && npm run build` | on (npm registry) |
-| Запуск unit тестов | Testing | `node:20-alpine` | `npm test` | off |
-| Линтинг Python кода | Code Review | `python:3.12-slim` | `pip install ruff && ruff check .` | on (pip) |
-| Компиляция Go сервиса | Development | `golang:1.22-alpine` | `go build -o /workspace/dist/app ./cmd/server` | on (go modules) |
+| Build Node.js project | Development | `node:20-alpine` | `npm install && npm run build` | on (npm registry) |
+| Run unit tests | Testing | `node:20-alpine` | `npm test` | off |
+| Lint Python code | Code Review | `python:3.12-slim` | `pip install ruff && ruff check .` | on (pip) |
+| Compile Go service | Development | `golang:1.22-alpine` | `go build -o /workspace/dist/app ./cmd/server` | on (go modules) |
 | Security scan | Code Review | `aquasec/trivy:latest` | `trivy fs --exit-code 1 /workspace` | on (vuln DB) |
 | Terraform validate | Deployment | `hashicorp/terraform:latest` | `terraform init && terraform validate` | on (providers) |
-| Изолированный shell | Custom | любой | user-defined | user-defined |
+| Isolated shell | Custom | any | user-defined | user-defined |
 
-### 3.5.11 — Пакеты
+### 3.5.11 — Packages
 
 ```bash
 npm install dockerode @types/dockerode
 ```
 
-### 3.5.12 — Порядок реализации
+### 3.5.12 — Implementation Order
 
-1. `SandboxConfig` + `SandboxResult` типы в `shared/types.ts`
-2. `SandboxExecutor` сервис (`server/sandbox/executor.ts`)
-3. Интеграция в `PipelineController` (post-LLM hook)
-4. WS events для sandbox lifecycle
+1. `SandboxConfig` + `SandboxResult` types in `shared/types.ts`
+2. `SandboxExecutor` service (`server/sandbox/executor.ts`)
+3. Integration into `PipelineController` (post-LLM hook)
+4. WS events for sandbox lifecycle
 5. API endpoints (`/api/sandbox/*`)
-6. DB таблица `sandbox_executions`
-7. Frontend: config UI в pipeline builder
-8. Frontend: output display в StageProgress
-9. Docker-compose обновление
-10. Security hardening + тесты
+6. DB table `sandbox_executions`
+7. Frontend: config UI in pipeline builder
+8. Frontend: output display in StageProgress
+9. Docker-compose update
+10. Security hardening + tests
 
 ### Open Design Questions (Phase 3.5)
 
-| # | Вопрос | Варианты |
+| # | Question | Options |
 |---|--------|----------|
-| 15 | **Docker доступ** | A) Docker socket mount (простой, менее безопасный) B) Docker-in-Docker (sysbox) C) Remote Docker API (TCP) |
-| 16 | **Файлы из LLM** | A) Парсить markdown code blocks B) Требовать JSON `{ files: [...] }` от teams C) Оба |
-| 17 | **Fail policy** | A) Sandbox fail = stage fail (default) B) Sandbox fail = warning, stage продолжается C) Настраиваемо per-stage |
-| 18 | **Стриминг логов** | A) Полный stdout/stderr через WS в реальном времени B) Только итоговый результат C) Стриминг + итог |
-| 19 | **Workspace привязка** | A) Sandbox работает только с LLM-generated файлами B) Sandbox может монтировать workspace из Phase 4 C) Оба |
-| 20 | **Образы** | A) Только из whitelist B) Любой публичный образ C) Whitelist + admin может добавлять |
+| 15 | **Docker access** | A) Docker socket mount (simple, less secure) B) Docker-in-Docker (sysbox) C) Remote Docker API (TCP) |
+| 16 | **Files from LLM** | A) Parse markdown code blocks B) Require JSON `{ files: [...] }` from teams C) Both |
+| 17 | **Fail policy** | A) Sandbox fail = stage fail (default) B) Sandbox fail = warning, stage continues C) Configurable per-stage |
+| 18 | **Log streaming** | A) Full stdout/stderr via WS in real time B) Final result only C) Streaming + summary |
+| 19 | **Workspace binding** | A) Sandbox works only with LLM-generated files B) Sandbox can mount workspace from Phase 4 C) Both |
+| 20 | **Images** | A) Whitelist only B) Any public image C) Whitelist + admin can add more |
 
 ---
 
@@ -1916,48 +2077,48 @@ CREATE TABLE compliance_settings (
 
 ## Phase 4 — Code Workspace (Claude Code-like experience)
 
-> Goal: дать пользователю возможность подключить локальный или удалённый репозиторий и работать с кодом через Chat и Code интерфейсы — как в Claude Code, но с мульти-модельным бэкендом.
+> Goal: give users the ability to connect a local or remote repository and work with code through Chat and Code interfaces — like Claude Code, but with a multi-model backend.
 
 ### 4.1 — Workspace & Repository Management
 
-- [ ] **Workspace model** — новая сущность `workspaces` в DB:
+- [ ] **Workspace model** — new `workspaces` entity in DB:
   ```
   id, name, type ("local" | "git_remote"), path, gitUrl, branch, lastSyncedAt, createdAt
   ```
-- [ ] **Add local repo** — пользователь указывает путь на диске; бэкенд валидирует что это git-репо, читает `.gitignore`, строит file tree
-- [ ] **Clone remote repo** — пользователь вводит git URL; бэкенд клонирует в `data/workspaces/{id}/`, отслеживает branch
+- [ ] **Add local repo** — user provides a path on disk; backend validates it is a git repo, reads `.gitignore`, builds file tree
+- [ ] **Clone remote repo** — user enters git URL; backend clones into `data/workspaces/{id}/`, tracks branch
 - [ ] **File system service** (`server/services/filesystem.ts`):
-  - `listDir(path)` → рекурсивный tree с иконками по расширению
-  - `readFile(path)` → содержимое + язык + размер
-  - `writeFile(path, content)` → запись с бэкапом
-  - `searchFiles(query)` → glob/grep по содержимому и именам
-  - Уважает `.gitignore` — никогда не показывает `node_modules`, `.env`, etc.
+  - `listDir(path)` → recursive tree with icons by extension
+  - `readFile(path)` → content + language + size
+  - `writeFile(path, content)` → write with backup
+  - `searchFiles(query)` → glob/grep by content and names
+  - Respects `.gitignore` — never exposes `node_modules`, `.env`, etc.
 - [ ] **Git service** (`server/services/git.ts`):
   - `status()` → modified, staged, untracked files
   - `diff(file?)` → unified diff
-  - `log(limit)` → история коммитов
+  - `log(limit)` → commit history
   - `checkout(branch)`, `createBranch(name)`
   - `commit(message, files[])`, `push()`, `pull()`
-  - Все git-операции через `simple-git` (npm package)
+  - All git operations via `simple-git` (npm package)
 
 ### 4.2 — API Endpoints
 
-- [ ] **`/api/workspaces`** — CRUD для workspace'ов
+- [ ] **`/api/workspaces`** — CRUD for workspaces
   ```
   POST   /api/workspaces              — create (local path or git URL)
   GET    /api/workspaces              — list all
   GET    /api/workspaces/:id          — details + status
-  DELETE /api/workspaces/:id          — remove (не удаляет файлы для local)
+  DELETE /api/workspaces/:id          — remove (does not delete files for local)
   ```
-- [ ] **`/api/workspaces/:id/files`** — файловые операции
+- [ ] **`/api/workspaces/:id/files`** — file operations
   ```
   GET    /files?path=/src             — directory listing (tree)
   GET    /files/content?path=src/index.ts  — file content
   PUT    /files/content               — write file { path, content }
   POST   /files/search                — search { query, type: "filename"|"content" }
-  DELETE /files?path=...              — delete file (с подтверждением)
+  DELETE /files?path=...              — delete file (with confirmation)
   ```
-- [ ] **`/api/workspaces/:id/git`** — git операции
+- [ ] **`/api/workspaces/:id/git`** — git operations
   ```
   GET    /git/status                  — status + branch + remotes
   GET    /git/diff?path=...           — diff (all or per-file)
@@ -1969,12 +2130,12 @@ CREATE TABLE compliance_settings (
 - [ ] **`/api/workspaces/:id/terminal`** — shell execution
   ```
   POST   /terminal/exec               — { command, cwd? } → { stdout, stderr, exitCode }
-  WS     /terminal/stream             — interactive PTY через WebSocket (xterm.js)
+  WS     /terminal/stream             — interactive PTY via WebSocket (xterm.js)
   ```
 
 ### 4.3 — Frontend: Code Editor Page
 
-- [ ] **Новая страница `/editor`** — основной IDE-подобный интерфейс, layout:
+- [ ] **New `/editor` page** — main IDE-like interface, layout:
   ```
   ┌─────────────────────────────────────────────────────────────┐
   │ Toolbar: [Workspace selector ▾] [Branch ▾] [git status]    │
@@ -2000,33 +2161,33 @@ CREATE TABLE compliance_settings (
   └─────────────────────────────────────────────────────────────┘
   ```
 - [ ] **File Tree Component** (`FileTree.tsx`):
-  - Lazy-loaded directory expansion (не грузит всё дерево сразу)
-  - Иконки по типу файла (vscode-icons или simple-icons)
-  - Контекстное меню: New File, New Folder, Rename, Delete
-  - Поиск по файлам (Cmd+P / Ctrl+P)
-  - Drag-and-drop для перемещения
+  - Lazy-loaded directory expansion (does not load entire tree at once)
+  - Icons by file type (vscode-icons or simple-icons)
+  - Context menu: New File, New Folder, Rename, Delete
+  - File search (Cmd+P / Ctrl+P)
+  - Drag-and-drop for moving
 - [ ] **Monaco Editor Integration** (`MonacoEditor.tsx`):
-  - `@monaco-editor/react` — обёртка над VS Code editor
-  - Tabs с открытыми файлами, закрытие, переключение
-  - Auto-detect language по расширению
-  - Diff view для git changes
-  - Auto-save с дебаунсом (PUT /files/content)
-  - Cmd+S для явного сохранения
+  - `@monaco-editor/react` — wrapper over VS Code editor
+  - Tabs with open files, close, switch
+  - Auto-detect language by extension
+  - Diff view for git changes
+  - Auto-save with debounce (PUT /files/content)
+  - Cmd+S for explicit save
 - [ ] **Terminal Panel** (`TerminalPanel.tsx`):
   - `xterm.js` + `xterm-addon-fit` + `xterm-addon-web-links`
-  - WebSocket подключение к бэкенду PTY
-  - Несколько вкладок терминала
-  - Copy/paste, цвета ANSI
+  - WebSocket connection to backend PTY
+  - Multiple terminal tabs
+  - Copy/paste, ANSI colors
 
 ### 4.4 — AI-Assisted Code Interaction (Chat + Code integration)
 
-- [ ] **Контекст-aware Chat** — когда пользователь пишет в Chat, автоматически прикрепляется:
-  - Текущий открытый файл (или выделенный фрагмент)
+- [ ] **Context-aware Chat** — when user types in Chat, automatically attaches:
+  - Currently open file (or selected fragment)
   - Workspace tree structure (top-level)
-  - Git diff (если есть несохранённые изменения)
-- [ ] **Chat → Code actions** — модель может предложить изменения, пользователь применяет одним кликом:
+  - Git diff (if there are unsaved changes)
+- [ ] **Chat → Code actions** — model can propose changes, user applies with one click:
   ```
-  Model: "Вот исправленная функция:"
+  Model: "Here is the corrected function:"
   ```
   ```typescript
   function calculateTotal(items: Item[]) { ... }
@@ -2034,33 +2195,33 @@ CREATE TABLE compliance_settings (
   ```
   [Apply to src/utils.ts] [Copy] [Diff preview]
   ```
-- [ ] **Code → Chat** — правый клик на код → "Ask AI about this" / "Explain" / "Refactor" / "Find bugs"
-- [ ] **Inline suggestions** — модель может предложить edit прямо в Monaco (как GitHub Copilot):
-  - Ghost text для autocomplete (опционально, Phase 5)
-  - Inline diff для предложенных изменений: зелёный/красный прямо в редакторе
-- [ ] **Slash commands в Chat** привязанные к workspace:
+- [ ] **Code → Chat** — right-click on code → "Ask AI about this" / "Explain" / "Refactor" / "Find bugs"
+- [ ] **Inline suggestions** — model can propose edit directly in Monaco (like GitHub Copilot):
+  - Ghost text for autocomplete (optional, Phase 5)
+  - Inline diff for proposed changes: green/red directly in editor
+- [ ] **Slash commands in Chat** bound to workspace:
   ```
-  /file src/index.ts         — прикрепить файл к контексту
-  /search "TODO"             — найти по кодовой базе
-  /diff                      — показать git diff
-  /run npm test              — выполнить команду
-  /commit "fix: typo"        — коммит через чат
-  /explain                   — объяснить текущий файл
-  /refactor                  — предложить рефакторинг
+  /file src/index.ts         — attach file to context
+  /search "TODO"             — search the codebase
+  /diff                      — show git diff
+  /run npm test              — execute command
+  /commit "fix: typo"        — commit via chat
+  /explain                   — explain current file
+  /refactor                  — suggest refactoring
   ```
-- [ ] **Multi-model code review** — отправить файл/diff на ревью нескольким моделям параллельно:
-  - Claude анализирует архитектуру и безопасность
-  - Gemini проверяет edge cases и тесты
-  - Grok проверяет актуальность библиотек и best practices через web search
-  - Результаты отображаются side-by-side
+- [ ] **Multi-model code review** — send file/diff for review to multiple models in parallel:
+  - Claude analyzes architecture and security
+  - Gemini checks edge cases and tests
+  - Grok checks library currency and best practices via web search
+  - Results displayed side-by-side
 
 ### 4.5 — Security & Sandboxing
 
-- [ ] **Path traversal protection** — все файловые операции нормализуют путь и проверяют что он внутри workspace root
-- [ ] **`.gitignore` enforcement** — файлы из gitignore никогда не отдаются в API / AI контекст
-- [ ] **Sensitive file detection** — предупреждение при попытке открыть `.env`, `*.key`, `*.pem`, `credentials.*`
-- [ ] **Terminal sandboxing** — опциональный whitelist команд; запрет `rm -rf /`, `sudo`, etc.
-- [ ] **AI context limits** — не отправлять моделям файлы > 100KB; бинарные файлы исключаются автоматически
+- [ ] **Path traversal protection** — all file operations normalize the path and verify it is inside workspace root
+- [ ] **`.gitignore` enforcement** — gitignore files are never exposed to API / AI context
+- [ ] **Sensitive file detection** — warning when trying to open `.env`, `*.key`, `*.pem`, `credentials.*`
+- [ ] **Terminal sandboxing** — optional command whitelist; block `rm -rf /`, `sudo`, etc.
+- [ ] **AI context limits** — do not send files > 100KB to models; binary files are excluded automatically
 
 ---
 
@@ -2120,3 +2281,1858 @@ CREATE TABLE compliance_settings (
 | 23 | **Sandbox runtime** | A) Docker socket mount (dev only) B) gVisor for prod C) Firecracker for SaaS D) Configurable per environment |
 | 24 | **Token budget default** | A) 100K tokens per stage B) Proportional to model context (e.g. 50% of context limit) C) User-configurable per stage |
 | 25 | **Semantic cache scope** | A) Per-pipeline cache B) Global cache across pipelines C) Both with toggle |
+| Phase 3.6 priority | Moved up — core product differentiator (MoA/Debate/Voting) |
+| Phase 3.7 priority | PRIORITIZED — data privacy before sending to cloud providers |
+| Thought Tree | Core debugging feature — split into 3 sub-tasks: data model, API/WS, frontend |
+| Auto Model Downgrade | Keep in plan, defer design — needs smarter classification approach |
+| Memory workspace scope | Logical grouping for now — full workspace model in Phase 4 |
+| Section 3.3 numbering | Old "Governance & Gates" 3.3 renamed to 3.4 |
+
+---
+
+## Phase 3.5 — Docker Sandbox Execution (Isolated Stage Runtime)
+
+> Goal: give the pipeline the ability to not just generate code/tests via LLM, but to **actually execute** them inside an isolated Docker container. Each stage can optionally run a generated artifact (build, tests, linting, arbitrary commands) inside an ephemeral container — with no access to the host system.
+
+### Architecture
+
+```
+Pipeline Stage
+  │
+  ├─ LLM generates output (code, tests, commands)
+  │
+  ├─ Output parsed into ExecutionPlan:
+  │   ├─ files: [{ path, content }]     ← written into container
+  │   ├─ commands: ["npm install", "npm test"]
+  │   ├─ image: "node:20-slim"          ← base Docker image
+  │   └─ timeout: 120_000               ← max execution time (ms)
+  │
+  ├─ SandboxExecutor:
+  │   1. Pull/verify image
+  │   2. Create ephemeral container (no network by default)
+  │   3. Copy files into /workspace
+  │   4. Run commands sequentially
+  │   5. Stream stdout/stderr via WebSocket
+  │   6. Collect exit codes
+  │   7. Copy output artifacts back (optional)
+  │   8. Destroy container
+  │
+  └─ Result:
+      ├─ exitCode: 0 | 1 | ...
+      ├─ stdout: string
+      ├─ stderr: string
+      ├─ artifacts: [{ path, content }]  ← files produced
+      └─ duration: number
+```
+
+### 3.5.1 — Types and Configuration
+
+```typescript
+// shared/types.ts
+
+export interface SandboxConfig {
+  enabled: boolean;
+  image: string;                    // Docker image: "node:20-slim", "python:3.12-slim"
+  timeout: number;                  // ms, default 120_000 (2 min)
+  memoryLimit: string;              // Docker memory limit: "512m", "1g"
+  cpuLimit: number;                 // CPU cores: 1, 2
+  networkEnabled: boolean;          // default false (no network in sandbox)
+  workdir: string;                  // default "/workspace"
+  env: Record<string, string>;     // environment variables
+}
+
+export interface ExecutionPlan {
+  files: Array<{ path: string; content: string }>;
+  commands: string[];
+  image?: string;                   // override stage-level image
+  timeout?: number;                 // override stage-level timeout
+}
+
+export interface SandboxResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  artifacts: Array<{ path: string; content: string }>;
+  duration: number;                 // ms
+  containerInfo: {
+    id: string;
+    image: string;
+    memoryUsed: number;
+  };
+}
+
+// Extended PipelineStageConfig
+export interface PipelineStageConfig {
+  teamId: TeamId;
+  modelSlug: string;
+  systemPromptOverride?: string;
+  temperature?: number;
+  maxTokens?: number;
+  sandbox?: SandboxConfig;          // NEW: optional sandbox per stage
+}
+```
+
+### 3.5.2 — SandboxExecutor (Backend Service)
+
+```typescript
+// server/sandbox/executor.ts
+
+class SandboxExecutor {
+  constructor(private dockerSocket: string = "/var/run/docker.sock") {}
+
+  async execute(plan: ExecutionPlan, config: SandboxConfig): Promise<SandboxResult>;
+
+  // Pull image if not cached
+  private async ensureImage(image: string): Promise<void>;
+
+  // Create ephemeral container with resource limits
+  private async createContainer(image: string, config: SandboxConfig): Promise<Container>;
+
+  // Copy files into container's /workspace
+  private async copyFiles(container: Container, files: ExecutionPlan["files"]): Promise<void>;
+
+  // Run commands sequentially, stream output via callback
+  private async runCommands(
+    container: Container,
+    commands: string[],
+    onOutput: (stream: "stdout" | "stderr", data: string) => void,
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+
+  // Copy output artifacts back from container
+  private async collectArtifacts(container: Container, paths: string[]): Promise<ExecutionPlan["files"]>;
+
+  // Cleanup: stop + remove container
+  private async cleanup(container: Container): Promise<void>;
+}
+```
+
+**Docker API usage**:
+```typescript
+// Uses dockerode (Node.js Docker client)
+import Docker from "dockerode";
+
+const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+
+// Create container with security limits
+const container = await docker.createContainer({
+  Image: config.image,
+  Cmd: ["/bin/sh", "-c", commands.join(" && ")],
+  WorkingDir: config.workdir,
+  Env: Object.entries(config.env).map(([k, v]) => `${k}=${v}`),
+  HostConfig: {
+    Memory: parseMemoryLimit(config.memoryLimit),   // bytes
+    NanoCpus: config.cpuLimit * 1e9,                // nano CPUs
+    NetworkMode: config.networkEnabled ? "bridge" : "none",
+    AutoRemove: true,
+    ReadonlyRootfs: false,         // /workspace needs to be writable
+    SecurityOpt: ["no-new-privileges"],
+  },
+});
+```
+
+### 3.5.3 — Integration into Pipeline Controller
+
+```typescript
+// pipeline-controller.ts — inside stage execution loop
+
+// After LLM generates output:
+const result = await team.execute(stageInput, teamContext);
+
+// If sandbox is enabled for this stage:
+if (stage.sandbox?.enabled && result.output.executionPlan) {
+  const sandboxResult = await this.sandboxExecutor.execute(
+    result.output.executionPlan,
+    stage.sandbox,
+  );
+
+  // Stream sandbox output via WebSocket
+  this.wsManager.emit(runId, "sandbox:output", {
+    stageId: stage.teamId,
+    stdout: sandboxResult.stdout,
+    stderr: sandboxResult.stderr,
+  });
+
+  // Decision: what to do with sandbox result
+  if (sandboxResult.exitCode !== 0) {
+    // Stage fails — include error details
+    result.output.sandboxError = {
+      exitCode: sandboxResult.exitCode,
+      stderr: sandboxResult.stderr,
+    };
+    // Mark stage as failed
+    await this.storage.updateStageExecution(stageExecId, {
+      status: "failed",
+      output: result.output,
+    });
+    // Stop pipeline (or continue based on policy)
+    throw new SandboxExecutionError(sandboxResult);
+  }
+
+  // Attach sandbox output to stage result
+  result.output.sandboxResult = {
+    exitCode: sandboxResult.exitCode,
+    stdout: sandboxResult.stdout,
+    artifacts: sandboxResult.artifacts,
+    duration: sandboxResult.duration,
+  };
+}
+```
+
+### 3.5.4 — WebSocket Events
+
+```typescript
+// New WS events for sandbox streaming:
+"sandbox:starting"     → { stageId, image, commands }
+"sandbox:output"       → { stageId, stream: "stdout"|"stderr", data: string }
+"sandbox:completed"    → { stageId, exitCode, duration }
+"sandbox:error"        → { stageId, error: string }
+```
+
+### 3.5.5 — DB Schema (optional)
+
+```sql
+-- Track sandbox executions for debugging/audit
+ALTER TABLE stage_executions ADD COLUMN sandbox_result JSONB;
+-- Contains: { exitCode, stdout (truncated), stderr (truncated), duration, image }
+```
+
+### 3.5.6 — Frontend: Sandbox UI
+
+- [ ] **Sandbox config per stage** in pipeline builder:
+  - Toggle: "Enable code execution"
+  - Docker image selector (preset: node:20-slim, python:3.12-slim, go:1.22, custom)
+  - Resource limits (memory, CPU, timeout)
+  - Network toggle (disabled by default with warning)
+
+- [ ] **Sandbox output viewer** in run detail:
+  ```
+  ┌── Stage: Testing ─── Sandbox Output ────────────────────┐
+  │  ▶ Running in node:20-slim (timeout: 120s)               │
+  │  $ npm install                                            │
+  │  added 47 packages in 2.3s                               │
+  │  $ npm test                                               │
+  │  PASS src/auth.test.ts (3 tests)                         │
+  │  PASS src/users.test.ts (5 tests)                        │
+  │  ✅ All tests passed (exit code 0, 4.2s)                  │
+  └──────────────────────────────────────────────────────────┘
+  ```
+  - Collapsible by default (like design decision)
+  - Real-time streaming via WebSocket
+  - Color-coded: green for success, red for errors
+
+### 3.5.7 — API Endpoints
+
+```
+POST /api/sandbox/test              — test sandbox config (pull image, run echo)
+GET  /api/sandbox/images            — list available Docker images
+GET  /api/runs/:id/sandbox/:stageId — get sandbox result for a stage execution
+```
+
+### 3.5.8 — Security
+
+1. **No network by default** — `NetworkMode: "none"` prevents data exfiltration
+2. **Resource limits** — memory + CPU caps prevent resource exhaustion
+3. **Timeout** — hard kill after configured timeout (default 2 min)
+4. **No host access** — no volume mounts to host filesystem
+5. **No privilege escalation** — `no-new-privileges` security option
+6. **Ephemeral** — containers auto-removed after execution
+7. **Image whitelist** (optional) — restrict which Docker images can be used
+
+### 3.5.9 — Docker-in-Docker (DinD) for Production
+
+For production deployment where multiqlti itself runs in Docker:
+
+```yaml
+# docker-compose.yml
+services:
+  multiqlti:
+    build: .
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Option A: socket mount
+    # OR
+    privileged: true  # Option B: DinD (less secure but fully isolated)
+```
+
+**Socket mount** (recommended for dev):
+- multiqlti talks to host Docker daemon
+- Containers are siblings (not nested)
+- Simpler, faster, but shared Docker daemon
+
+**DinD** (recommended for prod/SaaS):
+```yaml
+services:
+  multiqlti:
+    build: .
+    environment:
+      - DOCKER_HOST=tcp://dind:2376
+    depends_on:
+      - dind
+
+  dind:
+    image: docker:dind
+    privileged: true
+    volumes:
+      - docker-data:/var/lib/docker
+    environment:
+      - DOCKER_TLS_CERTDIR=/certs
+    expose:
+      - "2376"
+
+volumes:
+  docker-data:
+```
+
+For maximum isolation (SaaS/multi-tenant):
+- Use **gVisor** (`runsc`) or **Firecracker** as container runtime
+- Each tenant gets isolated Docker daemon
+- Network policies via Kubernetes NetworkPolicy
+
+### 3.5.10 — Use Cases
+
+| Stage | What gets executed | Why |
+|-------|--------------------|-----|
+| Development | Generated code → build + lint | Verify code compiles before passing to next stage |
+| Testing | Generated tests → run in container | Actual test execution, not just LLM-generated test text |
+| Code Review | Run static analysis tools (eslint, sonar) | Real findings, not hallucinated ones |
+| Deployment | Terraform validate, Helm lint | Validate IaC before marking stage complete |
+| Monitoring | Health check scripts | Verify monitoring endpoints after deployment |
+
+### 3.5.11 — Packages
+
+```bash
+npm install dockerode          # Docker API client
+npm install @types/dockerode   # TypeScript types
+```
+
+### 3.5.12 — Implementation Order
+
+1. Types: `SandboxConfig`, `ExecutionPlan`, `SandboxResult`
+2. `SandboxExecutor` service with Docker socket connection
+3. LLM output parsing: extract `executionPlan` from team output
+4. Pipeline Controller integration: execute sandbox after LLM stage
+5. WebSocket events for live streaming
+6. Frontend: sandbox config in pipeline builder
+7. Frontend: sandbox output viewer in run detail
+8. API endpoints for testing/management
+9. DB schema extension for audit trail
+10. Security hardening: image whitelist, resource limit validation
+
+### Open Design Questions (Phase 3.5)
+
+| # | Question | Options |
+|---|----------|---------|
+| 23 | **Sandbox runtime** | A) Docker socket mount (dev only) B) gVisor for prod C) Firecracker for SaaS D) Configurable per environment |
+| 24 | **Token budget default** | A) 100K tokens per stage B) Proportional to model context (e.g. 50% of context limit) C) User-configurable per stage |
+
+---
+
+## Phase 3.6 — Multi-Model Execution Strategies (MoA, Debate, Voting)
+
+> Goal: allow each pipeline stage to use **multiple models simultaneously** with different coordination strategies — not just "one model per stage" but sophisticated multi-model patterns that improve output quality.
+
+### Core Concept
+
+Current flow: `Stage → 1 model → 1 output`
+New flow: `Stage → N models → Strategy → 1 merged output`
+
+```
+Stage Input
+    │
+    ├─► Model A (Claude)  ──► Output A ─┐
+    ├─► Model B (Gemini)  ──► Output B ─┤─► Strategy ──► Final Output
+    └─► Model C (Grok)    ──► Output C ─┘
+
+Strategies:
+  1. MoA (Mixture-of-Agents): models refine each other's outputs in rounds
+  2. Debate: models argue, judge picks winner
+  3. Voting: models vote independently, majority wins
+```
+
+### Recommended Strategy per SDLC Stage
+
+| Stage | Best Strategy | Why |
+|-------|--------------|-----|
+| Planning | **MoA** | Multiple perspectives refined into comprehensive plan |
+| Architecture | **Debate** | Models argue trade-offs (microservices vs monolith), judge picks |
+| Development | **Voting** | Multiple implementations, pick most consistent/correct |
+| Testing | **MoA** | One model writes tests, another reviews, third adds edge cases |
+| Code Review | **Voting** | Multiple reviewers, aggregate findings (union of all issues found) |
+| Deployment | **Single** | Usually one correct approach, multi-model adds risk |
+| Monitoring | **Single** | Straightforward config generation |
+
+### Type Definitions
+
+```typescript
+// shared/types.ts
+
+export type ExecutionStrategy = "single" | "moa" | "debate" | "voting";
+
+export interface StrategyConfig {
+  strategy: ExecutionStrategy;
+  models: string[];                  // model slugs to use (2-5)
+
+  // MoA-specific
+  moa?: {
+    rounds: number;                  // refinement rounds (default 2)
+    aggregatorModel: string;         // model that produces final synthesis
+  };
+
+  // Debate-specific
+  debate?: {
+    rounds: number;                  // debate rounds (default 3)
+    judgeModel: string;              // model that judges the debate
+    debateStyle: "adversarial" | "collaborative";
+  };
+
+  // Voting-specific
+  voting?: {
+    threshold: number;               // agreement threshold (default 0.5 = majority)
+    mergeStrategy: "majority" | "union" | "intersection";
+    tieBreaker: string;              // model slug to break ties
+  };
+}
+
+// Extended PipelineStageConfig
+export interface PipelineStageConfig {
+  teamId: TeamId;
+  modelSlug: string;                 // primary model (for single strategy)
+  systemPromptOverride?: string;
+  temperature?: number;
+  maxTokens?: number;
+  sandbox?: SandboxConfig;
+  strategy?: StrategyConfig;         // NEW: multi-model execution strategy
+}
+
+// MoA types
+export interface MoALayer {
+  round: number;
+  inputs: Array<{
+    model: string;
+    output: string;
+    tokenCount: number;
+  }>;
+  aggregatedOutput?: string;
+}
+
+export interface MoARun {
+  layers: MoALayer[];
+  finalOutput: string;
+  totalTokens: number;
+  totalCost: number;
+}
+
+// Debate types
+export interface DebateMessage {
+  round: number;
+  model: string;
+  role: "proponent" | "opponent" | "judge";
+  content: string;
+  position: string;                  // what this model is arguing for
+}
+
+export interface DebateRun {
+  topic: string;
+  messages: DebateMessage[];
+  judgment: {
+    winner: string;                  // model slug
+    reasoning: string;
+    confidence: number;
+  };
+  finalOutput: string;
+  totalTokens: number;
+  totalCost: number;
+}
+
+// Voting types
+export interface Vote {
+  model: string;
+  output: string;
+  tokenCount: number;
+}
+
+export interface VotingRun {
+  votes: Vote[];
+  agreement: number;                 // 0-1, how much models agree
+  mergedOutput: string;
+  mergeStrategy: string;
+  totalTokens: number;
+  totalCost: number;
+}
+
+// Strategy execution result (attached to stage output)
+export interface StrategyResult {
+  strategy: ExecutionStrategy;
+  models: string[];
+  details: MoARun | DebateRun | VotingRun;
+  finalOutput: string;
+  metadata: {
+    totalTokens: number;
+    totalCost: number;
+    duration: number;
+    rounds: number;
+  };
+}
+```
+
+### Strategy Executor Service
+
+```typescript
+// server/strategies/executor.ts
+
+class StrategyExecutor {
+  constructor(
+    private gateway: Gateway,
+    private costTracker: CostTracker,
+  ) {}
+
+  async execute(
+    input: string,
+    systemPrompt: string,
+    config: StrategyConfig,
+    context: StageContext,
+  ): Promise<StrategyResult>;
+
+  private executeMoA(input: string, systemPrompt: string, config: StrategyConfig): Promise<MoARun>;
+  private executeDebate(input: string, systemPrompt: string, config: StrategyConfig): Promise<DebateRun>;
+  private executeVoting(input: string, systemPrompt: string, config: StrategyConfig): Promise<VotingRun>;
+}
+```
+
+### Strategy 1: Mixture-of-Agents (MoA)
+
+```
+Round 1 (parallel):
+  ├─ Claude: generates initial output
+  ├─ Gemini: generates initial output
+  └─ Grok: generates initial output
+
+Round 2 (parallel, each sees all Round 1 outputs):
+  ├─ Claude: refines with context from Gemini + Grok
+  ├─ Gemini: refines with context from Claude + Grok
+  └─ Grok: refines with context from Claude + Gemini
+
+Aggregation:
+  └─ Aggregator model synthesizes all Round 2 outputs into final
+```
+
+```typescript
+// server/strategies/moa.ts
+async function executeMoA(
+  input: string,
+  systemPrompt: string,
+  config: StrategyConfig,
+): Promise<MoARun> {
+  const layers: MoALayer[] = [];
+
+  // Round 1: parallel generation
+  let previousOutputs: Array<{ model: string; output: string }> = [];
+  const round1 = await Promise.all(
+    config.models.map(model =>
+      gateway.complete(model, [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: input },
+      ])
+    )
+  );
+  previousOutputs = round1.map((out, i) => ({ model: config.models[i], output: out.content }));
+  layers.push({ round: 1, inputs: previousOutputs.map(o => ({ ...o, tokenCount: 0 })) });
+
+  // Round 2+: each model sees all previous outputs
+  for (let round = 2; round <= (config.moa?.rounds ?? 2); round++) {
+    const contextStr = previousOutputs
+      .map(o => `[${o.model}]: ${o.output}`)
+      .join("\n\n---\n\n");
+
+    const roundOutputs = await Promise.all(
+      config.models.map(model =>
+        gateway.complete(model, [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `Previous outputs from other models:\n\n${contextStr}\n\nOriginal input: ${input}\n\nRefine and improve upon the previous outputs.` },
+        ])
+      )
+    );
+    previousOutputs = roundOutputs.map((out, i) => ({ model: config.models[i], output: out.content }));
+    layers.push({ round, inputs: previousOutputs.map(o => ({ ...o, tokenCount: 0 })) });
+  }
+
+  // Final aggregation
+  const aggregatorModel = config.moa?.aggregatorModel ?? config.models[0];
+  const finalOutput = await gateway.complete(aggregatorModel, [
+    { role: "system", content: "You are a synthesis agent. Combine the following outputs into a single, high-quality result." },
+    { role: "user", content: previousOutputs.map(o => `[${o.model}]: ${o.output}`).join("\n\n---\n\n") },
+  ]);
+
+  return { layers, finalOutput: finalOutput.content, totalTokens: 0, totalCost: 0 };
+}
+```
+
+### Strategy 2: Multi-Agent Debate
+
+```
+Round 1:
+  Proponent (Claude): "I propose microservices because..."
+  Opponent (Gemini): "I counter with monolith-first because..."
+
+Round 2:
+  Proponent: "Addressing the monolith argument, microservices still win because..."
+  Opponent: "However, the operational complexity means..."
+
+Round 3:
+  Proponent: final argument
+  Opponent: final argument
+
+Judgment:
+  Judge (Grok): "Having evaluated both positions, the winner is...
+                  because... The final recommendation is..."
+```
+
+```typescript
+// server/strategies/debate.ts
+async function executeDebate(
+  input: string,
+  systemPrompt: string,
+  config: StrategyConfig,
+): Promise<DebateRun> {
+  const [proponentModel, opponentModel] = config.models;
+  const judgeModel = config.debate?.judgeModel ?? config.models[2] ?? config.models[0];
+  const messages: DebateMessage[] = [];
+
+  let debateHistory = "";
+
+  for (let round = 1; round <= (config.debate?.rounds ?? 3); round++) {
+    // Proponent argues
+    const proArg = await gateway.complete(proponentModel, [
+      { role: "system", content: `${systemPrompt}\n\nYou are the PROPONENT in a technical debate. Argue FOR your position.` },
+      { role: "user", content: `Topic: ${input}\n\nDebate history:\n${debateHistory}\n\nPresent your argument for Round ${round}.` },
+    ]);
+    messages.push({ round, model: proponentModel, role: "proponent", content: proArg.content, position: "for" });
+    debateHistory += `\n[Round ${round} - Proponent (${proponentModel})]: ${proArg.content}\n`;
+
+    // Opponent counters
+    const oppArg = await gateway.complete(opponentModel, [
+      { role: "system", content: `${systemPrompt}\n\nYou are the OPPONENT in a technical debate. Argue AGAINST the proponent's position.` },
+      { role: "user", content: `Topic: ${input}\n\nDebate history:\n${debateHistory}\n\nPresent your counter-argument for Round ${round}.` },
+    ]);
+    messages.push({ round, model: opponentModel, role: "opponent", content: oppArg.content, position: "against" });
+    debateHistory += `\n[Round ${round} - Opponent (${opponentModel})]: ${oppArg.content}\n`;
+  }
+
+  // Judge evaluates
+  const judgment = await gateway.complete(judgeModel, [
+    { role: "system", content: "You are an impartial technical judge. Evaluate the debate and declare a winner with detailed reasoning." },
+    { role: "user", content: `Debate transcript:\n${debateHistory}\n\nJudge this debate. Who wins and why? Provide a final recommendation.` },
+  ]);
+
+  return {
+    topic: input,
+    messages,
+    judgment: { winner: proponentModel, reasoning: judgment.content, confidence: 0.8 },
+    finalOutput: judgment.content,
+    totalTokens: 0,
+    totalCost: 0,
+  };
+}
+```
+
+### Strategy 3: Majority Voting
+
+```
+All models generate independently (parallel):
+  Claude: { recommendation: "PostgreSQL", reasons: [...] }
+  Gemini: { recommendation: "PostgreSQL", reasons: [...] }
+  Grok:   { recommendation: "MongoDB", reasons: [...] }
+
+Merge (majority):
+  PostgreSQL wins (2/3 votes)
+  Final output = highest-rated PostgreSQL response
+  Minority report: "Grok suggested MongoDB because..."
+```
+
+```typescript
+// server/strategies/voting.ts
+async function executeVoting(
+  input: string,
+  systemPrompt: string,
+  config: StrategyConfig,
+): Promise<VotingRun> {
+  // All models generate in parallel
+  const votes = await Promise.all(
+    config.models.map(async (model) => {
+      const result = await gateway.complete(model, [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: input },
+      ]);
+      return { model, output: result.content, tokenCount: 0 };
+    })
+  );
+
+  // Merge based on strategy
+  const mergeStrategy = config.voting?.mergeStrategy ?? "majority";
+
+  // For structured outputs (JSON), compare key decisions
+  // For text outputs, use the tie-breaker model to select best
+  const tieBreaker = config.voting?.tieBreaker ?? config.models[0];
+
+  const mergeResult = await gateway.complete(tieBreaker, [
+    { role: "system", content: "You are a merge agent. You have received outputs from multiple models. Select the best output or merge them according to the merge strategy." },
+    { role: "user", content: `Merge strategy: ${mergeStrategy}\n\nOutputs:\n${votes.map(v => `[${v.model}]:\n${v.output}`).join("\n\n---\n\n")}\n\nProduce the final merged output.` },
+  ]);
+
+  return {
+    votes,
+    agreement: 0,     // calculated by comparing outputs
+    mergedOutput: mergeResult.content,
+    mergeStrategy,
+    totalTokens: 0,
+    totalCost: 0,
+  };
+}
+```
+
+### DB Schema Extension
+
+```sql
+-- Strategy execution results stored with stage execution
+ALTER TABLE stage_executions ADD COLUMN strategy_result JSONB;
+-- Contains: { strategy, models, details: MoARun|DebateRun|VotingRun, metadata }
+
+-- Optional: individual model calls within a strategy
+CREATE TABLE strategy_calls (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  stage_execution_id UUID REFERENCES stage_executions(id),
+  model_slug TEXT NOT NULL,
+  round INTEGER NOT NULL,
+  role TEXT,                           -- "proponent", "opponent", "judge", "voter", "refiner"
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  cost REAL,
+  duration INTEGER,                    -- ms
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+```
+
+### Pipeline Stage Config Extension
+
+```typescript
+// In pipeline builder, each stage can optionally set:
+{
+  teamId: "architecture",
+  modelSlug: "claude-sonnet",           // primary (used for "single" strategy)
+  strategy: {
+    strategy: "debate",
+    models: ["claude-sonnet", "gemini-pro", "grok-3"],
+    debate: {
+      rounds: 3,
+      judgeModel: "grok-3",
+      debateStyle: "adversarial",
+    },
+  },
+}
+```
+
+### API Endpoints
+
+```
+GET  /api/strategies/presets                 — list available strategy presets
+GET  /api/runs/:id/stages/:stageId/strategy — get strategy execution details
+POST /api/strategies/estimate                — estimate cost for a strategy config
+                                              (models × rounds × avg tokens)
+```
+
+### Strategy Presets (UX)
+
+```
+┌── Strategy Presets ────────────────────────────────────────────┐
+│                                                                 │
+│  🎯 Single Model (default)                                      │
+│  One model per stage. Fast, cheapest.                           │
+│                                                                 │
+│  🔄 Mixture-of-Agents (MoA)                                     │
+│  Models refine each other's work. Best quality, 3-5x cost.     │
+│  Recommended for: Planning, Testing                             │
+│                                                                 │
+│  ⚔️ Multi-Agent Debate                                          │
+│  Models argue trade-offs, judge picks winner.                   │
+│  Recommended for: Architecture, critical decisions              │
+│                                                                 │
+│  🗳️ Majority Voting                                             │
+│  Models vote independently, consensus wins.                     │
+│  Recommended for: Code Review, Development                      │
+│                                                                 │
+│  💰 Estimated cost multiplier:                                   │
+│  Single: 1x │ MoA: 3-5x │ Debate: 3-4x │ Voting: 2-3x         │
+│                                                                 │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### Frontend: Strategy Configuration UI
+
+```
+┌── Stage: Architecture ────────────────────────────────────────┐
+│  Model: claude-sonnet ▾                                        │
+│                                                                 │
+│  ┌── Execution Strategy ──────────────────────────────────┐    │
+│  │  ○ Single Model                                         │    │
+│  │  ○ Mixture-of-Agents (MoA)                              │    │
+│  │  ● Multi-Agent Debate                                   │    │
+│  │  ○ Majority Voting                                      │    │
+│  │                                                          │    │
+│  │  ┌── Debate Config ─────────────────────────────────┐   │    │
+│  │  │  Proponent: claude-sonnet ▾                       │   │    │
+│  │  │  Opponent:  gemini-pro ▾                          │   │    │
+│  │  │  Judge:     grok-3 ▾                              │   │    │
+│  │  │  Rounds:    [3] ▾                                 │   │    │
+│  │  │  Style:     ○ Adversarial  ● Collaborative        │   │    │
+│  │  │  Est. cost: ~$0.45 per execution                  │   │    │
+│  │  └──────────────────────────────────────────────────┘   │    │
+│  └──────────────────────────────────────────────────────────┘    │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### Frontend: Strategy Execution Viewer
+
+```
+┌── Stage: Architecture ── Strategy: Debate ────────────────────┐
+│                                                                 │
+│  ┌── Round 1 ──────────────────────────────────────────────┐   │
+│  │  🟦 Proponent (Claude):                                  │   │
+│  │  "I propose microservices architecture because the       │   │
+│  │   system has 3 distinct bounded contexts..."             │   │
+│  │                                                           │   │
+│  │  🟥 Opponent (Gemini):                                   │   │
+│  │  "While microservices offer scalability, for a team of   │   │
+│  │   3 developers, a modular monolith would..."             │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  ┌── Round 2 ──────────────────────────────────────────────┐   │
+│  │  🟦 Proponent: "Addressing the team size concern..."     │   │
+│  │  🟥 Opponent: "Even with containerization..."            │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  ┌── Judgment ─────────────────────────────────────────────┐   │
+│  │  ⚖️ Judge (Grok):                                        │   │
+│  │  "Winner: Modular Monolith (Gemini)                      │   │
+│  │   Reasoning: Given the team size and initial scale..."   │   │
+│  │  Confidence: 0.85                                        │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  💰 Cost: $0.42 │ Tokens: 12,450 │ Duration: 34s               │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### WebSocket Events
+
+```typescript
+// Strategy-specific WS events:
+"strategy:started"      → { stageId, strategy, models }
+"strategy:round"        → { stageId, round, model, role, content }
+"strategy:judgment"     → { stageId, winner, reasoning }
+"strategy:vote"         → { stageId, model, output }
+"strategy:completed"    → { stageId, finalOutput, metadata }
+```
+
+### Cross-Phase Synergies
+
+| Phase | Synergy with Strategies |
+|-------|------------------------|
+| Phase 3.1 (Tools) | Each model in MoA/Debate can use different tools |
+| Phase 3.2 (Stats) | Cost tracking per strategy call, strategy cost comparison |
+| Phase 3.3 (Memory) | Memory helps models in later rounds (avoids re-debate settled topics) |
+| Phase 3.5 (Sandbox) | Voting: run each model's code in sandbox, pick one that passes tests |
+| Phase 4.5 (Maintenance) | Use debate to evaluate whether a dependency update is worth it |
+
+### Implementation Order
+
+1. Types: `StrategyConfig`, `StrategyResult`, `MoARun`, `DebateRun`, `VotingRun`
+2. `StrategyExecutor` service with strategy dispatch
+3. MoA implementation (most straightforward — parallel + refine)
+4. Voting implementation (parallel + merge)
+5. Debate implementation (sequential rounds + judgment)
+6. Pipeline Controller integration: use `StrategyExecutor` when `stage.strategy` is set
+7. DB schema: `strategy_result` column, `strategy_calls` table
+8. API endpoints
+9. Frontend: strategy config in pipeline builder
+10. Frontend: strategy execution viewer in run detail
+11. Cost estimation for strategies
+12. Strategy presets
+
+### Open Design Questions (Phase 3.6)
+
+| # | Question | Options |
+|---|----------|---------|
+| 25 | **Semantic cache scope** | A) Per-pipeline cache B) Global cache across pipelines C) Both with toggle |
+
+---
+
+## Phase 4 — Code Workspace (Claude Code-like experience)
+
+> Scoped to **multi-model parallel code review** — not a full IDE. Users can connect a workspace (local path or remote repo) and run multiple models to review code simultaneously with different perspectives.
+
+### 4.1 — Workspace & Repository Management
+
+```typescript
+// shared/types.ts
+export interface Workspace {
+  id: string;
+  name: string;
+  type: "local" | "remote";
+  path: string;                     // local path or git URL
+  branch: string;
+  status: "active" | "syncing" | "error";
+  lastSyncAt: Date | null;
+  createdAt: Date;
+}
+
+// server/workspace/manager.ts
+class WorkspaceManager {
+  // Connect local directory
+  async connectLocal(path: string, name?: string): Promise<Workspace>;
+
+  // Clone remote repository
+  async cloneRemote(url: string, branch?: string): Promise<Workspace>;
+
+  // Sync remote workspace (git pull)
+  async sync(workspaceId: string): Promise<void>;
+
+  // List files in workspace
+  async listFiles(workspaceId: string, path?: string): Promise<FileEntry[]>;
+
+  // Read file content
+  async readFile(workspaceId: string, filePath: string): Promise<string>;
+
+  // Write file (for AI-generated changes)
+  async writeFile(workspaceId: string, filePath: string, content: string): Promise<void>;
+
+  // Git operations
+  async gitStatus(workspaceId: string): Promise<GitStatus>;
+  async gitDiff(workspaceId: string): Promise<string>;
+  async gitCommit(workspaceId: string, message: string): Promise<void>;
+  async gitBranch(workspaceId: string, branchName: string): Promise<void>;
+}
+```
+
+### 4.2 — API Endpoints
+
+```
+-- Workspace management
+POST   /api/workspaces                          — connect workspace (local or remote)
+GET    /api/workspaces                          — list workspaces
+GET    /api/workspaces/:id                      — workspace details
+DELETE /api/workspaces/:id                      — disconnect workspace
+POST   /api/workspaces/:id/sync                 — sync remote workspace
+
+-- File operations
+GET    /api/workspaces/:id/files                — list files (tree)
+GET    /api/workspaces/:id/files/*path          — read file content
+PUT    /api/workspaces/:id/files/*path          — write file
+DELETE /api/workspaces/:id/files/*path          — delete file
+
+-- Git operations
+GET    /api/workspaces/:id/git/status           — git status
+GET    /api/workspaces/:id/git/diff             — git diff
+POST   /api/workspaces/:id/git/commit           — commit changes
+POST   /api/workspaces/:id/git/branch           — create branch
+GET    /api/workspaces/:id/git/log              — commit history
+
+-- AI operations
+POST   /api/workspaces/:id/review               — multi-model code review
+POST   /api/workspaces/:id/chat                 — chat about workspace code
+```
+
+### 4.3 — Frontend: Code Editor Page
+
+```
+┌── Workspace: my-project ── branch: main ──────────────────────┐
+│                                                                 │
+│  ┌── File Tree ──┐  ┌── Editor ────────────────────────────┐   │
+│  │ 📁 src/        │  │  // auth.controller.ts                │   │
+│  │  📄 app.ts     │  │  import { Router } from "express";    │   │
+│  │  📄 auth.ts ◄──┤  │  import { validateToken } from...     │   │
+│  │  📄 users.ts   │  │  ...                                  │   │
+│  │ 📁 tests/      │  │                                       │   │
+│  │ 📄 package.json│  │  ┌── Inline AI suggestion ──────┐     │   │
+│  │                │  │  │ 💡 Add rate limiting here      │     │   │
+│  │                │  │  │ [Apply] [Dismiss] [Explain]   │     │   │
+│  │                │  │  └──────────────────────────────┘     │   │
+│  └────────────────┘  └──────────────────────────────────────┘   │
+│                                                                 │
+│  ┌── AI Chat ──────────────────────────────────────────────┐   │
+│  │  You: "Review this auth module for security issues"      │   │
+│  │                                                           │   │
+│  │  🟦 Claude: "Found 2 issues: 1) No rate limiting on      │   │
+│  │  login endpoint. 2) JWT secret from env without..."       │   │
+│  │                                                           │   │
+│  │  🟩 Gemini: "The token validation looks correct but      │   │
+│  │  I'd recommend adding refresh token rotation..."          │   │
+│  │                                                           │   │
+│  │  🟧 Grok: "Checked against OWASP: missing CSRF          │   │
+│  │  protection on auth endpoints. Also, express-rate-limit   │   │
+│  │  v7 just released with improved Redis support."           │   │
+│  │                                                           │   │
+│  │  [Send message...                              ] [Send]   │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 4.4 — AI-Assisted Code Interaction (Chat + Code integration)
+
+```typescript
+// server/workspace/code-chat.ts
+
+class CodeChatService {
+  // Multi-model code review: run N models in parallel on selected files
+  async reviewCode(
+    workspaceId: string,
+    filePaths: string[],
+    models: string[],
+    prompt?: string,
+  ): Promise<Map<string, ReviewResult>>;
+
+  // Chat about code with workspace context
+  async chat(
+    workspaceId: string,
+    message: string,
+    modelSlug: string,
+    context?: { filePaths?: string[]; selection?: CodeSelection },
+  ): Promise<ChatResponse>;
+
+  // Apply AI-suggested code change
+  async applyChange(
+    workspaceId: string,
+    filePath: string,
+    change: CodeChange,
+  ): Promise<void>;
+}
+
+interface ReviewResult {
+  model: string;
+  issues: Array<{
+    severity: "error" | "warning" | "info";
+    file: string;
+    line?: number;
+    message: string;
+    suggestion?: string;
+  }>;
+  summary: string;
+}
+```
+
+### 4.5 — Security & Sandboxing
+
+- Workspace file access is scoped to the workspace root (no path traversal)
+- Git operations use `simple-git` library (no shell exec)
+- Remote clones go to `data/workspaces/{id}/` with size limits
+- AI-generated file writes require user confirmation in UI
+- Terminal access (if added later) must be Docker-sandboxed
+
+---
+
+## Phase 4.5 — Continuous Maintenance Autopilot
+
+> Goal: the platform proactively initiates work when it detects that a project is outdated, vulnerable, or non-compliant with standards. Two-tier system: **Cron Scout Agent** (lightweight — scans and scores) → **Full SDLC Pipeline** (heavyweight — when Scout finds something important).
+
+### Design Decisions (Resolved)
+
+| # | Question | Decision |
+|---|--------|---------|
+| M1 | **What to monitor** | Full list (see categories below) + compliance-driven categories from SOC 2, PCI DSS, ISO 27001 |
+| M2 | **Autonomy level** | **B) Proposes PR** by default. Direct intervention (auto-merge) is possible but must be explicitly enabled via toggle in UI |
+| M3 | **Scope binding** | Enabled **per-workspace/project** + globally. Global = platform monitors all connected projects |
+| M4 | **Trigger** | **C) Both** — cron for scheduled checks + events for urgent cases (CVE) |
+| M5 | **Who executes** | **Two-tier**: Cron Scout Agent (lightweight scan) → if it finds something important → Full SDLC Pipeline for assessment + implementation |
+| M6 | **Unique value** | Multi-model analysis: Claude (breaking changes), Gemini (code), Grok (web verification) |
+| M7 | **Scout intelligence** | **A) Pure code** — Scout is a data collector only (npm audit, license-checker, etc.). No LLM. Heavy analysis delegated to SDLC pipeline |
+| M8 | **Finding dedup** | **B) Re-evaluate** — every scan re-evaluates all findings (CVE severity can change). User selects which findings to action |
+| M9 | **PR strategy** | **A) One PR per finding** — each problem/task gets its own PR for clean rollback and independent review |
+| M10 | **Notification** | **Scout shows results in UI** — user manually selects important findings → SDLC / backlog. No auto-notifications for now (TBD after testing) |
+| M11 | **History & trends** | **C) Trends + recommendations** — scan history, health score trends, mean-time-to-remediate, platform recommends policy changes |
+
+### 4.5.1 — Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    CRON SCHEDULER                            │
+│  (configurable: hourly / daily / weekly per workspace)       │
+└──────────────────────┬──────────────────────────────────────┘
+                       │ trigger
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 SCOUT AGENT (lightweight)                     │
+│                                                               │
+│  1. Read workspace config (what to monitor, severity filter)  │
+│  2. Run check categories (parallel):                          │
+│     ├─ dependency_updates    ← npm audit, pip-audit, etc.    │
+│     ├─ security_advisories   ← GitHub Advisory DB, NVD       │
+│     ├─ breaking_changes      ← major version releases        │
+│     ├─ license_compliance    ← SPDX check                   │
+│     ├─ api_deprecations      ← changelog parsing            │
+│     ├─ config_drift          ← CIS benchmarks, hardening    │
+│     ├─ best_practices        ← linter rules, framework recs │
+│     ├─ documentation_currency← stale docs, outdated README  │
+│     ├─ access_control        ← unused tokens, expired certs │
+│     └─ data_retention        ← old logs, expired data       │
+│  3. Score each finding: severity × relevance × effort        │
+│  4. Filter by workspace threshold (e.g. only "high"+)        │
+│  5. If nothing important → log scan result → DONE            │
+│     If important findings → create MaintenanceTask           │
+└──────────────────────┬──────────────────────────────────────┘
+                       │ MaintenanceTask[]
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│              MAINTENANCE PIPELINE (full SDLC)                │
+│                                                               │
+│  Planning: Claude analyzes breaking changes, writes          │
+│            migration plan, estimates effort                   │
+│                                                               │
+│  Architecture: does the architecture need to change?          │
+│                (e.g. new SDK requires async patterns)         │
+│                                                               │
+│  Development: Gemini generates updated code                  │
+│               (bump versions, adapt to new APIs)              │
+│                                                               │
+│  Testing: runs existing tests + new ones                     │
+│           in Docker sandbox                                    │
+│                                                               │
+│  Code Review: Claude verifies the update                     │
+│               didn't break anything                           │
+│                                                               │
+│  Grok Fact-Check: verifies via web that the new              │
+│                   version is stable, no known issues          │
+│                                                               │
+│  → Creates PR with description: what was updated, why,      │
+│    which tests passed, risk assessment                        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 4.5.2 — Monitoring Categories (Compliance-Enriched)
+
+Categories are derived from best practices in **SOC 2**, **PCI DSS**, **ISO 27001**, **HIPAA**, **NIST CSF**, **CIS Controls**, **GDPR**, and **FedRAMP**.
+
+| Category | What Scout Checks | Compliance Source | Default Severity |
+|----------|------------------|-------------------|-----------------|
+| **Dependency Updates** | Outdated packages (minor/patch) | SOC 2 CC8.1, PCI DSS 6.2, CIS 7 | medium |
+| **Breaking Changes** | Major version releases of key deps | SOC 2 CC8.1, ISO 27001 A.8.32 | high |
+| **Security Advisories (CVE)** | Known vulns in deps (npm audit, Trivy) | PCI DSS 6.2/11.2, NIST SI-2, HIPAA §164.308 | critical |
+| **License Compliance** | License changes, GPL contamination, SPDX violations | SOC 2 CC5, ISO 27001 A.5.22 | high |
+| **API Deprecations** | Deprecated endpoints, SDK version sunset notices | ISO 27001 A.8.9, NIST CM-3 | medium |
+| **Configuration Drift** | Divergence from CIS benchmarks, hardening baselines | FedRAMP CM-6, NIST CM-2, PCI DSS 2.2.4 | high |
+| **Best Practices Drift** | Outdated patterns, new framework recommendations | ISO 27001 A.8.6 | low |
+| **Documentation Currency** | Stale README, outdated API docs, missing CHANGELOG | SOC 2 CC2, ISO 27001 A.8.33 | low |
+| **Access Control Review** | Expired tokens, unused API keys, stale credentials | PCI DSS 7.x/8.x, ISO 27001 A.8.2, SOC 2 CC6 | high |
+| **Data Retention** | Old logs beyond retention policy, expired data | GDPR Art.5/17, HIPAA §164.306, SOC 2 | medium |
+| **Certificate Expiry** | TLS/SSL certs approaching expiry | PCI DSS 4.1, NIST SC-12 | critical |
+| **Infrastructure Drift** | Terraform state vs actual (if workspace has IaC) | FedRAMP CM-3, NIST CM-3 | high |
+| **Vendor/Third-Party** | Upstream provider status, service deprecations | PCI DSS 12.8, ISO 27001 A.5.22, SOC 2 CC5 | medium |
+| **System Hardening** | DISA STIG / CIS benchmark compliance checks | FedRAMP CM-6, CIS Controls 2, NIST CM-7 | medium |
+
+### 4.5.3 — Types
+
+```typescript
+// shared/types.ts
+
+export type MaintenanceCategory =
+  | "dependency_update" | "breaking_change" | "security_advisory"
+  | "license_compliance" | "api_deprecation" | "config_drift"
+  | "best_practices" | "documentation" | "access_control"
+  | "data_retention" | "cert_expiry" | "infra_drift"
+  | "vendor_status" | "system_hardening";
+
+export type MaintenanceSeverity = "critical" | "high" | "medium" | "low" | "info";
+
+export interface MaintenancePolicy {
+  id: string;
+  workspaceId: string | null;            // null = global policy
+  enabled: boolean;
+  schedule: string;                       // cron expression: "0 9 * * 1" = Mon 9am
+  categories: MaintenanceCategoryConfig[];
+  severityThreshold: MaintenanceSeverity; // only trigger SDLC for findings ≥ this
+  autoMerge: boolean;                     // if true, auto-merge PRs for patch-level updates
+  notifyChannels: string[];               // webhook URLs for notifications
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface MaintenanceCategoryConfig {
+  category: MaintenanceCategory;
+  enabled: boolean;
+  severity: MaintenanceSeverity;          // override default severity
+  customRules?: Record<string, unknown>;  // category-specific config
+}
+
+export interface ScoutFinding {
+  id: string;
+  scanId: string;
+  category: MaintenanceCategory;
+  severity: MaintenanceSeverity;
+  title: string;                          // "express 4.18.2 → 5.0.0 (breaking)"
+  description: string;                    // detailed description
+  currentValue: string;                   // "express@4.18.2"
+  recommendedValue: string;               // "express@5.0.0"
+  effort: "trivial" | "small" | "medium" | "large"; // estimated effort
+  references: string[];                   // URLs to changelogs, CVEs, docs
+  autoFixable: boolean;                   // can be fixed without human review
+  complianceRefs: string[];               // ["PCI DSS 6.2", "SOC 2 CC8.1"]
+}
+
+export interface MaintenanceScan {
+  id: string;
+  policyId: string;
+  workspaceId: string;
+  status: "running" | "completed" | "failed";
+  findings: ScoutFinding[];
+  importantCount: number;                 // findings ≥ severityThreshold
+  triggeredPipelineId: string | null;     // if SDLC was triggered
+  startedAt: Date;
+  completedAt: Date | null;
+  createdAt: Date;
+}
+```
+
+### 4.5.4 — Scout Agent (`server/maintenance/scout.ts`)
+
+```typescript
+class ScoutAgent {
+  // Run all enabled category checks for a workspace
+  async scan(workspace: Workspace, policy: MaintenancePolicy): Promise<MaintenanceScan>;
+
+  // Individual category scanners
+  private scanDependencies(workspace: Workspace): Promise<ScoutFinding[]>;
+  private scanSecurityAdvisories(workspace: Workspace): Promise<ScoutFinding[]>;
+  private scanLicenses(workspace: Workspace): Promise<ScoutFinding[]>;
+  private scanApiDeprecations(workspace: Workspace): Promise<ScoutFinding[]>;
+  private scanConfigDrift(workspace: Workspace): Promise<ScoutFinding[]>;
+  private scanCertificates(workspace: Workspace): Promise<ScoutFinding[]>;
+  private scanAccessControl(workspace: Workspace): Promise<ScoutFinding[]>;
+  private scanDocumentation(workspace: Workspace): Promise<ScoutFinding[]>;
+  private scanDataRetention(workspace: Workspace): Promise<ScoutFinding[]>;
+  private scanInfraDrift(workspace: Workspace): Promise<ScoutFinding[]>;
+}
+```
+
+**Scanner implementations**:
+
+| Scanner | Tool | How it works |
+|---------|-----------|-------------|
+| `scanDependencies` | `npm outdated`, `pip list --outdated`, package.json parse | Compares current vs latest, identifies breaking (semver major) |
+| `scanSecurityAdvisories` | `npm audit --json`, GitHub Advisory API, NVD API | Finds CVEs for installed packages, CVSS scoring |
+| `scanLicenses` | `license-checker`, SPDX database | Checks license compatibility, GPL contamination |
+| `scanApiDeprecations` | Web search (Grok), changelog parsing | Finds deprecation notices in upstream APIs |
+| `scanConfigDrift` | Docker sandbox + CIS benchmark tools | Runs `kube-bench`, `cfn-nag`, terraform validate |
+| `scanCertificates` | OpenSSL check, API endpoints scan | Checks TLS certificate expiry dates |
+| `scanAccessControl` | Git secrets scan, env file audit | Finds expired tokens, unused credentials |
+| `scanDocumentation` | File age analysis, README parse | Identifies stale docs by git blame dates |
+| `scanDataRetention` | Log size analysis, DB query | Finds data/logs older than retention policy |
+| `scanInfraDrift` | `terraform plan` in sandbox | Compares state with actual infrastructure |
+
+### 4.5.5 — Cron Scheduler (`server/maintenance/scheduler.ts`)
+
+```typescript
+class MaintenanceScheduler {
+  private jobs: Map<string, CronJob> = new Map();
+
+  // Start scheduler for all active policies
+  async start(): Promise<void>;
+
+  // Register/update a policy's cron job
+  registerPolicy(policy: MaintenancePolicy): void;
+
+  // Unregister when policy disabled/deleted
+  unregisterPolicy(policyId: string): void;
+
+  // Execute a scan (called by cron or manually)
+  async executeScan(policyId: string): Promise<MaintenanceScan>;
+
+  // Decision: should we trigger full SDLC?
+  private shouldTriggerPipeline(scan: MaintenanceScan, policy: MaintenancePolicy): boolean;
+
+  // Create and start maintenance SDLC pipeline
+  private async triggerMaintenancePipeline(
+    scan: MaintenanceScan,
+    findings: ScoutFinding[],
+  ): Promise<PipelineRun>;
+}
+```
+
+**Cron → Scout → Pipeline flow:**
+
+```
+1. Cron fires → executeScan(policyId)
+2. Load policy + workspace config
+3. ScoutAgent.scan(workspace, policy) → findings[]
+4. Filter findings by severity ≥ policy.severityThreshold
+5. If importantCount === 0 → log "all clear" → DONE
+6. If importantCount > 0:
+   a. Group findings by category
+   b. Create MaintenanceTask with grouped findings
+   c. Create special "Maintenance Pipeline" run
+   d. Pipeline input = { findings, workspace, policy }
+   e. SDLC stages analyze, plan, implement, test, review
+   f. Pipeline creates PR (or auto-merges if policy.autoMerge && finding.autoFixable)
+7. Send notifications to policy.notifyChannels
+```
+
+### 4.5.6 — Auto-Merge Control
+
+```
+Auto-merge toggle (off by default):
+  ┌─ Workspace Settings → Maintenance → Auto-merge ─┐
+  │                                                    │
+  │  [OFF] Automatic update application                │
+  │                                                    │
+  │  If enabled:                                       │
+  │  ☑ Patch updates only (1.2.3 → 1.2.4)             │
+  │  ☐ Minor updates (1.2.3 → 1.3.0)                  │
+  │  ☐ Major updates (1.x → 2.x) — NEVER auto-merge   │
+  │                                                    │
+  │  Conditions for auto-merge:                        │
+  │  ☑ All tests passed in sandbox                     │
+  │  ☑ No security findings severity ≥ high            │
+  │  ☑ Code review score ≥ 0.8                         │
+  │                                                    │
+  │  ⚠️ Major breaking changes always require           │
+  │     manual confirmation                            │
+  └────────────────────────────────────────────────────┘
+```
+
+### 4.5.7 — DB Schema
+
+```sql
+CREATE TABLE maintenance_policies (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id        UUID REFERENCES workspaces(id),    -- null = global
+  enabled             BOOLEAN NOT NULL DEFAULT true,
+  schedule            TEXT NOT NULL,                      -- cron expression
+  categories          JSONB NOT NULL DEFAULT '[]',       -- MaintenanceCategoryConfig[]
+  severity_threshold  TEXT NOT NULL DEFAULT 'high',
+  auto_merge          BOOLEAN NOT NULL DEFAULT false,
+  notify_channels     JSONB DEFAULT '[]',
+  created_at          TIMESTAMPTZ DEFAULT now(),
+  updated_at          TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE maintenance_scans (
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  policy_id             UUID REFERENCES maintenance_policies(id),
+  workspace_id          UUID REFERENCES workspaces(id),
+  status                TEXT NOT NULL DEFAULT 'running',
+  findings              JSONB NOT NULL DEFAULT '[]',
+  important_count       INTEGER NOT NULL DEFAULT 0,
+  triggered_pipeline_id UUID REFERENCES pipeline_runs(id),
+  started_at            TIMESTAMPTZ DEFAULT now(),
+  completed_at          TIMESTAMPTZ,
+  created_at            TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_scans_policy ON maintenance_scans(policy_id, created_at);
+CREATE INDEX idx_scans_workspace ON maintenance_scans(workspace_id, created_at);
+```
+
+### 4.5.8 — API Endpoints
+
+```
+-- Policies
+GET    /api/maintenance/policies                    — list all policies
+POST   /api/maintenance/policies                    — create policy
+PUT    /api/maintenance/policies/:id                — update policy
+DELETE /api/maintenance/policies/:id                — delete policy
+
+-- Scans
+GET    /api/maintenance/scans                       — list scans (filterable by workspace, policy)
+GET    /api/maintenance/scans/:id                   — scan details + findings
+POST   /api/maintenance/scans/trigger               — trigger manual scan { policyId }
+GET    /api/maintenance/scans/:id/findings          — findings with filters
+
+-- Finding Actions
+POST   /api/maintenance/findings/:id/action         — { action: "sdlc" | "backlog" | "dismiss" }
+
+-- Dashboard
+GET    /api/maintenance/dashboard                   — overview: active policies, recent scans, open findings
+GET    /api/maintenance/health/:workspaceId         — health score per workspace
+GET    /api/maintenance/trends/:workspaceId         — health score + findings trends over time
+GET    /api/maintenance/recommendations/:workspaceId — smart recommendations
+```
+
+### 4.5.9 — Frontend
+
+- [ ] **Maintenance Settings** (per-workspace + global):
+  - Enable/disable maintenance autopilot
+  - Cron schedule picker (visual: "Every Monday at 9am")
+  - Category toggles with severity overrides
+  - Severity threshold selector
+  - Auto-merge toggle with conditions (patch only, tests pass, etc.)
+  - Notification channels (webhook URLs)
+
+- [ ] **Maintenance Dashboard** (`/maintenance`):
+  ```
+  ┌─────────────────────────────────────────────────────────────┐
+  │  Maintenance Autopilot                                       │
+  ├─────────────────────────────────────────────────────────────┤
+  │  ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐   │
+  │  │ Projects  │ │ Open      │ │ Last Scan │ │ Health    │   │
+  │  │ Monitored │ │ Findings  │ │ 2h ago    │ │ Score     │   │
+  │  │ 5         │ │ 12        │ │ ✅ clean   │ │ 87/100    │   │
+  │  └───────────┘ └───────────┘ └───────────┘ └───────────┘   │
+  │                                                               │
+  │  ┌── Recent Scans ──────────────────────────────────────────┐│
+  │  │ Workspace │ Time │ Findings │ Critical │ SDLC triggered? ││
+  │  │ frontend  │ 2h   │ 3        │ 0        │ No              ││
+  │  │ backend   │ 2h   │ 8        │ 2 🔴     │ Yes → PR #47    ││
+  │  └─────────────────────────────────────────────────────────┘│
+  │                                                               │
+  │  ┌── Findings by Category (stacked bar) ────────────────────┐│
+  │  │  dependency | security | license | config | ...           ││
+  │  └─────────────────────────────────────────────────────────┘│
+  │                                                               │
+  │  ┌── Compliance Coverage ───────────────────────────────────┐│
+  │  │  SOC 2: 85% │ PCI DSS: 72% │ ISO 27001: 90%             ││
+  │  │  (based on enabled categories vs framework requirements)  ││
+  │  └─────────────────────────────────────────────────────────┘│
+  └─────────────────────────────────────────────────────────────┘
+  ```
+
+- [ ] **Scan Detail View** — findings list with severity badges, references, action buttons per finding:
+  ```
+  ┌── Scan #42 — backend — 2026-03-14 09:00 ────────────────────┐
+  │                                                                │
+  │  8 findings (2 critical, 3 high, 2 medium, 1 low)            │
+  │                                                                │
+  │  ☐ 🔴 CRITICAL: CVE-2026-1234 in lodash@4.17.21              │
+  │    CVSS 9.8 | PCI DSS 6.2 | Auto-fixable: yes                │
+  │    [Send to SDLC] [Add to Backlog] [Dismiss]                  │
+  │                                                                │
+  │  ☐ 🔴 CRITICAL: TLS cert expires in 7 days                    │
+  │    PCI DSS 4.1, NIST SC-12 | Effort: trivial                  │
+  │    [Send to SDLC] [Add to Backlog] [Dismiss]                  │
+  │                                                                │
+  │  ☐ 🟠 HIGH: express 4.18 → 5.0 (breaking change)             │
+  │    SOC 2 CC8.1 | Effort: large | 14 breaking changes          │
+  │    [Send to SDLC] [Add to Backlog] [Dismiss]                  │
+  │                                                                │
+  │  ... more findings ...                                         │
+  │                                                                │
+  │  [Select All Critical] [Send Selected to SDLC] [Bulk Dismiss] │
+  └────────────────────────────────────────────────────────────────┘
+  ```
+
+- [ ] **Workspace Health Badge** — show health score in workspace list
+
+### 4.5.10 — Multi-Model Advantage
+
+Why multiqlti is better than Dependabot/Renovate for maintenance:
+
+| Aspect | Dependabot/Renovate | multiqlti Maintenance |
+|--------|--------------------|-----------------------|
+| **Scope** | Dependencies only | 14 categories including compliance |
+| **Analysis** | Bump version + run tests | Claude analyzes breaking changes, writes migration plan |
+| **Code generation** | Template-based bumps | Gemini generates adapted code for new APIs |
+| **Verification** | CI tests only | Grok web-checks if new version is stable + has known issues |
+| **Compliance** | None | Maps findings to SOC 2, PCI DSS, ISO 27001 controls |
+| **Context** | Per-package | Full project memory — knows architecture, decisions, preferences |
+| **Custom checks** | Limited | Any check category, custom rules, MCP tool integration |
+
+### 4.5.11 — Trend Analysis & Recommendations (`server/maintenance/analytics.ts`)
+
+```typescript
+class MaintenanceAnalytics {
+  // Health score: 0–100 based on open findings, compliance coverage, time-to-fix
+  async calculateHealthScore(workspaceId: string): Promise<HealthScore>;
+
+  // Trends over time: findings count, severity distribution, health score
+  async getTrends(workspaceId: string, period: "7d" | "30d" | "90d"): Promise<TrendData>;
+
+  // Mean time to remediate (from finding created → PR merged)
+  async getMTTR(workspaceId: string): Promise<{ overall: number; byCategory: Record<string, number> }>;
+
+  // Smart recommendations based on scan history
+  async getRecommendations(workspaceId: string): Promise<Recommendation[]>;
+}
+
+interface HealthScore {
+  score: number;               // 0–100
+  breakdown: {
+    openFindings: number;       // -points per open finding (weighted by severity)
+    complianceCoverage: number; // % of enabled compliance categories
+    meanTimeToFix: number;      // lower = better
+    scanFrequency: number;      // regular scanning = bonus
+  };
+  trend: "improving" | "stable" | "declining";
+}
+
+interface TrendData {
+  points: Array<{
+    date: string;
+    healthScore: number;
+    findingsCount: number;
+    criticalCount: number;
+    resolvedCount: number;
+  }>;
+  period: string;
+}
+
+interface Recommendation {
+  type: "increase_frequency" | "enable_category" | "review_stale" | "upgrade_threshold";
+  message: string;             // "Security findings increased 40% — consider weekly scans instead of monthly"
+  priority: "high" | "medium" | "low";
+  actionable: boolean;         // can be applied with one click
+  suggestedChange?: Partial<MaintenancePolicy>;
+}
+```
+
+**Recommendation rules** (pure code, no LLM):
+
+| Condition | Recommendation |
+|-----------|---------------|
+| Security findings trending up (>20% over 30d) | "Enable weekly scans" / "Lower severity threshold" |
+| Category disabled but workspace has relevant files | "Enable `license_compliance` — workspace has 47 npm deps" |
+| MTTR > 14 days for critical findings | "Critical findings take too long to fix — consider auto-merge for patch-level" |
+| Health score declining 3+ consecutive scans | "Health declining — review open findings and consider enabling more categories" |
+| Same finding open > 30 days with no action | "Stale finding: express@4.18 outdated — dismiss or action" |
+
+**Frontend: Trends Dashboard** (addition to 4.5.9):
+
+```
+┌── Health Score Trend (line chart) ──────────────────────────┐
+│  100 ┤                                                       │
+│   90 ┤──────╮       ╭──────────────────────────              │
+│   80 ┤      ╰───────╯                                       │
+│   70 ┤                                                       │
+│      └─── Jan ──── Feb ──── Mar ──── Apr ────                │
+└──────────────────────────────────────────────────────────────┘
+
+┌── Findings by Severity (stacked area) ─────────────────────┐
+│  Critical 🔴  High 🟠  Medium 🟡  Low 🟢                    │
+└──────────────────────────────────────────────────────────────┘
+
+┌── MTTR by Category (bar chart) ────────────────────────────┐
+│  security_advisory   ████ 3d                                │
+│  dependency_update   ██████████ 8d                          │
+│  license_compliance  ████████████████ 14d                   │
+└──────────────────────────────────────────────────────────────┘
+
+┌── Recommendations ─────────────────────────────────────────┐
+│  🔴 HIGH: Security findings +40% — enable weekly scans      │
+│     [Apply] [Dismiss]                                       │
+│  🟡 MED: 3 stale findings > 30 days — review or dismiss     │
+│     [View Findings] [Dismiss All]                           │
+│  🟢 LOW: license_compliance not enabled — 47 npm deps found │
+│     [Enable] [Dismiss]                                      │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 4.5.12 — Implementation Order
+
+1. Types: `MaintenancePolicy`, `ScoutFinding`, `MaintenanceScan`, `HealthScore`, `Recommendation`
+2. DB schema: `maintenance_policies`, `maintenance_scans`
+3. ScoutAgent — core scanner framework + 3 initial scanners:
+   - `scanDependencies` (npm/pip)
+   - `scanSecurityAdvisories` (npm audit + GitHub Advisory)
+   - `scanLicenses` (license-checker)
+4. Cron Scheduler — register policies, trigger scans
+5. **Scan Results UI** — findings list with severity badges, "Send to SDLC" / "Add to Backlog" / "Dismiss" per finding
+6. Maintenance Pipeline template — special SDLC pipeline with one-finding-per-PR strategy
+7. API endpoints (policies, scans, finding actions)
+8. Frontend: Maintenance settings per workspace
+9. Frontend: Maintenance dashboard
+10. Additional scanners: config drift, cert expiry, API deprecation
+11. Auto-merge logic with conditions (UI toggle, off by default)
+12. **MaintenanceAnalytics** — health score, MTTR, trends calculation
+13. **Recommendations engine** — pure-code rules analyzing scan history
+14. Frontend: Trends dashboard (health chart, MTTR bars, recommendations cards)
+15. Compliance coverage calculation
+16. Notifications (webhooks — deferred, TBD after testing)
+
+### 4.5.13 — Dependencies
+
+| Depends On | Why |
+|-----------|-----|
+| Phase 4 (Workspace) | Scout needs file access to scan deps, configs, etc. |
+| Phase 3.1 (Tools) | Grok web search for stability verification |
+| Phase 3.3 (Memory) | Memory stores what was previously scanned and decided |
+| Phase 3.5 (Sandbox) | Run tests, CIS benchmarks in Docker |
+| Phase 3.2 (Stats) | Cost tracking for maintenance pipeline runs |
+
+### 4.5.14 — Packages
+
+```bash
+npm install node-cron                     # cron scheduler
+npm install license-checker-webpack-plugin # or license-checker for SPDX
+# npm audit is built-in
+# GitHub Advisory API via @octokit/rest
+```
+
+---
+
+## Phase 5 — Advanced Features (post-launch)
+
+- [ ] **Model specialization presets** — recommended model assignments based on each provider's strengths:
+  - **Claude** → Planning, Architecture, Code Review (strong reasoning, system design)
+  - **Gemini** → Development, Testing (large context, code generation)
+  - **Grok** → Fact-checking, Monitoring, web-grounded verification (real-time search, live data)
+  - Allow users to define custom specialization profiles
+- [ ] **Stage reordering** — drag-to-reorder in pipeline builder (`MultiAgentPipeline.tsx`); remove hardcoded `TEAM_ORDER` dependency
+- [ ] **Custom stages** — let users add stages beyond the 7 SDLC defaults (e.g. a "Summarize" stage, a "Translate" stage, a "Fact-check" stage)
+- [ ] **Run comparison** — side-by-side view of two runs to compare model outputs for the same pipeline
+
+---
+
+## Phase 6 — Competitive Parity Features (from CrewAI / Lindy.ai / OpenClaw analysis)
+
+> Features inspired by competitive analysis of DeerFlow, Paperclip, CrewAI, and Lindy.ai — adapted for multiqlti's multi-model architecture.
+
+### 6.1 — Guardrails & Structured Output Validation
+
+```typescript
+// Validate LLM outputs before passing to next stage
+export interface StageGuardrail {
+  id: string;
+  stageId: TeamId;
+  type: "json_schema" | "regex" | "custom" | "llm_check";
+  config: {
+    schema?: object;              // JSON Schema for json_schema type
+    pattern?: string;             // regex pattern
+    validatorFn?: string;         // custom JS function (sandboxed)
+    llmPrompt?: string;           // prompt for LLM-based validation
+    llmModel?: string;            // which model validates (default: cheap/fast)
+  };
+  onFail: "retry" | "skip" | "fail" | "fallback";
+  maxRetries: number;             // for "retry" action
+  fallbackValue?: unknown;        // for "fallback" action
+}
+
+// Integration into pipeline controller:
+// After team.execute() → validate output against guardrails
+// If validation fails → apply onFail policy
+```
+
+**Use cases:**
+- Architecture stage must return valid JSON with `techStack`, `components` fields
+- Code Review must include `securityIssues` array (even if empty)
+- Testing must include `coverage` percentage
+- Custom regex: deployment output must contain "terraform plan" keyword
+
+**Frontend:**
+```
+┌── Stage: Architecture ── Guardrails ─────────────────────────┐
+│  ┌── Guardrail 1 ──────────────────────────────────────────┐ │
+│  │  Type: JSON Schema                                        │ │
+│  │  Schema: { required: ["techStack", "components"] }       │ │
+│  │  On fail: Retry (max 2)                                   │ │
+│  └──────────────────────────────────────────────────────────┘ │
+│  [+ Add Guardrail]                                             │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 6.2 — Conditional Branching & Pipeline DAG
+
+```typescript
+// Allow stages to branch based on conditions
+export interface PipelineDAG {
+  stages: DAGStage[];
+  edges: DAGEdge[];
+}
+
+export interface DAGStage {
+  id: string;
+  teamId: TeamId;
+  modelSlug: string;
+  position: { x: number; y: number }; // for visual DAG editor
+}
+
+export interface DAGEdge {
+  from: string;                        // stage id
+  to: string;                          // stage id
+  condition?: {
+    field: string;                     // output field to check
+    operator: "eq" | "neq" | "gt" | "lt" | "contains" | "exists";
+    value: unknown;
+  };
+}
+```
+
+**Visual DAG editor:**
+```
+  [Planning] ─────► [Architecture] ───► [Development]
+                          │                    │
+                          │ if techStack       │
+                          │ === "microservices" │
+                          ▼                    ▼
+                   [K8s Config]         [Testing]
+                          │                    │
+                          └────────┬───────────┘
+                                   ▼
+                            [Code Review]
+                                   │
+                                   ▼
+                            [Deployment]
+```
+
+### 6.3 — Event-Driven Triggers
+
+```typescript
+// Trigger pipelines from external events
+export interface PipelineTrigger {
+  id: string;
+  pipelineId: string;
+  type: "webhook" | "schedule" | "github_event" | "file_change";
+  config: {
+    // webhook
+    secret?: string;
+    endpoint?: string;               // auto-generated: /api/triggers/{id}
+
+    // schedule
+    cron?: string;
+
+    // github_event
+    repository?: string;
+    events?: string[];               // "push", "pull_request", "issue"
+
+    // file_change
+    watchPath?: string;
+    patterns?: string[];             // glob patterns
+  };
+  enabled: boolean;
+  lastTriggeredAt: Date | null;
+}
+```
+
+### 6.4 — Agent Delegation (Inter-Stage Communication)
+
+```typescript
+// Allow one stage to delegate subtasks to other stages mid-execution
+export interface DelegationRequest {
+  fromStage: TeamId;
+  toStage: TeamId;
+  task: string;
+  context: Record<string, unknown>;
+  priority: "blocking" | "async";    // blocking = wait for result, async = fire-and-forget
+  timeout: number;
+}
+
+// Example: Architecture stage delegates to Development stage:
+// "Generate a proof-of-concept for this API design"
+// Development generates code → returns to Architecture → Architecture continues
+```
+
+### 6.5 — Tracing & Observability
+
+```typescript
+// OpenTelemetry-compatible tracing for pipeline runs
+export interface PipelineTrace {
+  traceId: string;
+  runId: string;
+  spans: TraceSpan[];
+}
+
+export interface TraceSpan {
+  spanId: string;
+  parentSpanId?: string;
+  name: string;                      // "planning.execute", "gateway.complete"
+  startTime: number;
+  endTime: number;
+  attributes: Record<string, string | number>;
+  events: Array<{ name: string; timestamp: number; attributes?: Record<string, string> }>;
+  status: "ok" | "error";
+}
+
+// Integrates with: Jaeger, Datadog, New Relic, Grafana Tempo
+```
+
+### 6.6 — Hierarchical Orchestration (Manager Agent)
+
+```typescript
+// A "manager" agent that can dynamically decide which stages to run
+// and in what order — instead of static pipeline definition
+
+export interface ManagerConfig {
+  managerModel: string;              // model that orchestrates
+  availableTeams: TeamId[];          // teams the manager can dispatch
+  maxIterations: number;             // prevent infinite loops
+  goal: string;                      // high-level objective
+}
+
+// Flow: Manager receives goal → decides which team to call next →
+// evaluates result → decides next step → repeats until goal is met
+```
+
+### 6.7 — Agent Swarms (Parallel Stage Cloning)
+
+```typescript
+// Clone a stage N times with different inputs for parallel processing
+export interface SwarmConfig {
+  stageId: string;
+  cloneCount: number;                // how many parallel instances
+  inputSplitter: "chunks" | "perspectives" | "custom";
+  outputMerger: "concatenate" | "llm_merge" | "vote";
+}
+
+// Use case: Code Review stage cloned 3x
+// Clone 1: Review for security
+// Clone 2: Review for performance
+// Clone 3: Review for maintainability
+// Merger: LLM combines all 3 reviews into unified report
+```
+
+### 6.8 — Skills System (Reusable Agent Configurations)
+
+```typescript
+// Saved, reusable agent configurations (like DeerFlow skills)
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  teamId: TeamId;
+  systemPromptOverride: string;
+  tools: string[];                   // MCP tools this skill uses
+  modelPreference: string;          // preferred model
+  outputFormat: object;             // expected output JSON schema
+  tags: string[];
+  createdBy: string;
+  isPublic: boolean;
+}
+
+// Built-in skills:
+// - "Security Auditor": Code Review + OWASP prompts + security tools
+// - "API Designer": Architecture + OpenAPI generation + validation
+// - "Test Writer": Testing + coverage focus + edge case generation
+// - "Docs Generator": custom stage + JSDoc/README generation
+```
+
+---
+
+## Known Technical Risks & Mitigations
+
+| Risk | Impact | Mitigation |
+|------|--------|-----------|
+| Context limit exceeded (large `previousOutputs`) | Stage fails or truncates history | Implement smart summarization between stages; compress earlier outputs |
+| Provider rate limits (Claude/Gemini/Grok) | Pipeline stalls mid-run | Retry with exponential backoff; surface clear error to user; allow model fallback |
+| Docker socket security | Host compromise if sandbox escapes | Default `NetworkMode: none`; resource limits; gVisor/Firecracker for prod |
+| Memory table growth | Slow queries, storage bloat | Confidence decay auto-cleans stale memories; TTL; pagination |
+| Strategy cost explosion (MoA/Debate) | Unexpected bills | Cost estimation before run; hard budget cap per stage; "confirm if > $X" gate |
+| Multi-model output format inconsistency | Parsing failures | Guardrails + structured output validation; fallback to text if JSON fails |
+| Maintenance Scout false positives | Alert fatigue | Re-evaluate every scan; user-controlled severity thresholds; dismiss/backlog actions |
+
+### Implementation Sequence Validation
+
+```
+Step 1 — Phase 2: Pipeline Builder UX
+  ↓ (pipeline UX must be solid — strategy presets feed into Phase 3.6)
+Step 2 — Phase 3.6: Multi-Model Execution Strategies (MoA, Debate, Voting)
+  ↓ (core product differentiator — parallel proposers, debate loops, voting)
+Step 3 — Phase 3.7: Privacy Proxy Layer
+  ↓ (PRIORITIZED — must anonymize data before sending to cloud providers)
+Step 4 — Phase 3.5: Docker Sandbox Execution
+  ↓ (isolated code execution — needs stable pipeline controller)
+Step 5 — Phase 3: Quality & Reliability (fact-checker, context accumulation, WS cleanup, syntax highlighting)
+  ↓ (stabilization before adding data layer)
+Step 6 — Phase 3.2: Statistics, Cost Tracking, Thought Tree
+  ↓ (llm_requests table feeds knowledge_search in Phase 3.1)
+Step 7 — Phase 3.3: Memory System
+  ↓ (needs stable run data + llm_requests from Phase 3.2)
+Step 8 — Phase 3.1: Tools, MCP & Knowledge Bases
+  ↓ (needs memory + knowledge_search from 3.2/3.3)
+Step 9 — Phase 3.4: Governance & Gates
+  ↓
+Step 10 — Phase 4: Multi-model parallel code review (scoped — no full IDE)
+  ↓
+Step 11 — Phase 5: Advanced features
+```
