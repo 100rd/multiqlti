@@ -1,7 +1,7 @@
 # multiqlti — Implementation Plan
 
 **Created**: 2026-03-13
-**Status**: Planning — awaiting answers to design questions (see bottom)
+**Status**: Planning — memory system designed, other design questions open (see bottom)
 
 ---
 
@@ -73,20 +73,999 @@
   - Remove or implement paperclip attachment button
 - [ ] **Settings page — manual model entry** — add "Add model manually" form for non-discoverable deployments. Allow editing model capabilities after import.
 
-### 3.1 — Inspired by DeerFlow: Web Search & Tools
+### 3.1 — MCP, Tools & Knowledge Bases
 
-- [ ] **Web search tools integration** — add Tavily / Jina AI / Firecrawl as tool providers for stages that need web access (especially Grok fact-checker and Monitoring team). Config via env vars (`TAVILY_API_KEY`, etc.)
-- [ ] **Parallel sub-agent execution** — allow pipeline stages to spawn parallel sub-tasks (like DeerFlow's sub-agent system). Example: Development stage can fan out into frontend + backend + database sub-agents, each on a different model, then merge results
-- [ ] **Persistent memory across runs** — store user preferences, project context, and learned patterns in a `memory` table. Agents read memory at start, write findings at end. Survives sessions (inspired by DeerFlow's cross-session memory)
-- [ ] **Skills system (markdown-based)** — extensible skill definitions as markdown files (like DeerFlow's `/mnt/skills/`). Each skill = system prompt + tools + output schema. Users can create custom skills and assign them to pipeline stages
-- [ ] **MCP server integration** — allow connecting external MCP servers (HTTP/SSE) as tool providers for any pipeline stage. Gateway routes tool calls to registered MCP servers. Enables ecosystem extensibility without code changes
+> Цель: дать pipeline stages доступ к инструментам — веб-поиск, базы знаний, код, инфраструктура — через MCP протокол и встроенные tools. Модель сама решает когда и какой инструмент вызвать (agentic loop).
 
-### 3.2 — Inspired by Paperclip: Governance & Cost
+#### 3.1.0 — Архитектура: Agentic Tool Loop
 
-- [ ] **Per-model cost tracking** — track token usage and estimated cost per model, per run, per stage. Dashboard widget: "This run cost $0.12 across 3 models". Budget alerts when approaching limits
+```
+┌──────────────┐
+│  BaseTeam     │
+│  .execute()   │
+└──────┬───────┘
+       │ messages + tools[]
+       ▼
+┌──────────────────────────┐
+│  Gateway.completeWithTools()  │  ← НОВЫЙ метод
+│                               │
+│  loop {                       │
+│    response = provider.complete(messages, tools)  │
+│                               │
+│    if response.tool_calls:    │
+│      for each call:           │
+│        result = toolRegistry.execute(call)        │
+│        messages.push(tool_result)                 │
+│      continue loop            │
+│                               │
+│    if response.content:       │
+│      break (final answer)     │
+│  }                            │
+│  max iterations: 10           │
+└──────────────────────────────┘
+       │ final content + tool call log
+       ▼
+┌──────────────┐
+│  TeamResult   │
+│  + toolCalls[]│
+└──────────────┘
+```
+
+**Ключевой принцип**: модель решает вызывать ли инструмент. Мы даём ей список доступных tools, она возвращает `tool_use` блоки. Gateway исполняет их и передаёт результат обратно. Цикл до финального текстового ответа (max 10 итераций).
+
+#### 3.1.1 — Расширение ILLMProvider для Tool Calling
+
+- [ ] **Новый тип `ToolDefinition`**:
+  ```typescript
+  // shared/types.ts
+  export interface ToolDefinition {
+    name: string;                              // unique ID: "web_search", "mcp__github__search_code"
+    description: string;                       // для модели: когда вызывать
+    inputSchema: Record<string, unknown>;      // JSON Schema параметров
+    source: "builtin" | "mcp";                 // откуда инструмент
+    mcpServer?: string;                        // имя MCP сервера (если source=mcp)
+  }
+
+  export interface ToolCall {
+    id: string;                                // уникальный ID вызова
+    name: string;                              // имя инструмента
+    arguments: Record<string, unknown>;        // аргументы от модели
+  }
+
+  export interface ToolResult {
+    toolCallId: string;
+    content: string;                           // результат исполнения
+    isError?: boolean;
+  }
+
+  // Расширенный ProviderMessage для tool calling
+  export type ProviderMessage =
+    | { role: "system" | "user" | "assistant"; content: string }
+    | { role: "assistant"; content: string; toolCalls?: ToolCall[] }
+    | { role: "tool"; toolCallId: string; content: string };
+  ```
+
+- [ ] **Расширить `ILLMProviderOptions`**:
+  ```typescript
+  export interface ILLMProviderOptions {
+    maxTokens?: number;
+    temperature?: number;
+    tools?: ToolDefinition[];                  // ← НОВОЕ: доступные инструменты
+    toolChoice?: "auto" | "none" | "required"; // ← НОВОЕ: стратегия вызова
+  }
+  ```
+
+- [ ] **Расширить return type `complete()`**:
+  ```typescript
+  complete(...): Promise<{
+    content: string;
+    tokensUsed: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    toolCalls?: ToolCall[];                    // ← НОВОЕ: если модель хочет вызвать инструмент
+    finishReason: "stop" | "tool_use";         // ← НОВОЕ
+  }>
+  ```
+
+- [ ] **Имплементация в каждом провайдере**:
+  - **ClaudeProvider**: Anthropic API нативно поддерживает tools — `tools` param + `tool_use` content blocks
+  - **GeminiProvider**: Google API поддерживает `functionDeclarations` + `functionCall` response parts
+  - **GrokProvider**: xAI OpenAI-compatible — `tools` param + `tool_calls` в response (как OpenAI)
+  - **VllmProvider/OllamaProvider**: зависит от модели, но OpenAI-compatible format поддерживается vLLM
+
+#### 3.1.2 — Tool Registry (`server/tools/registry.ts`)
+
+- [ ] **Единый реестр всех доступных инструментов**:
+  ```typescript
+  class ToolRegistry {
+    private tools: Map<string, ToolHandler> = new Map();
+
+    register(name: string, handler: ToolHandler): void;
+    unregister(name: string): void;
+    getAvailableTools(filter?: { tags?: string[], source?: string }): ToolDefinition[];
+    async execute(call: ToolCall): Promise<ToolResult>;
+  }
+
+  interface ToolHandler {
+    definition: ToolDefinition;
+    execute(args: Record<string, unknown>): Promise<string>;
+  }
+  ```
+
+- [ ] **Категории инструментов**:
+  ```
+  ToolRegistry
+  ├── builtin/          — встроенные инструменты (web search, RAG, code)
+  │   ├── web_search        — поиск в интернете
+  │   ├── url_reader        — извлечение контента из URL
+  │   ├── knowledge_search  — RAG по llm_requests + docs
+  │   ├── code_search       — поиск по codebase (grep/ast)
+  │   ├── file_read         — чтение файла из workspace
+  │   └── calculator        — вычисления
+  │
+  └── mcp/              — инструменты из подключённых MCP серверов
+      ├── github__*         — GitHub операции
+      ├── terraform__*      — Terraform docs/commands
+      ├── kubernetes__*     — K8s cluster operations
+      ├── notion__*         — Notion pages/databases
+      └── {custom}__*       — любой пользовательский MCP сервер
+  ```
+
+#### 3.1.3 — MCP Client Manager (`server/tools/mcp-client.ts`)
+
+- [ ] **Подключение к внешним MCP серверам** через `@modelcontextprotocol/sdk`:
+  ```typescript
+  class McpClientManager {
+    private connections: Map<string, McpConnection> = new Map();
+
+    // Подключить MCP сервер
+    async connect(config: McpServerConfig): Promise<void>;
+    // Отключить
+    async disconnect(serverName: string): Promise<void>;
+    // Получить все tools от всех подключённых серверов
+    getTools(): ToolDefinition[];
+    // Вызвать tool на конкретном сервере
+    async callTool(serverName: string, toolName: string, args: Record<string, unknown>): Promise<string>;
+    // Статус подключений
+    getStatus(): Record<string, { connected: boolean; tools: number; error?: string }>;
+  }
+
+  interface McpServerConfig {
+    name: string;                             // уникальное имя: "github", "terraform", "my-notion"
+    transport: "stdio" | "sse" | "streamable-http";
+    command?: string;                         // для stdio: путь к бинарнику
+    args?: string[];                          // аргументы команды
+    url?: string;                             // для sse/http: URL сервера
+    env?: Record<string, string>;             // переменные окружения (API ключи и т.д.)
+    enabled: boolean;
+    autoConnect: boolean;                     // подключать при старте приложения
+  }
+  ```
+
+- [ ] **DB: таблица `mcp_servers`** — хранение конфигураций:
+  ```typescript
+  export const mcpServers = pgTable("mcp_servers", {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    name: text("name").notNull().unique(),
+    transport: text("transport").notNull(),     // "stdio" | "sse" | "streamable-http"
+    command: text("command"),
+    args: jsonb("args"),
+    url: text("url"),
+    env: jsonb("env"),                          // encrypted env vars
+    enabled: boolean("enabled").notNull().default(true),
+    autoConnect: boolean("auto_connect").notNull().default(false),
+    toolCount: integer("tool_count").default(0),
+    lastConnectedAt: timestamp("last_connected_at"),
+    createdAt: timestamp("created_at").defaultNow(),
+  });
+  ```
+
+#### 3.1.4 — Встроенные инструменты (Built-in Tools)
+
+##### Web Search
+
+- [ ] **`web_search`** — поиск в интернете:
+  ```typescript
+  // server/tools/builtin/web-search.ts
+  // Поддержка нескольких провайдеров через абстракцию:
+
+  interface SearchProvider {
+    search(query: string, options?: { limit?: number; domain?: string }): Promise<SearchResult[]>;
+  }
+
+  // Реализации:
+  class TavilySearch implements SearchProvider { }   // TAVILY_API_KEY — лучшее качество, платный
+  class BraveSearch implements SearchProvider { }    // BRAVE_API_KEY — бесплатный tier
+  class ExaSearch implements SearchProvider { }      // EXA_API_KEY — semantic search
+  class DuckDuckGoSearch implements SearchProvider { } // бесплатный, без API ключа
+
+  // Tool definition:
+  {
+    name: "web_search",
+    description: "Search the internet for current information. Use when you need up-to-date data, documentation, library versions, or facts you're not sure about.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query" },
+        limit: { type: "number", default: 5 },
+      },
+      required: ["query"]
+    }
+  }
+  ```
+
+- [ ] **`url_reader`** — извлечение контента из URL:
+  ```typescript
+  // Jina AI Reader (https://r.jina.ai/{url}) или Firecrawl
+  {
+    name: "url_reader",
+    description: "Read and extract content from a web page URL. Returns clean markdown text.",
+    inputSchema: {
+      properties: {
+        url: { type: "string" },
+        format: { enum: ["markdown", "text", "html"], default: "markdown" }
+      }
+    }
+  }
+  ```
+
+##### Knowledge Base / RAG
+
+- [ ] **`knowledge_search`** — поиск по внутренней базе знаний (RAG из `llm_requests` таблицы из Phase 3.2):
+  ```typescript
+  {
+    name: "knowledge_search",
+    description: "Search through previous pipeline runs, LLM responses, and project knowledge. Use when a similar question may have been answered before.",
+    inputSchema: {
+      properties: {
+        query: { type: "string" },
+        scope: { enum: ["all", "this_pipeline", "this_run"], default: "all" },
+        limit: { type: "number", default: 5 }
+      }
+    }
+  }
+  ```
+  **Реализация**:
+  - Phase 1: PostgreSQL full-text search по `llm_requests.responseContent` (pg_trgm)
+  - Phase 2: pgvector embeddings — `CREATE EXTENSION vector` + embedding column + cosine similarity
+  - Phase 3: External vector store (Qdrant/Pinecone) для масштабирования
+
+- [ ] **`memory_search`** — поиск по памяти системы (из Phase 3.3):
+  ```typescript
+  {
+    name: "memory_search",
+    description: "Search project memories — decisions, patterns, known issues, user preferences. Use to recall what was decided or learned in previous runs.",
+    inputSchema: {
+      properties: {
+        query: { type: "string" },
+        type: { enum: ["decision", "pattern", "fact", "preference", "issue", "dependency"] }
+      }
+    }
+  }
+  ```
+
+##### Code & Files
+
+- [ ] **`code_search`** — поиск по кодовой базе workspace (Phase 4 dependency):
+  ```typescript
+  {
+    name: "code_search",
+    description: "Search through the project codebase. Find functions, classes, patterns, or text across all source files.",
+    inputSchema: {
+      properties: {
+        query: { type: "string" },
+        type: { enum: ["text", "filename", "symbol"], default: "text" },
+        filePattern: { type: "string", description: "Glob pattern, e.g. '*.ts'" }
+      }
+    }
+  }
+  ```
+
+- [ ] **`file_read`** — чтение файла из workspace:
+  ```typescript
+  {
+    name: "file_read",
+    description: "Read the content of a file from the workspace.",
+    inputSchema: {
+      properties: {
+        path: { type: "string" },
+        startLine: { type: "number" },
+        endLine: { type: "number" }
+      },
+      required: ["path"]
+    }
+  }
+  ```
+
+#### 3.1.5 — Рекомендуемые MCP серверы
+
+| MCP сервер | Что даёт | Какие stages используют | Env vars |
+|------------|----------|------------------------|----------|
+| **GitHub** (`@modelcontextprotocol/server-github`) | Repos, issues, PRs, code search | Development, Code Review, Monitoring | `GITHUB_TOKEN` |
+| **Terraform** (`hashicorp/terraform-mcp-server`) | Provider docs, module search | Architecture, Deployment | — |
+| **Kubernetes** (`kubernetes-mcp-server`) | Pods, deployments, logs, events | Deployment, Monitoring | `KUBECONFIG` |
+| **PostgreSQL** (`@modelcontextprotocol/server-postgres`) | Query DB for context | All stages (project data) | `DATABASE_URL` |
+| **Filesystem** (`@modelcontextprotocol/server-filesystem`) | Read/write workspace files | Development, Testing | workspace path |
+| **Notion** (`notion-mcp-server`) | Pages, databases | Planning, Architecture | `NOTION_TOKEN` |
+| **Confluence** (`confluence-mcp-server`) | Wiki pages | Planning, Architecture | `CONFLUENCE_*` |
+| **Slack** (`slack-mcp-server`) | Messages, channels | Monitoring, notifications | `SLACK_TOKEN` |
+| **Brave Search** (`@anthropic/brave-search-mcp`) | Web search | All stages | `BRAVE_API_KEY` |
+| **Memory** (custom, built-in) | Project memory from 3.3 | All stages | — |
+
+#### 3.1.6 — Per-Stage Tool Assignment
+
+- [ ] **Расширить `PipelineStageConfig`**:
+  ```typescript
+  export interface PipelineStageConfig {
+    teamId: TeamId;
+    modelSlug: string;
+    systemPromptOverride?: string;
+    enabled: boolean;
+    sandbox?: SandboxConfig;
+    tools?: StageToolConfig;              // ← НОВОЕ
+  }
+
+  export interface StageToolConfig {
+    enabled: boolean;                     // вкл/выкл tools для stage
+    allowedTools?: string[];              // whitelist tool names (null = all available)
+    blockedTools?: string[];              // blacklist (useful for security)
+    maxToolCalls?: number;                // лимит вызовов за stage (default: 10)
+    toolChoice?: "auto" | "none" | "required";
+  }
+  ```
+
+- [ ] **Default tool assignments по team type**:
+  ```typescript
+  export const DEFAULT_TEAM_TOOLS: Record<TeamId, string[]> = {
+    planning:     ["web_search", "knowledge_search", "memory_search"],
+    architecture: ["web_search", "knowledge_search", "memory_search", "code_search"],
+    development:  ["web_search", "code_search", "file_read", "knowledge_search"],
+    testing:      ["code_search", "file_read", "knowledge_search"],
+    code_review:  ["web_search", "code_search", "file_read", "knowledge_search", "memory_search"],
+    deployment:   ["web_search", "knowledge_search", "memory_search"],
+    monitoring:   ["web_search", "knowledge_search"],
+  };
+  ```
+
+#### 3.1.7 — Gateway: completeWithTools()
+
+- [ ] **Новый метод в Gateway** — agentic tool loop:
+  ```typescript
+  async completeWithTools(request: GatewayRequest & {
+    tools: ToolDefinition[];
+    maxIterations?: number;
+  }): Promise<GatewayResponse & { toolCallLog: ToolCallLogEntry[] }> {
+
+    const messages = [...request.messages];
+    const toolCallLog: ToolCallLogEntry[] = [];
+    let totalTokens = 0;
+
+    for (let i = 0; i < (request.maxIterations ?? 10); i++) {
+      const result = await provider.complete(modelId, messages, {
+        ...options,
+        tools: request.tools,
+        toolChoice: i === 0 ? "auto" : "auto",
+      });
+
+      totalTokens += result.tokensUsed;
+
+      // Модель вернула финальный ответ
+      if (result.finishReason === "stop" || !result.toolCalls?.length) {
+        return { content: result.content, tokensUsed: totalTokens, toolCallLog, ... };
+      }
+
+      // Модель хочет вызвать инструменты
+      messages.push({ role: "assistant", content: result.content, toolCalls: result.toolCalls });
+
+      for (const call of result.toolCalls) {
+        const toolResult = await this.toolRegistry.execute(call);
+        messages.push({ role: "tool", toolCallId: call.id, content: toolResult.content });
+        toolCallLog.push({ iteration: i, call, result: toolResult });
+      }
+    }
+
+    // Max iterations reached — return last content
+    return { content: messages.at(-1)?.content ?? "", tokensUsed: totalTokens, toolCallLog, ... };
+  }
+  ```
+
+- [ ] **BaseTeam обновление** — использовать `completeWithTools` если tools включены:
+  ```typescript
+  // base.ts — execute()
+  const tools = this.getAvailableTools(context);  // из StageToolConfig + defaults
+
+  const response = tools.length > 0
+    ? await this.gateway.completeWithTools({ modelSlug, messages, tools })
+    : await this.gateway.complete({ modelSlug, messages });
+  ```
+
+#### 3.1.8 — API Endpoints
+
+- [ ] **MCP Server management**:
+  ```
+  GET    /api/mcp/servers              — список подключённых MCP серверов
+  POST   /api/mcp/servers              — добавить MCP сервер
+  PUT    /api/mcp/servers/:id          — обновить конфигурацию
+  DELETE /api/mcp/servers/:id          — удалить
+  POST   /api/mcp/servers/:id/connect  — подключиться
+  POST   /api/mcp/servers/:id/disconnect — отключиться
+  GET    /api/mcp/servers/:id/tools    — список tools от сервера
+  POST   /api/mcp/servers/:id/test     — тестовый вызов
+  ```
+
+- [ ] **Tools**:
+  ```
+  GET    /api/tools                    — все доступные инструменты (builtin + mcp)
+  GET    /api/tools/builtin            — только встроенные
+  GET    /api/tools/status             — статус провайдеров (какие API ключи настроены)
+  POST   /api/tools/:name/test         — тестовый вызов инструмента
+  ```
+
+#### 3.1.9 — Frontend
+
+- [ ] **Settings → Tools & MCP** — новая секция:
+  - Встроенные инструменты: статус (configured/not), env var hints
+  - MCP серверы: список, add/remove, connect/disconnect, test
+  - Каждый сервер: иконка, имя, transport, tool count, status badge
+
+- [ ] **Pipeline Builder → Stage config → Tools tab**:
+  - Toggle "Enable tool calling" per stage
+  - Checklist доступных tools (pre-selected по DEFAULT_TEAM_TOOLS)
+  - Max iterations slider
+  - Tool choice selector (auto/none/required)
+
+- [ ] **Stage output → Tool calls section**:
+  - Collapsible log tool вызовов: tool name, args, result, duration
+  - Иконки по типу tool (search, code, file, mcp)
+
+#### 3.1.10 — Пакеты
+
+```bash
+npm install @modelcontextprotocol/sdk                # MCP client
+npm install @anthropic-ai/sdk                         # уже есть — поддерживает tools
+npm install @tavily/core                              # Tavily search (optional)
+```
+
+#### 3.1.11 — Порядок реализации
+
+1. Types: `ToolDefinition`, `ToolCall`, `ToolResult`, расширение `ProviderMessage`
+2. `ToolRegistry` — базовый registry + execute
+3. Расширить `ILLMProvider.complete()` для tool calling
+4. Имплементация tool calling в ClaudeProvider (Anthropic API нативно)
+5. `Gateway.completeWithTools()` — agentic loop
+6. Built-in tools: `web_search` (Tavily/DuckDuckGo), `url_reader`
+7. Built-in tools: `knowledge_search` (PostgreSQL full-text)
+8. `McpClientManager` — подключение внешних MCP серверов
+9. Per-stage tool config в `PipelineStageConfig`
+10. `BaseTeam` обновление — автовыбор completeWithTools
+11. DB: `mcp_servers` таблица
+12. API endpoints
+13. Frontend: Settings → Tools & MCP
+14. Frontend: Pipeline Builder → tool config per stage
+15. Frontend: Stage output → tool call log
+
+#### Связи с другими фазами
+
+| Зависит от | Что даёт |
+|------------|----------|
+| Phase 3.2 (llm_requests) | `knowledge_search` ищет по сохранённым ответам |
+| Phase 3.3 (memory) | `memory_search` ищет по памяти проекта |
+| Phase 3.5 (sandbox) | Sandbox может вызываться как tool (`code_execute`) |
+| Phase 4 (workspace) | `code_search` и `file_read` работают с workspace файлами |
+
+### 3.1b — Other DeerFlow-Inspired Features
+
+- [ ] **Parallel sub-agent execution** — allow pipeline stages to spawn parallel sub-tasks. Example: Development stage can fan out into frontend + backend + database sub-agents, each on a different model, then merge results
+- [ ] **Persistent memory across runs** — see **Memory System Design** (3.3) below for full architecture
+- [ ] **Skills system (markdown-based)** — extensible skill definitions as markdown files. Each skill = system prompt + tools + output schema. Users can create custom skills and assign them to pipeline stages
+
+### 3.2 — Statistics, Request Log & Cost Tracking
+
+> Цель: детальная статистика использования моделей, хранение всех запросов/ответов для последующего RAG и fine-tuning inference.
+
+#### 3.2.1 — DB: таблица `llm_requests` (лог всех LLM-вызовов)
+
+- [ ] **Новая таблица `llm_requests`** — каждый вызов к провайдеру записывается:
+  ```typescript
+  // shared/schema.ts
+  export const llmRequests = pgTable("llm_requests", {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    // Контекст вызова
+    runId: varchar("run_id").references(() => pipelineRuns.id),       // nullable — standalone chat тоже логируется
+    stageExecutionId: varchar("stage_execution_id").references(() => stageExecutions.id),
+    // Модель и провайдер
+    modelSlug: text("model_slug").notNull(),
+    modelId: text("model_id").notNull(),                              // provider-side ID (claude-sonnet-4-6, grok-3, etc.)
+    provider: text("provider").notNull(),                              // anthropic, google, xai, vllm, ollama
+    // Запрос
+    messages: jsonb("messages").notNull(),                             // полный массив messages (для RAG/replay)
+    systemPrompt: text("system_prompt"),                               // system prompt отдельно для удобства поиска
+    temperature: real("temperature"),
+    maxTokens: integer("max_tokens"),
+    // Ответ
+    responseContent: text("response_content").notNull(),               // полный текст ответа
+    responseRaw: jsonb("response_raw"),                                // raw provider response (для debug)
+    // Метрики
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    totalTokens: integer("total_tokens").notNull().default(0),
+    latencyMs: integer("latency_ms").notNull().default(0),             // время от запроса до полного ответа
+    estimatedCostUsd: real("estimated_cost_usd"),                      // расчёт по прайсу модели
+    // Мета
+    status: text("status").notNull().default("success"),               // success | error | timeout
+    errorMessage: text("error_message"),
+    teamId: text("team_id"),                                           // planning, development, testing, etc.
+    tags: jsonb("tags").default(sql`'[]'::jsonb`),                     // произвольные теги для фильтрации
+    createdAt: timestamp("created_at").defaultNow(),
+  });
+  ```
+
+- [ ] **Индексы** для быстрой аналитики:
+  ```sql
+  CREATE INDEX idx_llm_requests_model ON llm_requests(model_slug, created_at);
+  CREATE INDEX idx_llm_requests_provider ON llm_requests(provider, created_at);
+  CREATE INDEX idx_llm_requests_run ON llm_requests(run_id);
+  CREATE INDEX idx_llm_requests_created ON llm_requests(created_at);
+  ```
+
+#### 3.2.2 — Gateway: логирование запросов
+
+- [ ] **Обернуть `Gateway.complete()` и `Gateway.stream()`** — записывать каждый вызов в `llm_requests`:
+  ```typescript
+  // Gateway.complete() — после получения результата
+  const startTime = Date.now();
+  const result = await provider.complete(modelId, messages, options);
+  const latencyMs = Date.now() - startTime;
+
+  await this.storage.createLlmRequest({
+    runId, stageExecutionId, modelSlug, modelId, provider: providerKey,
+    messages, systemPrompt, temperature, maxTokens,
+    responseContent: result.content,
+    inputTokens: result.inputTokens ?? 0,
+    outputTokens: result.outputTokens ?? 0,
+    totalTokens: result.tokensUsed,
+    latencyMs,
+    estimatedCostUsd: this.estimateCost(providerKey, modelId, result.inputTokens, result.outputTokens),
+    teamId, status: "success",
+  });
+  ```
+
+- [ ] **Расширить `GatewayRequest`** — добавить optional `runId`, `stageExecutionId`, `teamId` для связки с контекстом pipeline
+
+- [ ] **`ILLMProvider` возвращает раздельные токены** — расширить return type:
+  ```typescript
+  complete(...): Promise<{ content: string; tokensUsed: number; inputTokens?: number; outputTokens?: number }>
+  ```
+
+- [ ] **Таблица цен `MODEL_PRICING`** в `shared/constants.ts`:
+  ```typescript
+  export const MODEL_PRICING: Record<string, { inputPer1M: number; outputPer1M: number }> = {
+    "claude-sonnet-4-6":  { inputPer1M: 3.00,  outputPer1M: 15.00 },
+    "claude-haiku-4-5":   { inputPer1M: 0.80,  outputPer1M: 4.00 },
+    "gemini-2.0-flash":   { inputPer1M: 0.075, outputPer1M: 0.30 },
+    "grok-3":             { inputPer1M: 3.00,  outputPer1M: 15.00 },
+    "grok-3-mini":        { inputPer1M: 0.30,  outputPer1M: 0.50 },
+    "vllm":               { inputPer1M: 0,     outputPer1M: 0 },
+    "ollama":             { inputPer1M: 0,     outputPer1M: 0 },
+  };
+  ```
+
+#### 3.2.3 — API: эндпоинты статистики
+
+- [ ] **`GET /api/stats/overview`** — общая сводка:
+  ```json
+  { "totalRequests": 1234, "totalTokens": { "input": 890000, "output": 340000 }, "totalCostUsd": 4.56, "totalRuns": 42 }
+  ```
+
+- [ ] **`GET /api/stats/by-model`** — статистика по каждой модели:
+  ```json
+  [{ "modelSlug": "claude-sonnet-4-6", "provider": "anthropic", "requests": 456, "tokens": { "input": 320000, "output": 120000 }, "costUsd": 2.76, "avgLatencyMs": 2340, "errorRate": 0.02 }]
+  ```
+
+- [ ] **`GET /api/stats/by-provider`** — агрегация по провайдерам
+
+- [ ] **`GET /api/stats/by-team`** — агрегация по SDLC team (planning, development, testing, ...)
+
+- [ ] **`GET /api/stats/by-run/:runId`** — стоимость и токены конкретного run'а
+
+- [ ] **`GET /api/stats/timeline`** — временной ряд для графиков:
+  ```
+  ?granularity=hour|day|week  &from=...  &to=...  &groupBy=model|provider|team
+  ```
+
+- [ ] **`GET /api/stats/requests`** — пагинированный лог запросов:
+  ```
+  ?page=1  &limit=50  &model=...  &provider=...  &runId=...  &from=...  &to=...
+  ```
+
+- [ ] **`GET /api/stats/requests/:id`** — полный запрос с messages и response (для replay/debug)
+
+- [ ] **`POST /api/stats/export`** — экспорт в CSV/JSON/JSONL
+
+#### 3.2.4 — Frontend: страница `/stats`
+
+- [ ] **Новая страница Statistics** (`client/src/pages/Statistics.tsx`):
+  ```
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  Statistics                              [Export CSV] [Export JSON]│
+  ├──────────────────────────────────────────────────────────────────┤
+  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐           │
+  │  │ Total    │ │ Total    │ │ Total    │ │ Estimated│           │
+  │  │ Requests │ │ Tokens   │ │ Runs     │ │ Cost     │           │
+  │  │ 1,234    │ │ 1.23M    │ │ 42       │ │ $4.56    │           │
+  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘           │
+  │                                                                  │
+  │  ┌── Token Usage Over Time (stacked area chart) ─────────────┐  │
+  │  │  Granularity: [Hour] [Day] [Week]                         │  │
+  │  │  Group by: [Model] [Provider] [Team]                      │  │
+  │  └───────────────────────────────────────────────────────────┘  │
+  │                                                                  │
+  │  ┌── Per-Model Breakdown (sortable table) ───────────────────┐  │
+  │  │  Model │ Provider │ Requests │ Tokens │ Cost │ Avg Latency│  │
+  │  └───────────────────────────────────────────────────────────┘  │
+  │                                                                  │
+  │  ┌── Cost Distribution ──┐  ┌── Latency Distribution ────────┐  │
+  │  │  Donut by provider    │  │  Histogram by model             │  │
+  │  └───────────────────────┘  └─────────────────────────────────┘  │
+  │                                                                  │
+  │  ┌── Request Log (paginated, expandable rows) ───────────────┐  │
+  │  │  Time │ Model │ Team │ Tokens │ Latency │ Cost │ Status   │  │
+  │  │  Filters: model, provider, team, status, date range       │  │
+  │  │  Click row → full messages + response                     │  │
+  │  └───────────────────────────────────────────────────────────┘  │
+  └──────────────────────────────────────────────────────────────────┘
+  ```
+
+- [ ] **Router** — добавить `/stats` в `App.tsx`, навигация в sidebar
+
+- [ ] **Hooks** — `useStatsOverview()`, `useStatsTimeline()`, `useStatsRequests()` в `use-pipeline.ts`
+
+- [ ] **Dashboard обновление** — заменить mock traffic chart на реальные данные из `/api/stats/timeline`
+
+#### 3.2.5 — Хранение для будущего RAG и Inference
+
+- [ ] **Полные messages в `llm_requests.messages`** (JSONB) — training data:
+  - system prompt + user messages + assistant response
+  - Полный контекст каждого вызова для replay
+  - Fine-tuning: prompt → response pairs
+  - RAG: поиск по прошлым ответам, similar questions
+
+- [ ] **`responseContent` как text** — для полнотекстового поиска:
+  - Trigram index: `CREATE INDEX ... USING gin(response_content gin_trgm_ops)`
+  - Или pg_tsvector для полнотекстового поиска
+
+- [ ] **Tags** — `llm_requests.tags` (JSONB array):
+  - Auto-tags: `["pipeline:web-app", "stage:testing", "lang:typescript"]`
+  - User tags через UI
+  - Фильтрация в `/api/stats/requests`
+
+- [ ] **Export для training** — `POST /api/stats/export-training`:
+  - Format: JSONL (для fine-tuning)
+  - Фильтры: model, status=success, date range
+  - Выход: пары prompt/completion
+
+- [ ] **Embeddings-ready** — структура готова для Phase 5 RAG:
+  - `messages` + `responseContent` → embed → vector store
+  - Semantic cache: поиск похожих прошлых запросов → reuse ответа
+  - Снижает повторные вызовы LLM
+
+#### 3.2.6 — Порядок реализации
+
+1. Таблица `llm_requests` + миграция + индексы
+2. Storage methods (`createLlmRequest`, `getLlmRequests`, `getLlmRequestStats`)
+3. Gateway logging wrapper
+4. `MODEL_PRICING` + `estimateCost()`
+5. API endpoints `/api/stats/*`
+6. Frontend: `/stats` page
+7. Dashboard: замена mock данных
+8. Export (CSV/JSON/JSONL)
+9. Полнотекстовый поиск + trigram индекс
+
+### 3.3 — Governance & Gates
+
 - [ ] **Approval gates per stage** — configurable human-in-the-loop checkpoints. Before a stage executes, optionally require user approval of the previous stage's output. More granular than current pause-on-question
-- [ ] **Audit trail** — immutable log of every LLM call: model, tokens, input hash, output hash, latency, cost. Queryable via API. Export as CSV/JSON
 - [ ] **Run export & reports** — generate downloadable report from pipeline run: executive summary, per-stage outputs, code files as ZIP, cost breakdown, timeline. PDF or Markdown
+
+### 3.3 — Memory System Design
+
+> Persistent cross-run memory that allows pipeline stages to learn from previous runs, remember user preferences, and accumulate project knowledge.
+
+#### Design Decisions (Resolved)
+
+| # | Question | Decision |
+|---|----------|----------|
+| D1 | **Scope hierarchy** | `global > workspace > pipeline > run` — narrower scope overrides broader on conflict |
+| D2 | **Auto-extract vs explicit** | **Hybrid** — hard rules per stage type + optional `"memories"` array in model output |
+| D3 | **Injection point** | **System message append** — memories injected at end of system prompt, max 15% of context limit |
+| D4 | **Conflict resolution** | **Latest-wins + confidence decay** — 0.1 decay per run without confirmation, explicit user preference always wins |
+
+#### 3.3.1 — DB Schema
+
+```sql
+CREATE TABLE memories (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  scope         TEXT NOT NULL,           -- "global" | "workspace" | "pipeline" | "run"
+  scope_id      TEXT,                    -- null for global, workspace/pipeline/run ID for others
+  type          TEXT NOT NULL,           -- "decision" | "pattern" | "fact" | "preference" | "issue" | "dependency"
+  key           TEXT NOT NULL,           -- unique within scope, e.g. "db-choice", "auth-approach"
+  content       TEXT NOT NULL,           -- human-readable memory content
+  source        TEXT,                    -- "planning/run-3", "user/explicit", "code_review/run-7"
+  confidence    REAL NOT NULL DEFAULT 1.0,  -- 0.0–1.0, decays over time
+  tags          TEXT[] DEFAULT '{}',     -- searchable tags
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at    TIMESTAMPTZ,            -- optional TTL
+  created_by_run_id  UUID REFERENCES pipeline_runs(id),
+
+  UNIQUE(scope, scope_id, key)          -- one memory per key per scope
+);
+
+CREATE INDEX idx_memories_scope ON memories(scope, scope_id);
+CREATE INDEX idx_memories_type ON memories(type);
+CREATE INDEX idx_memories_key ON memories(key);
+CREATE INDEX idx_memories_confidence ON memories(confidence) WHERE confidence >= 0.3;
+```
+
+#### 3.3.2 — Types
+
+```typescript
+// shared/types.ts
+
+export type MemoryScope = "global" | "workspace" | "pipeline" | "run";
+export type MemoryType = "decision" | "pattern" | "fact" | "preference" | "issue" | "dependency";
+
+export interface Memory {
+  id: string;
+  scope: MemoryScope;
+  scopeId: string | null;
+  type: MemoryType;
+  key: string;
+  content: string;
+  source: string | null;
+  confidence: number;
+  tags: string[];
+  createdAt: Date;
+  updatedAt: Date;
+  expiresAt: Date | null;
+  createdByRunId: string | null;
+}
+
+export interface InsertMemory {
+  scope: MemoryScope;
+  scopeId?: string | null;
+  type: MemoryType;
+  key: string;
+  content: string;
+  source?: string | null;
+  confidence?: number;
+  tags?: string[];
+  expiresAt?: Date | null;
+  createdByRunId?: string | null;
+}
+
+// Optional field in any team's JSON output
+export interface TeamMemoryHint {
+  key: string;
+  content: string;
+  type: MemoryType;
+}
+```
+
+#### 3.3.3 — MemoryExtractor (`server/memory/extractor.ts`)
+
+Runs after each stage completes. Two extraction modes:
+
+**A) Hard rules per stage type** (always run):
+
+| Stage | Auto-extracted memories |
+|-------|----------------------|
+| `planning` | tasks[].title → `decision`, risks[].description → `issue`, acceptanceCriteria → `fact` |
+| `architecture` | techStack.* → `decision`, components[].name → `fact`, apiEndpoints → `pattern` |
+| `development` | dependencies[].name → `dependency`, file structure patterns → `pattern` |
+| `testing` | coverageTargets → `fact`, issues[].severity=critical → `issue` |
+| `code_review` | securityIssues[].severity ≥ high → `issue`, score → `fact`, approved → `decision` |
+| `deployment` | deploymentStrategy → `decision`, environments → `fact` |
+| `monitoring` | alerts[].condition → `pattern`, healthChecks → `fact` |
+
+**B) Model-provided hints** (optional):
+
+Any team can include `"memories": [{ key, content, type }]` in its JSON output. The extractor picks these up and stores them with `source: "{teamId}/run-{runId}"`.
+
+```typescript
+class MemoryExtractor {
+  async extractFromStageResult(
+    teamId: TeamId,
+    runId: string,
+    pipelineId: string,
+    output: Record<string, unknown>,
+  ): Promise<InsertMemory[]>;
+
+  // Hard rules return memories for known fields
+  private extractByRules(teamId: TeamId, output: Record<string, unknown>): InsertMemory[];
+
+  // Parse optional "memories" array from model output
+  private extractModelHints(output: Record<string, unknown>): InsertMemory[];
+}
+```
+
+#### 3.3.4 — MemoryProvider (`server/memory/provider.ts`)
+
+Injects relevant memories into stage prompts before LLM call.
+
+```typescript
+class MemoryProvider {
+  // Get memories relevant to this stage execution
+  async getRelevantMemories(params: {
+    pipelineId: string;
+    runId: string;
+    teamId: TeamId;
+    workspaceId?: string;
+    maxTokenBudget: number;  // 15% of model's contextLimit
+  }): Promise<Memory[]>;
+
+  // Format memories for system prompt injection
+  formatForPrompt(memories: Memory[]): string;
+
+  // Apply confidence decay to all memories not confirmed in this run
+  async decayUnconfirmedMemories(runId: string): Promise<void>;
+}
+```
+
+**Relevance ranking** (memories sorted by this score, top N fit in token budget):
+
+```
+score = scopeWeight × confidence × recencyBoost
+
+scopeWeight:
+  run (exact match)     = 1.0
+  pipeline (same)       = 0.8
+  workspace (same)      = 0.6
+  global                = 0.4
+
+recencyBoost:
+  updated < 1 day ago   = 1.0
+  updated < 7 days      = 0.9
+  updated < 30 days     = 0.7
+  updated > 30 days     = 0.5
+```
+
+**Prompt injection format** (appended to system message):
+
+```
+## Project Memory
+
+**Decisions:**
+- [2026-03-10] Auth: JWT with refresh tokens (confidence: 0.9, source: architecture/run-3)
+- [2026-03-09] DB: PostgreSQL 16 (confidence: 0.85, source: planning/run-2)
+
+**Patterns:**
+- API endpoints follow REST conventions with /api/v1 prefix
+- All services use structured logging with correlation IDs
+
+**Known Issues:**
+- SQL injection risk in user search endpoint (severity: high, source: code_review/run-5)
+
+**User Preferences:**
+- Prefers TypeScript over JavaScript
+- Wants comprehensive error handling
+
+**Dependencies:**
+- express@4.18, drizzle-orm@0.30, zod@3.22
+```
+
+#### 3.3.5 — Conflict Resolution Rules
+
+1. **Same scope + same key** → newer `updatedAt` wins (upsert on `UNIQUE(scope, scope_id, key)`)
+2. **Confidence decay** → every completed run triggers `decayUnconfirmedMemories()`: memories not referenced or re-confirmed lose 0.1 confidence. Below 0.3 = `stale`, excluded from injection
+3. **Explicit user preference** → type=`preference` always created with confidence=1.0, never decays automatically
+4. **Scope override** → narrower scope wins: `run > pipeline > workspace > global`. If `pipeline` says "use PostgreSQL" but `run` says "use MongoDB", the run-level memory is injected
+5. **Conflict detection** → if two memories have the same key, different content, and both confidence > 0.7, MemoryProvider injects both with a warning: `⚠️ Conflicting memories — previous runs disagreed on this`
+
+#### 3.3.6 — Integration into Pipeline Controller
+
+```typescript
+// pipeline-controller.ts — inside stage execution loop
+
+// 1. Before LLM call: get relevant memories
+const memories = await this.memoryProvider.getRelevantMemories({
+  pipelineId: run.pipelineId,
+  runId: run.id,
+  teamId: stage.teamId,
+  maxTokenBudget: Math.floor(model.contextLimit * 0.15),
+});
+
+// 2. Inject into team context
+const memoryContext = this.memoryProvider.formatForPrompt(memories);
+const teamContext: StageContext = {
+  ...context,
+  memoryContext,  // new field, used in BaseTeam.buildPrompt()
+};
+
+// 3. Execute stage as usual
+const result = await team.execute(stageInput, teamContext);
+
+// 4. After LLM call: extract and store new memories
+const newMemories = await this.memoryExtractor.extractFromStageResult(
+  stage.teamId, run.id, run.pipelineId, result.output,
+);
+await Promise.all(newMemories.map(m => this.storage.upsertMemory(m)));
+
+// 5. After full pipeline run: decay unconfirmed memories
+// (called once after all stages complete)
+await this.memoryProvider.decayUnconfirmedMemories(run.id);
+```
+
+#### 3.3.7 — BaseTeam Integration
+
+```typescript
+// server/teams/base.ts — updated buildSystemMessage()
+
+protected buildSystemMessage(memoryContext?: string): string {
+  const parts = [this.systemPromptTemplate];
+
+  if (memoryContext) {
+    parts.push(memoryContext);  // Already formatted by MemoryProvider
+  }
+
+  return parts.join("\n\n");
+}
+```
+
+Each team's `buildPrompt()` passes `context.memoryContext` to `buildSystemMessage()`.
+
+#### 3.3.8 — IStorage Extension
+
+```typescript
+// server/storage.ts — add to IStorage interface
+
+// Memories
+getMemories(scope: MemoryScope, scopeId?: string): Promise<Memory[]>;
+getMemoryByKey(scope: MemoryScope, scopeId: string | null, key: string): Promise<Memory | undefined>;
+upsertMemory(memory: InsertMemory): Promise<Memory>;  // insert or update on conflict
+deleteMemory(id: string): Promise<void>;
+decayMemories(excludeRunId: string, decayAmount: number): Promise<number>;  // returns count updated
+getStaleMemories(threshold: number): Promise<Memory[]>;  // confidence < threshold
+searchMemories(query: string, scope?: MemoryScope): Promise<Memory[]>;  // full-text search
+```
+
+#### 3.3.9 — API Endpoints
+
+```
+GET    /api/memories                         — list all (filterable by scope, type, key)
+GET    /api/memories/search?q=postgresql     — full-text search
+GET    /api/pipelines/:id/memories           — memories scoped to pipeline
+POST   /api/memories                         — create/upsert explicit memory (user preference)
+PUT    /api/memories/:id                     — update memory content/confidence
+DELETE /api/memories/:id                     — delete memory
+DELETE /api/memories/stale                   — bulk delete stale memories (confidence < 0.3)
+```
+
+#### 3.3.10 — Frontend: Memory UI
+
+- [ ] **Memory panel** in Pipeline Run detail view — show memories used during this run + newly created
+- [ ] **Memory browser** page (`/memories`) — searchable list of all memories, grouped by scope → type
+  - Edit/delete individual memories
+  - Confidence bar visualization
+  - Filter by scope, type, staleness
+- [ ] **User preferences panel** in Settings — explicit key-value preferences (type=`preference`, scope=`global`)
+  - "Preferred language: TypeScript"
+  - "Error handling style: comprehensive"
+  - "Preferred DB: PostgreSQL"
+
+#### 3.3.11 — Implementation Order
+
+1. Types (`shared/types.ts`) + DB schema (`shared/schema.ts`)
+2. `IStorage` extension + `MemStorage` implementation
+3. `PgStorage` implementation (if PG active)
+4. `MemoryExtractor` with hard rules per stage
+5. `MemoryProvider` with relevance ranking + prompt formatting
+6. Pipeline Controller integration (inject + extract)
+7. `BaseTeam.buildSystemMessage()` update
+8. API endpoints
+9. Frontend: memory panel in run detail
+10. Frontend: memory browser page
+11. Frontend: user preferences in settings
+12. Confidence decay cron job / post-run hook
 
 ---
 
@@ -587,6 +1566,9 @@ npm install dockerode @types/dockerode
 | 9 | **Terminal execution** | A) Sandboxed commands only (whitelist) B) Full PTY (user responsibility) C) Docker-isolated shell |
 | 10 | **AI file context strategy** | A) Send full file to model B) Smart chunking (only relevant sections) C) Embeddings + retrieval |
 | 11 | **Web search provider** | A) Tavily (best quality, paid) B) DuckDuckGo (free) C) Grok native search (via xAI) D) All as options |
-| 12 | **Memory scope** | ✅ **C) Both with hierarchy** — `global > workspace > pipeline > run`, narrower scope overrides broader on conflict |
+| 12 | **Memory scope** | ✅ **C) Both with hierarchy** — `global > workspace > pipeline > run`, narrower overrides broader |
+| 12a | **Memory auto-extract** | ✅ **Hybrid** — hard rules per stage type + optional `"memories"` array in model output |
+| 12b | **Memory injection** | ✅ **System message append** — max 15% of context limit, ranked by relevance |
+| 12c | **Memory conflicts** | ✅ **Latest-wins + confidence decay** — 0.1/run decay, user preferences never decay |
 | 13 | **Skills format** | A) Markdown (DeerFlow-style) B) JSON schema C) YAML with frontmatter |
 | 14 | **Parallel execution** | A) Fan-out within stages only B) Parallel stages (DAG) C) Both |
