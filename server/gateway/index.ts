@@ -1,48 +1,60 @@
 import type { IStorage } from "../storage";
-import type { GatewayRequest, GatewayResponse } from "@shared/types";
+import type { GatewayRequest, GatewayResponse, ILLMProvider } from "@shared/types";
 import { MockProvider } from "./providers/mock";
 import { VllmProvider } from "./providers/vllm";
 import { OllamaProvider } from "./providers/ollama";
+import { ClaudeProvider } from "./providers/claude";
+import { GeminiProvider } from "./providers/gemini";
+import { GrokProvider } from "./providers/grok";
 
 export class Gateway {
+  private registry: Map<string, ILLMProvider>;
   private mockProvider: MockProvider;
-  private vllmProvider: VllmProvider | null;
-  private ollamaProvider: OllamaProvider | null;
 
   constructor(private storage: IStorage) {
+    this.registry = new Map();
     this.mockProvider = new MockProvider();
 
-    const vllmEndpoint = process.env.VLLM_ENDPOINT;
-    this.vllmProvider = vllmEndpoint ? new VllmProvider(vllmEndpoint) : null;
+    // Self-hosted: endpoint-gated
+    if (process.env.VLLM_ENDPOINT) {
+      this.registry.set("vllm", new VllmProvider(process.env.VLLM_ENDPOINT));
+    }
+    if (process.env.OLLAMA_ENDPOINT) {
+      this.registry.set("ollama", new OllamaProvider(process.env.OLLAMA_ENDPOINT));
+    }
 
-    const ollamaEndpoint = process.env.OLLAMA_ENDPOINT;
-    this.ollamaProvider = ollamaEndpoint
-      ? new OllamaProvider(ollamaEndpoint)
-      : null;
+    // Cloud: API-key-gated
+    if (process.env.ANTHROPIC_API_KEY) {
+      this.registry.set("anthropic", new ClaudeProvider(process.env.ANTHROPIC_API_KEY));
+    }
+    if (process.env.GOOGLE_API_KEY) {
+      this.registry.set("google", new GeminiProvider(process.env.GOOGLE_API_KEY));
+    }
+    if (process.env.XAI_API_KEY) {
+      this.registry.set("xai", new GrokProvider(process.env.XAI_API_KEY));
+    }
+  }
+
+  /** Resolve the ILLMProvider for a model record's provider string. */
+  private getProvider(providerKey: string): ILLMProvider | null {
+    return this.registry.get(providerKey) ?? null;
   }
 
   async complete(request: GatewayRequest): Promise<GatewayResponse> {
     const model = await this.storage.getModelBySlug(request.modelSlug);
-    const provider = model?.provider ?? "mock";
-    const modelName = model?.name ?? request.modelSlug;
+    const providerKey = model?.provider ?? "mock";
+    const modelId = model?.modelId ?? model?.name ?? request.modelSlug;
+
+    const provider = this.getProvider(providerKey);
 
     let result: { content: string; tokensUsed: number };
-
-    if (provider === "vllm" && this.vllmProvider && model?.endpoint) {
-      result = await this.vllmProvider.complete(modelName, request.messages, {
-        maxTokens: request.maxTokens,
-        temperature: request.temperature,
-      });
-    } else if (
-      provider === "ollama" &&
-      this.ollamaProvider &&
-      model?.endpoint
-    ) {
-      result = await this.ollamaProvider.complete(modelName, request.messages, {
+    if (provider) {
+      result = await provider.complete(modelId, request.messages, {
         maxTokens: request.maxTokens,
         temperature: request.temperature,
       });
     } else {
+      // Fallback: mock (also catches vllm/ollama when env var not set)
       result = await this.mockProvider.complete(request.messages, {
         maxTokens: request.maxTokens,
       });
@@ -58,20 +70,13 @@ export class Gateway {
 
   async *stream(request: GatewayRequest): AsyncGenerator<string> {
     const model = await this.storage.getModelBySlug(request.modelSlug);
-    const provider = model?.provider ?? "mock";
-    const modelName = model?.name ?? request.modelSlug;
+    const providerKey = model?.provider ?? "mock";
+    const modelId = model?.modelId ?? model?.name ?? request.modelSlug;
 
-    if (provider === "vllm" && this.vllmProvider && model?.endpoint) {
-      yield* this.vllmProvider.stream(modelName, request.messages, {
-        maxTokens: request.maxTokens,
-        temperature: request.temperature,
-      });
-    } else if (
-      provider === "ollama" &&
-      this.ollamaProvider &&
-      model?.endpoint
-    ) {
-      yield* this.ollamaProvider.stream(modelName, request.messages, {
+    const provider = this.getProvider(providerKey);
+
+    if (provider) {
+      yield* provider.stream(modelId, request.messages, {
         maxTokens: request.maxTokens,
         temperature: request.temperature,
       });
@@ -82,53 +87,38 @@ export class Gateway {
 
   getStatus() {
     return {
-      vllm: !!this.vllmProvider,
-      ollama: !!this.ollamaProvider,
+      vllm: this.registry.has("vllm"),
+      ollama: this.registry.has("ollama"),
+      anthropic: this.registry.has("anthropic"),
+      google: this.registry.has("google"),
+      xai: this.registry.has("xai"),
       vllmEndpoint: process.env.VLLM_ENDPOINT ?? null,
       ollamaEndpoint: process.env.OLLAMA_ENDPOINT ?? null,
     };
   }
 
-  /** Discover models from all connected providers */
-  async discoverModels(): Promise<{
-    vllm: { available: boolean; models: any[]; error?: string };
-    ollama: { available: boolean; models: any[]; error?: string };
-  }> {
-    const results = {
-      vllm: { available: !!this.vllmProvider, models: [] as any[], error: undefined as string | undefined },
-      ollama: { available: !!this.ollamaProvider, models: [] as any[], error: undefined as string | undefined },
-    };
+  async discoverModels(): Promise<Record<string, { available: boolean; models: unknown[]; error?: string }>> {
+    const results: Record<string, { available: boolean; models: unknown[]; error?: string }> = {};
 
-    if (this.vllmProvider) {
-      try {
-        results.vllm.models = await this.vllmProvider.listModels();
-      } catch (e) {
-        results.vllm.error = (e as Error).message;
-      }
-    }
-
-    if (this.ollamaProvider) {
-      try {
-        results.ollama.models = await this.ollamaProvider.listModels();
-      } catch (e) {
-        results.ollama.error = (e as Error).message;
+    for (const [key, provider] of this.registry.entries()) {
+      results[key] = { available: true, models: [] };
+      if ("listModels" in provider && typeof (provider as any).listModels === "function") {
+        try {
+          results[key].models = await (provider as any).listModels();
+        } catch (e) {
+          results[key].error = (e as Error).message;
+        }
       }
     }
 
     return results;
   }
 
-  /** Discover models from a custom endpoint (one-off probe) */
   async discoverFromEndpoint(
     endpoint: string,
     providerType: "vllm" | "ollama",
-  ): Promise<any[]> {
-    if (providerType === "vllm") {
-      const p = new VllmProvider(endpoint);
-      return p.listModels();
-    } else {
-      const p = new OllamaProvider(endpoint);
-      return p.listModels();
-    }
+  ): Promise<unknown[]> {
+    if (providerType === "vllm") return new VllmProvider(endpoint).listModels();
+    return new OllamaProvider(endpoint).listModels();
   }
 }
