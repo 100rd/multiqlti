@@ -1381,6 +1381,539 @@ npm install dockerode @types/dockerode
 
 ---
 
+## Phase 3.6 — Multi-Model Execution Strategies (MoA, Debate, Voting)
+
+> Goal: allow each pipeline stage to use multiple models simultaneously with different orchestration strategies — Mixture-of-Agents for creative synthesis, Multi-Agent Debate for adversarial quality, and Majority Voting for deterministic validation. The user picks a strategy per stage; default remains `single` (backwards-compatible).
+
+### Core Concept
+
+Currently each stage runs **one model → one response**. With execution strategies, a stage can run **N models → orchestrated result**:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Stage Execution                       │
+│                                                         │
+│  ┌─── single ──┐  ┌──── moa ─────┐  ┌── debate ──┐    │
+│  │ 1 model     │  │ N proposers   │  │ A proposes │    │
+│  │ 1 response  │  │ 1 aggregator  │  │ B critiques│    │
+│  │ (default)   │  │ best-of-all   │  │ C judges   │    │
+│  └─────────────┘  └───────────────┘  └────────────┘    │
+│                                                         │
+│  ┌── voting ───┐                                        │
+│  │ N candidates│                                        │
+│  │ validator   │                                        │
+│  │ consensus   │                                        │
+│  └─────────────┘                                        │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Recommended Strategy per SDLC Stage
+
+| Stage | Best Strategy | Why |
+|-------|--------------|-----|
+| **Planning** | MoA | Creative task — diverse perspectives, then synthesize |
+| **Architecture** | Debate | Adversarial critique — one designs, another finds weaknesses |
+| **Development** | MoA + Voting | Multiple models generate → aggregator merges → voting validates via tests |
+| **Testing** | Voting | Deterministic — code either passes tests or doesn't |
+| **Code Review** | Debate | Reviewer critiques, author defends, judge decides |
+| **Deployment** | Voting | Config validation — majority consensus |
+| **Monitoring** | MoA | Different models analyze metrics from different angles |
+
+### Type Definitions
+
+```typescript
+type ExecutionStrategy =
+  | SingleStrategy
+  | MoaStrategy
+  | DebateStrategy
+  | VotingStrategy;
+
+interface SingleStrategy {
+  type: 'single';
+}
+
+interface MoaStrategy {
+  type: 'moa';
+  proposers: ProposerConfig[];     // 2-5 models generating in parallel
+  aggregator: AggregatorConfig;    // strongest model synthesizes
+  proposerPromptOverride?: string;
+}
+
+interface ProposerConfig {
+  modelId: string;
+  role?: string;                   // "optimist", "skeptic", "security-focused"
+  temperature?: number;
+}
+
+interface AggregatorConfig {
+  modelId: string;
+  systemPrompt?: string;
+}
+
+interface DebateStrategy {
+  type: 'debate';
+  participants: DebateParticipant[];
+  judge: JudgeConfig;
+  rounds: number;                  // 2-5 (default: 3)
+  stopEarly?: boolean;
+}
+
+interface DebateParticipant {
+  modelId: string;
+  role: 'proposer' | 'critic' | 'devil_advocate';
+  persona?: string;
+}
+
+interface JudgeConfig {
+  modelId: string;
+  criteria?: string[];             // ["correctness", "security", "performance"]
+}
+
+interface VotingStrategy {
+  type: 'voting';
+  candidates: CandidateConfig[];   // 3-7 models/runs
+  threshold: number;               // 0.5-1.0
+  validationMode: 'text_similarity' | 'test_execution' | 'custom';
+  validationFn?: string;
+}
+
+interface CandidateConfig {
+  modelId: string;
+  temperature?: number;            // same model + different temps = cheap diversity
+}
+
+interface StrategyResult {
+  finalContent: string;
+  strategy: ExecutionStrategy['type'];
+  details: MoaDetails | DebateDetails | VotingDetails;
+  totalTokensUsed: number;
+  totalCost: number;
+  durationMs: number;
+}
+```
+
+### Strategy Executor Service
+
+```typescript
+// server/services/strategy-executor.ts
+
+class StrategyExecutor {
+  constructor(
+    private gateway: Gateway,
+    private sandbox?: SandboxExecutor  // Phase 3.5
+  ) {}
+
+  async execute(
+    strategy: ExecutionStrategy,
+    basePrompt: ProviderMessage[],
+    context: StageContext
+  ): Promise<StrategyResult> {
+    switch (strategy.type) {
+      case 'single':  return this.executeSingle(basePrompt, context);
+      case 'moa':     return this.executeMoA(strategy, basePrompt, context);
+      case 'debate':  return this.executeDebate(strategy, basePrompt, context);
+      case 'voting':  return this.executeVoting(strategy, basePrompt, context);
+    }
+  }
+}
+```
+
+### Strategy 1: MoA — parallel proposers + aggregator
+1. `Promise.all()` — fire all proposers in parallel
+2. Build aggregation prompt with all proposer responses
+3. Single `gateway.complete()` to aggregator
+4. Return aggregated response + all intermediate data
+
+### Strategy 2: Debate — round loop + judge
+1. Round loop (1..N): proposer generates, critic critiques
+2. Each round broadcast via WS `debate:round`
+3. Early stop if consensus detected
+4. Judge produces final verdict
+
+### Strategy 3: Voting — candidates + validator
+- `test_execution`: runs code in Docker sandbox (Phase 3.5)
+- `text_similarity`: embed + cluster by cosine similarity
+- `custom`: user-provided validator function
+
+### Strategy Presets
+
+| Preset | Planning | Architecture | Development | Testing | Code Review | Deployment | Monitoring |
+|--------|----------|-------------|-------------|---------|-------------|------------|------------|
+| **Single** | single | single | single | single | single | single | single |
+| **Quality Max** | moa(3) | debate(3r) | moa(3)+voting | voting(5) | debate(3r) | voting(5) | moa(3) |
+| **Balanced** | moa(2) | debate(2r) | single | voting(3) | debate(2r) | single | single |
+| **Cost Optimized** | single | debate(2r) | single | voting(3) | single | single | single |
+| **Code Focus** | single | single | moa(3)+voting | voting(5) | debate(3r) | voting(3) | single |
+
+### DB Schema Extension
+
+```sql
+ALTER TABLE stage_executions ADD COLUMN execution_strategy jsonb;
+ALTER TABLE stage_executions ADD COLUMN strategy_result jsonb;
+ALTER TABLE llm_requests ADD COLUMN strategy_role text;
+-- values: 'proposer', 'aggregator', 'critic', 'judge', 'candidate', null
+```
+
+### WebSocket Events
+
+```typescript
+interface StrategyEvents {
+  'strategy:started':    { runId, stageId, strategy: ExecutionStrategy };
+  'strategy:proposer':   { runId, stageId, modelId, role, content, index };
+  'strategy:aggregating':{ runId, stageId, aggregatorModelId };
+  'strategy:debate:round':{ runId, stageId, round, participant, role, content };
+  'strategy:debate:judge':{ runId, stageId, verdict, reasoning };
+  'strategy:voting:candidate': { runId, stageId, modelId, index, passed };
+  'strategy:voting:result': { runId, stageId, winnerIndex, agreement };
+  'strategy:completed':  { runId, stageId, result: StrategyResult };
+}
+```
+
+### Implementation Order
+
+1. `ExecutionStrategy` types in `shared/types.ts`
+2. `StrategyExecutor` service with `single` mode (refactor)
+3. `PipelineStageConfig.executionStrategy` field + DB migration
+4. MoA executor — parallel proposers + aggregator
+5. Debate executor — round loop + judge
+6. Voting executor — candidates + validators
+7. Voting + Docker sandbox integration (`test_execution`)
+8. API endpoints for strategy CRUD + presets
+9. Frontend: strategy config UI + execution viewer
+10. Strategy presets + cost estimation endpoint
+
+### Open Design Questions (Phase 3.6)
+
+| # | Question | Options |
+|---|---------|---------|
+| 21 | **MoA: same prompt or varied?** | A) Identical prompt B) Persona-tailored C) Configurable |
+| 22 | **Debate: who speaks first?** | A) Always proposer B) Random C) Configurable |
+| 23 | **Voting: tie-breaking** | A) First passing B) Lowest-cost C) Extra tiebreaker round |
+| 24 | **Streaming during strategy** | A) Final only B) Each sub-request live C) Proposers live, aggregator buffered |
+| 25 | **Cost ceiling** | A) Hard limit B) Soft warning C) Both configurable |
+| 26 | **Hybrid strategies** | A) Single per stage B) Chaining (MoA → Voting) C) User DAG |
+
+---
+
+## Phase 3.7 — Privacy Proxy Layer (Optional, Late Priority)
+
+> **Status: Optional feature, disabled by default.**
+> Goal: prevent sensitive data leakage to public LLM APIs by intercepting requests through a pseudonymization proxy. Identifiers (domains, IPs, cluster names, repo URLs, service names) are replaced with pseudonyms before leaving the system, and restored in responses. No smart routing to private models — all requests go to configured public providers, but with data sanitized.
+
+### The Problem
+
+When the platform orchestrates infrastructure work (especially via ArgoCD MCP), prompts contain:
+
+| Data Type | Example | Risk |
+|-----------|---------|------|
+| Domain names | `api.acme-corp.io` | Client identification |
+| IP addresses | `10.42.3.15`, `172.16.0.0/12` | Network topology leak |
+| K8s namespaces | `prod-payments`, `staging-auth` | Business logic exposure |
+| ArgoCD app names | `acme-checkout-v2` | Product roadmap leak |
+| Git repo URLs | `github.com/acme-corp/billing-engine` | Org structure exposure |
+| Docker images | `acme.azurecr.io/services/fraud-detector:v3` | Registry + service names |
+| Env variables | `DATABASE_URL=postgres://prod-db.acme...` | Credential + infra leak |
+| Helm values | `ingress.host: checkout.acme-corp.com` | Deployment topology |
+| Service names | `fraud-detection-ml`, `kyc-verification` | Competitive intelligence |
+| Cloud account IDs | `arn:aws:iam::123456789:role/deploy` | Account targeting |
+
+**Compliance drivers**: SOC 2, GDPR (data minimization), PCI DSS, internal InfoSec.
+
+### Architecture: Privacy Proxy Layer
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Pipeline Stage                           │
+│  ┌──────────┐                                                    │
+│  │ BaseTeam  │─── prompt with real data                          │
+│  └────┬──────┘                                                   │
+│       ▼                                                          │
+│  ┌────────────────────────────────────────┐                      │
+│  │     Interceptor (Privacy Proxy)         │                      │
+│  │                                        │                      │
+│  │  1. Scan text for PII & identifiers    │                      │
+│  │  2. Pseudonymize:                       │                      │
+│  │     prod-db.client.com → service-A     │                      │
+│  │     192.168.1.45 → IP_ADDR_1           │                      │
+│  │     Project-Phoenix → Core-App         │                      │
+│  │  3. Store mapping in Vault (never      │                      │
+│  │     leaves your perimeter)             │                      │
+│  │  4. Forward sanitized prompt           │──── to Public LLM    │
+│  │                                        │                      │
+│  │  On response (Rehydration):            │                      │
+│  │  5. Reverse-map pseudonyms → real      │                      │
+│  │  6. User sees real names               │                      │
+│  └────────────────────────────────────────┘                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Data Classification Engine
+
+```typescript
+interface ClassificationResult {
+  sensitivityScore: number;        // 0.0 - 1.0
+  detectedEntities: DetectedEntity[];
+  recommendedRoute: 'private' | 'anonymized_public' | 'public';
+  complianceFlags: ComplianceFlag[];
+}
+
+interface DetectedEntity {
+  type: EntityType;
+  value: string;
+  position: { start: number; end: number };
+  confidence: number;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+}
+
+type EntityType =
+  | 'domain' | 'ip_address' | 'ip_cidr' | 'k8s_namespace' | 'k8s_resource'
+  | 'argocd_app' | 'git_url' | 'docker_image' | 'cloud_account'
+  | 'cloud_resource_id' | 'env_variable' | 'api_key' | 'email'
+  | 'hostname' | 'helm_value' | 'service_name' | 'custom_pattern';
+```
+
+### Detection Patterns (Built-in)
+
+```typescript
+const BUILTIN_PATTERNS: PatternDef[] = [
+  { type: 'domain', severity: 'high',
+    patterns: [/(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|io|dev|net|org|co|app|cloud|internal)/gi],
+    allowlist: ['github.com', 'docker.io', 'registry.terraform.io', 'kubernetes.io'] },
+  { type: 'git_url', severity: 'high',
+    patterns: [/(?:https?:\/\/|git@)(?:github|gitlab|bitbucket)[^\s]+/gi] },
+  { type: 'ip_address', severity: 'high',
+    patterns: [/\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b/g] },
+  { type: 'docker_image', severity: 'high',
+    patterns: [/[a-z0-9.-]+\.(?:azurecr|gcr|ecr\.[a-z-]+\.amazonaws)\.(?:io|com)\/[^\s]+/gi] },
+  { type: 'cloud_account', severity: 'critical',
+    patterns: [/arn:aws:[a-z0-9-]+:[a-z0-9-]*:(\d{12}):/g,
+               /projects\/([a-z][a-z0-9-]{4,28}[a-z0-9])\//g,
+               /\/subscriptions\/([0-9a-f-]{36})\//gi] },
+  { type: 'api_key', severity: 'critical',
+    patterns: [/(?:sk|pk|api[_-]?key|token|secret|password|Bearer)\s*[=:]\s*['"]?[\w\-./]{20,}/gi,
+               /AKIA[0-9A-Z]{16}/g, /ghp_[A-Za-z0-9_]{36}/g] },
+  { type: 'k8s_namespace', severity: 'medium',
+    patterns: [/namespace:\s*['"]?([a-z0-9-]+)/gi],
+    allowlist: ['default', 'kube-system', 'kube-public', 'argocd', 'monitoring'] },
+];
+```
+
+### Pseudonym Generation (Context-Preserving)
+
+Pseudonyms **preserve semantic structure** so the LLM can still reason about the architecture:
+
+```typescript
+const PSEUDONYM_STRATEGIES: Record<EntityType, PseudonymStrategy> = {
+  domain: {
+    // api.acme-corp.io → api.alpha-org.example (same org = same pseudonym)
+    generate: (value, ctx) => {
+      const parts = value.split('.');
+      const org = ctx.getOrCreateOrgPseudonym(extractOrg(value));
+      return `${parts[0]}.${org}.example`;
+    }
+  },
+  ip_address: {
+    // 10.42.3.15 → 10.0.{random}.15 (preserve /8, keep host octet)
+    generate: (value) => {
+      const octets = value.split('.');
+      return `10.0.${randomInt(1, 254)}.${octets[3]}`;
+    }
+  },
+  k8s_namespace: {
+    // prod-payments → prod-service-a (preserve env prefix)
+    generate: (value, ctx) => {
+      const env = extractEnvPrefix(value);
+      return env ? `${env}${ctx.getOrCreateServicePseudonym(value)}` : ctx.getOrCreateServicePseudonym(value);
+    }
+  },
+  git_url: {
+    // github.com/acme-corp/billing → github.com/org-alpha/repo-a
+    generate: (value, ctx) => {
+      const { host, org, repo } = parseGitUrl(value);
+      return `${host}/${ctx.getOrCreateOrgPseudonym(org)}/${ctx.getOrCreateRepoPseudonym(repo)}`;
+    }
+  },
+  api_key: {
+    generate: () => '<REDACTED_SECRET>',  // never send
+  },
+};
+```
+
+### Consistency Within Session
+
+Same real value → same pseudonym within a session:
+
+```
+Real:                              Anonymized:
+api.acme-corp.io                →  api.alpha-org.example
+db.acme-corp.io                 →  db.alpha-org.example      ← same org!
+prod-payments namespace         →  prod-service-a
+staging-payments namespace      →  staging-service-a          ← same service!
+```
+
+### Gateway Integration
+
+```typescript
+class Gateway {
+  async complete(messages, modelId, options?: { privacyProxy?: boolean }) {
+    // Privacy proxy is optional, disabled by default
+    if (options?.privacyProxy && this.privacyProxyEnabled) {
+      // Intercept → Pseudonymize → Send → Rehydrate
+      const { anonymized, mapId } = this.anonymizer.anonymize(
+        messages.map(m => m.content).join('\n')
+      );
+      const anonMessages = this.anonymizer.applyToMessages(messages, mapId);
+      const result = await this.providers.get(modelId).complete(anonMessages);
+      result.content = this.anonymizer.rehydrate(result.content, mapId);
+      return result;
+    }
+
+    // Default: direct call (no anonymization)
+    return this.providers.get(modelId).complete(messages);
+  }
+}
+```
+
+### ArgoCD Integration Example
+
+```typescript
+// BEFORE anonymization (real ArgoCD data):
+{ name: "acme-checkout-v2",
+  destination: { server: "https://k8s.acme-corp.internal:6443", namespace: "prod-payments" },
+  source: { repoURL: "git@github.com:acme-corp/checkout-service.git" } }
+
+// AFTER anonymization (sent to public LLM):
+{ name: "alpha-app-a-v2",
+  destination: { server: "https://k8s.alpha-org.example:6443", namespace: "prod-service-a" },
+  source: { repoURL: "git@github.com:org-alpha/repo-a.git" } }
+// LLM can still diagnose issues — but can't identify the client
+```
+
+### Anonymization Levels
+
+| Level | What Gets Masked | Use Case |
+|-------|-----------------|----------|
+| **Off (default)** | Nothing — direct to LLM | Personal/OSS projects, no compliance needs |
+| **Standard** | Domains, IPs, git URLs, docker images, cloud accounts | Enterprise with compliance requirements |
+| **Strict** | All of Standard + k8s namespaces, service names, helm values | Regulated industries (fintech, healthcare) |
+| **Paranoid** | All of Strict + project names, file paths, env var names | Government / classified workloads |
+
+### DB Schema
+
+```sql
+CREATE TABLE anonymization_log (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid REFERENCES pipeline_runs(id),
+  stage_id text NOT NULL,
+  llm_request_id uuid REFERENCES llm_requests(id),
+  route_decision text NOT NULL,
+  sensitivity_score numeric(3,2),
+  entities_detected integer DEFAULT 0,
+  entities_anonymized integer DEFAULT 0,
+  entity_types text[],
+  compliance_profile text,
+  model_id text NOT NULL,
+  is_private_model boolean DEFAULT false,
+  created_at timestamptz DEFAULT now()
+);
+
+CREATE TABLE anonymization_patterns (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  entity_type text DEFAULT 'custom_pattern',
+  regex_pattern text NOT NULL,
+  severity text DEFAULT 'high',
+  pseudonym_template text,
+  allowlist text[],
+  created_at timestamptz DEFAULT now()
+);
+
+CREATE TABLE compliance_settings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  profile text DEFAULT 'enterprise',
+  custom_overrides jsonb DEFAULT '{}',
+  private_model_fallback text,
+  audit_all_requests boolean DEFAULT true,
+  retention_days integer DEFAULT 90,
+  updated_at timestamptz DEFAULT now()
+);
+```
+
+### API Endpoints
+
+| Method | Endpoint | Description |
+|--------|---------|-------------|
+| GET | `/api/compliance/profiles` | List compliance profiles |
+| PUT | `/api/compliance/settings` | Update compliance profile |
+| GET | `/api/compliance/audit-log` | Query anonymization audit log |
+| POST | `/api/compliance/test-anonymize` | Preview anonymization on sample text |
+| GET | `/api/compliance/stats` | Anonymization + routing statistics |
+| POST | `/api/anonymization/patterns` | Add custom detection pattern |
+| GET | `/api/anonymization/patterns` | List custom patterns |
+
+### Frontend: Compliance Dashboard
+
+```
+┌─ Compliance & Data Anonymization ───────────────────────┐
+│  Active Profile: [Enterprise SOC 2 ▼]                    │
+│  Private Models: vLLM ✅ Ollama ✅                        │
+│                                                          │
+│  ┌─ Routing Stats (7d) ─────────────────────────────┐    │
+│  │  Private:           ████████████████░░░  78%      │    │
+│  │  Anonymized Public: ████░░░░░░░░░░░░░░░  18%      │    │
+│  │  Direct Public:     █░░░░░░░░░░░░░░░░░░   4%      │    │
+│  │  Entities anonymized: 2,847                       │    │
+│  └───────────────────────────────────────────────────┘    │
+│                                                          │
+│  ┌─ Test Anonymization ─────────────────────────────┐    │
+│  │  Input:  "checkout-api in prod-payments at acme"  │    │
+│  │  Result: "app-a-api in prod-service-a at alpha"   │    │
+│  │  Detected: 3 entities (domain, k8s_ns, service)  │    │
+│  └───────────────────────────────────────────────────┘    │
+│                                                          │
+│  ┌─ Custom Patterns ────────────────────────────────┐    │
+│  │  acme-*          → alpha-*       [Edit] [Del]    │    │
+│  │  *.internal.corp → *.internal.ex [Edit] [Del]    │    │
+│  │  [+ Add Pattern]                                  │    │
+│  └───────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Cross-Phase Synergies
+
+| Uses | From Phase | How |
+|------|-----------|-----|
+| MCP (ArgoCD, K8s) | 3.1 | MCP tool responses anonymized before prompt inclusion |
+| Request Logging | 3.2 | Stores both anonymized (sent) and original (encrypted audit) |
+| Strategies | 3.6 | MoA/Debate sub-requests each routed through anonymizer |
+| Docker Sandbox | 3.5 | Sandbox runs privately — no anonymization needed |
+
+### Implementation Order
+
+1. `DataClassifier` with built-in pattern library (regex-based)
+2. `AnonymizerService` with pseudonym generation + session vault
+3. Gateway integration — interceptor/rehydration wrapper (disabled by default)
+4. Settings toggle: enable/disable privacy proxy per pipeline
+5. Anonymization levels (Off / Standard / Strict / Paranoid)
+6. `anonymization_log` table + audit logging
+7. `anonymization_patterns` table + custom patterns API
+8. Test anonymization endpoint (preview mode)
+9. Frontend: Privacy settings page + test preview
+10. MCP tool response anonymization (ArgoCD, K8s data)
+11. `llm_requests` dual storage (anonymized sent + original encrypted)
+
+### Open Design Questions (Phase 3.7)
+
+| # | Question | Options |
+|---|---------|---------|
+| 27 | **Vault storage** | A) In-memory (lost on restart) B) Encrypted DB C) Redis with TTL |
+| 28 | **Audit retention** | A) Forever B) Configurable TTL (90d) C) Compliance-dependent |
+| 29 | **MCP tool responses** | A) Anonymize all B) Only sensitive tools C) Configurable per-tool |
+| 30 | **Pseudonym consistency** | A) Per-session B) Per-pipeline C) Global |
+| 31 | **Original data in logs** | A) Store encrypted B) Never store C) Per-profile config |
+
+---
+
 ## Phase 4 — Code Workspace (Claude Code-like experience)
 
 > Goal: дать пользователю возможность подключить локальный или удалённый репозиторий и работать с кодом через Chat и Code интерфейсы — как в Claude Code, но с мульти-модельным бэкендом.
@@ -1572,3 +2105,18 @@ npm install dockerode @types/dockerode
 | 12c | **Memory conflicts** | ✅ **Latest-wins + confidence decay** — 0.1/run decay, user preferences never decay |
 | 13 | **Skills format** | A) Markdown (DeerFlow-style) B) JSON schema C) YAML with frontmatter |
 | 14 | **Parallel execution** | A) Fan-out within stages only B) Parallel stages (DAG) C) Both |
+| 15a | **Maintenance: Scout LLM** | ✅ **A) Pure code** — Scout is a data collector, no LLM. SDLC pipeline does the heavy analysis |
+| 15b | **Maintenance: finding dedup** | ✅ **B) Re-evaluate** — every scan re-evaluates (CVE severity can change). User selects actions |
+| 15c | **Maintenance: PR strategy** | ✅ **A) One PR per finding** — clean rollback, independent review |
+| 15d | **Maintenance: notifications** | ✅ **Scout shows results in UI** — user selects findings → SDLC or backlog. Auto-notify TBD after testing |
+| 15e | **Maintenance: history** | ✅ **C) Trends + recommendations** — health score trends, mean-time-to-remediate, platform suggests policy changes |
+| 16 | **Pipeline mode default** | A) Sequential only (DAG opt-in) B) DAG always C) Auto-detect (linear input = sequential, multi-dep = DAG) |
+| 17 | **Guardrail LLM** | A) Same model as stage B) Always use cheap model (Haiku/Flash) for validation C) Configurable per stage |
+| 18 | **Condition expressions** | A) Simple field checks only B) JS-like safe expressions (no eval) C) Full sandboxed JS eval |
+| 19 | **Trigger auth** | A) Webhook secret only B) API key per trigger C) OAuth for GitHub events |
+| 20 | **Delegation depth** | A) Max 1 (no recursive delegation) B) Max 2 C) Configurable |
+| 21 | **Manager mode scope** | A) Full pipeline only B) Can manage sub-pipelines C) Both |
+| 22 | **Swarm merge** | A) Simple concatenation B) LLM merge (extra cost) C) Both as options |
+| 23 | **Sandbox runtime** | A) Docker socket mount (dev only) B) gVisor for prod C) Firecracker for SaaS D) Configurable per environment |
+| 24 | **Token budget default** | A) 100K tokens per stage B) Proportional to model context (e.g. 50% of context limit) C) User-configurable per stage |
+| 25 | **Semantic cache scope** | A) Per-pipeline cache B) Global cache across pipelines C) Both with toggle |
