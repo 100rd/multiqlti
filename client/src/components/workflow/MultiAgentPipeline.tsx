@@ -1,18 +1,27 @@
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Play, Save, RotateCcw } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Save, RotateCcw, Zap } from "lucide-react";
 import AgentNode from "./AgentNode";
 import { usePipelines, useUpdatePipeline, useModels } from "@/hooks/use-pipeline";
-import { SDLC_TEAMS, TEAM_ORDER } from "@shared/constants";
+import { SDLC_TEAMS, TEAM_ORDER, STRATEGY_PRESETS } from "@shared/constants";
 import type { PipelineStageConfig } from "@shared/types";
-import { useState, useEffect } from "react";
 
-export default function MultiAgentPipeline() {
+interface MultiAgentPipelineProps {
+  pipelineId?: string;
+}
+
+export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelineProps) {
   const { data: pipelines } = usePipelines();
   const { data: models } = useModels();
   const updatePipeline = useUpdatePipeline();
 
-  const pipeline = Array.isArray(pipelines) ? pipelines[0] : null;
+  const pipeline = pipelineId
+    ? (Array.isArray(pipelines) ? pipelines.find((p: { id: string }) => p.id === pipelineId) : null)
+    : (Array.isArray(pipelines) ? pipelines[0] : null);
+
   const pipelineStages: PipelineStageConfig[] = pipeline?.stages ?? [];
 
   const [localStages, setLocalStages] = useState<PipelineStageConfig[]>(pipelineStages);
@@ -35,6 +44,40 @@ export default function MultiAgentPipeline() {
     setDirty(true);
   };
 
+  const updateSystemPrompt = (teamId: string, prompt: string) => {
+    setLocalStages(prev => prev.map(s =>
+      s.teamId === teamId
+        ? { ...s, systemPromptOverride: prompt || undefined }
+        : s,
+    ));
+    setDirty(true);
+  };
+
+  const updateTemperature = (teamId: string, temperature: number) => {
+    setLocalStages(prev => prev.map(s => s.teamId === teamId ? { ...s, temperature } : s));
+    setDirty(true);
+  };
+
+  const updateMaxTokens = (teamId: string, maxTokens: number) => {
+    setLocalStages(prev => prev.map(s => s.teamId === teamId ? { ...s, maxTokens } : s));
+    setDirty(true);
+  };
+
+  const applyPreset = (presetId: string) => {
+    const preset = STRATEGY_PRESETS.find(p => p.id === presetId);
+    if (!preset) return;
+    setLocalStages(prev => prev.map(s => {
+      const override = preset.stageOverrides?.[s.teamId as keyof typeof preset.stageOverrides];
+      return {
+        ...s,
+        modelSlug: override?.modelSlug ?? s.modelSlug,
+        temperature: override?.temperature ?? preset.temperature,
+        maxTokens: preset.maxTokens,
+      };
+    }));
+    setDirty(true);
+  };
+
   const handleSave = () => {
     if (!pipeline) return;
     updatePipeline.mutate(
@@ -49,7 +92,7 @@ export default function MultiAgentPipeline() {
   };
 
   const modelList = Array.isArray(models)
-    ? models.filter((m: any) => m.isActive).map((m: any) => ({
+    ? models.filter((m: { isActive: boolean }) => m.isActive).map((m: { name: string; slug: string; provider: string }) => ({
         label: m.name,
         value: m.slug,
         provider: m.provider,
@@ -63,7 +106,7 @@ export default function MultiAgentPipeline() {
         <div>
           <h3 className="text-lg font-semibold">SDLC Pipeline</h3>
           <p className="text-sm text-muted-foreground mt-1">
-            7-stage software development lifecycle — configure models per team
+            {pipeline?.name ?? "No pipeline selected"} — configure models and prompts per stage
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -84,6 +127,67 @@ export default function MultiAgentPipeline() {
         </div>
       </div>
 
+      {/* Strategy Presets */}
+      <Card className="border-border bg-card p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Zap className="h-4 w-4 text-amber-500" />
+          <span className="text-sm font-medium">Strategy Presets</span>
+        </div>
+
+        {/* Preset quick-pick buttons */}
+        <div className="flex flex-wrap gap-2">
+          {STRATEGY_PRESETS.map(preset => (
+            <Button
+              key={preset.id}
+              variant="outline"
+              size="sm"
+              className="text-xs h-7"
+              onClick={() => applyPreset(preset.id)}
+            >
+              {preset.label}
+            </Button>
+          ))}
+        </div>
+
+        {/* Visual constructor: stage × model grid */}
+        <div className="mt-3">
+          <div className="text-xs text-muted-foreground mb-2 font-medium">Stage Model Matrix</div>
+          <div className="space-y-1.5">
+            {localStages.map(stage => {
+              const team = SDLC_TEAMS[stage.teamId as keyof typeof SDLC_TEAMS];
+              if (!team) return null;
+              return (
+                <div key={stage.teamId} className="grid grid-cols-[140px_1fr_80px_80px] gap-2 items-center">
+                  <span className="text-xs font-medium truncate">{team.name}</span>
+                  <Select
+                    value={stage.modelSlug}
+                    onValueChange={(val) => updateStageModel(stage.teamId, val)}
+                    disabled={!stage.enabled}
+                  >
+                    <SelectTrigger className="h-6 text-[11px] bg-background border-border">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {modelList.map(m => (
+                        <SelectItem key={m.value} value={m.value} className="text-xs">
+                          {m.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <span className="text-[10px] text-muted-foreground text-right font-mono">
+                    t={((stage.temperature ?? 0.7)).toFixed(1)}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground text-right font-mono">
+                    {stage.maxTokens ?? 2048}tk
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </Card>
+
       {/* Stage Pipeline */}
       <div className="relative">
         <div className="space-y-6">
@@ -100,8 +204,14 @@ export default function MultiAgentPipeline() {
                 enabled={stage.enabled}
                 color={team.color}
                 models={modelList}
+                systemPromptOverride={stage.systemPromptOverride}
+                temperature={stage.temperature}
+                maxTokens={stage.maxTokens}
                 onModelChange={(_, model) => updateStageModel(stage.teamId, model)}
                 onToggle={() => toggleStage(stage.teamId)}
+                onSystemPromptChange={(_, prompt) => updateSystemPrompt(stage.teamId, prompt)}
+                onTemperatureChange={(_, temp) => updateTemperature(stage.teamId, temp)}
+                onMaxTokensChange={(_, tokens) => updateMaxTokens(stage.teamId, tokens)}
                 isLast={idx === localStages.length - 1}
               />
             );
@@ -148,6 +258,9 @@ export default function MultiAgentPipeline() {
                 <span>
                   <span className="font-medium text-foreground">{team.name}</span>
                   {model && <span className="ml-1">({model.label})</span>}
+                  {stage?.systemPromptOverride && (
+                    <Badge variant="outline" className="ml-2 text-[9px] h-4 px-1">custom prompt</Badge>
+                  )}
                   {' — '}{team.description}
                 </span>
               </div>

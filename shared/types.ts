@@ -83,6 +83,8 @@ export interface PipelineStageConfig {
   teamId: TeamId;
   modelSlug: string;
   systemPromptOverride?: string;
+  temperature?: number;
+  maxTokens?: number;
   enabled: boolean;
 }
 
@@ -90,6 +92,8 @@ export interface StageContext {
   runId: string;
   stageIndex: number;
   modelSlug?: string;
+  temperature?: number;
+  maxTokens?: number;
   previousOutputs: Record<string, unknown>[];
   userAnswers?: Record<string, string>;
 }
@@ -99,4 +103,20 @@ export interface TeamResult {
   tokensUsed: number;
   raw: string;
   questions?: string[];
+}
+
+export type StrategyPresetId =
+  | "fast"
+  | "balanced"
+  | "deep_think"
+  | "cost_efficient"
+  | "anti_hallucination";
+
+export interface StrategyPreset {
+  id: StrategyPresetId;
+  label: string;
+  description: string;
+  temperature: number;
+  maxTokens: number;
+  stageOverrides?: Partial<Record<TeamId, { modelSlug?: string; temperature?: number; maxTokens?: number }>>;
 }

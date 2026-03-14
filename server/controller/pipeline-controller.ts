@@ -133,6 +133,8 @@ export class PipelineController {
           runId: run.id,
           stageIndex: i,
           modelSlug: stage.modelSlug,
+          temperature: stage.temperature,
+          maxTokens: stage.maxTokens,
           previousOutputs,
         };
 

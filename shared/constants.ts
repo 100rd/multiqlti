@@ -1,4 +1,4 @@
-import type { TeamConfig, TeamId, PipelineStageConfig } from "./types";
+import type { TeamConfig, TeamId, PipelineStageConfig, StrategyPreset } from "./types";
 
 export const SDLC_TEAMS: Record<TeamId, TeamConfig> = {
   planning: {
@@ -251,5 +251,94 @@ export const DEFAULT_MODELS = [
     contextLimit: 131072,
     capabilities: ["summarization", "classification", "lightweight"],
     isActive: true,
+  },
+];
+
+export const DEFAULT_TEMPERATURE = 0.7;
+export const DEFAULT_MAX_TOKENS = 2048;
+export const MIN_TEMPERATURE = 0.0;
+export const MAX_TEMPERATURE = 2.0;
+export const TEMPERATURE_STEP = 0.1;
+
+export const STRATEGY_PRESETS: StrategyPreset[] = [
+  {
+    id: "fast",
+    label: "Fast",
+    description: "Lightweight models on all stages — low latency, lower quality",
+    temperature: 0.3,
+    maxTokens: 1024,
+    stageOverrides: {
+      planning: { modelSlug: "phi3-mini" },
+      architecture: { modelSlug: "phi3-mini" },
+      development: { modelSlug: "phi3-mini" },
+      testing: { modelSlug: "phi3-mini" },
+      code_review: { modelSlug: "phi3-mini" },
+      deployment: { modelSlug: "phi3-mini" },
+      monitoring: { modelSlug: "phi3-mini" },
+    },
+  },
+  {
+    id: "balanced",
+    label: "Balanced",
+    description: "General-purpose models — good quality and reasonable speed",
+    temperature: 0.7,
+    maxTokens: 2048,
+    stageOverrides: {
+      planning: { modelSlug: "llama3-70b" },
+      architecture: { modelSlug: "llama3-70b" },
+      development: { modelSlug: "deepseek-coder" },
+      testing: { modelSlug: "mixtral-8x7b" },
+      code_review: { modelSlug: "llama3-70b" },
+      deployment: { modelSlug: "deepseek-coder" },
+      monitoring: { modelSlug: "mixtral-8x7b" },
+    },
+  },
+  {
+    id: "deep_think",
+    label: "Deep Think",
+    description: "Larger models, higher temperature — maximum reasoning depth",
+    temperature: 0.9,
+    maxTokens: 4096,
+    stageOverrides: {
+      planning: { modelSlug: "llama3-70b" },
+      architecture: { modelSlug: "llama3-70b" },
+      development: { modelSlug: "deepseek-coder" },
+      testing: { modelSlug: "mixtral-8x7b" },
+      code_review: { modelSlug: "llama3-70b" },
+      deployment: { modelSlug: "deepseek-coder" },
+      monitoring: { modelSlug: "mixtral-8x7b" },
+    },
+  },
+  {
+    id: "cost_efficient",
+    label: "Cost-Efficient",
+    description: "Minimal models and tokens — best for simple or repetitive tasks",
+    temperature: 0.3,
+    maxTokens: 1024,
+    stageOverrides: {
+      planning: { modelSlug: "phi3-mini" },
+      architecture: { modelSlug: "phi3-mini" },
+      development: { modelSlug: "phi3-mini" },
+      testing: { modelSlug: "phi3-mini" },
+      code_review: { modelSlug: "phi3-mini" },
+      deployment: { modelSlug: "phi3-mini" },
+      monitoring: { modelSlug: "phi3-mini" },
+    },
+  },
+  {
+    id: "anti_hallucination",
+    label: "Anti-Hallucination",
+    description: "Low temperature with careful review stages — reduces model drift",
+    temperature: 0.3,
+    maxTokens: 2048,
+    stageOverrides: {
+      planning: { modelSlug: "llama3-70b", temperature: 0.2 },
+      architecture: { modelSlug: "llama3-70b", temperature: 0.2 },
+      development: { modelSlug: "deepseek-coder", temperature: 0.2 },
+      testing: { modelSlug: "llama3-70b", temperature: 0.1 },
+      code_review: { modelSlug: "llama3-70b", temperature: 0.1 },
+      deployment: { modelSlug: "deepseek-coder", temperature: 0.2 },
+      monitoring: { modelSlug: "mixtral-8x7b", temperature: 0.2 },
+    },
   },
 ];

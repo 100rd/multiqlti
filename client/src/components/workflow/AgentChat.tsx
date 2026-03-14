@@ -17,10 +17,30 @@ const TEAM_COLORS: Record<string, string> = {
   monitoring: "bg-rose-500/20 text-rose-700",
 };
 
-export default function AgentChat() {
-  const { data: runs } = useRuns();
-  const latestRun = Array.isArray(runs) && runs.length > 0 ? runs[0] : null;
+interface AgentChatProps {
+  pipelineId?: string;
+}
+
+interface ChatMessage {
+  id?: string;
+  role: string;
+  agentTeam?: string;
+  modelSlug?: string;
+  content: string;
+}
+
+interface Run {
+  id: string;
+  pipelineId?: string;
+}
+
+export default function AgentChat({ pipelineId }: AgentChatProps) {
+  const { data: runs } = useRuns(pipelineId);
+
+  const scopedRuns = Array.isArray(runs) ? runs : [];
+  const latestRun: Run | null = scopedRuns.length > 0 ? scopedRuns[0] : null;
   const runId = latestRun?.id;
+
   const { data: messages } = useChatMessages(runId);
   const sendMessage = useSendChatMessage();
   const [input, setInput] = useState("");
@@ -31,7 +51,7 @@ export default function AgentChat() {
     setInput("");
   };
 
-  const msgList = Array.isArray(messages) ? messages : [];
+  const msgList: ChatMessage[] = Array.isArray(messages) ? messages : [];
 
   return (
     <div className="flex flex-col h-full bg-background rounded-lg border border-border">
@@ -54,33 +74,33 @@ export default function AgentChat() {
               {runId ? "No messages yet in this run." : "Execute a pipeline to see agent discussion here."}
             </div>
           )}
-          {msgList.map((msg: any, i: number) => {
+          {msgList.map((msg, i) => {
             const isUser = msg.role === "user";
             const teamKey = msg.agentTeam;
             const team = teamKey ? SDLC_TEAMS[teamKey as keyof typeof SDLC_TEAMS] : null;
             const agentName = team?.name ?? (isUser ? "You" : "Agent");
             const colorClass = isUser
               ? "bg-primary text-primary-foreground"
-              : TEAM_COLORS[teamKey] ?? "bg-muted text-muted-foreground";
+              : TEAM_COLORS[teamKey ?? ""] ?? "bg-muted text-muted-foreground";
 
             return (
               <div key={msg.id || i} className={cn(
                 "flex gap-3",
-                isUser ? "flex-row-reverse" : "flex-row"
+                isUser ? "flex-row-reverse" : "flex-row",
               )}>
                 <div className={cn(
                   "w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-xs font-medium",
-                  colorClass
+                  colorClass,
                 )}>
                   {isUser ? "U" : agentName[0]}
                 </div>
 
-                <div className={cn("flex-1 max-w-[70%]")}>
+                <div className="flex-1 max-w-[70%]">
                   <div className={cn(
                     "px-4 py-2 rounded-lg text-sm shadow-sm",
                     isUser
                       ? "bg-primary text-primary-foreground rounded-tr-none"
-                      : "bg-card border border-border text-card-foreground rounded-tl-none"
+                      : "bg-card border border-border text-card-foreground rounded-tl-none",
                   )}>
                     <pre className="whitespace-pre-wrap font-sans">{msg.content}</pre>
                   </div>
