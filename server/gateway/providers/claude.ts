@@ -1,11 +1,39 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ILLMProvider, ILLMProviderOptions, ProviderMessage } from "@shared/types";
 
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+/** Returns true for errors that warrant a single retry. */
+function isRetryable(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const code = (e as Error & { status?: number; code?: string }).status;
+  const errCode = (e as Error & { code?: string }).code;
+  if (code !== undefined && (code === 502 || code === 503 || code === 504)) return true;
+  if (errCode !== undefined && ["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED"].includes(errCode)) return true;
+  if (e.name === "TimeoutError") return true;
+  return false;
+}
+
+async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (isRetryable(e)) {
+      console.warn(`[claude] Retrying after error: ${(e as Error).message} (${label})`);
+      return fn();
+    }
+    throw e;
+  }
+}
+
 export class ClaudeProvider implements ILLMProvider {
   private client: Anthropic;
 
   constructor(apiKey: string) {
-    this.client = new Anthropic({ apiKey });
+    this.client = new Anthropic({
+      apiKey,
+      timeout: DEFAULT_TIMEOUT_MS,
+    });
   }
 
   /**
@@ -42,13 +70,17 @@ export class ClaudeProvider implements ILLMProvider {
   ): Promise<{ content: string; tokensUsed: number }> {
     const { system, messages: msgs } = this.extractSystem(messages);
 
-    const response = await this.client.messages.create({
-      model: modelId,
-      max_tokens: options?.maxTokens ?? 4096,
-      temperature: options?.temperature ?? 0.7,
-      ...(system ? { system } : {}),
-      messages: msgs,
-    });
+    const response = await withRetry(
+      () =>
+        this.client.messages.create({
+          model: modelId,
+          max_tokens: options?.maxTokens ?? 4096,
+          temperature: options?.temperature ?? 0.7,
+          ...(system ? { system } : {}),
+          messages: msgs,
+        }),
+      `complete/${modelId}`,
+    );
 
     const content = response.content
       .filter((block) => block.type === "text")
@@ -68,13 +100,30 @@ export class ClaudeProvider implements ILLMProvider {
   ): AsyncGenerator<string> {
     const { system, messages: msgs } = this.extractSystem(messages);
 
-    const stream = this.client.messages.stream({
-      model: modelId,
-      max_tokens: options?.maxTokens ?? 4096,
-      temperature: options?.temperature ?? 0.7,
-      ...(system ? { system } : {}),
-      messages: msgs,
-    });
+    // Streaming via SDK — retry not feasible mid-stream; retry on initial connect only
+    let stream: Awaited<ReturnType<typeof this.client.messages.stream>>;
+    try {
+      stream = this.client.messages.stream({
+        model: modelId,
+        max_tokens: options?.maxTokens ?? 4096,
+        temperature: options?.temperature ?? 0.7,
+        ...(system ? { system } : {}),
+        messages: msgs,
+      });
+    } catch (e) {
+      if (isRetryable(e)) {
+        console.warn(`[claude] Retrying stream after error: ${(e as Error).message}`);
+        stream = this.client.messages.stream({
+          model: modelId,
+          max_tokens: options?.maxTokens ?? 4096,
+          temperature: options?.temperature ?? 0.7,
+          ...(system ? { system } : {}),
+          messages: msgs,
+        });
+      } else {
+        throw e;
+      }
+    }
 
     for await (const event of stream) {
       if (
