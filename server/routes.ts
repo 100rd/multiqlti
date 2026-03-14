@@ -10,6 +10,7 @@ import { registerPipelineRoutes } from "./routes/pipelines";
 import { registerRunRoutes } from "./routes/runs";
 import { registerChatRoutes } from "./routes/chat";
 import { registerGatewayRoutes } from "./routes/gateway";
+import { registerStrategyRoutes } from "./routes/strategies";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
 
@@ -20,7 +21,7 @@ export async function registerRoutes(
   // Initialize core systems
   const wsManager = new WsManager(httpServer);
   const gateway = new Gateway(storage);
-  const teamRegistry = new TeamRegistry(gateway);
+  const teamRegistry = new TeamRegistry(gateway, wsManager);
   const controller = new PipelineController(storage, teamRegistry, wsManager);
 
   // Register route groups
@@ -29,6 +30,7 @@ export async function registerRoutes(
   registerRunRoutes(app, storage, controller);
   registerChatRoutes(app, storage, gateway, wsManager);
   registerGatewayRoutes(app, gateway);
+  registerStrategyRoutes(app, storage);
 
   // Seed default models
   const existingModels = await storage.getModels();
