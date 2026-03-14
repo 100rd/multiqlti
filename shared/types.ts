@@ -25,7 +25,7 @@ export type StageStatus =
 
 export type QuestionStatus = "pending" | "answered" | "dismissed";
 
-export type ModelProvider = "vllm" | "ollama" | "mock";
+export type ModelProvider = "vllm" | "ollama" | "mock" | "anthropic" | "google" | "xai";
 
 export interface TeamConfig {
   id: TeamId;
@@ -105,18 +105,30 @@ export interface TeamResult {
   questions?: string[];
 }
 
-export type StrategyPresetId =
-  | "fast"
-  | "balanced"
-  | "deep_think"
-  | "cost_efficient"
-  | "anti_hallucination";
+export type ProviderMessage = { role: string; content: string };
 
-export interface StrategyPreset {
-  id: StrategyPresetId;
-  label: string;
-  description: string;
-  temperature: number;
-  maxTokens: number;
-  stageOverrides?: Partial<Record<TeamId, { modelSlug?: string; temperature?: number; maxTokens?: number }>>;
+export interface ILLMProviderOptions {
+  maxTokens?: number;
+  temperature?: number;
+}
+
+export interface ILLMProvider {
+  /**
+   * Non-streaming completion. Returns full content and token count.
+   */
+  complete(
+    modelId: string,
+    messages: ProviderMessage[],
+    options?: ILLMProviderOptions,
+  ): Promise<{ content: string; tokensUsed: number }>;
+
+  /**
+   * Streaming completion. Yields text delta chunks as they arrive.
+   * The generator MUST be exhaustible — callers do not cancel mid-stream.
+   */
+  stream(
+    modelId: string,
+    messages: ProviderMessage[],
+    options?: ILLMProviderOptions,
+  ): AsyncGenerator<string>;
 }

@@ -19,6 +19,7 @@ import {
   XCircle,
   Loader2,
   Search,
+  Cloud,
 } from "lucide-react";
 import {
   useModels,
@@ -30,7 +31,25 @@ import {
   useProbeEndpoint,
 } from "@/hooks/use-pipeline";
 import { cn } from "@/lib/utils";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, useMutation } from "@tanstack/react-query";
+
+type CloudProvider = "anthropic" | "google" | "xai";
+
+interface ProviderTestResult {
+  ok: boolean;
+  latencyMs?: number;
+  error?: string;
+}
+
+const CLOUD_PROVIDERS: Array<{
+  key: CloudProvider;
+  name: string;
+  envVar: string;
+}> = [
+  { key: "anthropic", name: "Anthropic (Claude)", envVar: "ANTHROPIC_API_KEY" },
+  { key: "google",    name: "Google (Gemini)",    envVar: "GOOGLE_API_KEY"    },
+  { key: "xai",       name: "xAI (Grok)",         envVar: "XAI_API_KEY"       },
+];
 
 export default function Settings() {
   const { data: models, isLoading: modelsLoading } = useModels();
@@ -46,6 +65,37 @@ export default function Settings() {
   const [probeType, setProbeType] = useState<"vllm" | "ollama">("ollama");
   const [probeResults, setProbeResults] = useState<any[] | null>(null);
   const [probeError, setProbeError] = useState<string | null>(null);
+
+  // Per-provider test state: key → result or null (null = idle/loading)
+  const [testResults, setTestResults] = useState<Partial<Record<CloudProvider, ProviderTestResult | null>>>({});
+
+  const testProvider = useMutation({
+    mutationFn: async (provider: CloudProvider): Promise<{ provider: CloudProvider } & ProviderTestResult> => {
+      const res = await fetch(`/api/gateway/test/${provider}`, { method: "POST" });
+      if (!res.ok) {
+        const text = await res.text().catch(() => res.statusText);
+        return { provider, ok: false, error: text || res.statusText };
+      }
+      const data = await res.json() as ProviderTestResult;
+      return { provider, ...data };
+    },
+    onMutate: (provider: CloudProvider) => {
+      // Mark as loading (null = in-flight)
+      setTestResults((prev) => ({ ...prev, [provider]: null }));
+    },
+    onSuccess: (data) => {
+      setTestResults((prev) => ({
+        ...prev,
+        [data.provider]: { ok: data.ok, latencyMs: data.latencyMs, error: data.error },
+      }));
+    },
+    onError: (_err, provider) => {
+      setTestResults((prev) => ({
+        ...prev,
+        [provider]: { ok: false, error: "Request failed" },
+      }));
+    },
+  });
 
   const modelList: any[] = Array.isArray(models) ? models : [];
   const registeredSlugs = new Set(modelList.map((m: any) => m.slug));
@@ -131,6 +181,99 @@ export default function Settings() {
                   </div>
                 </div>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* ── Cloud Providers ────────────────────────── */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Cloud className="h-4 w-4" /> Cloud Providers
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-muted-foreground">
+                API keys are read from environment variables. Set the variable on your server to enable each provider.
+              </p>
+              {CLOUD_PROVIDERS.map(({ key, name, envVar }) => {
+                const isConfigured: boolean = !!gatewayStatus?.[key];
+                const testResult = testResults[key];
+                // testResult === undefined → never tested; null → in-flight
+                const isTesting = testResult === null && testProvider.isPending && testProvider.variables === key;
+
+                return (
+                  <div
+                    key={key}
+                    className="flex items-start gap-4 p-4 rounded-lg border border-border"
+                  >
+                    {/* Status icon */}
+                    <div className="mt-0.5 shrink-0">
+                      {isConfigured ? (
+                        <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+                      ) : (
+                        <XCircle className="h-5 w-5 text-muted-foreground" />
+                      )}
+                    </div>
+
+                    {/* Provider info */}
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium">{name}</span>
+                        {isConfigured ? (
+                          <Badge className="text-[10px] bg-emerald-500/15 text-emerald-600 border-emerald-500/30 hover:bg-emerald-500/15">
+                            Connected
+                          </Badge>
+                        ) : (
+                          <Badge variant="secondary" className="text-[10px]">
+                            Not configured
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-muted-foreground">Set</span>
+                        <code className="text-xs font-mono bg-muted px-1.5 py-0.5 rounded text-foreground">
+                          {envVar}
+                        </code>
+                        <span className="text-xs text-muted-foreground">on the server</span>
+                      </div>
+
+                      {/* Test result feedback */}
+                      {testResult !== undefined && testResult !== null && (
+                        <div
+                          className={cn(
+                            "text-xs mt-1.5 px-2 py-1 rounded",
+                            testResult.ok
+                              ? "text-emerald-600 bg-emerald-500/10"
+                              : "text-destructive bg-destructive/10",
+                          )}
+                        >
+                          {testResult.ok
+                            ? `Connected — ${testResult.latencyMs}ms`
+                            : `Error: ${testResult.error}`}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Test button */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs shrink-0"
+                      disabled={!isConfigured || isTesting}
+                      onClick={() => testProvider.mutate(key)}
+                    >
+                      {isTesting ? (
+                        <>
+                          <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+                          Testing
+                        </>
+                      ) : (
+                        "Test"
+                      )}
+                    </Button>
+                  </div>
+                );
+              })}
             </CardContent>
           </Card>
 

@@ -15,6 +15,7 @@ import {
   type InsertChatMessage,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
+import { PgStorage } from "./storage-pg";
 
 export interface IStorage {
   // Users
@@ -121,6 +122,7 @@ export class MemStorage implements IStorage {
       id,
       name: insert.name,
       slug: insert.slug,
+      modelId: insert.modelId ?? null,
       endpoint: insert.endpoint ?? null,
       provider: insert.provider ?? "mock",
       contextLimit: insert.contextLimit ?? 4096,
@@ -366,4 +368,6 @@ export class MemStorage implements IStorage {
   }
 }
 
-export const storage = new MemStorage();
+export const storage: IStorage = process.env.DATABASE_URL
+  ? new PgStorage()
+  : new MemStorage();
