@@ -1,19 +1,27 @@
 import type { IStorage } from "../storage";
-import type { GatewayRequest, GatewayResponse, ILLMProvider } from "@shared/types";
+import type { GatewayRequest, GatewayResponse, ILLMProvider, PrivacySettings } from "@shared/types";
 import { MockProvider } from "./providers/mock";
 import { VllmProvider } from "./providers/vllm";
 import { OllamaProvider } from "./providers/ollama";
 import { ClaudeProvider } from "./providers/claude";
 import { GeminiProvider } from "./providers/gemini";
 import { GrokProvider } from "./providers/grok";
+import { AnonymizerService } from "../privacy/anonymizer";
+
+export interface GatewayPrivacyOptions {
+  privacy?: PrivacySettings;
+  sessionId?: string;
+}
 
 export class Gateway {
   private registry: Map<string, ILLMProvider>;
   private mockProvider: MockProvider;
+  private anonymizer: AnonymizerService;
 
   constructor(private storage: IStorage) {
     this.registry = new Map();
     this.mockProvider = new MockProvider();
+    this.anonymizer = new AnonymizerService();
 
     // Self-hosted: endpoint-gated
     if (process.env.VLLM_ENDPOINT) {
@@ -40,49 +48,101 @@ export class Gateway {
     return this.registry.get(providerKey) ?? null;
   }
 
-  async complete(request: GatewayRequest): Promise<GatewayResponse> {
+  private shouldAnonymize(privacy?: PrivacySettings): boolean {
+    return !!(privacy?.enabled && privacy.level !== "off");
+  }
+
+  async complete(
+    request: GatewayRequest,
+    privacyOptions?: GatewayPrivacyOptions,
+  ): Promise<GatewayResponse> {
     const model = await this.storage.getModelBySlug(request.modelSlug);
     const providerKey = model?.provider ?? "mock";
     const modelId = model?.modelId ?? model?.name ?? request.modelSlug;
 
     const provider = this.getProvider(providerKey);
 
+    const privacy = privacyOptions?.privacy;
+    const sessionId = privacyOptions?.sessionId ?? crypto.randomUUID();
+
+    let messages = request.messages;
+    if (this.shouldAnonymize(privacy)) {
+      messages = request.messages.map((m) => ({
+        ...m,
+        content: this.anonymizer.anonymize(
+          m.content,
+          sessionId,
+          privacy!.level,
+          privacy!.vaultTtlMs,
+        ).anonymizedText,
+      }));
+    }
+
     let result: { content: string; tokensUsed: number };
     if (provider) {
-      result = await provider.complete(modelId, request.messages, {
+      result = await provider.complete(modelId, messages, {
         maxTokens: request.maxTokens,
         temperature: request.temperature,
       });
     } else {
-      // Fallback: mock (also catches vllm/ollama when env var not set)
-      result = await this.mockProvider.complete(request.messages, {
+      result = await this.mockProvider.complete(messages, {
         maxTokens: request.maxTokens,
       });
     }
 
+    const content = this.shouldAnonymize(privacy)
+      ? this.anonymizer.rehydrate(result.content, sessionId)
+      : result.content;
+
     return {
-      content: result.content,
+      content,
       tokensUsed: result.tokensUsed,
       modelSlug: request.modelSlug,
       finishReason: "stop",
     };
   }
 
-  async *stream(request: GatewayRequest): AsyncGenerator<string> {
+  async *stream(
+    request: GatewayRequest,
+    privacyOptions?: GatewayPrivacyOptions,
+  ): AsyncGenerator<string> {
     const model = await this.storage.getModelBySlug(request.modelSlug);
     const providerKey = model?.provider ?? "mock";
     const modelId = model?.modelId ?? model?.name ?? request.modelSlug;
 
     const provider = this.getProvider(providerKey);
 
+    const privacy = privacyOptions?.privacy;
+    const sessionId = privacyOptions?.sessionId ?? crypto.randomUUID();
+
+    let messages = request.messages;
+    if (this.shouldAnonymize(privacy)) {
+      messages = request.messages.map((m) => ({
+        ...m,
+        content: this.anonymizer.anonymize(
+          m.content,
+          sessionId,
+          privacy!.level,
+          privacy!.vaultTtlMs,
+        ).anonymizedText,
+      }));
+    }
+
     if (provider) {
-      yield* provider.stream(modelId, request.messages, {
+      yield* provider.stream(modelId, messages, {
         maxTokens: request.maxTokens,
         temperature: request.temperature,
       });
     } else {
-      yield* this.mockProvider.stream(request.messages);
+      yield* this.mockProvider.stream(messages);
     }
+    // Note: streaming rehydration is not applied chunk-by-chunk because
+    // pseudonyms may span chunk boundaries. Callers that need rehydration
+    // should accumulate chunks and call anonymizer.rehydrate() on the full response.
+  }
+
+  getAnonymizer(): AnonymizerService {
+    return this.anonymizer;
   }
 
   getStatus() {
@@ -102,9 +162,9 @@ export class Gateway {
 
     for (const [key, provider] of this.registry.entries()) {
       results[key] = { available: true, models: [] };
-      if ("listModels" in provider && typeof (provider as any).listModels === "function") {
+      if ("listModels" in provider && typeof (provider as Record<string, unknown>).listModels === "function") {
         try {
-          results[key].models = await (provider as any).listModels();
+          results[key].models = await (provider as { listModels: () => Promise<unknown[]> }).listModels();
         } catch (e) {
           results[key].error = (e as Error).message;
         }

@@ -7,6 +7,7 @@ import {
   boolean,
   timestamp,
   jsonb,
+  serial,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -179,3 +180,45 @@ export const insertChatMessageSchema = createInsertSchema(chatMessages).omit({
 
 export type InsertChatMessage = z.infer<typeof insertChatMessageSchema>;
 export type ChatMessage = typeof chatMessages.$inferSelect;
+
+// ─── Privacy: Anonymization Log ─────────────────────
+
+export const anonymizationLog = pgTable("anonymization_log", {
+  id: serial("id").primaryKey(),
+  runId: varchar("run_id"),
+  stageIndex: integer("stage_index"),
+  sessionId: text("session_id").notNull(),
+  entitiesFound: jsonb("entities_found").notNull(), // array of DetectedEntity (no real values stored)
+  entityCount: integer("entity_count").notNull(),
+  level: text("level").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+export const insertAnonymizationLogSchema = createInsertSchema(anonymizationLog).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertAnonymizationLog = z.infer<typeof insertAnonymizationLogSchema>;
+export type AnonymizationLog = typeof anonymizationLog.$inferSelect;
+
+// ─── Privacy: Custom Anonymization Patterns ──────────
+
+export const anonymizationPatterns = pgTable("anonymization_patterns", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  entityType: text("entity_type").notNull().default("custom_pattern"),
+  regexPattern: text("regex_pattern").notNull(),
+  severity: text("severity").notNull().default("high"),
+  pseudonymTemplate: text("pseudonym_template"),
+  allowlist: text("allowlist").array().default(sql`'{}'::text[]`),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+export const insertAnonymizationPatternSchema = createInsertSchema(anonymizationPatterns).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertAnonymizationPattern = z.infer<typeof insertAnonymizationPatternSchema>;
+export type AnonymizationPattern = typeof anonymizationPatterns.$inferSelect;
