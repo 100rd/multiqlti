@@ -7,6 +7,8 @@ import { ClaudeProvider } from "./providers/claude";
 import { GeminiProvider } from "./providers/gemini";
 import { GrokProvider } from "./providers/grok";
 
+type CloudProviderKey = "anthropic" | "google" | "xai";
+
 export class Gateway {
   private registry: Map<string, ILLMProvider>;
   private mockProvider: MockProvider;
@@ -23,7 +25,7 @@ export class Gateway {
       this.registry.set("ollama", new OllamaProvider(process.env.OLLAMA_ENDPOINT));
     }
 
-    // Cloud: API-key-gated
+    // Cloud: API-key-gated (env vars; DB keys loaded later via loadDbKeys())
     if (process.env.ANTHROPIC_API_KEY) {
       this.registry.set("anthropic", new ClaudeProvider(process.env.ANTHROPIC_API_KEY));
     }
@@ -32,6 +34,49 @@ export class Gateway {
     }
     if (process.env.XAI_API_KEY) {
       this.registry.set("xai", new GrokProvider(process.env.XAI_API_KEY));
+    }
+  }
+
+  /**
+   * Load provider keys from DB, registering any providers not already set via env vars.
+   * Called once at startup after DB is available.
+   */
+  async loadDbKeys(dbKeys: Map<string, string>): Promise<void> {
+    for (const [provider, apiKey] of dbKeys.entries()) {
+      // Env var takes precedence — don't overwrite
+      if (this.registry.has(provider)) continue;
+      await this.reloadProvider(provider as CloudProviderKey, apiKey);
+    }
+  }
+
+  /**
+   * Hot-reload a cloud provider with a new API key (or null to remove it).
+   * Called when the user saves or deletes a key via the settings UI.
+   */
+  async reloadProvider(provider: CloudProviderKey, apiKey: string | null): Promise<void> {
+    if (!apiKey) {
+      // Only remove if not backed by env var
+      const envVars: Record<CloudProviderKey, string> = {
+        anthropic: "ANTHROPIC_API_KEY",
+        google: "GOOGLE_API_KEY",
+        xai: "XAI_API_KEY",
+      };
+      if (!process.env[envVars[provider]]) {
+        this.registry.delete(provider);
+      }
+      return;
+    }
+
+    switch (provider) {
+      case "anthropic":
+        this.registry.set("anthropic", new ClaudeProvider(apiKey));
+        break;
+      case "google":
+        this.registry.set("google", new GeminiProvider(apiKey));
+        break;
+      case "xai":
+        this.registry.set("xai", new GrokProvider(apiKey));
+        break;
     }
   }
 
@@ -102,9 +147,9 @@ export class Gateway {
 
     for (const [key, provider] of this.registry.entries()) {
       results[key] = { available: true, models: [] };
-      if ("listModels" in provider && typeof (provider as any).listModels === "function") {
+      if ("listModels" in provider && typeof (provider as unknown as { listModels: unknown }).listModels === "function") {
         try {
-          results[key].models = await (provider as any).listModels();
+          results[key].models = await (provider as unknown as { listModels: () => Promise<unknown[]> }).listModels();
         } catch (e) {
           results[key].error = (e as Error).message;
         }

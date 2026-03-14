@@ -5,6 +5,28 @@ import {
 } from "@google/generative-ai";
 import type { ILLMProvider, ILLMProviderOptions, ProviderMessage } from "@shared/types";
 
+/** Returns true for errors that warrant a single retry. */
+function isRetryable(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const msg = e.message.toLowerCase();
+  if (msg.includes("502") || msg.includes("503") || msg.includes("504")) return true;
+  if (msg.includes("econnreset") || msg.includes("etimedout") || msg.includes("econnrefused")) return true;
+  if (e.name === "TimeoutError") return true;
+  return false;
+}
+
+async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (isRetryable(e)) {
+      console.warn(`[gemini] Retrying after error: ${(e as Error).message} (${label})`);
+      return fn();
+    }
+    throw e;
+  }
+}
+
 export class GeminiProvider implements ILLMProvider {
   private client: GoogleGenerativeAI;
 
@@ -59,8 +81,11 @@ export class GeminiProvider implements ILLMProvider {
     });
 
     const chat = model.startChat({ history });
-    const result = await chat.sendMessage(
-      lastMessage.parts.map((p) => p.text ?? "").join(""),
+    const userText = lastMessage.parts.map((p) => p.text ?? "").join("");
+
+    const result = await withRetry(
+      () => chat.sendMessage(userText),
+      `complete/${modelId}`,
     );
 
     const response = result.response;
@@ -90,8 +115,11 @@ export class GeminiProvider implements ILLMProvider {
     });
 
     const chat = model.startChat({ history });
-    const result: GenerateContentStreamResult = await chat.sendMessageStream(
-      lastMessage.parts.map((p) => p.text ?? "").join(""),
+    const userText = lastMessage.parts.map((p) => p.text ?? "").join("");
+
+    const result: GenerateContentStreamResult = await withRetry(
+      () => chat.sendMessageStream(userText),
+      `stream/${modelId}`,
     );
 
     for await (const chunk of result.stream) {

@@ -210,6 +210,8 @@ export type ProviderMessage = { role: string; content: string };
 export interface ILLMProviderOptions {
   maxTokens?: number;
   temperature?: number;
+  /** Per-request timeout override in milliseconds. Defaults to provider default (30s). */
+  timeoutMs?: number;
 }
 
 export interface ILLMProvider {
