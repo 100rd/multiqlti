@@ -110,6 +110,8 @@ export type ProviderMessage = { role: string; content: string };
 export interface ILLMProviderOptions {
   maxTokens?: number;
   temperature?: number;
+  /** Per-request timeout override in milliseconds. Defaults to provider default (30s). */
+  timeoutMs?: number;
 }
 
 export interface ILLMProvider {
@@ -131,4 +133,19 @@ export interface ILLMProvider {
     messages: ProviderMessage[],
     options?: ILLMProviderOptions,
   ): AsyncGenerator<string>;
+}
+
+export interface StageOverride {
+  modelSlug?: string;
+  temperature?: number;
+  maxTokens?: number;
+}
+
+export interface StrategyPreset {
+  id: string;
+  label: string;
+  description: string;
+  temperature: number;
+  maxTokens: number;
+  stageOverrides: Partial<Record<TeamId, StageOverride>>;
 }
