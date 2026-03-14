@@ -137,6 +137,11 @@ export class PipelineController {
           temperature: stage.temperature,
           maxTokens: stage.maxTokens,
           previousOutputs,
+          // Privacy: use the run ID as a stable sessionId for the full run
+          privacySettings: stage.privacySettings?.enabled
+            ? stage.privacySettings
+            : undefined,
+          sessionId: run.id,
         };
 
         // Pass execution strategy (undefined = single, handled in BaseTeam)

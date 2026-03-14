@@ -7,7 +7,7 @@ import { Save, RotateCcw, Zap, Network } from "lucide-react";
 import AgentNode from "./AgentNode";
 import { usePipelines, useUpdatePipeline, useModels } from "@/hooks/use-pipeline";
 import { SDLC_TEAMS, TEAM_ORDER, STRATEGY_PRESETS, EXECUTION_STRATEGY_PRESETS } from "@shared/constants";
-import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy } from "@shared/types";
+import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy, PrivacySettings } from "@shared/types";
 
 interface MultiAgentPipelineProps {
   pipelineId?: string;
@@ -72,6 +72,13 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
       }
       return { ...s, executionStrategy: strategy };
     }));
+    setDirty(true);
+  };
+
+  const updatePrivacy = (teamId: string, settings: PrivacySettings) => {
+    setLocalStages(prev => prev.map(s =>
+      s.teamId === teamId ? { ...s, privacySettings: settings } : s,
+    ));
     setDirty(true);
   };
 
@@ -267,12 +274,14 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                 temperature={stage.temperature}
                 maxTokens={stage.maxTokens}
                 executionStrategy={stage.executionStrategy}
+                privacySettings={stage.privacySettings}
                 onModelChange={(_, model) => updateStageModel(stage.teamId, model)}
                 onToggle={() => toggleStage(stage.teamId)}
                 onSystemPromptChange={(_, prompt) => updateSystemPrompt(stage.teamId, prompt)}
                 onTemperatureChange={(_, temp) => updateTemperature(stage.teamId, temp)}
                 onMaxTokensChange={(_, tokens) => updateMaxTokens(stage.teamId, tokens)}
                 onStrategyChange={(_, strategy) => updateStrategy(stage.teamId, strategy)}
+                onPrivacyChange={(_, settings) => updatePrivacy(stage.teamId, settings)}
                 isLast={idx === localStages.length - 1}
               />
             );
@@ -326,6 +335,11 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                   {strat && strat.type !== "single" && (
                     <Badge variant="secondary" className="ml-2 text-[9px] h-4 px-1">
                       {strategyBadge(strat)}
+                    </Badge>
+                  )}
+                  {stage?.privacySettings?.enabled && (
+                    <Badge variant="outline" className="ml-2 text-[9px] h-4 px-1 border-emerald-500/50 text-emerald-600">
+                      privacy:{stage.privacySettings.level}
                     </Badge>
                   )}
                   {' — '}{team.description}

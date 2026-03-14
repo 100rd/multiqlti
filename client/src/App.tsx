@@ -13,6 +13,7 @@ import PipelineList from "@/pages/PipelineList";
 import PipelineDetail from "@/pages/PipelineDetail";
 import PipelineRun from "@/pages/PipelineRun";
 import Settings from "@/pages/Settings";
+import Privacy from "@/pages/Privacy";
 
 function Router() {
   return (
@@ -25,6 +26,7 @@ function Router() {
         <Route path="/pipelines/:id" component={PipelineDetail} />
         <Route path="/runs/:runId" component={PipelineRun} />
         <Route path="/settings" component={Settings} />
+        <Route path="/privacy" component={Privacy} />
         <Route component={NotFound} />
       </Switch>
     </MainLayout>

@@ -11,6 +11,7 @@ import { registerRunRoutes } from "./routes/runs";
 import { registerChatRoutes } from "./routes/chat";
 import { registerGatewayRoutes } from "./routes/gateway";
 import { registerStrategyRoutes } from "./routes/strategies";
+import { registerPrivacyRoutes } from "./routes/privacy";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
 
@@ -31,6 +32,7 @@ export async function registerRoutes(
   registerChatRoutes(app, storage, gateway, wsManager);
   registerGatewayRoutes(app, gateway);
   registerStrategyRoutes(app, storage);
+  registerPrivacyRoutes(app);
 
   // Seed default models
   const existingModels = await storage.getModels();

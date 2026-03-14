@@ -6,11 +6,11 @@ import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ChevronDown, ChevronUp, Pencil } from "lucide-react";
+import { ChevronDown, ChevronUp, Pencil, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SDLC_TEAMS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, MIN_TEMPERATURE, MAX_TEMPERATURE, TEMPERATURE_STEP } from "@shared/constants";
 import StrategyConfig from "./StrategyConfig";
-import type { ExecutionStrategy } from "@shared/types";
+import type { ExecutionStrategy, PrivacySettings } from "@shared/types";
 
 interface ModelOption {
   label: string;
@@ -30,12 +30,14 @@ interface AgentNodeProps {
   temperature?: number;
   maxTokens?: number;
   executionStrategy?: ExecutionStrategy;
+  privacySettings?: PrivacySettings;
   onModelChange: (id: string, model: string) => void;
   onToggle: () => void;
   onSystemPromptChange: (id: string, prompt: string) => void;
   onTemperatureChange: (id: string, temperature: number) => void;
   onMaxTokensChange: (id: string, maxTokens: number) => void;
   onStrategyChange: (id: string, strategy: ExecutionStrategy) => void;
+  onPrivacyChange: (id: string, settings: PrivacySettings) => void;
   isLast: boolean;
 }
 
@@ -59,6 +61,13 @@ const DOT_COLOR_MAP: Record<string, string> = {
   rose: "bg-rose-500",
 };
 
+const DEFAULT_PRIVACY: PrivacySettings = {
+  enabled: false,
+  level: "standard",
+  vaultTtlMs: 3_600_000,
+  auditLog: true,
+};
+
 export default function AgentNode({
   id,
   role,
@@ -71,12 +80,14 @@ export default function AgentNode({
   temperature,
   maxTokens,
   executionStrategy,
+  privacySettings,
   onModelChange,
   onToggle,
   onSystemPromptChange,
   onTemperatureChange,
   onMaxTokensChange,
   onStrategyChange,
+  onPrivacyChange,
   isLast,
 }: AgentNodeProps) {
   const team = SDLC_TEAMS[role as keyof typeof SDLC_TEAMS];
@@ -92,6 +103,7 @@ export default function AgentNode({
 
   const effectiveTemperature = temperature ?? DEFAULT_TEMPERATURE;
   const effectiveMaxTokens = maxTokens ?? DEFAULT_MAX_TOKENS;
+  const effectivePrivacy = privacySettings ?? DEFAULT_PRIVACY;
 
   const handlePromptBlur = () => {
     onSystemPromptChange(id, localPrompt);
@@ -113,6 +125,17 @@ export default function AgentNode({
         setTimeout(() => textareaRef.current?.focus(), 50);
       }
       return !prev;
+    });
+  };
+
+  const handlePrivacyToggle = (checked: boolean) => {
+    onPrivacyChange(id, { ...effectivePrivacy, enabled: checked });
+  };
+
+  const handlePrivacyLevelChange = (level: string) => {
+    onPrivacyChange(id, {
+      ...effectivePrivacy,
+      level: level as PrivacySettings["level"],
     });
   };
 
@@ -189,7 +212,7 @@ export default function AgentNode({
             )}
           </div>
 
-          {/* Advanced: Temperature + Max Tokens */}
+          {/* Advanced: Temperature + Max Tokens + Privacy */}
           <div>
             <button
               type="button"
@@ -242,6 +265,47 @@ export default function AgentNode({
                     onBlur={handleMaxTokensBlur}
                     disabled={!enabled}
                   />
+                </div>
+
+                {/* Privacy Proxy */}
+                <div className="pt-1 border-t border-border">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-1.5">
+                      <ShieldCheck className="h-3 w-3 text-muted-foreground" />
+                      <label className="text-xs font-medium text-muted-foreground">
+                        Privacy Proxy
+                      </label>
+                    </div>
+                    <Switch
+                      checked={effectivePrivacy.enabled}
+                      onCheckedChange={handlePrivacyToggle}
+                      disabled={!enabled}
+                    />
+                  </div>
+
+                  {effectivePrivacy.enabled && (
+                    <div className="space-y-2">
+                      <label className="text-xs text-muted-foreground mb-1 block">
+                        Anonymization Level
+                      </label>
+                      <Select
+                        value={effectivePrivacy.level}
+                        onValueChange={handlePrivacyLevelChange}
+                        disabled={!enabled}
+                      >
+                        <SelectTrigger className="h-7 text-xs bg-background border-border">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="standard">Standard — mask critical + high severity</SelectItem>
+                          <SelectItem value="strict">Strict — mask all identifiers</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-[10px] text-muted-foreground">
+                        Pseudonymizes identifiers before sending to the LLM. Real values are restored in the response.
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
