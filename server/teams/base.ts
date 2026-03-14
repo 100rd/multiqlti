@@ -22,6 +22,8 @@ export abstract class BaseTeam {
     const response = await this.gateway.complete({
       modelSlug: context.modelSlug || this.config.defaultModelSlug,
       messages,
+      temperature: context.temperature,
+      maxTokens: context.maxTokens,
     });
 
     const parsed = this.parseOutput(response.content);
@@ -43,6 +45,8 @@ export abstract class BaseTeam {
     yield* this.gateway.stream({
       modelSlug: context.modelSlug || this.config.defaultModelSlug,
       messages,
+      temperature: context.temperature,
+      maxTokens: context.maxTokens,
     });
   }
 

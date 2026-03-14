@@ -1,9 +1,14 @@
+import { useState, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Slider } from "@/components/ui/slider";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { ChevronDown, ChevronUp, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { SDLC_TEAMS } from "@shared/constants";
+import { SDLC_TEAMS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, MIN_TEMPERATURE, MAX_TEMPERATURE, TEMPERATURE_STEP } from "@shared/constants";
 
 interface ModelOption {
   label: string;
@@ -19,8 +24,14 @@ interface AgentNodeProps {
   enabled: boolean;
   color: string;
   models: ModelOption[];
+  systemPromptOverride?: string;
+  temperature?: number;
+  maxTokens?: number;
   onModelChange: (id: string, model: string) => void;
   onToggle: () => void;
+  onSystemPromptChange: (id: string, prompt: string) => void;
+  onTemperatureChange: (id: string, temperature: number) => void;
+  onMaxTokensChange: (id: string, maxTokens: number) => void;
   isLast: boolean;
 }
 
@@ -52,12 +63,52 @@ export default function AgentNode({
   enabled,
   color,
   models,
+  systemPromptOverride,
+  temperature,
+  maxTokens,
   onModelChange,
   onToggle,
+  onSystemPromptChange,
+  onTemperatureChange,
+  onMaxTokensChange,
   isLast,
 }: AgentNodeProps) {
   const team = SDLC_TEAMS[role as keyof typeof SDLC_TEAMS];
   const teamName = team?.name ?? role;
+
+  const [promptExpanded, setPromptExpanded] = useState(false);
+  const [advancedExpanded, setAdvancedExpanded] = useState(false);
+  const [localPrompt, setLocalPrompt] = useState(systemPromptOverride ?? "");
+  const [localMaxTokens, setLocalMaxTokens] = useState(
+    String(maxTokens ?? DEFAULT_MAX_TOKENS),
+  );
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const effectiveTemperature = temperature ?? DEFAULT_TEMPERATURE;
+  const effectiveMaxTokens = maxTokens ?? DEFAULT_MAX_TOKENS;
+
+  const handlePromptBlur = () => {
+    onSystemPromptChange(id, localPrompt);
+  };
+
+  const handleMaxTokensBlur = () => {
+    const parsed = parseInt(localMaxTokens, 10);
+    if (!isNaN(parsed) && parsed > 0) {
+      onMaxTokensChange(id, parsed);
+    } else {
+      setLocalMaxTokens(String(effectiveMaxTokens));
+    }
+  };
+
+  const handlePromptToggle = () => {
+    setPromptExpanded((prev) => {
+      if (!prev) {
+        setLocalPrompt(systemPromptOverride ?? "");
+        setTimeout(() => textareaRef.current?.focus(), 50);
+      }
+      return !prev;
+    });
+  };
 
   return (
     <div className="relative">
@@ -95,6 +146,99 @@ export default function AgentNode({
                 ))}
               </SelectContent>
             </Select>
+          </div>
+
+          {/* System Prompt Override */}
+          <div>
+            <button
+              type="button"
+              onClick={handlePromptToggle}
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              disabled={!enabled}
+            >
+              <Pencil className="h-3 w-3" />
+              <span>
+                {systemPromptOverride ? "Edit prompt override" : "Add prompt override"}
+              </span>
+              {promptExpanded
+                ? <ChevronUp className="h-3 w-3 ml-1" />
+                : <ChevronDown className="h-3 w-3 ml-1" />}
+            </button>
+
+            {promptExpanded && (
+              <div className="mt-2">
+                <Textarea
+                  ref={textareaRef}
+                  className="text-xs font-mono min-h-[80px] resize-y bg-background border-border"
+                  placeholder={team?.systemPromptTemplate ?? "Override the system prompt for this stage..."}
+                  value={localPrompt}
+                  onChange={(e) => setLocalPrompt(e.target.value)}
+                  onBlur={handlePromptBlur}
+                  disabled={!enabled}
+                />
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  Saves automatically when you click away. Leave empty to use the default.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Advanced: Temperature + Max Tokens */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setAdvancedExpanded((prev) => !prev)}
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              disabled={!enabled}
+            >
+              <span>Advanced</span>
+              {advancedExpanded
+                ? <ChevronUp className="h-3 w-3 ml-1" />
+                : <ChevronDown className="h-3 w-3 ml-1" />}
+            </button>
+
+            {advancedExpanded && (
+              <div className="mt-3 space-y-3 p-3 rounded border border-border bg-muted/30">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-medium text-muted-foreground">
+                      Temperature
+                    </label>
+                    <span className="text-xs font-mono text-foreground">
+                      {effectiveTemperature.toFixed(1)}
+                    </span>
+                  </div>
+                  <Slider
+                    min={MIN_TEMPERATURE}
+                    max={MAX_TEMPERATURE}
+                    step={TEMPERATURE_STEP}
+                    value={[effectiveTemperature]}
+                    onValueChange={([val]) => onTemperatureChange(id, val)}
+                    disabled={!enabled}
+                    className="h-4"
+                  />
+                  <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5">
+                    <span>Precise (0.0)</span>
+                    <span>Creative (2.0)</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1 block">
+                    Max Tokens
+                  </label>
+                  <Input
+                    type="number"
+                    min={1}
+                    className="h-7 text-xs bg-background border-border"
+                    value={localMaxTokens}
+                    onChange={(e) => setLocalMaxTokens(e.target.value)}
+                    onBlur={handleMaxTokensBlur}
+                    disabled={!enabled}
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           {team && (

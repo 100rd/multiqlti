@@ -83,6 +83,8 @@ export interface PipelineStageConfig {
   teamId: TeamId;
   modelSlug: string;
   systemPromptOverride?: string;
+  temperature?: number;
+  maxTokens?: number;
   enabled: boolean;
 }
 
@@ -90,6 +92,8 @@ export interface StageContext {
   runId: string;
   stageIndex: number;
   modelSlug?: string;
+  temperature?: number;
+  maxTokens?: number;
   previousOutputs: Record<string, unknown>[];
   userAnswers?: Record<string, string>;
 }
