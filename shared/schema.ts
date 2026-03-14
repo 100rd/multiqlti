@@ -37,6 +37,9 @@ export const models = pgTable("models", {
     .default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
   slug: text("slug").notNull().unique(),
+  // Provider-side model identifier, e.g. "claude-sonnet-4-6", "grok-3"
+  // Null for self-hosted models where model name IS the modelId.
+  modelId: text("model_id"),
   endpoint: text("endpoint"),
   provider: text("provider").notNull().default("mock"),
   contextLimit: integer("context_limit").notNull().default(4096),

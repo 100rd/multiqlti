@@ -252,4 +252,60 @@ export const DEFAULT_MODELS = [
     capabilities: ["summarization", "classification", "lightweight"],
     isActive: true,
   },
+
+  // ─── Anthropic ──────────────────────────────────────
+  {
+    name: "Claude Sonnet 4.6",
+    slug: "claude-sonnet-4-6",
+    modelId: "claude-sonnet-4-6",
+    provider: "anthropic" as const,
+    endpoint: null,
+    contextLimit: 200000,
+    capabilities: ["planning", "architecture", "code_review", "reasoning", "general"],
+    isActive: true,
+  },
+  {
+    name: "Claude Haiku 4.5",
+    slug: "claude-haiku-4-5",
+    modelId: "claude-haiku-4-5",
+    provider: "anthropic" as const,
+    endpoint: null,
+    contextLimit: 200000,
+    capabilities: ["testing", "summarization", "lightweight", "fast"],
+    isActive: true,
+  },
+
+  // ─── Google ─────────────────────────────────────────
+  {
+    name: "Gemini 2.0 Flash",
+    slug: "gemini-2-0-flash",
+    modelId: "gemini-2.0-flash",
+    provider: "google" as const,
+    endpoint: null,
+    contextLimit: 1048576,
+    capabilities: ["development", "testing", "analysis", "multimodal", "fast"],
+    isActive: true,
+  },
+
+  // ─── xAI ────────────────────────────────────────────
+  {
+    name: "Grok 3",
+    slug: "grok-3",
+    modelId: "grok-3",
+    provider: "xai" as const,
+    endpoint: null,
+    contextLimit: 131072,
+    capabilities: ["planning", "architecture", "development", "reasoning"],
+    isActive: true,
+  },
+  {
+    name: "Grok 3 Mini",
+    slug: "grok-3-mini",
+    modelId: "grok-3-mini",
+    provider: "xai" as const,
+    endpoint: null,
+    contextLimit: 131072,
+    capabilities: ["testing", "summarization", "lightweight", "fast"],
+    isActive: true,
+  },
 ];

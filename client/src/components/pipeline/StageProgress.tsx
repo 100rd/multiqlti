@@ -75,6 +75,8 @@ export default function StageProgress({
         const config = statusConfig[status];
         const team = SDLC_TEAMS[stage.teamId as keyof typeof SDLC_TEAMS];
         const isActive = idx === currentStageIndex && status === "running";
+        // Prefer the live model slug from stage execution data; fall back to the configured slug
+        const modelSlug = stageInfo?.modelSlug ?? stage.modelSlug;
 
         return (
           <div
@@ -97,6 +99,11 @@ export default function StageProgress({
               <p className={cn("text-xs font-medium truncate", config.color)}>
                 {team?.name ?? stage.teamId}
               </p>
+              {modelSlug && (
+                <p className="text-[10px] text-muted-foreground font-mono truncate">
+                  {modelSlug}
+                </p>
+              )}
               {stageInfo?.tokensUsed ? (
                 <p className="text-[10px] text-muted-foreground">
                   {stageInfo.tokensUsed.toLocaleString()} tokens

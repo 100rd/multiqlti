@@ -58,6 +58,30 @@ export function registerGatewayRoutes(router: Router, gateway: Gateway) {
     res.json(gateway.getStatus());
   });
 
+  /** Test connectivity for a specific provider */
+  router.post("/api/gateway/test/:provider", async (req, res) => {
+    const { provider } = req.params;
+    const status = gateway.getStatus();
+    const providerKey = provider as keyof typeof status;
+
+    // Check if provider is registered (env var is set)
+    if (!(providerKey in status) || !status[providerKey as keyof typeof status]) {
+      return res.json({ ok: false, error: "Provider not configured" });
+    }
+
+    const start = Date.now();
+    try {
+      await gateway.complete({
+        modelSlug: `__test__${provider}`,
+        messages: [{ role: "user", content: "ping" }],
+        maxTokens: 5,
+      });
+      res.json({ ok: true, latencyMs: Date.now() - start });
+    } catch (e) {
+      res.json({ ok: false, error: (e as Error).message });
+    }
+  });
+
   /** Discover models from all connected provider endpoints */
   router.get("/api/providers/discover", async (_req, res) => {
     try {
