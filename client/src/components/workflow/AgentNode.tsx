@@ -10,7 +10,8 @@ import { ChevronDown, ChevronUp, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SDLC_TEAMS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, MIN_TEMPERATURE, MAX_TEMPERATURE, TEMPERATURE_STEP } from "@shared/constants";
 import StrategyConfig from "./StrategyConfig";
-import type { ExecutionStrategy } from "@shared/types";
+import SandboxConfig from "./SandboxConfig";
+import type { ExecutionStrategy, SandboxConfig as SandboxConfigType } from "@shared/types";
 
 interface ModelOption {
   label: string;
@@ -30,12 +31,14 @@ interface AgentNodeProps {
   temperature?: number;
   maxTokens?: number;
   executionStrategy?: ExecutionStrategy;
+  sandboxConfig?: SandboxConfigType;
   onModelChange: (id: string, model: string) => void;
   onToggle: () => void;
   onSystemPromptChange: (id: string, prompt: string) => void;
   onTemperatureChange: (id: string, temperature: number) => void;
   onMaxTokensChange: (id: string, maxTokens: number) => void;
   onStrategyChange: (id: string, strategy: ExecutionStrategy) => void;
+  onSandboxChange: (id: string, config: SandboxConfigType | undefined) => void;
   isLast: boolean;
 }
 
@@ -71,12 +74,14 @@ export default function AgentNode({
   temperature,
   maxTokens,
   executionStrategy,
+  sandboxConfig,
   onModelChange,
   onToggle,
   onSystemPromptChange,
   onTemperatureChange,
   onMaxTokensChange,
   onStrategyChange,
+  onSandboxChange,
   isLast,
 }: AgentNodeProps) {
   const team = SDLC_TEAMS[role as keyof typeof SDLC_TEAMS];
@@ -254,6 +259,13 @@ export default function AgentNode({
             defaultModelSlug={model}
             enabled={enabled}
             onChange={(s) => onStrategyChange(id, s)}
+          />
+
+          {/* Sandbox Config */}
+          <SandboxConfig
+            config={sandboxConfig}
+            enabled={enabled}
+            onChange={(cfg) => onSandboxChange(id, cfg)}
           />
 
           {team && (

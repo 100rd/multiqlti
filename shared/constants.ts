@@ -598,3 +598,23 @@ export function computeCostMultiplier(strategy: { type: string; proposers?: unkn
     default: return 1;
   }
 }
+
+// ─── Sandbox Image Presets ────────────────────────────────────────────────────
+
+export const SANDBOX_IMAGE_PRESETS = {
+  node:      { image: "node:20-alpine",             installCmd: "npm install",                      testCmd: "npm test",           buildCmd: "npm run build" },
+  python:    { image: "python:3.12-slim",            installCmd: "pip install -r requirements.txt",  testCmd: "pytest",             buildCmd: "python -m build" },
+  go:        { image: "golang:1.22-alpine",          installCmd: "go mod download",                  testCmd: "go test ./...",      buildCmd: "go build ./..." },
+  rust:      { image: "rust:1.77-slim",              installCmd: "cargo fetch",                      testCmd: "cargo test",         buildCmd: "cargo build --release" },
+  terraform: { image: "hashicorp/terraform:latest",  installCmd: "terraform init",                   testCmd: "terraform validate", buildCmd: "terraform plan" },
+  custom:    { image: "",                            installCmd: "",                                  testCmd: "",                   buildCmd: "" },
+} as const;
+
+export const SANDBOX_DEFAULTS = {
+  timeout: 120,
+  memoryLimit: "512m",
+  cpuLimit: 1.0,
+  networkEnabled: false,
+  workdir: "/workspace",
+  failOnNonZero: true,
+} as const;

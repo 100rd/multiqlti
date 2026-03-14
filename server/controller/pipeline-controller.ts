@@ -1,17 +1,21 @@
 import type { IStorage } from "../storage";
 import type { TeamRegistry } from "../teams/registry";
 import type { WsManager } from "../ws/manager";
-import type { PipelineStageConfig, WsEvent } from "@shared/types";
+import type { PipelineStageConfig, WsEvent, SandboxFile } from "@shared/types";
 import type { PipelineRun } from "@shared/schema";
+import { SandboxExecutor } from "../sandbox/executor";
 
 export class PipelineController {
   private activeRuns: Map<string, AbortController> = new Map();
+  private sandboxExecutor: SandboxExecutor;
 
   constructor(
     private storage: IStorage,
     private teamRegistry: TeamRegistry,
     private wsManager: WsManager,
-  ) {}
+  ) {
+    this.sandboxExecutor = new SandboxExecutor();
+  }
 
   async startRun(pipelineId: string, input: string): Promise<PipelineRun> {
     const pipeline = await this.storage.getPipeline(pipelineId);
@@ -59,6 +63,41 @@ export class PipelineController {
     });
 
     return run;
+  }
+
+  private extractFilesFromOutput(output: Record<string, unknown>): SandboxFile[] {
+    const files: SandboxFile[] = [];
+
+    // Check structured output.files array first
+    const rawFiles = output.files as Array<{ path: string; content: string }> | undefined;
+    if (Array.isArray(rawFiles)) {
+      for (const f of rawFiles) {
+        if (f.path && f.content) {
+          files.push({ path: f.path, content: f.content });
+        }
+      }
+      return files;
+    }
+
+    // Parse markdown code blocks from string fields
+    const raw = (output.raw as string) ?? JSON.stringify(output);
+    const patterns = [
+      /```\w*\s+\/\/\s*filename:\s*(\S+)\n([\s\S]*?)```/g,
+      /```\w*\s+(\S+\.\w+)\n([\s\S]*?)```/g,
+    ];
+
+    for (const pattern of patterns) {
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(raw)) !== null) {
+        const path = match[1];
+        const content = match[2];
+        if (path && content && !files.find((f) => f.path === path)) {
+          files.push({ path, content });
+        }
+      }
+    }
+
+    return files;
   }
 
   private async executeStages(
@@ -176,12 +215,67 @@ export class PipelineController {
           return; // Stop; resumeRun will re-enter
         }
 
+        // ─── Sandbox Execution ────────────────────────────────────────────────
+        let sandboxResult = null;
+
+        if (stage.sandbox?.enabled) {
+          const files = this.extractFilesFromOutput(result.output);
+
+          this.broadcast(run.id, {
+            type: "sandbox:starting",
+            runId: run.id,
+            stageExecutionId: stageExec.id,
+            payload: {
+              stageIndex: i,
+              image: stage.sandbox.image,
+              command: stage.sandbox.command,
+            },
+            timestamp: new Date().toISOString(),
+          });
+
+          sandboxResult = await this.sandboxExecutor.execute(
+            stage.sandbox,
+            files,
+            (stream, data) => {
+              this.broadcast(run.id, {
+                type: "sandbox:output",
+                runId: run.id,
+                stageExecutionId: stageExec.id,
+                payload: { stageIndex: i, stream, data },
+                timestamp: new Date().toISOString(),
+              });
+            },
+          );
+
+          this.broadcast(run.id, {
+            type: "sandbox:completed",
+            runId: run.id,
+            stageExecutionId: stageExec.id,
+            payload: {
+              stageIndex: i,
+              exitCode: sandboxResult.exitCode,
+              durationMs: sandboxResult.durationMs,
+              timedOut: sandboxResult.timedOut,
+            },
+            timestamp: new Date().toISOString(),
+          });
+
+          result.output.sandboxResult = sandboxResult;
+
+          if (stage.sandbox.failOnNonZero !== false && sandboxResult.exitCode !== 0) {
+            throw new Error(
+              `Sandbox failed (exit ${sandboxResult.exitCode}): ${sandboxResult.stderr.slice(0, 500)}`,
+            );
+          }
+        }
+
         // Stage completed
         await this.storage.updateStageExecution(stageExec.id, {
           status: "completed",
           output: result.output,
           tokensUsed: result.tokensUsed,
           completedAt: new Date(),
+          ...(sandboxResult ? { sandboxResult } : {}),
         });
 
         previousOutputs.push(result.output);

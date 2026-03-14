@@ -261,6 +261,7 @@ export class MemStorage implements IStorage {
       tokensUsed: insert.tokensUsed ?? 0,
       startedAt: insert.startedAt ?? null,
       completedAt: insert.completedAt ?? null,
+      sandboxResult: insert.sandboxResult ?? null,
       createdAt: new Date(),
     };
     this.stages.set(id, stage);

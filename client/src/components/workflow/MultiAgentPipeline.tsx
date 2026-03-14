@@ -7,7 +7,7 @@ import { Save, RotateCcw, Zap, Network } from "lucide-react";
 import AgentNode from "./AgentNode";
 import { usePipelines, useUpdatePipeline, useModels } from "@/hooks/use-pipeline";
 import { SDLC_TEAMS, TEAM_ORDER, STRATEGY_PRESETS, EXECUTION_STRATEGY_PRESETS } from "@shared/constants";
-import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy } from "@shared/types";
+import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy, SandboxConfig } from "@shared/types";
 
 interface MultiAgentPipelineProps {
   pipelineId?: string;
@@ -71,6 +71,18 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
         return rest as PipelineStageConfig;
       }
       return { ...s, executionStrategy: strategy };
+    }));
+    setDirty(true);
+  };
+
+  const updateSandbox = (teamId: string, config: SandboxConfig | undefined) => {
+    setLocalStages(prev => prev.map(s => {
+      if (s.teamId !== teamId) return s;
+      if (!config) {
+        const { sandbox: _removed, ...rest } = s as PipelineStageConfig & { sandbox?: SandboxConfig };
+        return rest as PipelineStageConfig;
+      }
+      return { ...s, sandbox: config };
     }));
     setDirty(true);
   };
@@ -267,12 +279,14 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                 temperature={stage.temperature}
                 maxTokens={stage.maxTokens}
                 executionStrategy={stage.executionStrategy}
+                sandboxConfig={stage.sandbox}
                 onModelChange={(_, model) => updateStageModel(stage.teamId, model)}
                 onToggle={() => toggleStage(stage.teamId)}
                 onSystemPromptChange={(_, prompt) => updateSystemPrompt(stage.teamId, prompt)}
                 onTemperatureChange={(_, temp) => updateTemperature(stage.teamId, temp)}
                 onMaxTokensChange={(_, tokens) => updateMaxTokens(stage.teamId, tokens)}
                 onStrategyChange={(_, strategy) => updateStrategy(stage.teamId, strategy)}
+                onSandboxChange={(_, cfg) => updateSandbox(stage.teamId, cfg)}
                 isLast={idx === localStages.length - 1}
               />
             );
@@ -298,8 +312,8 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
               <div className="text-muted-foreground">Full task context and prior outputs passed to each team</div>
             </div>
             <div className="p-2 rounded border border-border bg-card">
-              <div className="font-medium mb-1">Multi-Model Strategies</div>
-              <div className="text-muted-foreground">Each stage can use MoA, Debate, or Voting for higher quality</div>
+              <div className="font-medium mb-1">Sandbox Execution</div>
+              <div className="text-muted-foreground">Each stage can optionally run generated code in an isolated Docker container</div>
             </div>
           </div>
         </div>
@@ -326,6 +340,11 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                   {strat && strat.type !== "single" && (
                     <Badge variant="secondary" className="ml-2 text-[9px] h-4 px-1">
                       {strategyBadge(strat)}
+                    </Badge>
+                  )}
+                  {stage?.sandbox?.enabled && (
+                    <Badge variant="outline" className="ml-2 text-[9px] h-4 px-1 border-cyan-500/50 text-cyan-600">
+                      sandbox
                     </Badge>
                   )}
                   {' — '}{team.description}

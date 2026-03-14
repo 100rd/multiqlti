@@ -120,6 +120,7 @@ export const stageExecutions = pgTable("stage_executions", {
   tokensUsed: integer("tokens_used").default(0),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
+  sandboxResult: jsonb("sandbox_result"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

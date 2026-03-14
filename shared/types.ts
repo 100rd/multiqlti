@@ -130,6 +130,45 @@ export interface StrategyResult {
   durationMs: number;
 }
 
+// ─── Sandbox Types ────────────────────────────────────────────────────────────
+
+export interface SandboxConfig {
+  enabled: boolean;
+  image: string;
+  command: string;
+  installCommand?: string;
+  workdir?: string;
+  timeout?: number;
+  memoryLimit?: string;
+  cpuLimit?: number;
+  networkEnabled?: boolean;
+  env?: Record<string, string>;
+  failOnNonZero?: boolean;
+}
+
+export interface SandboxFile {
+  path: string;
+  content: string;
+}
+
+export interface SandboxArtifact {
+  path: string;
+  content: string;
+  sizeBytes: number;
+  isBinary: boolean;
+}
+
+export interface SandboxResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+  timedOut: boolean;
+  artifacts: SandboxArtifact[];
+  image: string;
+  command: string;
+}
+
 // ─── WS Event Types ──────────────────────────────────────────────────────────
 
 export type WsEventType =
@@ -152,7 +191,10 @@ export type WsEventType =
   | "strategy:debate:round"
   | "strategy:debate:judge"
   | "strategy:voting:candidate"
-  | "strategy:completed";
+  | "strategy:completed"
+  | "sandbox:starting"
+  | "sandbox:output"
+  | "sandbox:completed";
 
 export interface WsEvent {
   type: WsEventType;
@@ -185,6 +227,7 @@ export interface PipelineStageConfig {
   maxTokens?: number;
   enabled: boolean;
   executionStrategy?: ExecutionStrategy;
+  sandbox?: SandboxConfig;
 }
 
 export interface StageContext {
