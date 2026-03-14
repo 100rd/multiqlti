@@ -3,11 +3,11 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Save, RotateCcw, Zap } from "lucide-react";
+import { Save, RotateCcw, Zap, Network } from "lucide-react";
 import AgentNode from "./AgentNode";
 import { usePipelines, useUpdatePipeline, useModels } from "@/hooks/use-pipeline";
-import { SDLC_TEAMS, TEAM_ORDER, STRATEGY_PRESETS } from "@shared/constants";
-import type { PipelineStageConfig } from "@shared/types";
+import { SDLC_TEAMS, TEAM_ORDER, STRATEGY_PRESETS, EXECUTION_STRATEGY_PRESETS } from "@shared/constants";
+import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy } from "@shared/types";
 
 interface MultiAgentPipelineProps {
   pipelineId?: string;
@@ -63,6 +63,18 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
     setDirty(true);
   };
 
+  const updateStrategy = (teamId: string, strategy: ExecutionStrategy) => {
+    setLocalStages(prev => prev.map(s => {
+      if (s.teamId !== teamId) return s;
+      if (strategy.type === "single") {
+        const { executionStrategy: _removed, ...rest } = s as PipelineStageConfig & { executionStrategy?: ExecutionStrategy };
+        return rest as PipelineStageConfig;
+      }
+      return { ...s, executionStrategy: strategy };
+    }));
+    setDirty(true);
+  };
+
   const applyPreset = (presetId: string) => {
     const preset = STRATEGY_PRESETS.find(p => p.id === presetId);
     if (!preset) return;
@@ -74,6 +86,20 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
         temperature: override?.temperature ?? preset.temperature,
         maxTokens: preset.maxTokens,
       };
+    }));
+    setDirty(true);
+  };
+
+  const applyExecutionPreset = (presetId: string) => {
+    const preset = EXECUTION_STRATEGY_PRESETS.find(p => p.id === presetId);
+    if (!preset) return;
+    setLocalStages(prev => prev.map(s => {
+      const stageStrategy = preset.stageStrategies[s.teamId as keyof typeof preset.stageStrategies];
+      if (!stageStrategy) {
+        const { executionStrategy: _removed, ...rest } = s as PipelineStageConfig & { executionStrategy?: ExecutionStrategy };
+        return rest as PipelineStageConfig;
+      }
+      return { ...s, executionStrategy: stageStrategy };
     }));
     setDirty(true);
   };
@@ -127,14 +153,13 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
         </div>
       </div>
 
-      {/* Strategy Presets */}
+      {/* Model Presets */}
       <Card className="border-border bg-card p-4 space-y-3">
         <div className="flex items-center gap-2">
           <Zap className="h-4 w-4 text-amber-500" />
-          <span className="text-sm font-medium">Strategy Presets</span>
+          <span className="text-sm font-medium">Model Presets</span>
         </div>
 
-        {/* Preset quick-pick buttons */}
         <div className="flex flex-wrap gap-2">
           {STRATEGY_PRESETS.map(preset => (
             <Button
@@ -149,15 +174,16 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
           ))}
         </div>
 
-        {/* Visual constructor: stage × model grid */}
+        {/* Stage Model Matrix */}
         <div className="mt-3">
           <div className="text-xs text-muted-foreground mb-2 font-medium">Stage Model Matrix</div>
           <div className="space-y-1.5">
             {localStages.map(stage => {
               const team = SDLC_TEAMS[stage.teamId as keyof typeof SDLC_TEAMS];
               if (!team) return null;
+              const strat = stage.executionStrategy;
               return (
-                <div key={stage.teamId} className="grid grid-cols-[140px_1fr_80px_80px] gap-2 items-center">
+                <div key={stage.teamId} className="grid grid-cols-[140px_1fr_60px_60px_56px] gap-2 items-center">
                   <span className="text-xs font-medium truncate">{team.name}</span>
                   <Select
                     value={stage.modelSlug}
@@ -181,11 +207,44 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                   <span className="text-[10px] text-muted-foreground text-right font-mono">
                     {stage.maxTokens ?? 2048}tk
                   </span>
+                  {strat && strat.type !== "single" ? (
+                    <Badge variant="secondary" className="text-[9px] h-4 px-1 justify-center">
+                      {strategyBadge(strat)}
+                    </Badge>
+                  ) : (
+                    <span />
+                  )}
                 </div>
               );
             })}
           </div>
         </div>
+      </Card>
+
+      {/* Execution Strategy Presets */}
+      <Card className="border-border bg-card p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Network className="h-4 w-4 text-violet-500" />
+          <span className="text-sm font-medium">Execution Strategy Presets</span>
+          <span className="text-xs text-muted-foreground">(multi-model orchestration)</span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {EXECUTION_STRATEGY_PRESETS.map(preset => (
+            <Button
+              key={preset.id}
+              variant="outline"
+              size="sm"
+              className="text-xs h-7"
+              onClick={() => applyExecutionPreset(preset.id)}
+            >
+              {preset.label}
+            </Button>
+          ))}
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Quality Max uses MoA, Debate, and Voting for maximum output quality.
+          Apply a preset, then save to persist.
+        </p>
       </Card>
 
       {/* Stage Pipeline */}
@@ -207,11 +266,13 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                 systemPromptOverride={stage.systemPromptOverride}
                 temperature={stage.temperature}
                 maxTokens={stage.maxTokens}
+                executionStrategy={stage.executionStrategy}
                 onModelChange={(_, model) => updateStageModel(stage.teamId, model)}
                 onToggle={() => toggleStage(stage.teamId)}
                 onSystemPromptChange={(_, prompt) => updateSystemPrompt(stage.teamId, prompt)}
                 onTemperatureChange={(_, temp) => updateTemperature(stage.teamId, temp)}
                 onMaxTokensChange={(_, tokens) => updateMaxTokens(stage.teamId, tokens)}
+                onStrategyChange={(_, strategy) => updateStrategy(stage.teamId, strategy)}
                 isLast={idx === localStages.length - 1}
               />
             );
@@ -237,8 +298,8 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
               <div className="text-muted-foreground">Full task context and prior outputs passed to each team</div>
             </div>
             <div className="p-2 rounded border border-border bg-card">
-              <div className="font-medium mb-1">Model Flexibility</div>
-              <div className="text-muted-foreground">Assign any registered model to any team stage</div>
+              <div className="font-medium mb-1">Multi-Model Strategies</div>
+              <div className="text-muted-foreground">Each stage can use MoA, Debate, or Voting for higher quality</div>
             </div>
           </div>
         </div>
@@ -252,6 +313,7 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
             const team = SDLC_TEAMS[teamId];
             const stage = localStages.find(s => s.teamId === teamId);
             const model = modelList.find(m => m.value === stage?.modelSlug);
+            const strat = stage?.executionStrategy;
             return (
               <div key={teamId} className="flex gap-2">
                 <span className="font-mono text-blue-500">→</span>
@@ -260,6 +322,11 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                   {model && <span className="ml-1">({model.label})</span>}
                   {stage?.systemPromptOverride && (
                     <Badge variant="outline" className="ml-2 text-[9px] h-4 px-1">custom prompt</Badge>
+                  )}
+                  {strat && strat.type !== "single" && (
+                    <Badge variant="secondary" className="ml-2 text-[9px] h-4 px-1">
+                      {strategyBadge(strat)}
+                    </Badge>
                   )}
                   {' — '}{team.description}
                 </span>
@@ -270,4 +337,13 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
       </Card>
     </div>
   );
+}
+
+function strategyBadge(strategy: ExecutionStrategy): string {
+  switch (strategy.type) {
+    case "moa": return `MoA×${(strategy as MoaStrategy).proposers.length}`;
+    case "debate": return `Debate ${(strategy as DebateStrategy).rounds}r`;
+    case "voting": return `Vote×${(strategy as VotingStrategy).candidates.length}`;
+    default: return "Single";
+  }
 }
