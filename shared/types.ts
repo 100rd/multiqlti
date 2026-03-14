@@ -40,6 +40,98 @@ export interface TeamConfig {
   icon: string;
 }
 
+// ─── Execution Strategy Types ────────────────────────────────────────────────
+
+export type ExecutionStrategyType = "single" | "moa" | "debate" | "voting";
+
+export interface SingleStrategy {
+  type: "single";
+}
+
+export interface ProposerConfig {
+  modelSlug: string;
+  role?: string;
+  temperature?: number;
+}
+
+export interface AggregatorConfig {
+  modelSlug: string;
+  systemPrompt?: string;
+}
+
+export interface MoaStrategy {
+  type: "moa";
+  proposers: ProposerConfig[];
+  aggregator: AggregatorConfig;
+  proposerPromptOverride?: string;
+}
+
+export interface DebateParticipant {
+  modelSlug: string;
+  role: "proposer" | "critic" | "devil_advocate";
+  persona?: string;
+}
+
+export interface JudgeConfig {
+  modelSlug: string;
+  criteria?: string[];
+}
+
+export interface DebateStrategy {
+  type: "debate";
+  participants: DebateParticipant[];
+  judge: JudgeConfig;
+  rounds: number;
+  stopEarly?: boolean;
+}
+
+export interface CandidateConfig {
+  modelSlug: string;
+  temperature?: number;
+}
+
+export interface VotingStrategy {
+  type: "voting";
+  candidates: CandidateConfig[];
+  threshold: number;
+  validationMode: "text_similarity" | "test_execution";
+}
+
+export type ExecutionStrategy =
+  | SingleStrategy
+  | MoaStrategy
+  | DebateStrategy
+  | VotingStrategy;
+
+// ─── Strategy Result Detail Types ────────────────────────────────────────────
+
+export interface MoaDetails {
+  proposerResponses: Array<{ modelSlug: string; content: string; role?: string }>;
+  aggregatorModelSlug: string;
+}
+
+export interface DebateDetails {
+  rounds: Array<{ round: number; participant: string; role: string; content: string }>;
+  judgeModelSlug: string;
+  verdict: string;
+}
+
+export interface VotingDetails {
+  candidates: Array<{ modelSlug: string; content: string; passed: boolean }>;
+  winnerIndex: number;
+  agreement: number;
+}
+
+export interface StrategyResult {
+  finalContent: string;
+  strategy: ExecutionStrategyType;
+  details: MoaDetails | DebateDetails | VotingDetails | null;
+  totalTokensUsed: number;
+  durationMs: number;
+}
+
+// ─── WS Event Types ──────────────────────────────────────────────────────────
+
 export type WsEventType =
   | "pipeline:started"
   | "pipeline:completed"
@@ -54,7 +146,13 @@ export type WsEventType =
   | "chat:message"
   | "chat:stream_chunk"
   | "chat:stream_end"
-  | "model:status";
+  | "model:status"
+  | "strategy:started"
+  | "strategy:proposer"
+  | "strategy:debate:round"
+  | "strategy:debate:judge"
+  | "strategy:voting:candidate"
+  | "strategy:completed";
 
 export interface WsEvent {
   type: WsEventType;
@@ -86,6 +184,7 @@ export interface PipelineStageConfig {
   temperature?: number;
   maxTokens?: number;
   enabled: boolean;
+  executionStrategy?: ExecutionStrategy;
 }
 
 export interface StageContext {
@@ -103,6 +202,7 @@ export interface TeamResult {
   tokensUsed: number;
   raw: string;
   questions?: string[];
+  strategyResult?: StrategyResult;
 }
 
 export type ProviderMessage = { role: string; content: string };
@@ -135,11 +235,7 @@ export interface ILLMProvider {
   ): AsyncGenerator<string>;
 }
 
-export interface StageOverride {
-  modelSlug?: string;
-  temperature?: number;
-  maxTokens?: number;
-}
+// ─── Strategy Preset (existing usage in constants.ts) ────────────────────────
 
 export interface StrategyPreset {
   id: string;
@@ -147,5 +243,14 @@ export interface StrategyPreset {
   description: string;
   temperature: number;
   maxTokens: number;
-  stageOverrides: Partial<Record<TeamId, StageOverride>>;
+  stageOverrides?: Partial<Record<TeamId, { modelSlug?: string; temperature?: number }>>;
+}
+
+// ─── Execution Strategy Preset ───────────────────────────────────────────────
+
+export interface ExecutionStrategyPreset {
+  id: string;
+  label: string;
+  description: string;
+  stageStrategies: Partial<Record<TeamId, ExecutionStrategy>>;
 }

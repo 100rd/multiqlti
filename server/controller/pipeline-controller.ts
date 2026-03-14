@@ -111,6 +111,7 @@ export class PipelineController {
           stageIndex: i,
           teamId: stage.teamId,
           modelSlug: stage.modelSlug,
+          executionStrategy: stage.executionStrategy?.type ?? "single",
         },
         timestamp: new Date().toISOString(),
       });
@@ -138,7 +139,8 @@ export class PipelineController {
           previousOutputs,
         };
 
-        const result = await team.execute(stageInput, context);
+        // Pass execution strategy (undefined = single, handled in BaseTeam)
+        const result = await team.execute(stageInput, context, stage.executionStrategy);
 
         // Check if team needs clarification
         if (result.questions && result.questions.length > 0) {
@@ -193,6 +195,7 @@ export class PipelineController {
             teamId: stage.teamId,
             output: result.output,
             tokensUsed: result.tokensUsed,
+            strategyResult: result.strategyResult ?? null,
           },
           timestamp: new Date().toISOString(),
         });

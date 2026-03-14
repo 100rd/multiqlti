@@ -4,11 +4,14 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import StrategyViewer from "./StrategyViewer";
+import type { StrategyResult } from "@shared/types";
 
 interface StageOutputProps {
   teamId: string;
   teamName: string;
   output: Record<string, unknown>;
+  strategyResult?: StrategyResult | null;
   isActive?: boolean;
 }
 
@@ -16,6 +19,7 @@ export default function StageOutput({
   teamId,
   teamName,
   output,
+  strategyResult,
   isActive,
 }: StageOutputProps) {
   const [expanded, setExpanded] = useState(isActive ?? false);
@@ -135,6 +139,11 @@ export default function StageOutput({
                 </pre>
               </ScrollArea>
             </div>
+          )}
+
+          {/* Strategy intermediate outputs */}
+          {strategyResult && strategyResult.strategy !== "single" && (
+            <StrategyViewer strategyResult={strategyResult} />
           )}
         </CardContent>
       )}

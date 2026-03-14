@@ -9,6 +9,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { ChevronDown, ChevronUp, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SDLC_TEAMS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, MIN_TEMPERATURE, MAX_TEMPERATURE, TEMPERATURE_STEP } from "@shared/constants";
+import StrategyConfig from "./StrategyConfig";
+import type { ExecutionStrategy } from "@shared/types";
 
 interface ModelOption {
   label: string;
@@ -27,11 +29,13 @@ interface AgentNodeProps {
   systemPromptOverride?: string;
   temperature?: number;
   maxTokens?: number;
+  executionStrategy?: ExecutionStrategy;
   onModelChange: (id: string, model: string) => void;
   onToggle: () => void;
   onSystemPromptChange: (id: string, prompt: string) => void;
   onTemperatureChange: (id: string, temperature: number) => void;
   onMaxTokensChange: (id: string, maxTokens: number) => void;
+  onStrategyChange: (id: string, strategy: ExecutionStrategy) => void;
   isLast: boolean;
 }
 
@@ -66,11 +70,13 @@ export default function AgentNode({
   systemPromptOverride,
   temperature,
   maxTokens,
+  executionStrategy,
   onModelChange,
   onToggle,
   onSystemPromptChange,
   onTemperatureChange,
   onMaxTokensChange,
+  onStrategyChange,
   isLast,
 }: AgentNodeProps) {
   const team = SDLC_TEAMS[role as keyof typeof SDLC_TEAMS];
@@ -240,6 +246,15 @@ export default function AgentNode({
               </div>
             )}
           </div>
+
+          {/* Strategy Config */}
+          <StrategyConfig
+            strategy={executionStrategy}
+            models={models}
+            defaultModelSlug={model}
+            enabled={enabled}
+            onChange={(s) => onStrategyChange(id, s)}
+          />
 
           {team && (
             <div className="p-2 rounded bg-muted/50 border border-border">

@@ -1,4 +1,4 @@
-import type { TeamConfig, TeamId, PipelineStageConfig, StrategyPreset } from "./types";
+import type { TeamConfig, TeamId, PipelineStageConfig, StrategyPreset, ExecutionStrategyPreset } from "./types";
 
 export const SDLC_TEAMS: Record<TeamId, TeamConfig> = {
   planning: {
@@ -398,3 +398,203 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     },
   },
 ];
+
+// ─── Execution Strategy Presets ──────────────────────────────────────────────
+
+export const EXECUTION_STRATEGY_PRESETS: ExecutionStrategyPreset[] = [
+  {
+    id: "single",
+    label: "Single",
+    description: "All stages use a single model — default, backwards-compatible",
+    stageStrategies: {},
+  },
+  {
+    id: "quality_max",
+    label: "Quality Max",
+    description: "Multi-model orchestration on every stage for maximum output quality",
+    stageStrategies: {
+      planning: {
+        type: "moa",
+        proposers: [
+          { modelSlug: "llama3-70b", role: "optimist", temperature: 0.8 },
+          { modelSlug: "mixtral-8x7b", role: "skeptic", temperature: 0.6 },
+          { modelSlug: "phi3-mini", role: "pragmatist", temperature: 0.5 },
+        ],
+        aggregator: { modelSlug: "llama3-70b" },
+      },
+      architecture: {
+        type: "debate",
+        participants: [
+          { modelSlug: "llama3-70b", role: "proposer" },
+          { modelSlug: "mixtral-8x7b", role: "critic" },
+          { modelSlug: "phi3-mini", role: "devil_advocate" },
+        ],
+        judge: { modelSlug: "llama3-70b", criteria: ["scalability", "maintainability", "security"] },
+        rounds: 3,
+      },
+      development: {
+        type: "moa",
+        proposers: [
+          { modelSlug: "deepseek-coder", role: "primary", temperature: 0.4 },
+          { modelSlug: "llama3-70b", role: "reviewer", temperature: 0.5 },
+          { modelSlug: "mixtral-8x7b", role: "alternative", temperature: 0.6 },
+        ],
+        aggregator: { modelSlug: "deepseek-coder" },
+      },
+      testing: {
+        type: "voting",
+        candidates: [
+          { modelSlug: "mixtral-8x7b", temperature: 0.5 },
+          { modelSlug: "llama3-70b", temperature: 0.5 },
+          { modelSlug: "phi3-mini", temperature: 0.4 },
+          { modelSlug: "deepseek-coder", temperature: 0.4 },
+          { modelSlug: "mixtral-8x7b", temperature: 0.7 },
+        ],
+        threshold: 0.6,
+        validationMode: "text_similarity",
+      },
+      code_review: {
+        type: "debate",
+        participants: [
+          { modelSlug: "llama3-70b", role: "proposer" },
+          { modelSlug: "mixtral-8x7b", role: "critic" },
+        ],
+        judge: { modelSlug: "llama3-70b", criteria: ["correctness", "security", "performance"] },
+        rounds: 3,
+      },
+      deployment: {
+        type: "voting",
+        candidates: [
+          { modelSlug: "deepseek-coder", temperature: 0.4 },
+          { modelSlug: "llama3-70b", temperature: 0.5 },
+          { modelSlug: "mixtral-8x7b", temperature: 0.5 },
+        ],
+        threshold: 0.6,
+        validationMode: "text_similarity",
+      },
+      monitoring: {
+        type: "moa",
+        proposers: [
+          { modelSlug: "mixtral-8x7b", role: "primary", temperature: 0.5 },
+          { modelSlug: "llama3-70b", role: "secondary", temperature: 0.6 },
+        ],
+        aggregator: { modelSlug: "mixtral-8x7b" },
+      },
+    },
+  },
+  {
+    id: "balanced_multi",
+    label: "Balanced",
+    description: "Multi-model on planning and architecture; single for the rest",
+    stageStrategies: {
+      planning: {
+        type: "moa",
+        proposers: [
+          { modelSlug: "llama3-70b", role: "primary", temperature: 0.7 },
+          { modelSlug: "mixtral-8x7b", role: "secondary", temperature: 0.6 },
+        ],
+        aggregator: { modelSlug: "llama3-70b" },
+      },
+      architecture: {
+        type: "debate",
+        participants: [
+          { modelSlug: "llama3-70b", role: "proposer" },
+          { modelSlug: "mixtral-8x7b", role: "critic" },
+        ],
+        judge: { modelSlug: "llama3-70b" },
+        rounds: 2,
+      },
+    },
+  },
+  {
+    id: "cost_optimized_multi",
+    label: "Cost Optimized",
+    description: "Multi-model only where quality matters most: architecture, testing",
+    stageStrategies: {
+      architecture: {
+        type: "debate",
+        participants: [
+          { modelSlug: "llama3-70b", role: "proposer" },
+          { modelSlug: "phi3-mini", role: "critic" },
+        ],
+        judge: { modelSlug: "llama3-70b" },
+        rounds: 2,
+      },
+      testing: {
+        type: "voting",
+        candidates: [
+          { modelSlug: "mixtral-8x7b", temperature: 0.5 },
+          { modelSlug: "phi3-mini", temperature: 0.4 },
+          { modelSlug: "mixtral-8x7b", temperature: 0.7 },
+        ],
+        threshold: 0.6,
+        validationMode: "text_similarity",
+      },
+    },
+  },
+  {
+    id: "code_focus",
+    label: "Code Focus",
+    description: "Multi-model on development, testing, and code review stages",
+    stageStrategies: {
+      development: {
+        type: "moa",
+        proposers: [
+          { modelSlug: "deepseek-coder", role: "primary", temperature: 0.4 },
+          { modelSlug: "llama3-70b", role: "alternative", temperature: 0.5 },
+          { modelSlug: "mixtral-8x7b", role: "creative", temperature: 0.7 },
+        ],
+        aggregator: { modelSlug: "deepseek-coder" },
+      },
+      testing: {
+        type: "voting",
+        candidates: [
+          { modelSlug: "mixtral-8x7b", temperature: 0.5 },
+          { modelSlug: "llama3-70b", temperature: 0.5 },
+          { modelSlug: "deepseek-coder", temperature: 0.4 },
+          { modelSlug: "phi3-mini", temperature: 0.4 },
+          { modelSlug: "mixtral-8x7b", temperature: 0.7 },
+        ],
+        threshold: 0.6,
+        validationMode: "text_similarity",
+      },
+      code_review: {
+        type: "debate",
+        participants: [
+          { modelSlug: "llama3-70b", role: "proposer" },
+          { modelSlug: "deepseek-coder", role: "critic" },
+          { modelSlug: "mixtral-8x7b", role: "devil_advocate" },
+        ],
+        judge: { modelSlug: "llama3-70b", criteria: ["correctness", "security", "performance"] },
+        rounds: 3,
+      },
+    },
+  },
+];
+
+// Strategy cost multiplier hints for UI display
+export const STRATEGY_COST_MULTIPLIERS: Record<string, number> = {
+  single: 1,
+  moa: 0, // computed dynamically: proposers + 1 aggregator
+  debate: 0, // computed dynamically: participants * rounds + 1 judge
+  voting: 0, // computed dynamically: candidates
+};
+
+export function computeCostMultiplier(strategy: { type: string; proposers?: unknown[]; participants?: unknown[]; rounds?: number; candidates?: unknown[] }): number {
+  switch (strategy.type) {
+    case "single": return 1;
+    case "moa": {
+      const proposers = Array.isArray(strategy.proposers) ? strategy.proposers.length : 2;
+      return proposers + 1;
+    }
+    case "debate": {
+      const participants = Array.isArray(strategy.participants) ? strategy.participants.length : 2;
+      const rounds = typeof strategy.rounds === "number" ? strategy.rounds : 3;
+      return participants * rounds + 1;
+    }
+    case "voting": {
+      return Array.isArray(strategy.candidates) ? strategy.candidates.length : 3;
+    }
+    default: return 1;
+  }
+}
