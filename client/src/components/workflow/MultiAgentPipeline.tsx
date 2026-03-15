@@ -20,7 +20,7 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
 
   const pipeline = pipelineId
     ? (Array.isArray(pipelines) ? pipelines.find((p: { id: string }) => p.id === pipelineId) : null)
-    : (Array.isArray(pipelines) ? pipelines[0] : null);
+    : null;
 
   const pipelineStages: PipelineStageConfig[] = pipeline?.stages ?? [];
 
@@ -256,10 +256,16 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
               key={preset.id}
               variant="outline"
               size="sm"
-              className="text-xs h-7"
+              className="text-xs h-7 flex items-center gap-1"
               onClick={() => applyExecutionPreset(preset.id)}
+              title={preset.description}
             >
               {preset.label}
+              {preset.costMultiplier > 1 && (
+                <span className="text-[9px] text-amber-500 font-mono">
+                  ~{preset.costMultiplier}x
+                </span>
+              )}
             </Button>
           ))}
         </div>
