@@ -13,6 +13,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import type { MaintenanceCategoryConfig, ScoutFinding } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -365,3 +366,53 @@ export const insertWorkspaceSchema = createInsertSchema(workspaces).omit({
 
 export type InsertWorkspace = z.infer<typeof insertWorkspaceSchema>;
 export type WorkspaceRow = typeof workspaces.$inferSelect;
+
+// ─── Maintenance Autopilot Schema (Phase 4.5) ────────────────────────────────
+
+export const maintenancePolicies = pgTable("maintenance_policies", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  workspaceId: varchar("workspace_id").references(() => workspaces.id, {
+    onDelete: "cascade",
+  }),
+  enabled: boolean("enabled").notNull().default(true),
+  schedule: text("schedule").notNull().default("0 9 * * 1"),
+  categories: jsonb("categories")
+    .notNull()
+    .$type<MaintenanceCategoryConfig[]>()
+    .default(sql`'[]'::jsonb`),
+  severityThreshold: text("severity_threshold").notNull().default("high"),
+  autoMerge: boolean("auto_merge").notNull().default(false),
+  notifyChannels: jsonb("notify_channels")
+    .$type<string[]>()
+    .default(sql`'[]'::jsonb`),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export type MaintenancePolicyRow = typeof maintenancePolicies.$inferSelect;
+
+export const maintenanceScans = pgTable("maintenance_scans", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  policyId: varchar("policy_id").references(() => maintenancePolicies.id, {
+    onDelete: "cascade",
+  }),
+  workspaceId: varchar("workspace_id").references(() => workspaces.id, {
+    onDelete: "cascade",
+  }),
+  status: text("status").notNull().default("running"),
+  findings: jsonb("findings")
+    .notNull()
+    .$type<ScoutFinding[]>()
+    .default(sql`'[]'::jsonb`),
+  importantCount: integer("important_count").notNull().default(0),
+  triggeredPipelineId: varchar("triggered_pipeline_id"),
+  startedAt: timestamp("started_at").defaultNow(),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export type MaintenanceScanRow = typeof maintenanceScans.$inferSelect;
