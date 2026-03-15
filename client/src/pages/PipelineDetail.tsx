@@ -4,17 +4,32 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { ArrowLeft, Play, Loader2, GitCompare } from "lucide-react";
+import { ArrowLeft, Play, Loader2, GitCompare, Network } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useLocation } from "wouter";
 import MultiAgentPipeline from "@/components/workflow/MultiAgentPipeline";
 import AgentChat from "@/components/workflow/AgentChat";
 import CodePreview from "@/components/workflow/CodePreview";
+import DAGEditor from "@/components/dag/DAGEditor";
 import { usePipeline, useStartRun, useRuns } from "@/hooks/use-pipeline";
+import { usePipelineDAG } from "@/hooks/use-dag";
 import { RunVariablesDialog } from "@/components/pipeline/RunVariablesDialog";
+import type { DAGStageNode, DAGEdgeData } from "@/components/dag/DAGCanvas";
+import type { DAGCondition } from "@/components/dag/ConditionDialog";
 
 interface PipelineDetailProps {
   params: { id: string };
+}
+
+/** Normalise the dag field returned by the API into typed arrays. */
+function normaliseDag(dag: unknown): { stages: DAGStageNode[]; edges: DAGEdgeData[] } | null {
+  if (!dag || typeof dag !== "object") return null;
+  const d = dag as Record<string, unknown>;
+  if (!Array.isArray(d.stages)) return null;
+  return {
+    stages: (d.stages as DAGStageNode[]),
+    edges: Array.isArray(d.edges) ? (d.edges as DAGEdgeData[]) : [],
+  };
 }
 
 export default function PipelineDetail({ params }: PipelineDetailProps) {
@@ -27,6 +42,7 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
 
   const { data: pipeline, isLoading } = usePipeline(id);
   const { data: runs } = useRuns(id);
+  const { data: dagData, isLoading: dagLoading } = usePipelineDAG(id);
   const startRun = useStartRun();
 
   const handleExecute = () => {
@@ -84,6 +100,9 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
     );
   }
 
+  const normalisedDag = normaliseDag(dagData);
+  const hasDag = normalisedDag !== null;
+
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
@@ -104,6 +123,11 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
               <p className="text-xs text-muted-foreground">{pipeline.description}</p>
             )}
           </div>
+          {hasDag && (
+            <Badge variant="secondary" className="text-xs gap-1">
+              <Network className="h-3 w-3" /> DAG mode
+            </Badge>
+          )}
         </div>
       </div>
 
@@ -132,8 +156,11 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
 
       <div className="flex-1 overflow-hidden">
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full h-full flex flex-col">
-          <TabsList className="grid w-full grid-cols-4 px-6 pt-4 bg-background">
+          <TabsList className="grid w-full grid-cols-5 px-6 pt-4 bg-background">
             <TabsTrigger value="design" className="text-xs">Pipeline Design</TabsTrigger>
+            <TabsTrigger value="dag" className="text-xs gap-1">
+              <Network className="h-3 w-3" /> DAG Builder
+            </TabsTrigger>
             <TabsTrigger value="chat" className="text-xs">Discussion</TabsTrigger>
             <TabsTrigger value="code" className="text-xs">Generated Code</TabsTrigger>
             <TabsTrigger value="history" className="text-xs">Run History</TabsTrigger>
@@ -142,6 +169,30 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
           <div className="flex-1 overflow-hidden p-6">
             <TabsContent value="design" className="h-full overflow-y-auto">
               <MultiAgentPipeline pipelineId={id} />
+            </TabsContent>
+
+            <TabsContent value="dag" className="h-full overflow-y-auto">
+              {dagLoading ? (
+                <div className="flex items-center justify-center py-12 text-muted-foreground text-sm gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading DAG...
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div>
+                    <h3 className="text-sm font-medium">Conditional Branching — DAG Builder</h3>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Design a directed acyclic graph for conditional stage execution.
+                      When a DAG is saved, pipeline runs will use it instead of the linear stage order.
+                      Click the blue + button on a stage to draw an edge; click any edge to add a condition.
+                    </p>
+                  </div>
+                  <DAGEditor
+                    pipelineId={id}
+                    initialStages={normalisedDag?.stages ?? []}
+                    initialEdges={normalisedDag?.edges ?? []}
+                  />
+                </div>
+              )}
             </TabsContent>
 
             <TabsContent value="chat" className="h-full">
@@ -187,7 +238,7 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
               )}
               <div className="space-y-4">
                 {Array.isArray(runs) && runs.length > 0
-                  ? runs.map((run: { id: string; input: string; currentStageIndex: number; status: string }) => (
+                  ? runs.map((run: { id: string; input: string; currentStageIndex: number; status: string; dagMode?: boolean }) => (
                     <Card
                       key={run.id}
                       className="border-border p-4 flex items-center gap-3 hover:bg-accent/50 transition-colors"
@@ -205,10 +256,18 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
                         <div className="flex-1">
                           <h4 className="font-medium text-sm truncate max-w-[400px]">{run.input}</h4>
                           <p className="text-xs text-muted-foreground mt-1">
-                            Run {run.id.slice(0, 8)} · Stage {run.currentStageIndex + 1}/7
+                            Run {run.id.slice(0, 8)}
+                            {run.dagMode
+                              ? " · DAG mode"
+                              : ` · Stage ${run.currentStageIndex + 1}/7`}
                           </p>
                         </div>
                         <div className="flex items-center gap-3">
+                          {run.dagMode && (
+                            <Badge variant="outline" className="text-xs gap-1">
+                              <Network className="h-3 w-3" /> DAG
+                            </Badge>
+                          )}
                           <Badge className={`text-xs ${
                             run.status === "completed" ? "bg-emerald-500/20 text-emerald-700" :
                             run.status === "running" ? "bg-blue-500/20 text-blue-700" :

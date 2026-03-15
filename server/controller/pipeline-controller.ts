@@ -2,7 +2,9 @@ import type { IStorage } from "../storage";
 import type { TeamRegistry } from "../teams/registry";
 import type { WsManager } from "../ws/manager";
 import type { Gateway } from "../gateway/index";
-import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput } from "@shared/types";
+import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput, PipelineDAG, DAGStage } from "@shared/types";
+import { DAGExecutor } from "../pipeline/dag-executor";
+import type { StageExecuteFn } from "../pipeline/dag-executor";
 import { ParallelExecutor } from "../pipeline/parallel-executor";
 import type { PipelineRun } from "@shared/schema";
 import { SandboxExecutor } from "../sandbox/executor";
@@ -23,6 +25,7 @@ export class PipelineController {
   private parallelExecutor: ParallelExecutor;
   private memoryExtractor: MemoryExtractor;
   private memoryProvider: MemoryProvider;
+  private dagExecutor: DAGExecutor;
 
   constructor(
     private storage: IStorage,
@@ -38,12 +41,14 @@ export class PipelineController {
     );
     this.memoryExtractor = new MemoryExtractor();
     this.memoryProvider = new MemoryProvider(storage);
+    this.dagExecutor = new DAGExecutor(storage, wsManager);
   }
 
   async startRun(pipelineId: string, input: string, variables?: Record<string, string>, triggeredBy?: string): Promise<PipelineRun> {
     const pipeline = await this.storage.getPipeline(pipelineId);
     if (!pipeline) throw new Error(`Pipeline not found: ${pipelineId}`);
 
+    const dag = pipeline.dag as PipelineDAG | null | undefined;
     const stages = pipeline.stages as PipelineStageConfig[];
 
     const run = await this.storage.createPipelineRun({
@@ -53,20 +58,8 @@ export class PipelineController {
       currentStageIndex: 0,
       startedAt: new Date(),
       triggeredBy: triggeredBy ?? null,
+      dagMode: dag != null,
     });
-
-    // Create stage execution records for each enabled stage
-    for (let i = 0; i < stages.length; i++) {
-      const stage = stages[i];
-      await this.storage.createStageExecution({
-        runId: run.id,
-        stageIndex: i,
-        teamId: stage.teamId,
-        modelSlug: stage.modelSlug,
-        status: stage.enabled ? "pending" : "skipped",
-        input: {},
-      });
-    }
 
     this.broadcast(run.id, {
       type: "pipeline:started",
@@ -74,7 +67,8 @@ export class PipelineController {
       payload: {
         pipelineId,
         input,
-        totalStages: stages.filter((s) => s.enabled).length,
+        dagMode: dag != null,
+        totalStages: dag ? dag.stages.filter((s) => s.enabled).length : stages.filter((s) => s.enabled).length,
       },
       timestamp: new Date().toISOString(),
     });
@@ -84,14 +78,196 @@ export class PipelineController {
       ephemeralVarStore.set(run.id, variables);
     }
 
-    // Execute stages in background
     const abortController = new AbortController();
     this.activeRuns.set(run.id, abortController);
-    this.executeStages(run, stages, abortController.signal).catch((err) => {
-      console.error(`Pipeline run ${run.id} error:`, err);
-    });
+
+    if (dag != null) {
+      // ── DAG mode ──
+      const executeStage = this.makeDAGStageExecuteFn(run);
+      this.dagExecutor
+        .executeDAG(run, dag, abortController.signal, executeStage)
+        .then(() => this.finishDAGRun(run.id, abortController.signal))
+        .catch((err) => {
+          console.error(`DAG run ${run.id} error:`, err);
+        });
+    } else {
+      // ── Linear mode ──
+      // Create stage execution records for each enabled stage
+      for (let i = 0; i < stages.length; i++) {
+        const stage = stages[i];
+        await this.storage.createStageExecution({
+          runId: run.id,
+          stageIndex: i,
+          teamId: stage.teamId,
+          modelSlug: stage.modelSlug,
+          status: stage.enabled ? "pending" : "skipped",
+          input: {},
+        });
+      }
+      this.executeStages(run, stages, abortController.signal).catch((err) => {
+        console.error(`Pipeline run ${run.id} error:`, err);
+      });
+    }
 
     return run;
+  }
+
+  /**
+   * Creates a StageExecuteFn bound to this controller for use by DAGExecutor.
+   * The DAG executor calls this for each stage it wants to run.
+   */
+  private makeDAGStageExecuteFn(run: PipelineRun): StageExecuteFn {
+    return async (
+      _run: PipelineRun,
+      dagStage: DAGStage,
+      stageInput: Record<string, unknown>,
+      stageIndex: number,
+      dagStageId: string,
+    ): Promise<{ output: Record<string, unknown>; failed: boolean }> => {
+      const executions = await this.storage.getStageExecutions(run.id);
+      const stageExec = executions.find((e) => e.dagStageId === dagStageId);
+      if (!stageExec) {
+        return { output: {}, failed: true };
+      }
+
+      await this.storage.updateStageExecution(stageExec.id, {
+        status: "running",
+        startedAt: new Date(),
+        input: stageInput,
+      });
+
+      this.broadcast(run.id, {
+        type: "stage:started",
+        runId: run.id,
+        stageExecutionId: stageExec.id,
+        payload: {
+          stageIndex,
+          teamId: dagStage.teamId,
+          modelSlug: dagStage.modelSlug,
+          dagStageId,
+        },
+        timestamp: new Date().toISOString(),
+      });
+
+      try {
+        const team = this.teamRegistry.getTeam(dagStage.teamId);
+        const numericRunId = this.hashRunId(run.id);
+        const numericPipelineId = this.hashRunId(run.pipelineId);
+
+        const relevantMemories = await this.memoryProvider.getRelevantMemories({
+          pipelineId: numericPipelineId,
+          runId: numericRunId,
+          teamId: dagStage.teamId,
+          maxTokenBudget: 2000,
+        });
+        const memoryContext = relevantMemories.length > 0
+          ? this.memoryProvider.formatForPrompt(relevantMemories)
+          : undefined;
+
+        const context = {
+          runId: run.id,
+          stageIndex,
+          stageExecutionId: stageExec.id,
+          modelSlug: dagStage.modelSlug,
+          temperature: dagStage.temperature,
+          maxTokens: dagStage.maxTokens,
+          previousOutputs: [],
+          fullContext: [] as StageOutput[],
+          sessionId: run.id,
+          memoryContext,
+          variables: ephemeralVarStore.get(run.id) ?? undefined,
+          stageConfig: dagStage as unknown as PipelineStageConfig,
+        };
+
+        const result = await team.execute(stageInput, context, dagStage.executionStrategy);
+
+        const newMemories = await this.memoryExtractor.extractFromStageResult(
+          dagStage.teamId,
+          numericRunId,
+          numericPipelineId,
+          result.output ?? {},
+        );
+        await Promise.all(newMemories.map((m) => this.storage.upsertMemory(m)));
+
+        await this.storage.updateStageExecution(stageExec.id, {
+          status: "completed",
+          output: result.output,
+          tokensUsed: result.tokensUsed,
+          completedAt: new Date(),
+        });
+
+        this.broadcast(run.id, {
+          type: "stage:completed",
+          runId: run.id,
+          stageExecutionId: stageExec.id,
+          payload: {
+            stageIndex,
+            teamId: dagStage.teamId,
+            dagStageId,
+            output: result.output,
+            tokensUsed: result.tokensUsed,
+          },
+          timestamp: new Date().toISOString(),
+        });
+
+        return { output: result.output, failed: false };
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : "Unknown error";
+
+        await this.storage.updateStageExecution(stageExec.id, {
+          status: "failed",
+          completedAt: new Date(),
+        });
+
+        this.broadcast(run.id, {
+          type: "stage:failed",
+          runId: run.id,
+          stageExecutionId: stageExec.id,
+          payload: { error: errMsg, stageIndex, dagStageId },
+          timestamp: new Date().toISOString(),
+        });
+
+        return { output: {}, failed: true };
+      }
+    };
+  }
+
+  /** Called after DAGExecutor finishes to mark run as completed or failed. */
+  private async finishDAGRun(runId: string, signal: AbortSignal): Promise<void> {
+    const executions = await this.storage.getStageExecutions(runId);
+    const anyFailed = executions.some((e) => e.status === "failed");
+
+    if (signal.aborted) {
+      this.activeRuns.delete(runId);
+      return;
+    }
+
+    if (anyFailed) {
+      await this.storage.updatePipelineRun(runId, {
+        status: "failed",
+        completedAt: new Date(),
+      });
+      this.broadcast(runId, {
+        type: "pipeline:failed",
+        runId,
+        payload: { error: "One or more DAG stages failed" },
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      await this.storage.updatePipelineRun(runId, {
+        status: "completed",
+        completedAt: new Date(),
+      });
+      this.broadcast(runId, {
+        type: "pipeline:completed",
+        runId,
+        payload: {},
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    ephemeralVarStore.clearOnSuccess(runId);
+    this.activeRuns.delete(runId);
   }
 
   private extractFilesFromOutput(output: Record<string, unknown>): SandboxFile[] {

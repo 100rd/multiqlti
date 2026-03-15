@@ -163,6 +163,7 @@ export interface IStorage {
   createSkill(data: InsertSkill): Promise<Skill>;
   updateSkill(id: string, updates: Partial<InsertSkill>): Promise<Skill>;
   deleteSkill(id: string): Promise<void>;
+
 }
 
 export class MemStorage implements IStorage {
@@ -292,6 +293,7 @@ export class MemStorage implements IStorage {
       name: insert.name,
       description: insert.description ?? null,
       stages: insert.stages ?? [],
+      dag: insert.dag ?? null,
       createdBy: insert.createdBy ?? null,
       ownerId: insert.ownerId ?? null,
       isTemplate: insert.isTemplate ?? false,
@@ -341,6 +343,7 @@ export class MemStorage implements IStorage {
       startedAt: insert.startedAt ?? null,
       completedAt: insert.completedAt ?? null,
       triggeredBy: insert.triggeredBy ?? null,
+      dagMode: insert.dagMode ?? false,
       createdAt: new Date(),
     };
     this.runs.set(id, run);
@@ -392,6 +395,7 @@ export class MemStorage implements IStorage {
       approvedAt: insert.approvedAt ?? null,
       approvedBy: insert.approvedBy ?? null,
       rejectionReason: insert.rejectionReason ?? null,
+      dagStageId: insert.dagStageId ?? null,
       createdAt: new Date(),
     };
     this.stages.set(id, stage);
