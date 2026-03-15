@@ -40,7 +40,7 @@ describe("ConfigLoader.load() — defaults", () => {
   });
 
   afterEach(() => {
-    fs.rmdirSync(tmpDir, { recursive: true } as Parameters<typeof fs.rmdirSync>[1]);
+    fs.rmSync(tmpDir, { recursive: true });
     vi.unstubAllEnvs();
   });
 
