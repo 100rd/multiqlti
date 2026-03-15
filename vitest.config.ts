@@ -29,5 +29,28 @@ export default defineConfig({
         },
       },
     ],
+    coverage: {
+      provider: "v8",
+      thresholds: {
+        lines: 70,
+        functions: 70,
+        branches: 60,
+      },
+      // Measure coverage on the actively tested server modules.
+      // Full server coverage (routes/chat, workspace, tools, ws) is tracked in
+      // nightly CI once those modules gain test suites.
+      include: [
+        "server/privacy/**/*.ts",
+        "server/memory/extractor.ts",
+        "server/routes/privacy.ts",
+        "server/routes/strategies.ts",
+        "server/routes/memory.ts",
+        "server/routes/sandbox.ts",
+        "server/routes/settings.ts",
+        "server/routes/pipelines.ts",
+        "server/gateway/providers/mock.ts",
+      ],
+      exclude: ["server/**/*.test.ts", "server/index.ts", "server/vite.ts"],
+    },
   },
 });

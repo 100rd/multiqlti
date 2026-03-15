@@ -1,0 +1,80 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  nightly-full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: multiqlti
+          POSTGRES_PASSWORD: multiqlti
+          POSTGRES_DB: multiqlti_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://multiqlti:multiqlti@localhost:5432/multiqlti_test
+      JWT_SECRET: nightly-test-secret-minimum-32-chars
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run db:push
+      - run: npm run test:unit
+      - run: npm run test:integration
+      - run: npx playwright install chromium --with-deps
+      - run: npm run test:e2e
+        env:
+          JWT_SECRET: nightly-test-secret-minimum-32-chars
+          PORT: "3099"
+      - run: npm run test:coverage
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+
+  sandbox-tests:
+    runs-on: ubuntu-latest
+    needs: nightly-full
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Start server with Docker sandbox enabled
+        run: |
+          PORT=3099 JWT_SECRET=test-secret-minimum-32-characters-long \
+          SANDBOX_ENABLED=true \
+          NODE_ENV=development npx tsx server/index.ts &
+          sleep 5
+          curl -f http://localhost:3099/api/sandbox/status
+      - name: Run sandbox integration test
+        run: |
+          curl -s -X POST http://localhost:3099/api/sandbox/test \
+            -H "Content-Type: application/json" \
+            -d '{"image":"node:20-alpine","code":"console.log(\"sandbox ok\")"}' \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); assert not d.get('timedOut'), 'timed out'; print('Sandbox test: PASS')"

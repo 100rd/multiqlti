@@ -1,4 +1,4 @@
-import type { TeamConfig, TeamId, PipelineStageConfig, StrategyPreset, ExecutionStrategyPreset } from "./types";
+import type { TeamConfig, TeamId, PipelineStageConfig, StrategyPreset, ExecutionStrategyPreset, TaskComplexity } from "./types";
 
 export const SDLC_TEAMS: Record<TeamId, TeamConfig> = {
   planning: {
@@ -440,12 +440,14 @@ export const EXECUTION_STRATEGY_PRESETS: ExecutionStrategyPreset[] = [
     id: "single",
     label: "Single",
     description: "All stages use a single model — default, backwards-compatible",
+    costMultiplier: 1,
     stageStrategies: {},
   },
   {
     id: "quality_max",
     label: "Quality Max",
     description: "Multi-model orchestration on every stage for maximum output quality",
+    costMultiplier: 5,
     stageStrategies: {
       planning: {
         type: "moa",
@@ -520,6 +522,7 @@ export const EXECUTION_STRATEGY_PRESETS: ExecutionStrategyPreset[] = [
     id: "balanced_multi",
     label: "Balanced",
     description: "Multi-model on planning and architecture; single for the rest",
+    costMultiplier: 2,
     stageStrategies: {
       planning: {
         type: "moa",
@@ -544,6 +547,7 @@ export const EXECUTION_STRATEGY_PRESETS: ExecutionStrategyPreset[] = [
     id: "cost_optimized_multi",
     label: "Cost Optimized",
     description: "Multi-model only where quality matters most: architecture, testing",
+    costMultiplier: 1.5,
     stageStrategies: {
       architecture: {
         type: "debate",
@@ -570,6 +574,7 @@ export const EXECUTION_STRATEGY_PRESETS: ExecutionStrategyPreset[] = [
     id: "code_focus",
     label: "Code Focus",
     description: "Multi-model on development, testing, and code review stages",
+    costMultiplier: 2.5,
     stageStrategies: {
       development: {
         type: "moa",
@@ -661,6 +666,24 @@ export const MODEL_PRICING: Record<string, { inputPer1M: number; outputPer1M: nu
   "gemini-2.0-flash":  { inputPer1M: 0.075, outputPer1M: 0.30 },
   "grok-3":            { inputPer1M: 3.00,  outputPer1M: 15.00 },
   "grok-3-mini":       { inputPer1M: 0.30,  outputPer1M: 0.50 },
+};
+
+export const MODEL_TIERS: Record<string, Record<TaskComplexity, string>> = {
+  anthropic: {
+    trivial:  "claude-haiku-4-5",
+    standard: "claude-sonnet-4-6",
+    complex:  "claude-sonnet-4-6",
+  },
+  google: {
+    trivial:  "gemini-2-0-flash",
+    standard: "gemini-2-0-flash",
+    complex:  "gemini-2-0-flash",
+  },
+  xai: {
+    trivial:  "grok-3-mini",
+    standard: "grok-3",
+    complex:  "grok-3",
+  },
 };
 
 /**

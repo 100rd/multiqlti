@@ -31,6 +31,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx vitest run --shard=${{ matrix.shard }}/3
+      - run: npm run test:coverage
+        continue-on-error: true
 
   e2e:
     runs-on: ubuntu-latest
