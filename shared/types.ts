@@ -219,6 +219,54 @@ export interface GatewayResponse {
   finishReason: string;
 }
 
+// ─── Privacy Proxy Types ─────────────────────────────────────────────────────
+
+export type EntityType =
+  | 'domain'
+  | 'ip_address'
+  | 'ip_cidr'
+  | 'k8s_namespace'
+  | 'k8s_resource'
+  | 'argocd_app'
+  | 'git_url'
+  | 'docker_image'
+  | 'cloud_account'
+  | 'cloud_resource_id'
+  | 'env_variable'
+  | 'api_key'
+  | 'email'
+  | 'hostname'
+  | 'service_name'
+  | 'custom_pattern';
+
+export type EntitySeverity = 'critical' | 'high' | 'medium' | 'low';
+
+export interface DetectedEntity {
+  type: EntityType;
+  value: string;
+  start: number;
+  end: number;
+  confidence: number;
+  severity: EntitySeverity;
+}
+
+export interface AnonymizationResult {
+  anonymizedText: string;
+  sessionId: string;
+  entitiesFound: DetectedEntity[];
+}
+
+export type AnonymizationLevel = 'off' | 'standard' | 'strict';
+
+export interface PrivacySettings {
+  enabled: boolean;
+  level: AnonymizationLevel;
+  vaultTtlMs: number;   // default: 3_600_000 (1 hour)
+  auditLog: boolean;    // default: true
+}
+
+// ─── Pipeline Stage Config ────────────────────────────────────────────────────
+
 export interface PipelineStageConfig {
   teamId: TeamId;
   modelSlug: string;
@@ -227,7 +275,7 @@ export interface PipelineStageConfig {
   maxTokens?: number;
   enabled: boolean;
   executionStrategy?: ExecutionStrategy;
-  sandbox?: SandboxConfig;
+  privacySettings?: PrivacySettings;
 }
 
 export interface StageContext {
@@ -238,6 +286,8 @@ export interface StageContext {
   maxTokens?: number;
   previousOutputs: Record<string, unknown>[];
   userAnswers?: Record<string, string>;
+  privacySettings?: PrivacySettings;
+  sessionId?: string;
 }
 
 export interface TeamResult {
@@ -253,6 +303,8 @@ export type ProviderMessage = { role: string; content: string };
 export interface ILLMProviderOptions {
   maxTokens?: number;
   temperature?: number;
+  /** Per-request timeout override in milliseconds. Defaults to provider default (30s). */
+  timeoutMs?: number;
 }
 
 export interface ILLMProvider {

@@ -44,12 +44,17 @@ export abstract class BaseTeam {
     messages: ProviderMessage[],
     context: StageContext,
   ): Promise<TeamResult> {
-    const response = await this.gateway.complete({
-      modelSlug: context.modelSlug || this.config.defaultModelSlug,
-      messages,
-      temperature: context.temperature,
-      maxTokens: context.maxTokens,
-    });
+    const response = await this.gateway.complete(
+      {
+        modelSlug: context.modelSlug || this.config.defaultModelSlug,
+        messages,
+        temperature: context.temperature,
+        maxTokens: context.maxTokens,
+      },
+      context.privacySettings
+        ? { privacy: context.privacySettings, sessionId: context.sessionId }
+        : undefined,
+    );
 
     const parsed = this.parseOutput(response.content);
     const questions = this.extractQuestions(parsed);
@@ -95,12 +100,17 @@ export abstract class BaseTeam {
   ): AsyncGenerator<string> {
     // Streaming always uses single model — intermediate strategy steps are WS events only
     const messages = this.buildPrompt(input, context);
-    yield* this.gateway.stream({
-      modelSlug: context.modelSlug || this.config.defaultModelSlug,
-      messages,
-      temperature: context.temperature,
-      maxTokens: context.maxTokens,
-    });
+    yield* this.gateway.stream(
+      {
+        modelSlug: context.modelSlug || this.config.defaultModelSlug,
+        messages,
+        temperature: context.temperature,
+        maxTokens: context.maxTokens,
+      },
+      context.privacySettings
+        ? { privacy: context.privacySettings, sessionId: context.sessionId }
+        : undefined,
+    );
   }
 
   protected extractQuestions(parsed: Record<string, unknown>): string[] {

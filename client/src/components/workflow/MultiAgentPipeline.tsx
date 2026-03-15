@@ -7,7 +7,7 @@ import { Save, RotateCcw, Zap, Network } from "lucide-react";
 import AgentNode from "./AgentNode";
 import { usePipelines, useUpdatePipeline, useModels } from "@/hooks/use-pipeline";
 import { SDLC_TEAMS, TEAM_ORDER, STRATEGY_PRESETS, EXECUTION_STRATEGY_PRESETS } from "@shared/constants";
-import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy, SandboxConfig } from "@shared/types";
+import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy, PrivacySettings } from "@shared/types";
 
 interface MultiAgentPipelineProps {
   pipelineId?: string;
@@ -75,15 +75,10 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
     setDirty(true);
   };
 
-  const updateSandbox = (teamId: string, config: SandboxConfig | undefined) => {
-    setLocalStages(prev => prev.map(s => {
-      if (s.teamId !== teamId) return s;
-      if (!config) {
-        const { sandbox: _removed, ...rest } = s as PipelineStageConfig & { sandbox?: SandboxConfig };
-        return rest as PipelineStageConfig;
-      }
-      return { ...s, sandbox: config };
-    }));
+  const updatePrivacy = (teamId: string, settings: PrivacySettings) => {
+    setLocalStages(prev => prev.map(s =>
+      s.teamId === teamId ? { ...s, privacySettings: settings } : s,
+    ));
     setDirty(true);
   };
 
@@ -279,14 +274,14 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                 temperature={stage.temperature}
                 maxTokens={stage.maxTokens}
                 executionStrategy={stage.executionStrategy}
-                sandboxConfig={stage.sandbox}
+                privacySettings={stage.privacySettings}
                 onModelChange={(_, model) => updateStageModel(stage.teamId, model)}
                 onToggle={() => toggleStage(stage.teamId)}
                 onSystemPromptChange={(_, prompt) => updateSystemPrompt(stage.teamId, prompt)}
                 onTemperatureChange={(_, temp) => updateTemperature(stage.teamId, temp)}
                 onMaxTokensChange={(_, tokens) => updateMaxTokens(stage.teamId, tokens)}
                 onStrategyChange={(_, strategy) => updateStrategy(stage.teamId, strategy)}
-                onSandboxChange={(_, cfg) => updateSandbox(stage.teamId, cfg)}
+                onPrivacyChange={(_, settings) => updatePrivacy(stage.teamId, settings)}
                 isLast={idx === localStages.length - 1}
               />
             );
@@ -342,9 +337,9 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                       {strategyBadge(strat)}
                     </Badge>
                   )}
-                  {stage?.sandbox?.enabled && (
-                    <Badge variant="outline" className="ml-2 text-[9px] h-4 px-1 border-cyan-500/50 text-cyan-600">
-                      sandbox
+                  {stage?.privacySettings?.enabled && (
+                    <Badge variant="outline" className="ml-2 text-[9px] h-4 px-1 border-emerald-500/50 text-emerald-600">
+                      privacy:{stage.privacySettings.level}
                     </Badge>
                   )}
                   {' — '}{team.description}

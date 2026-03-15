@@ -7,6 +7,7 @@ import {
   boolean,
   timestamp,
   jsonb,
+  serial,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -180,3 +181,17 @@ export const insertChatMessageSchema = createInsertSchema(chatMessages).omit({
 
 export type InsertChatMessage = z.infer<typeof insertChatMessageSchema>;
 export type ChatMessage = typeof chatMessages.$inferSelect;
+
+// ─── Provider Keys ──────────────────────────────────
+
+export const providerKeys = pgTable("provider_keys", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  provider: text("provider").notNull().unique(),
+  apiKeyEncrypted: text("api_key_encrypted").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export type ProviderKey = typeof providerKeys.$inferSelect;

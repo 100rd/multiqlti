@@ -9,6 +9,45 @@ interface OpenAIStreamChunk {
   choices: Array<{ delta: { content?: string } }>;
 }
 
+const RETRYABLE_CODES = new Set([502, 503, 504]);
+const RETRYABLE_ERRORS = new Set(["ECONNRESET", "ETIMEDOUT", "ECONNREFUSED"]);
+
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const signal = AbortSignal.timeout(timeoutMs);
+    try {
+      const res = await fetch(url, { ...init, signal });
+      if (res.ok || !RETRYABLE_CODES.has(res.status)) {
+        return res;
+      }
+      const text = await res.text();
+      lastError = new Error(`HTTP ${res.status}: ${text}`);
+      if (attempt === 0) {
+        console.warn(`[openai-compatible] Retrying after ${res.status} on ${url}`);
+      }
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      const isRetryable =
+        e.name === "TimeoutError" ||
+        (e.code !== undefined && RETRYABLE_ERRORS.has(e.code));
+      lastError = e;
+      if (attempt === 0 && isRetryable) {
+        console.warn(`[openai-compatible] Retrying after network error: ${e.message}`);
+        continue;
+      }
+      throw e;
+    }
+  }
+
+  throw lastError ?? new Error("Request failed after retry");
+}
+
 export class OpenAICompatibleProvider implements ILLMProvider {
   constructor(
     protected readonly baseUrl: string,
@@ -29,18 +68,22 @@ export class OpenAICompatibleProvider implements ILLMProvider {
     messages: ProviderMessage[],
     options?: ILLMProviderOptions,
   ): Promise<{ content: string; tokensUsed: number }> {
-    const res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-      method: "POST",
-      headers: this.buildHeaders(),
-      body: JSON.stringify({
-        model: modelId,
-        messages,
-        max_tokens: options?.maxTokens ?? 4096,
-        temperature: options?.temperature ?? 0.7,
-        stream: false,
-      }),
-      signal: AbortSignal.timeout(this.defaultTimeout),
-    });
+    const timeoutMs = options?.timeoutMs ?? this.defaultTimeout;
+    const res = await fetchWithRetry(
+      `${this.baseUrl}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: this.buildHeaders(),
+        body: JSON.stringify({
+          model: modelId,
+          messages,
+          max_tokens: options?.maxTokens ?? 4096,
+          temperature: options?.temperature ?? 0.7,
+          stream: false,
+        }),
+      },
+      timeoutMs,
+    );
 
     if (!res.ok) {
       const text = await res.text();
@@ -63,18 +106,22 @@ export class OpenAICompatibleProvider implements ILLMProvider {
     messages: ProviderMessage[],
     options?: ILLMProviderOptions,
   ): AsyncGenerator<string> {
-    const res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-      method: "POST",
-      headers: this.buildHeaders(),
-      body: JSON.stringify({
-        model: modelId,
-        messages,
-        max_tokens: options?.maxTokens ?? 4096,
-        temperature: options?.temperature ?? 0.7,
-        stream: true,
-      }),
-      signal: AbortSignal.timeout(this.defaultTimeout),
-    });
+    const timeoutMs = options?.timeoutMs ?? this.defaultTimeout;
+    const res = await fetchWithRetry(
+      `${this.baseUrl}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: this.buildHeaders(),
+        body: JSON.stringify({
+          model: modelId,
+          messages,
+          max_tokens: options?.maxTokens ?? 4096,
+          temperature: options?.temperature ?? 0.7,
+          stream: true,
+        }),
+      },
+      timeoutMs,
+    );
 
     if (!res.ok) {
       const text = await res.text();

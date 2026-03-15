@@ -6,7 +6,8 @@ import {
   GitMerge,
   Settings,
   ShieldAlert,
-  MessageCircleQuestion
+  MessageCircleQuestion,
+  ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -29,6 +30,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
       href: "/pipelines",
       badge: pendingCount > 0 ? pendingCount : undefined,
     },
+    { icon: ShieldCheck, label: "Privacy", href: "/privacy" },
     { icon: Settings, label: "Settings", href: "/settings" },
   ];
 
