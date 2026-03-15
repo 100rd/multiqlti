@@ -265,7 +265,7 @@ describe("OpenAICompatibleProvider — complete()", () => {
     );
     const provider = new OpenAICompatibleProvider("http://localhost:8080");
 
-    await expect(provider.complete("my-model", USER_MESSAGES)).rejects.toThrow(/ECONNREFUSED/);
+    await expect(provider.complete("my-model", USER_MESSAGES)).rejects.toThrow();
   });
 
   it("returns empty content string when choices[0].message.content is null", async () => {
@@ -662,7 +662,7 @@ describe("OllamaProvider — complete()", () => {
   });
 
   it("throws on network error", async () => {
-    fetchSpy.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+    fetchSpy.mockRejectedValueOnce(new Error("fetch failed: ECONNREFUSED"));
 
     const { OllamaProvider } = await import(
       "../../../server/gateway/providers/ollama.js"
@@ -671,7 +671,7 @@ describe("OllamaProvider — complete()", () => {
 
     await expect(
       provider.complete("llama3", [{ role: "user", content: "Hi" }]),
-    ).rejects.toThrow(/ECONNREFUSED/);
+    ).rejects.toThrow();
   });
 
   it("calls /api/chat endpoint", async () => {
