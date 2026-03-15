@@ -1,10 +1,12 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, Redirect } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { AuthProvider } from "@/contexts/AuthContext";
+import { useAuth } from "@/hooks/use-auth";
 
 import MainLayout from "@/components/layout/MainLayout";
 import Dashboard from "@/pages/Dashboard";
@@ -19,8 +21,23 @@ import Statistics from "@/pages/Statistics";
 import Memory from "@/pages/Memory";
 import WorkspaceList from "@/pages/WorkspaceList";
 import Workspace from "@/pages/Workspace";
+import Login from "@/pages/Login";
 
-function Router() {
+function ProtectedRouter() {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="text-muted-foreground text-sm">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Redirect to="/login" />;
+  }
+
   return (
     <MainLayout>
       <Switch>
@@ -36,7 +53,6 @@ function Router() {
         <Route path="/pipelines" component={() => (
           <ErrorBoundary><PipelineList /></ErrorBoundary>
         )} />
-        {/* PipelineDetail needs params from wouter — pass them through */}
         <Route path="/pipelines/:id">
           {(params) => (
             <ErrorBoundary><PipelineDetail params={params as { id: string }} /></ErrorBoundary>
@@ -69,14 +85,32 @@ function Router() {
   );
 }
 
+function Router() {
+  const { user, isLoading } = useAuth();
+
+  return (
+    <Switch>
+      <Route path="/login" component={() => {
+        if (!isLoading && user) return <Redirect to="/" />;
+        return <Login />;
+      }} />
+      <Route>
+        <ProtectedRouter />
+      </Route>
+    </Switch>
+  );
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
-        <ErrorBoundary>
-          <Router />
-        </ErrorBoundary>
+        <AuthProvider>
+          <ErrorBoundary>
+            <Router />
+          </ErrorBoundary>
+        </AuthProvider>
       </TooltipProvider>
     </QueryClientProvider>
   );

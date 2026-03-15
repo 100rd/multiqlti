@@ -1,9 +1,18 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
+function getAuthToken(): string | null {
+  return localStorage.getItem("auth_token");
+}
+
 async function apiRequest(method: string, url: string, body?: unknown) {
+  const headers: Record<string, string> = {};
+  if (body) headers["Content-Type"] = "application/json";
+  const token = getAuthToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
   const res = await fetch(url, {
     method,
-    headers: body ? { "Content-Type": "application/json" } : {},
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -330,7 +339,11 @@ export function useRejectStage() {
 export function useExportRun() {
   return useMutation({
     mutationFn: async ({ runId, format }: { runId: string; format: "markdown" | "zip" }) => {
-      const res = await fetch(`/api/runs/${runId}/export?format=${format}`);
+      const token = getAuthToken();
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
+      const res = await fetch(`/api/runs/${runId}/export?format=${format}`, { headers });
       if (!res.ok) {
         const errText = await res.text().catch(() => res.statusText);
         throw new Error(errText || res.statusText);

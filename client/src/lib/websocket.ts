@@ -12,7 +12,9 @@ export class WsClient {
     if (this.ws?.readyState === WebSocket.OPEN) return;
 
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${window.location.host}/ws`;
+    const token = localStorage.getItem("auth_token");
+    const tokenParam = token ? `?token=${encodeURIComponent(token)}` : "";
+    const url = `${protocol}//${window.location.host}/ws${tokenParam}`;
     this.ws = new WebSocket(url);
 
     this.ws.onopen = () => {
@@ -24,7 +26,7 @@ export class WsClient {
 
     this.ws.onmessage = (ev) => {
       try {
-        const event = JSON.parse(ev.data) as WsEvent;
+        const event = JSON.parse(ev.data as string) as WsEvent;
         this.emit(event);
       } catch {
         // ignore malformed messages

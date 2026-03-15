@@ -1,3 +1,21 @@
+// ─── Auth Types ───────────────────────────────────────────────────────────────
+
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  isActive: boolean;
+  createdAt: Date;
+}
+
+export interface AuthSession {
+  token: string;
+  user: User;
+  expiresAt: Date;
+}
+
+// ─── Pipeline Types ───────────────────────────────────────────────────────────
+
 export type TeamId =
   | "planning"
   | "architecture"

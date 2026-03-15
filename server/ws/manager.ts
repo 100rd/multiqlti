@@ -1,6 +1,18 @@
 import { WebSocketServer, WebSocket } from "ws";
-import type { Server } from "http";
+import type { Server, IncomingMessage } from "http";
 import type { WsEvent } from "@shared/types";
+import { authService } from "../auth/service";
+
+function extractTokenFromRequest(req: IncomingMessage): string | null {
+  const url = req.url ?? "";
+  const queryMatch = url.match(/[?&]token=([^&]+)/);
+  if (queryMatch) return decodeURIComponent(queryMatch[1]);
+
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith("Bearer ")) return authHeader.slice(7);
+
+  return null;
+}
 
 export class WsManager {
   private wss: WebSocketServer;
@@ -10,7 +22,19 @@ export class WsManager {
     this.wss = new WebSocketServer({ server: httpServer, path: "/ws" });
     this.subscriptions = new Map();
 
-    this.wss.on("connection", (ws) => {
+    this.wss.on("connection", async (ws, req) => {
+      const token = extractTokenFromRequest(req);
+      if (!token) {
+        ws.close(4001, "Unauthorized");
+        return;
+      }
+
+      const user = await authService.validateToken(token);
+      if (!user) {
+        ws.close(4001, "Unauthorized");
+        return;
+      }
+
       ws.on("message", (data) => {
         try {
           const msg = JSON.parse(data.toString()) as {

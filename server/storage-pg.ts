@@ -7,7 +7,7 @@ import {
   stageExecutions, questions, chatMessages, llmRequests,
   memories,
   mcpServers,
-  type User, type InsertUser,
+  type UserRow, type InsertUser,
   type Model, type InsertModel,
   type Pipeline, type InsertPipeline,
   type PipelineRun, type InsertPipelineRun,
@@ -21,17 +21,17 @@ export class PgStorage implements IStorage {
 
   // ─── Users ──────────────────────────────────────────
 
-  async getUser(id: string): Promise<User | undefined> {
+  async getUser(id: string): Promise<UserRow | undefined> {
     const [row] = await db.select().from(users).where(eq(users.id, id));
     return row;
   }
 
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    const [row] = await db.select().from(users).where(eq(users.username, username));
+  async getUserByEmail(email: string): Promise<UserRow | undefined> {
+    const [row] = await db.select().from(users).where(eq(users.email, email));
     return row;
   }
 
-  async createUser(user: InsertUser): Promise<User> {
+  async createUser(user: InsertUser): Promise<UserRow> {
     const [row] = await db.insert(users).values(user).returning();
     return row;
   }
@@ -529,6 +529,7 @@ export class PgStorage implements IStorage {
       .returning({ id: memories.id });
     return result.length;
   }
+
   // ─── MCP Servers ────────────────────────────────────
 
   private rowToMcpServer(row: typeof mcpServers.$inferSelect): McpServerConfig {

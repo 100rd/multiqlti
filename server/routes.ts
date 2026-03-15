@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import type { Express, Router } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
 import { Gateway } from "./gateway/index";
@@ -16,6 +16,8 @@ import { registerStatsRoutes } from "./routes/stats";
 import { registerMemoryRoutes } from "./routes/memory";
 import { registerToolRoutes } from "./routes/tools";
 import { registerWorkspaceRoutes } from "./routes/workspaces";
+import { registerAuthRoutes } from "./routes/auth";
+import { requireAuth } from "./auth/middleware";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
 
@@ -29,7 +31,28 @@ export async function registerRoutes(
   const teamRegistry = new TeamRegistry(gateway, wsManager);
   const controller = new PipelineController(storage, teamRegistry, wsManager);
 
-  // Register route groups
+  // Register auth routes first (public routes included)
+  registerAuthRoutes(app);
+
+  // Register protected route groups — all require authentication
+  app.use("/api/pipelines", requireAuth);
+  app.use("/api/runs", requireAuth);
+  app.use("/api/models", requireAuth);
+  app.use("/api/gateway", requireAuth);
+  app.use("/api/settings", requireAuth);
+  app.use("/api/workspaces", requireAuth);
+  app.use("/api/chat", requireAuth);
+  app.use("/api/questions", requireAuth);
+  app.use("/api/stats", requireAuth);
+  app.use("/api/strategies", requireAuth);
+  app.use("/api/privacy", requireAuth);
+  app.use("/api/memory", requireAuth);
+  app.use("/api/memories", requireAuth);
+  app.use("/api/tools", requireAuth);
+  app.use("/api/providers", requireAuth);
+  app.use("/api/teams", requireAuth);
+
+  // Register route implementations
   registerModelRoutes(app, storage);
   registerPipelineRoutes(app, storage);
   registerRunRoutes(app, storage, controller);
@@ -64,13 +87,13 @@ export async function registerRoutes(
     log("Seeded default SDLC pipeline template");
   }
 
-  // Global pending questions endpoint
+  // Global pending questions endpoint (protected by /api/questions middleware above)
   app.get("/api/questions/pending", async (_req, res) => {
     const pending = await storage.getPendingQuestions();
     res.json(pending);
   });
 
-  // Stats summary endpoint — aggregates real data for the Dashboard
+  // Stats summary endpoint (protected by /api/stats middleware above)
   app.get("/api/stats/summary", async (_req, res) => {
     const [allRuns, allPipelines, allModels] = await Promise.all([
       storage.getPipelineRuns(),
@@ -82,7 +105,6 @@ export async function registerRoutes(
     const activePipelines = allPipelines.filter((p) => !p.isTemplate).length;
     const modelsConfigured = allModels.filter((m) => m.isActive).length;
 
-    // Aggregate runs per day for the last 7 days (UTC)
     const now = Date.now();
     const dayMs = 86_400_000;
     const runsLast7Days: number[] = Array.from({ length: 7 }, (_, offset) => {
