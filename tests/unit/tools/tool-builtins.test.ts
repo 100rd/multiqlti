@@ -19,8 +19,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ─── Mock storage before any imports ─────────────────────────────────────────
 
-const mockGetLlmRequests = vi.fn();
-const mockSearchMemories = vi.fn();
+const { mockGetLlmRequests, mockSearchMemories } = vi.hoisted(() => ({
+  mockGetLlmRequests: vi.fn(),
+  mockSearchMemories: vi.fn(),
+}));
 
 vi.mock("../../../server/storage.js", () => ({
   storage: {
@@ -31,7 +33,9 @@ vi.mock("../../../server/storage.js", () => ({
 
 // ─── Mock configLoader before any imports ─────────────────────────────────────
 
-const mockConfigGet = vi.fn();
+const { mockConfigGet } = vi.hoisted(() => ({
+  mockConfigGet: vi.fn(),
+}));
 
 vi.mock("../../../server/config/loader.js", () => ({
   configLoader: {
