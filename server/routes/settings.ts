@@ -5,6 +5,7 @@ import { db } from "../db";
 import { providerKeys } from "@shared/schema";
 import { encrypt, decrypt } from "../crypto";
 import type { Gateway } from "../gateway/index";
+import { configLoader } from "../config/loader";
 
 const CLOUD_PROVIDERS = ["anthropic", "google", "xai"] as const;
 type CloudProvider = (typeof CLOUD_PROVIDERS)[number];
@@ -13,14 +14,15 @@ const SaveKeySchema = z.object({
   apiKey: z.string().min(1, "apiKey must be non-empty"),
 });
 
-/** Source of an active key: env var takes precedence over DB. */
+/** Source of an active key: config value (env var / config.yaml) takes precedence over DB. */
 function getKeySource(provider: CloudProvider): "env" | "db" | "none" {
-  const envVars: Record<CloudProvider, string> = {
-    anthropic: "ANTHROPIC_API_KEY",
-    google: "GOOGLE_API_KEY",
-    xai: "XAI_API_KEY",
+  const providers = configLoader.get().providers;
+  const configKeys: Record<CloudProvider, string | undefined> = {
+    anthropic: providers.anthropic.apiKey,
+    google: providers.google.apiKey,
+    xai: providers.xai.apiKey,
   };
-  if (process.env[envVars[provider]]) return "env";
+  if (configKeys[provider]) return "env";
   return "none"; // updated to "db" by caller if DB row exists
 }
 
@@ -93,7 +95,7 @@ export function registerSettingsRoutes(router: Router, gateway: Gateway) {
 
     try {
       await db.delete(providerKeys).where(eq(providerKeys.provider, provider));
-      // Reload gateway — if env var is set it will still work, otherwise provider is gone
+      // Reload gateway — if config key is set it will still work, otherwise provider is gone
       await gateway.reloadProvider(provider as CloudProvider, null);
       res.json({ ok: true, provider });
     } catch (e) {

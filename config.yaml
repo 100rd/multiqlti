@@ -1,0 +1,13 @@
+# multiqlti configuration
+# All values here override built-in defaults.
+# Environment variables with MULTI_* prefix override this file.
+# For secrets, use config.local.yaml (git-ignored) or environment variables.
+
+server:
+  port: 5000
+
+features:
+  sandbox:
+    enabled: false
+  privacy:
+    enabled: true

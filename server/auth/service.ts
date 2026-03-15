@@ -4,17 +4,7 @@ import { db } from "../db";
 import { users, sessions } from "@shared/schema";
 import { eq, count } from "drizzle-orm";
 import type { User, AuthSession } from "@shared/types";
-
-const SALT_ROUNDS = 12;
-const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-
-function getJwtSecret(): string {
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    throw new Error("JWT_SECRET environment variable is required");
-  }
-  return secret;
-}
+import { configLoader } from "../config/loader";
 
 interface JwtPayload {
   userId: string;
@@ -45,7 +35,8 @@ class AuthService {
       throw err;
     }
 
-    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+    const { bcryptRounds } = configLoader.get().auth;
+    const passwordHash = await bcrypt.hash(password, bcryptRounds);
     const [user] = await db.insert(users).values({ email, name, passwordHash }).returning();
 
     return this.createSession(user);
@@ -74,9 +65,11 @@ class AuthService {
   }
 
   async validateToken(token: string): Promise<User | null> {
+    const { jwtSecret } = configLoader.get().auth;
+    if (!jwtSecret) return null;
     let payload: JwtPayload;
     try {
-      payload = jwt.verify(token, getJwtSecret()) as JwtPayload;
+      payload = jwt.verify(token, jwtSecret) as JwtPayload;
     } catch {
       return null;
     }
@@ -100,13 +93,16 @@ class AuthService {
   }
 
   private async createSession(user: { id: string; email: string; name: string; isActive: boolean; createdAt: Date }): Promise<AuthSession> {
-    const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
+    const { jwtSecret, sessionTtlDays } = configLoader.get().auth;
+    if (!jwtSecret) throw new Error("[auth] JWT_SECRET is not configured");
+    const sessionMs = sessionTtlDays * 24 * 60 * 60 * 1000;
+    const expiresAt = new Date(Date.now() + sessionMs);
     const sessionId = crypto.randomUUID();
 
     const token = jwt.sign(
       { userId: user.id, sessionId } satisfies JwtPayload,
-      getJwtSecret(),
-      { expiresIn: "7d" },
+      jwtSecret,
+      { expiresIn: `${sessionTtlDays}d` },
     );
 
     await db.insert(sessions).values({

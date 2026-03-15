@@ -9,6 +9,7 @@ import { GeminiProvider } from "./providers/gemini";
 import { GrokProvider } from "./providers/grok";
 import { AnonymizerService } from "../privacy/anonymizer";
 import { estimateCostUsd } from "@shared/constants";
+import { configLoader } from "../config/loader";
 
 export interface GatewayPrivacyOptions {
   privacy?: PrivacySettings;
@@ -33,33 +34,35 @@ export class Gateway {
     this.mockProvider = new MockProvider();
     this.anonymizer = new AnonymizerService();
 
+    const providers = configLoader.get().providers;
+
     // Self-hosted: endpoint-gated
-    if (process.env.VLLM_ENDPOINT) {
-      this.registry.set("vllm", new VllmProvider(process.env.VLLM_ENDPOINT));
+    if (providers.vllm.endpoint) {
+      this.registry.set("vllm", new VllmProvider(providers.vllm.endpoint));
     }
-    if (process.env.OLLAMA_ENDPOINT) {
-      this.registry.set("ollama", new OllamaProvider(process.env.OLLAMA_ENDPOINT));
+    if (providers.ollama.endpoint) {
+      this.registry.set("ollama", new OllamaProvider(providers.ollama.endpoint));
     }
 
-    // Cloud: API-key-gated (env vars; DB keys loaded later via loadDbKeys())
-    if (process.env.ANTHROPIC_API_KEY) {
-      this.registry.set("anthropic", new ClaudeProvider(process.env.ANTHROPIC_API_KEY));
+    // Cloud: API-key-gated (config values; DB keys loaded later via loadDbKeys())
+    if (providers.anthropic.apiKey) {
+      this.registry.set("anthropic", new ClaudeProvider(providers.anthropic.apiKey));
     }
-    if (process.env.GOOGLE_API_KEY) {
-      this.registry.set("google", new GeminiProvider(process.env.GOOGLE_API_KEY));
+    if (providers.google.apiKey) {
+      this.registry.set("google", new GeminiProvider(providers.google.apiKey));
     }
-    if (process.env.XAI_API_KEY) {
-      this.registry.set("xai", new GrokProvider(process.env.XAI_API_KEY));
+    if (providers.xai.apiKey) {
+      this.registry.set("xai", new GrokProvider(providers.xai.apiKey));
     }
   }
 
   /**
-   * Load provider keys from DB, registering any providers not already set via env vars.
+   * Load provider keys from DB, registering any providers not already set via config.
    * Called once at startup after DB is available.
    */
   async loadDbKeys(dbKeys: Map<string, string>): Promise<void> {
     for (const [provider, apiKey] of dbKeys.entries()) {
-      // Env var takes precedence — don't overwrite
+      // Config value takes precedence — don't overwrite
       if (this.registry.has(provider)) continue;
       await this.reloadProvider(provider as CloudProviderKey, apiKey);
     }
@@ -71,13 +74,14 @@ export class Gateway {
    */
   async reloadProvider(provider: CloudProviderKey, apiKey: string | null): Promise<void> {
     if (!apiKey) {
-      // Only remove if not backed by env var
-      const envVars: Record<CloudProviderKey, string> = {
-        anthropic: "ANTHROPIC_API_KEY",
-        google: "GOOGLE_API_KEY",
-        xai: "XAI_API_KEY",
+      // Only remove if not backed by a config value
+      const providers = configLoader.get().providers;
+      const configKeys: Record<CloudProviderKey, string | undefined> = {
+        anthropic: providers.anthropic.apiKey,
+        google: providers.google.apiKey,
+        xai: providers.xai.apiKey,
       };
-      if (!process.env[envVars[provider]]) {
+      if (!configKeys[provider]) {
         this.registry.delete(provider);
       }
       return;
@@ -279,14 +283,15 @@ export class Gateway {
   }
 
   getStatus() {
+    const providers = configLoader.get().providers;
     return {
       vllm: this.registry.has("vllm"),
       ollama: this.registry.has("ollama"),
       anthropic: this.registry.has("anthropic"),
       google: this.registry.has("google"),
       xai: this.registry.has("xai"),
-      vllmEndpoint: process.env.VLLM_ENDPOINT ?? null,
-      ollamaEndpoint: process.env.OLLAMA_ENDPOINT ?? null,
+      vllmEndpoint: providers.vllm.endpoint ?? null,
+      ollamaEndpoint: providers.ollama.endpoint ?? null,
     };
   }
 

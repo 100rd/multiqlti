@@ -9,6 +9,7 @@ import {
 } from "@shared/schema";
 import { eq, desc } from "drizzle-orm";
 import type { AnonymizationLevel } from "@shared/types";
+import { configLoader } from "../config/loader";
 
 const anonymizer = new AnonymizerService();
 
@@ -25,6 +26,10 @@ const createPatternSchema = insertAnonymizationPatternSchema.extend({
   pseudonymTemplate: z.string().optional(),
   allowlist: z.array(z.string()).default([]),
 });
+
+function hasDatabase(): boolean {
+  return !!configLoader.get().database.url;
+}
 
 export function registerPrivacyRoutes(router: Router): void {
   // POST /api/privacy/test — preview anonymization
@@ -60,7 +65,7 @@ export function registerPrivacyRoutes(router: Router): void {
   // GET /api/privacy/patterns — list custom patterns
   router.get("/api/privacy/patterns", async (_req, res) => {
     try {
-      if (!process.env.DATABASE_URL) {
+      if (!hasDatabase()) {
         return res.json([]);
       }
       const patterns = await db
@@ -87,7 +92,7 @@ export function registerPrivacyRoutes(router: Router): void {
       return res.status(400).json({ error: "Invalid regular expression" });
     }
 
-    if (!process.env.DATABASE_URL) {
+    if (!hasDatabase()) {
       return res.status(503).json({ error: "Database not available" });
     }
 
@@ -116,7 +121,7 @@ export function registerPrivacyRoutes(router: Router): void {
       return res.status(400).json({ error: "Invalid pattern ID" });
     }
 
-    if (!process.env.DATABASE_URL) {
+    if (!hasDatabase()) {
       return res.status(503).json({ error: "Database not available" });
     }
 
@@ -132,7 +137,7 @@ export function registerPrivacyRoutes(router: Router): void {
 
   // GET /api/privacy/audit-log — query audit log (optionally filter by runId)
   router.get("/api/privacy/audit-log", async (req, res) => {
-    if (!process.env.DATABASE_URL) {
+    if (!hasDatabase()) {
       return res.json([]);
     }
 

@@ -19,6 +19,7 @@ import {
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
+import { configLoader } from "./config/loader";
 
 // ─── LLM Request query filters ───────────────────────────────────────────────
 
@@ -772,6 +773,6 @@ export class MemStorage implements IStorage {
 
 }
 
-export const storage: IStorage = process.env.DATABASE_URL
+export const storage: IStorage = configLoader.get().database.url
   ? new PgStorage()
   : new MemStorage();
