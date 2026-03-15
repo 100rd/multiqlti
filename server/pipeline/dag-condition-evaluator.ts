@@ -9,6 +9,9 @@ import type { DAGCondition } from "@shared/types";
 /** Regex for valid field paths: alphanumeric+underscore, max 3 dot-separated segments. */
 const FIELD_PATH_RE = /^[a-zA-Z0-9_]{1,50}(\.[a-zA-Z0-9_]{1,50}){0,2}$/;
 
+/** Blocked path segments that could cause prototype chain access. */
+const BLOCKED_SEGMENTS = new Set(["__proto__", "constructor", "prototype"]);
+
 /**
  * Resolves a dot-path field from an output object.
  * Returns undefined for invalid paths or missing values.
@@ -20,6 +23,7 @@ export function resolvePath(
 ): unknown {
   if (!FIELD_PATH_RE.test(path)) return undefined;
   const parts = path.split(".");
+  if (parts.some((p) => BLOCKED_SEGMENTS.has(p))) return undefined;
   let current: unknown = obj;
   for (const part of parts) {
     if (current === null || typeof current !== "object") return undefined;

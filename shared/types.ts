@@ -243,7 +243,9 @@ export type WsEventType =
   | "dag:stage:ready"
   | "dag:stage:skipped"
   | "dag:edge:evaluated"
-  | "dag:completed";
+  | "dag:completed"
+  | "trigger:fired"
+  | "trigger:error";
 
 export interface WsEvent {
   type: WsEventType;
@@ -930,4 +932,87 @@ export interface DAGStage {
 export interface PipelineDAG {
   stages: DAGStage[];
   edges: DAGEdge[];
+}
+
+// ─── Trigger Types (Phase 6.3) ────────────────────────────────────────────────
+
+export type TriggerType = "webhook" | "schedule" | "github_event" | "file_change";
+
+// Per-type discriminated union for the config JSONB column
+export interface WebhookTriggerConfig {
+  // endpoint is auto-derived as /api/webhooks/:triggerId — not stored
+  // secret is stored encrypted in secretEncrypted column — not in this object
+}
+
+export interface ScheduleTriggerConfig {
+  cron: string;      // standard 5-field cron expression, e.g. "0 9 * * 1"
+  timezone?: string; // IANA timezone string, defaults to "UTC"
+  input?: string;    // optional pipeline input override for this scheduled run
+}
+
+export interface GitHubEventTriggerConfig {
+  repository: string;   // "owner/repo"
+  events: string[];     // ["push", "pull_request", "issues", "release"]
+  refFilter?: string;   // optional, e.g. "refs/heads/main"
+  // secret stored encrypted in secretEncrypted column — not in this object
+}
+
+export interface FileChangeTriggerConfig {
+  watchPath: string;     // absolute or workspace-relative path
+  patterns: string[];    // micromatch glob patterns, e.g. ["**/*.ts", "!node_modules/**"]
+  debounceMs?: number;   // default 500
+  input?: string;        // optional pipeline input template; may reference {{filePath}}
+}
+
+export type TriggerConfig =
+  | WebhookTriggerConfig
+  | ScheduleTriggerConfig
+  | GitHubEventTriggerConfig
+  | FileChangeTriggerConfig;
+
+// Public-facing Trigger shape returned from API (no secretEncrypted)
+export interface PipelineTrigger {
+  id: string;
+  pipelineId: string;
+  type: TriggerType;
+  config: TriggerConfig;
+  // webhookUrl is synthesized by the server for webhook and github_event triggers
+  webhookUrl?: string;
+  // hasSecret tells client whether a secret is configured without exposing it
+  hasSecret: boolean;
+  enabled: boolean;
+  lastTriggeredAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface InsertTrigger {
+  pipelineId: string;
+  type: TriggerType;
+  config: TriggerConfig;
+  // plaintext secret supplied at creation/update — immediately encrypted, never stored raw
+  secret?: string;
+  enabled?: boolean;
+}
+
+export interface UpdateTrigger {
+  type?: TriggerType;
+  config?: TriggerConfig;
+  secret?: string | null;  // null = remove secret; undefined = leave unchanged
+  enabled?: boolean;
+}
+
+// WS event payload shapes
+export interface TriggerFiredPayload {
+  triggerId: string;
+  triggerType: TriggerType;
+  pipelineId: string;
+  runId: string;
+}
+
+export interface TriggerErrorPayload {
+  triggerId: string;
+  triggerType: TriggerType;
+  pipelineId: string;
+  error: string;
 }

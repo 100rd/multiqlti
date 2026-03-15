@@ -10,6 +10,7 @@ import {
   serial,
   real,
   unique,
+  index,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -457,3 +458,43 @@ export const insertSkillSchema = createInsertSchema(skills).omit({ createdAt: tr
 export type InsertSkill = z.infer<typeof insertSkillSchema>;
 export type Skill = typeof skills.$inferSelect;
 
+
+// ─── Pipeline Triggers (Phase 6.3) ───────────────────────────────────────────
+
+export const TRIGGER_TYPES = ["webhook", "schedule", "github_event", "file_change"] as const;
+
+import type { TriggerConfig, TriggerType } from "./types.js";
+
+export const triggers = pgTable(
+  "triggers",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    pipelineId: varchar("pipeline_id")
+      .notNull()
+      .references(() => pipelines.id, { onDelete: "cascade" }),
+    type: text("type").notNull().$type<TriggerType>(),
+    config: jsonb("config").notNull().default(sql`'{}'::jsonb`).$type<TriggerConfig>(),
+    secretEncrypted: text("secret_encrypted"),  // AES-256-GCM encrypted raw secret; null when no secret
+    enabled: boolean("enabled").notNull().default(true),
+    lastTriggeredAt: timestamp("last_triggered_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    pipelineIdIdx: index("triggers_pipeline_id_idx").on(table.pipelineId),
+    enabledTypeIdx: index("triggers_enabled_type_idx").on(table.enabled, table.type),
+  }),
+);
+
+export const insertTriggerSchema = createInsertSchema(triggers).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  lastTriggeredAt: true,
+  secretEncrypted: true,
+});
+
+export type TriggerRow = typeof triggers.$inferSelect;
+export type InsertTriggerRow = z.infer<typeof insertTriggerSchema>;
