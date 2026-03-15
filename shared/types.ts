@@ -1,3 +1,7 @@
+// ─── Complexity Types ─────────────────────────────────────────────────────────
+
+export type TaskComplexity = "trivial" | "standard" | "complex";
+
 // ─── Auth Types ───────────────────────────────────────────────────────────────
 
 export type UserRole = "user" | "maintainer" | "admin";
@@ -225,7 +229,8 @@ export type WsEventType =
   | "sandbox:starting"
   | "sandbox:output"
   | "sandbox:completed"
-  | "stage:thought_tree";
+  | "stage:thought_tree"
+  | "stage:model_downgraded";
 
 export interface WsEvent {
   type: WsEventType;
@@ -365,6 +370,9 @@ export interface PipelineStageConfig {
   privacySettings?: PrivacySettings;
   sandbox?: SandboxConfig;
   tools?: StageToolConfig;
+  autoModelRouting?: {
+    enabled: boolean;
+  };
 }
 
 export interface StageOutput {
@@ -456,6 +464,8 @@ export interface StrategyPreset {
 // ─── Execution Strategy Preset ───────────────────────────────────────────────
 
 export interface ExecutionStrategyPreset {
+  /** Estimated cost multiplier relative to single-model baseline (1.0 = 1x cost). */
+  costMultiplier: number;
   id: string;
   label: string;
   description: string;
