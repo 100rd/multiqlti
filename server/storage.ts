@@ -1,5 +1,5 @@
 import {
-  type User,
+  type UserRow,
   type InsertUser,
   type Model,
   type InsertModel,
@@ -77,10 +77,10 @@ export interface LlmTimelinePoint {
 }
 
 export interface IStorage {
-  // Users
-  getUser(id: string): Promise<User | undefined>;
-  getUserByUsername(username: string): Promise<User | undefined>;
-  createUser(user: InsertUser): Promise<User>;
+  // Users (legacy scaffold — auth handled by AuthService)
+  getUser(id: string): Promise<UserRow | undefined>;
+  getUserByEmail(email: string): Promise<UserRow | undefined>;
+  createUser(user: InsertUser): Promise<UserRow>;
 
   // Models
   getModels(): Promise<Model[]>;
@@ -149,7 +149,7 @@ export interface IStorage {
 }
 
 export class MemStorage implements IStorage {
-  private users: Map<string, User>;
+  private usersMap: Map<string, UserRow>;
   private models: Map<string, Model>;
   private pipelinesMap: Map<string, Pipeline>;
   private runs: Map<string, PipelineRun>;
@@ -164,7 +164,7 @@ export class MemStorage implements IStorage {
   private nextMcpServerId: number;
 
   constructor() {
-    this.users = new Map();
+    this.usersMap = new Map();
     this.models = new Map();
     this.pipelinesMap = new Map();
     this.runs = new Map();
@@ -181,20 +181,25 @@ export class MemStorage implements IStorage {
 
   // ─── Users ──────────────────────────────────────
 
-  async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
+  async getUser(id: string): Promise<UserRow | undefined> {
+    return this.usersMap.get(id);
   }
 
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
+  async getUserByEmail(email: string): Promise<UserRow | undefined> {
+    return Array.from(this.usersMap.values()).find((u) => u.email === email);
   }
 
-  async createUser(insertUser: InsertUser): Promise<User> {
+  async createUser(insertUser: InsertUser): Promise<UserRow> {
     const id = randomUUID();
-    const user: User = { ...insertUser, id };
-    this.users.set(id, user);
+    const user: UserRow = {
+      id,
+      email: insertUser.email,
+      name: insertUser.name,
+      passwordHash: insertUser.passwordHash,
+      isActive: insertUser.isActive ?? true,
+      createdAt: new Date(),
+    };
+    this.usersMap.set(id, user);
     return user;
   }
 
@@ -734,7 +739,7 @@ export class MemStorage implements IStorage {
   // ─── MCP Servers ───────────────────────────────
 
   async getMcpServers(): Promise<McpServerConfig[]> {
-    return Array.from(this.mcpServersMap.values()).filter((s) => true);
+    return Array.from(this.mcpServersMap.values());
   }
 
   async getMcpServer(id: number): Promise<McpServerConfig | undefined> {

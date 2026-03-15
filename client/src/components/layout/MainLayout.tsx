@@ -11,18 +11,21 @@ import {
   BarChart3,
   Brain,
   FolderGit2,
+  LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
+import { useAuth } from "@/hooks/use-auth";
 
 interface MainLayoutProps {
   children: ReactNode;
 }
 
 export default function MainLayout({ children }: MainLayoutProps) {
-  const [location] = useLocation();
+  const [location, navigate] = useLocation();
   const { data: pendingQuestions } = usePendingQuestions();
   const pendingCount = Array.isArray(pendingQuestions) ? pendingQuestions.length : 0;
+  const { user, logout } = useAuth();
 
   const navItems = [
     { icon: LayoutDashboard, label: "Dashboard", href: "/" },
@@ -39,6 +42,11 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: ShieldCheck, label: "Privacy", href: "/privacy" },
     { icon: Settings, label: "Settings", href: "/settings" },
   ];
+
+  async function handleLogout() {
+    await logout();
+    navigate("/login");
+  }
 
   return (
     <div className="flex h-screen w-full bg-background font-sans overflow-hidden">
@@ -95,7 +103,19 @@ export default function MainLayout({ children }: MainLayoutProps) {
           )}
         </div>
 
-        <div className="p-4 border-t border-border">
+        <div className="p-4 border-t border-border space-y-2">
+          {user && (
+            <div className="px-3 py-1">
+              <p className="text-[11px] text-muted-foreground truncate">{user.email}</p>
+            </div>
+          )}
+          <button
+            onClick={handleLogout}
+            className="flex w-full items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors"
+          >
+            <LogOut className="h-4 w-4" />
+            <span>Sign out</span>
+          </button>
           <div className="px-3 py-2 text-xs text-muted-foreground flex flex-col gap-1">
             <span className="font-mono text-[10px] uppercase tracking-wider">Status: Air-gapped</span>
             <span className="font-mono text-[10px] uppercase tracking-wider text-emerald-500">
