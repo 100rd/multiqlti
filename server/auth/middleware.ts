@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { authService } from "./service";
 import type { User } from "@shared/types";
+import { configLoader } from "../config/loader";
 
 declare global {
   namespace Express {
@@ -20,7 +21,8 @@ const TEST_USER: User = {
 };
 
 function isTestBypassEnabled(): boolean {
-  return process.env.NODE_ENV === "test" && process.env.DISABLE_AUTH === "true";
+  // DISABLE_AUTH is a raw test-runner escape hatch; intentionally not in the typed config.
+  return configLoader.get().server.nodeEnv === "test" && process.env.DISABLE_AUTH === "true";
 }
 
 function extractToken(req: Request): string | null {

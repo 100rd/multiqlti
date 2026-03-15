@@ -1,23 +1,24 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "crypto";
+import { configLoader } from "./config/loader";
 
 const ALGORITHM = "aes-256-gcm";
 const KEY_LEN = 32;
-const SALT = "multiqlti-provider-keys-v1"; // static salt; key is env-derived
+const SALT = "multiqlti-provider-keys-v1"; // static salt; key is config-derived
 
 function deriveKey(secret: string): Buffer {
   return scryptSync(secret, SALT, KEY_LEN);
 }
 
 function getSecret(): string {
-  const secret = process.env.ENCRYPTION_KEY;
-  if (!secret) {
+  const { key } = configLoader.get().encryption;
+  if (!key) {
     console.warn(
-      "[crypto] ENCRYPTION_KEY env var not set — using insecure dev default. " +
-      "Set ENCRYPTION_KEY in production.",
+      "[crypto] encryption.key is not set — using insecure dev default. " +
+      "Set ENCRYPTION_KEY (or MULTI_ENCRYPTION_KEY) in production.",
     );
     return "dev-default-insecure-key-change-me!";
   }
-  return secret;
+  return key;
 }
 
 /**
