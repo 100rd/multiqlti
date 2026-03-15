@@ -52,6 +52,7 @@ export async function registerRoutes(
   app.use("/api/memory", requireAuth);
   app.use("/api/memories", requireAuth);
   app.use("/api/tools", requireAuth);
+  app.use("/api/mcp", requireAuth);
   app.use("/api/providers", requireAuth);
   app.use("/api/teams", requireAuth);
   app.use("/api/sandbox", requireAuth);

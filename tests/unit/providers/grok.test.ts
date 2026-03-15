@@ -11,13 +11,15 @@
  *   - Error handling: rate limit (429) → surfaced clearly
  *   - Retry on 502/503/504: single retry, success on second attempt
  *   - Retry on 502/503/504: both attempts fail → throws
+ *   - Tool calling: tool_calls in response → ToolCall[] with finishReason "tool_use"
+ *   - Tool calling: tools passed as OpenAI function format in request body
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { MockInstance } from "vitest";
 
 // Import the provider (it uses global fetch, which we will mock)
 import { GrokProvider } from "../../../server/gateway/providers/grok.js";
-import type { ProviderMessage } from "../../../shared/types.js";
+import type { ProviderMessage, ToolDefinition } from "../../../shared/types.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -31,6 +33,19 @@ const CONVERSATION: ProviderMessage[] = [
   { role: "user", content: "How are you?" },
 ];
 
+const SAMPLE_TOOLS: ToolDefinition[] = [
+  {
+    name: "web_search",
+    description: "Search the web for information",
+    source: "builtin",
+    inputSchema: {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+    },
+  },
+];
+
 /** Build a minimal OpenAI-format JSON response body. */
 function makeCompletionBody(content: string, totalTokens = 50): string {
   return JSON.stringify({
@@ -38,6 +53,35 @@ function makeCompletionBody(content: string, totalTokens = 50): string {
       {
         message: { content, tool_calls: undefined },
         finish_reason: "stop",
+      },
+    ],
+    usage: { total_tokens: totalTokens },
+  });
+}
+
+/** Build a completion body with tool_calls in the response. */
+function makeToolCallBody(
+  toolName: string,
+  args: Record<string, unknown>,
+  totalTokens = 25,
+): string {
+  return JSON.stringify({
+    choices: [
+      {
+        message: {
+          content: null,
+          tool_calls: [
+            {
+              id: "call_abc123",
+              type: "function",
+              function: {
+                name: toolName,
+                arguments: JSON.stringify(args),
+              },
+            },
+          ],
+        },
+        finish_reason: "tool_calls",
       },
     ],
     usage: { total_tokens: totalTokens },
@@ -206,6 +250,117 @@ describe("GrokProvider — complete()", () => {
     expect(body.messages[0].role).toBe("user");
     expect(body.messages[1].role).toBe("assistant");
     expect(body.messages[2].role).toBe("user");
+  });
+});
+
+describe("GrokProvider — tool calling via OpenAI-compatible format", () => {
+  let provider: GrokProvider;
+  let fetchSpy: MockInstance;
+
+  beforeEach(() => {
+    provider = new GrokProvider("xai-test-key");
+    fetchSpy = vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns toolCalls and finishReason 'tool_use' when response has tool_calls", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      makeOkResponse(makeToolCallBody("web_search", { query: "latest TypeScript features" })),
+    );
+
+    const result = await provider.complete("grok-3", USER_MESSAGES, {
+      tools: SAMPLE_TOOLS,
+    });
+
+    expect(result.finishReason).toBe("tool_use");
+    expect(result.toolCalls).toBeDefined();
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls![0].name).toBe("web_search");
+    expect(result.toolCalls![0].arguments).toEqual({ query: "latest TypeScript features" });
+    expect(result.toolCalls![0].id).toBe("call_abc123");
+  });
+
+  it("sends tools in OpenAI function format in request body", async () => {
+    fetchSpy.mockResolvedValueOnce(makeOkResponse(makeCompletionBody("ok")));
+
+    await provider.complete("grok-3", USER_MESSAGES, {
+      tools: SAMPLE_TOOLS,
+    });
+
+    const [_url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as {
+      tools: Array<{
+        type: string;
+        function: { name: string; description: string; parameters: unknown };
+      }>;
+    };
+
+    expect(body.tools).toBeDefined();
+    expect(body.tools).toHaveLength(1);
+    expect(body.tools[0].type).toBe("function");
+    expect(body.tools[0].function.name).toBe("web_search");
+    expect(body.tools[0].function.description).toBe("Search the web for information");
+  });
+
+  it("returns no toolCalls when finish_reason is 'stop'", async () => {
+    fetchSpy.mockResolvedValueOnce(makeOkResponse(makeCompletionBody("regular response")));
+
+    const result = await provider.complete("grok-3", USER_MESSAGES, {
+      tools: SAMPLE_TOOLS,
+    });
+
+    expect(result.finishReason).toBe("stop");
+    expect(result.toolCalls).toBeUndefined();
+    expect(result.content).toBe("regular response");
+  });
+
+  it("handles malformed tool_call arguments gracefully", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      makeOkResponse(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: null,
+                tool_calls: [
+                  {
+                    id: "call_bad",
+                    type: "function",
+                    function: {
+                      name: "broken_tool",
+                      arguments: "{ this is not valid json }",
+                    },
+                  },
+                ],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+          usage: { total_tokens: 10 },
+        }),
+      ),
+    );
+
+    const result = await provider.complete("grok-3", USER_MESSAGES, {
+      tools: SAMPLE_TOOLS,
+    });
+
+    expect(result.toolCalls).toHaveLength(1);
+    // Malformed JSON falls back to { _raw: ... }
+    expect(result.toolCalls![0].arguments).toHaveProperty("_raw");
+  });
+
+  it("omits tools from request when none are provided", async () => {
+    fetchSpy.mockResolvedValueOnce(makeOkResponse(makeCompletionBody("ok")));
+
+    await provider.complete("grok-3", USER_MESSAGES);
+
+    const [_url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as { tools?: unknown };
+    expect(body.tools).toBeUndefined();
   });
 });
 
