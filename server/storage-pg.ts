@@ -1,7 +1,7 @@
-import { eq, desc, and, or, ilike, lt, ne, gte, lte, sql as drizzleSql } from "drizzle-orm";
+import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, sql as drizzleSql } from "drizzle-orm";
 import { db } from "./db";
 import type { IStorage, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint } from "./storage";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TriggerType } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
 import {
   users, models, pipelines, pipelineRuns,
   stageExecutions, questions, chatMessages, llmRequests,
@@ -21,7 +21,6 @@ import {
   type InsertSpecializationProfile,
   type SpecializationProfileRow,
   type Skill, type InsertSkill,
-  type TriggerRow,
 } from "@shared/schema";
 
 export class PgStorage implements IStorage {
@@ -663,43 +662,6 @@ export class PgStorage implements IStorage {
 
   async deleteSkill(id: string): Promise<void> {
     await db.delete(skills).where(eq(skills.id, id));
-  }
-
-  // ─── Triggers (Phase 6.3) ────────────────────────────────────────────────
-
-  async getTriggers(pipelineId: string): Promise<TriggerRow[]> {
-    return db.select().from(triggers).where(eq(triggers.pipelineId, pipelineId));
-  }
-
-  async getTrigger(id: string): Promise<TriggerRow | undefined> {
-    const [row] = await db.select().from(triggers).where(eq(triggers.id, id));
-    return row;
-  }
-
-  async getEnabledTriggersByType(type: TriggerType): Promise<TriggerRow[]> {
-    return db
-      .select()
-      .from(triggers)
-      .where(and(eq(triggers.enabled, true), eq(triggers.type, type)));
-  }
-
-  async createTrigger(data: Omit<TriggerRow, "id" | "createdAt" | "updatedAt">): Promise<TriggerRow> {
-    const [row] = await db.insert(triggers).values(data).returning();
-    return row;
-  }
-
-  async updateTrigger(id: string, updates: Partial<TriggerRow>): Promise<TriggerRow> {
-    const [row] = await db
-      .update(triggers)
-      .set({ ...updates, updatedAt: new Date() })
-      .where(eq(triggers.id, id))
-      .returning();
-    if (!row) throw new Error(`Trigger not found: ${id}`);
-    return row;
-  }
-
-  async deleteTrigger(id: string): Promise<void> {
-    await db.delete(triggers).where(eq(triggers.id, id));
   }
 
 }
