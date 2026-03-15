@@ -10,6 +10,7 @@ import {
   ShieldCheck,
   BarChart3,
   Brain,
+  FolderGit2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -32,6 +33,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
       href: "/pipelines",
       badge: pendingCount > 0 ? pendingCount : undefined,
     },
+    { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
     { icon: BarChart3, label: "Statistics", href: "/stats" },
     { icon: Brain, label: "Memory", href: "/memories" },
     { icon: ShieldCheck, label: "Privacy", href: "/privacy" },

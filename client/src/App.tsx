@@ -17,6 +17,8 @@ import Settings from "@/pages/Settings";
 import Privacy from "@/pages/Privacy";
 import Statistics from "@/pages/Statistics";
 import Memory from "@/pages/Memory";
+import WorkspaceList from "@/pages/WorkspaceList";
+import Workspace from "@/pages/Workspace";
 
 function Router() {
   return (
@@ -42,6 +44,12 @@ function Router() {
         </Route>
         <Route path="/runs/:runId" component={() => (
           <ErrorBoundary><PipelineRun /></ErrorBoundary>
+        )} />
+        <Route path="/workspaces" component={() => (
+          <ErrorBoundary><WorkspaceList /></ErrorBoundary>
+        )} />
+        <Route path="/workspaces/:id" component={() => (
+          <ErrorBoundary><Workspace /></ErrorBoundary>
         )} />
         <Route path="/settings" component={() => (
           <ErrorBoundary><Settings /></ErrorBoundary>

@@ -15,6 +15,7 @@ import { registerPrivacyRoutes } from "./routes/privacy";
 import { registerStatsRoutes } from "./routes/stats";
 import { registerMemoryRoutes } from "./routes/memory";
 import { registerToolRoutes } from "./routes/tools";
+import { registerWorkspaceRoutes } from "./routes/workspaces";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
 
@@ -39,6 +40,7 @@ export async function registerRoutes(
   registerStatsRoutes(app, storage);
   registerMemoryRoutes(app, storage);
   registerToolRoutes(app, storage);
+  registerWorkspaceRoutes(app, gateway);
 
   // Seed default models
   const existingModels = await storage.getModels();

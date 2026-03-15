@@ -318,3 +318,26 @@ export const insertMcpServerSchema = createInsertSchema(mcpServers).omit({
 
 export type InsertMcpServer = z.infer<typeof insertMcpServerSchema>;
 export type McpServerRow = typeof mcpServers.$inferSelect;
+
+// ─── Workspaces ──────────────────────────────────────────────────────────────
+
+export const workspaces = pgTable("workspaces", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  type: text("type").notNull().$type<"local" | "remote">(),
+  path: text("path").notNull(),
+  branch: text("branch").notNull().default("main"),
+  status: text("status").notNull().default("active").$type<"active" | "syncing" | "error">(),
+  lastSyncAt: timestamp("last_sync_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertWorkspaceSchema = createInsertSchema(workspaces).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertWorkspace = z.infer<typeof insertWorkspaceSchema>;
+export type WorkspaceRow = typeof workspaces.$inferSelect;

@@ -509,3 +509,57 @@ export interface TeamMemoryHint {
   content: string;
   type: MemoryType;
 }
+
+// ─── Workspace Types ──────────────────────────────────────────────────────────
+
+export interface Workspace {
+  id: string;
+  name: string;
+  type: "local" | "remote";
+  path: string;
+  branch: string;
+  status: "active" | "syncing" | "error";
+  lastSyncAt: Date | null;
+  createdAt: Date;
+}
+
+export interface FileEntry {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  size?: number;
+}
+
+export interface GitStatus {
+  branch: string;
+  modified: string[];
+  staged: string[];
+  untracked: string[];
+}
+
+export interface CodeSelection {
+  startLine: number;
+  endLine: number;
+  content: string;
+}
+
+export interface CodeChange {
+  type: "replace" | "insert" | "delete";
+  startLine: number;
+  endLine?: number;
+  content?: string;
+}
+
+export interface ReviewIssue {
+  severity: "error" | "warning" | "info";
+  file: string;
+  line?: number;
+  message: string;
+  suggestion?: string;
+}
+
+export interface ReviewResult {
+  model: string;
+  issues: ReviewIssue[];
+  summary: string;
+}
