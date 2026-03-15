@@ -195,7 +195,8 @@ export type WsEventType =
   | "strategy:completed"
   | "sandbox:starting"
   | "sandbox:output"
-  | "sandbox:completed";
+  | "sandbox:completed"
+  | "stage:thought_tree";
 
 export interface WsEvent {
   type: WsEventType;
@@ -314,6 +315,12 @@ export interface ILLMProviderOptions {
   temperature?: number;
   /** Per-request timeout override in milliseconds. Defaults to provider default (30s). */
   timeoutMs?: number;
+  /** Associate this request with a pipeline run for logging. */
+  runId?: string;
+  /** Associate this request with a stage execution for logging. */
+  stageExecutionId?: string;
+  /** Team identifier for cost/usage grouping. */
+  teamId?: string;
 }
 
 export interface ILLMProvider {
@@ -365,3 +372,24 @@ export interface FactCheckOutput {
   enrichedOutput: string;
   summary: string;
 }
+
+// ─── Thought Tree Types ───────────────────────────────────────────────────────
+
+export interface ThoughtNode {
+  id: string;
+  parentId: string | null;
+  type: 'reasoning' | 'tool_call' | 'tool_result' | 'decision' | 'guardrail' | 'memory_recall';
+  label: string;
+  content: string;
+  timestamp: number;
+  durationMs?: number;
+  metadata?: {
+    model?: string;
+    tokensUsed?: number;
+    toolName?: string;
+    decision?: string;
+    confidence?: number;
+  };
+}
+
+export type ThoughtTree = ThoughtNode[];

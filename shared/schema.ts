@@ -8,6 +8,7 @@ import {
   timestamp,
   jsonb,
   serial,
+  real,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -122,6 +123,7 @@ export const stageExecutions = pgTable("stage_executions", {
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
   sandboxResult: jsonb("sandbox_result"),
+  thoughtTree: jsonb("thought_tree"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -230,3 +232,36 @@ export const anonymizationLog = pgTable("anonymization_log", {
 });
 
 export type AnonymizationLogEntry = typeof anonymizationLog.$inferSelect;
+
+// ─── LLM Requests ───────────────────────────────────
+
+export const llmRequests = pgTable("llm_requests", {
+  id: serial("id").primaryKey(),
+  runId: varchar("run_id"),
+  stageExecutionId: varchar("stage_execution_id"),
+  modelSlug: text("model_slug").notNull(),
+  provider: text("provider").notNull(),
+  messages: jsonb("messages").notNull(),
+  systemPrompt: text("system_prompt"),
+  temperature: real("temperature"),
+  maxTokens: integer("max_tokens"),
+  responseContent: text("response_content").notNull().default(""),
+  inputTokens: integer("input_tokens").notNull().default(0),
+  outputTokens: integer("output_tokens").notNull().default(0),
+  totalTokens: integer("total_tokens").notNull().default(0),
+  latencyMs: integer("latency_ms").notNull().default(0),
+  estimatedCostUsd: real("estimated_cost_usd"),
+  status: text("status").notNull().default("success"),
+  errorMessage: text("error_message"),
+  teamId: text("team_id"),
+  tags: jsonb("tags").default(sql`'[]'::jsonb`),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertLlmRequestSchema = createInsertSchema(llmRequests).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertLlmRequest = z.infer<typeof insertLlmRequestSchema>;
+export type LlmRequest = typeof llmRequests.$inferSelect;

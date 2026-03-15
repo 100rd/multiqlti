@@ -15,6 +15,7 @@ import PipelineDetail from "@/pages/PipelineDetail";
 import PipelineRun from "@/pages/PipelineRun";
 import Settings from "@/pages/Settings";
 import Privacy from "@/pages/Privacy";
+import Statistics from "@/pages/Statistics";
 
 function Router() {
   return (
@@ -46,6 +47,9 @@ function Router() {
         )} />
         <Route path="/privacy" component={() => (
           <ErrorBoundary><Privacy /></ErrorBoundary>
+        )} />
+        <Route path="/stats" component={() => (
+          <ErrorBoundary><Statistics /></ErrorBoundary>
         )} />
         <Route component={NotFound} />
       </Switch>
