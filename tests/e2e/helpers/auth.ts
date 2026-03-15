@@ -38,19 +38,29 @@ export async function getAuthToken(baseURL: string): Promise<string> {
 
 /**
  * Authenticate the Playwright page:
+ * - Sets `auth_token` cookie so the server accepts all requests (page.request included).
  * - Sets `auth_token` in localStorage so the React app considers the session active.
- * - Sets `Authorization` header on all future page.request calls.
  */
 export async function loginPage(page: Page, baseURL: string): Promise<void> {
   const token = await getAuthToken(baseURL);
+  const url = new URL(baseURL);
 
-  // Set extra HTTP header on the page context so page.request calls include auth.
-  await page.setExtraHTTPHeaders({ Authorization: `Bearer ${token}` });
+  // Add cookie to the browser context — this is sent with page.request calls too.
+  await page.context().addCookies([
+    {
+      name: "auth_token",
+      value: token,
+      domain: url.hostname,
+      path: "/",
+      httpOnly: false,
+      secure: false,
+    },
+  ]);
 
-  // Navigate to login page first so the origin is available for localStorage.
+  // Navigate to login page so the origin is available for localStorage writes.
   await page.goto("/login");
   await page.waitForLoadState("networkidle");
 
-  // Set token in localStorage so React auth context considers user logged in.
+  // Set token in localStorage so the React AuthContext considers the user logged in.
   await page.evaluate((t) => localStorage.setItem("auth_token", t), token);
 }
