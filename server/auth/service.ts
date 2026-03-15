@@ -1,9 +1,8 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import type { User, AuthSession } from "@shared/types";
-import type { InsertUser } from "@shared/schema";
+import type { User, AuthSession, UserRole } from "@shared/types";
 import { configLoader } from "../config/loader";
-import { authStorage, MemAuthStorage } from "./storage";
+import { authStorage } from "./storage";
 
 interface JwtPayload {
   userId: string;
@@ -26,8 +25,8 @@ class AuthService {
     const { bcryptRounds } = configLoader.get().auth;
     const passwordHash = await bcrypt.hash(password, bcryptRounds);
 
-    const userData: InsertUser = { email, name, passwordHash };
-    const user = await authStorage.createUser(userData);
+    // First user is always admin
+    const user = await authStorage.createUser({ email, name, passwordHash, role: "admin" });
 
     return this.buildSession(user);
   }
@@ -38,7 +37,7 @@ class AuthService {
       throw new Error("Invalid credentials");
     }
 
-    const passwordHash = await this.getPasswordHash(email);
+    const passwordHash = await authStorage.getPasswordHashByEmail(email);
     if (!passwordHash) {
       throw new Error("Invalid credentials");
     }
@@ -52,7 +51,9 @@ class AuthService {
       throw new Error("Account is disabled");
     }
 
-    return this.buildSession(user);
+    // Update last_login_at
+    const updatedUser = await authStorage.updateUser(user.id, { lastLoginAt: new Date() });
+    return this.buildSession(updatedUser);
   }
 
   async logout(token: string): Promise<void> {
@@ -83,18 +84,34 @@ class AuthService {
     return user;
   }
 
-  private async getPasswordHash(email: string): Promise<string | undefined> {
-    if (authStorage instanceof MemAuthStorage) {
-      const user = await authStorage.getUserByEmail(email);
-      if (!user) return undefined;
-      return authStorage.getPasswordHash(user.id);
+  async getUserById(id: string): Promise<User | null> {
+    return (await authStorage.getUserById(id)) ?? null;
+  }
+
+  async getAllUsers(): Promise<User[]> {
+    return authStorage.getAllUsers();
+  }
+
+  async updateUser(
+    id: string,
+    updates: { name?: string; email?: string; password?: string },
+  ): Promise<User> {
+    const setValues: { name?: string; email?: string; passwordHash?: string } = {};
+    if (updates.name !== undefined) setValues.name = updates.name;
+    if (updates.email !== undefined) setValues.email = updates.email;
+    if (updates.password !== undefined) {
+      const { bcryptRounds } = configLoader.get().auth;
+      setValues.passwordHash = await bcrypt.hash(updates.password, bcryptRounds);
     }
-    // PgAuthStorage: fetch password hash directly
-    const { PgAuthStorage } = await import("./storage");
-    if (authStorage instanceof PgAuthStorage) {
-      return authStorage.getPasswordHashFromDb(email);
-    }
-    return undefined;
+    return authStorage.updateUser(id, setValues);
+  }
+
+  async updateUserRole(id: string, role: UserRole): Promise<User> {
+    return authStorage.updateUserRole(id, role);
+  }
+
+  async deactivateUser(id: string): Promise<User> {
+    return authStorage.deactivateUser(id);
   }
 
   private async buildSession(user: User): Promise<AuthSession> {

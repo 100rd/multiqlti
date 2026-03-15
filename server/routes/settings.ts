@@ -11,7 +11,7 @@ const CLOUD_PROVIDERS = ["anthropic", "google", "xai"] as const;
 type CloudProvider = (typeof CLOUD_PROVIDERS)[number];
 
 const SaveKeySchema = z.object({
-  apiKey: z.string().min(1, "apiKey must be non-empty"),
+  key: z.string().min(1, "key must be non-empty"),
 });
 
 /** Source of an active key: config value (env var / config.yaml) takes precedence over DB. */
@@ -66,7 +66,7 @@ export function registerSettingsRoutes(router: Router, gateway: Gateway) {
     }
 
     try {
-      const encrypted = encrypt(result.data.apiKey);
+      const encrypted = encrypt(result.data.key);
       const now = new Date();
 
       await db
@@ -78,7 +78,7 @@ export function registerSettingsRoutes(router: Router, gateway: Gateway) {
         });
 
       // Hot-reload the gateway with the new key
-      await gateway.reloadProvider(provider as CloudProvider, result.data.apiKey);
+      await gateway.reloadProvider(provider as CloudProvider, result.data.key);
 
       res.json({ ok: true, provider, source: "db" });
     } catch (e) {

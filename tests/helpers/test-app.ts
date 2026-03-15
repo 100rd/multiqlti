@@ -3,7 +3,8 @@
  *
  * Builds a minimal Express app wired with MemStorage + MockProvider.
  * No DB, no real LLM calls — fully in-memory.
- * This branch has no auth layer so routes are open by default.
+ * A synthetic admin user is injected into every request so RBAC middleware
+ * functions correctly without a real auth layer.
  */
 import express from "express";
 import { createServer } from "http";
@@ -16,6 +17,7 @@ import { registerPipelineRoutes } from "../../server/routes/pipelines.js";
 import { registerRunRoutes } from "../../server/routes/runs.js";
 import { registerModelRoutes } from "../../server/routes/models.js";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "../../shared/constants.js";
+import type { User } from "../../shared/types.js";
 
 export interface TestApp {
   app: express.Express;
@@ -23,6 +25,17 @@ export interface TestApp {
   mockProvider: MockProvider;
   close: () => Promise<void>;
 }
+
+/** Synthetic admin user injected into every test request. */
+const TEST_ADMIN_USER: User = {
+  id: "test-user-id",
+  email: "test@example.com",
+  name: "Test User",
+  isActive: true,
+  role: "admin",
+  lastLoginAt: null,
+  createdAt: new Date(0),
+};
 
 export async function createTestApp(): Promise<TestApp> {
   const storage = new MemStorage();
@@ -43,6 +56,12 @@ export async function createTestApp(): Promise<TestApp> {
 
   const app = express();
   app.use(express.json());
+
+  // Inject synthetic admin user so RBAC middleware passes without real auth
+  app.use((req, _res, next) => {
+    req.user = TEST_ADMIN_USER;
+    next();
+  });
 
   // Register only the routes under test (no auth, no full-app dependencies)
   registerModelRoutes(app, storage);

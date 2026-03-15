@@ -7,6 +7,7 @@ import { SandboxExecutor } from "../sandbox/executor";
 import { ThoughtTreeCollector } from "../pipeline/thought-tree-collector";
 import { MemoryExtractor } from "../memory/extractor";
 import { MemoryProvider } from "../memory/provider";
+import { ephemeralVarStore } from "../run-variables/store";
 
 interface ApprovalHandle {
   resolve: (approved: boolean) => void;
@@ -30,7 +31,7 @@ export class PipelineController {
     this.memoryProvider = new MemoryProvider(storage);
   }
 
-  async startRun(pipelineId: string, input: string): Promise<PipelineRun> {
+  async startRun(pipelineId: string, input: string, variables?: Record<string, string>, triggeredBy?: string): Promise<PipelineRun> {
     const pipeline = await this.storage.getPipeline(pipelineId);
     if (!pipeline) throw new Error(`Pipeline not found: ${pipelineId}`);
 
@@ -42,6 +43,7 @@ export class PipelineController {
       input,
       currentStageIndex: 0,
       startedAt: new Date(),
+      triggeredBy: triggeredBy ?? null,
     });
 
     // Create stage execution records for each enabled stage
@@ -67,6 +69,11 @@ export class PipelineController {
       },
       timestamp: new Date().toISOString(),
     });
+
+    // Store ephemeral variables in-memory (never written to DB)
+    if (variables && Object.keys(variables).length > 0) {
+      ephemeralVarStore.set(run.id, variables);
+    }
 
     // Execute stages in background
     const abortController = new AbortController();
@@ -287,6 +294,8 @@ export class PipelineController {
             : undefined,
           sessionId: run.id,
           memoryContext,
+          // Ephemeral run variables (in-memory only, never persisted)
+          variables: ephemeralVarStore.get(run.id) ?? undefined,
         };
 
         // Pass execution strategy (undefined = single, handled in BaseTeam)
@@ -508,6 +517,7 @@ export class PipelineController {
           timestamp: new Date().toISOString(),
         });
 
+        ephemeralVarStore.preserveOnFailure(run.id, `run failed at stage: ${stage.teamId}`);
         this.activeRuns.delete(run.id);
         return;
       }
@@ -530,6 +540,8 @@ export class PipelineController {
       timestamp: new Date().toISOString(),
     });
 
+    // Clear ephemeral variables on success — no trace left in memory
+    ephemeralVarStore.clearOnSuccess(run.id);
     this.activeRuns.delete(run.id);
   }
 

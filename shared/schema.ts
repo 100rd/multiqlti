@@ -14,6 +14,11 @@ import {
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
+// ─── RBAC ────────────────────────────────────────────
+
+export const USER_ROLES = ["user", "maintainer", "admin"] as const;
+export type UserRole = typeof USER_ROLES[number];
+
 // ─── Users ──────────────────────────────────────────
 
 export const users = pgTable("users", {
@@ -22,13 +27,15 @@ export const users = pgTable("users", {
   name: text("name").notNull(),
   passwordHash: text("password_hash").notNull(),
   isActive: boolean("is_active").notNull().default(true),
+  role: text("role").notNull().default("user").$type<UserRole>(),
+  lastLoginAt: timestamp("last_login_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
 });
 
-export const insertUserSchema = createInsertSchema(users).omit({
-  id: true,
-  createdAt: true,
-});
+export const insertUserSchema = createInsertSchema(users)
+  .omit({ id: true, createdAt: true, updatedAt: true })
+  .extend({ role: z.enum(USER_ROLES).optional() });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type UserRow = typeof users.$inferSelect;
@@ -84,6 +91,7 @@ export const pipelines = pgTable("pipelines", {
   description: text("description"),
   stages: jsonb("stages").notNull().default(sql`'[]'::jsonb`),
   createdBy: varchar("created_by"),
+  ownerId: text("owner_id").references(() => users.id, { onDelete: "set null" }),
   isTemplate: boolean("is_template").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
@@ -111,6 +119,7 @@ export const pipelineRuns = pgTable("pipeline_runs", {
   currentStageIndex: integer("current_stage_index").notNull().default(0),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
+  triggeredBy: text("triggered_by").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

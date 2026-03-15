@@ -6,6 +6,7 @@ import type {
   EntityType,
 } from "@shared/types";
 import { DataClassifier } from "./classifier";
+import type { CustomPattern } from "./classifier";
 
 // Severity ordering for level-based filtering
 const SEVERITY_RANK: Record<EntitySeverity, number> = {
@@ -138,6 +139,7 @@ export class AnonymizerService {
     sessionId: string,
     level: AnonymizationLevel,
     ttlMs = 3_600_000,
+    customPatterns?: CustomPattern[],
   ): AnonymizationResult {
     if (level === "off") {
       return { anonymizedText: text, sessionId, entitiesFound: [] };
@@ -146,7 +148,7 @@ export class AnonymizerService {
     this.getOrCreateSession(sessionId);
     this.scheduleExpiry(sessionId, ttlMs);
 
-    const entities = this.classifier.classify(text);
+    const entities = this.classifier.classify(text, customPatterns);
     const minRank = this.minSeverityForLevel(level);
 
     // Filter by severity threshold

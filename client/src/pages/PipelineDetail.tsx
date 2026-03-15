@@ -10,6 +10,7 @@ import MultiAgentPipeline from "@/components/workflow/MultiAgentPipeline";
 import AgentChat from "@/components/workflow/AgentChat";
 import CodePreview from "@/components/workflow/CodePreview";
 import { usePipeline, useStartRun, useRuns } from "@/hooks/use-pipeline";
+import { RunVariablesDialog } from "@/components/pipeline/RunVariablesDialog";
 
 interface PipelineDetailProps {
   params: { id: string };
@@ -20,6 +21,7 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState("design");
   const [taskInput, setTaskInput] = useState("");
+  const [showVarsDialog, setShowVarsDialog] = useState(false);
 
   const { data: pipeline, isLoading } = usePipeline(id);
   const { data: runs } = useRuns(id);
@@ -27,10 +29,20 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
 
   const handleExecute = () => {
     if (!taskInput.trim() || !pipeline) return;
+    setShowVarsDialog(true);
+  };
+
+  const handleRunConfirm = (variables: Record<string, string>) => {
+    if (!pipeline) return;
     startRun.mutate(
-      { pipelineId: pipeline.id, input: taskInput },
+      {
+        pipelineId: pipeline.id,
+        input: taskInput,
+        ...(Object.keys(variables).length > 0 ? { variables } : {}),
+      },
       {
         onSuccess: (run: { id: string }) => {
+          setShowVarsDialog(false);
           navigate(`/runs/${run.id}`);
         },
       },
@@ -164,6 +176,13 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
           </div>
         </Tabs>
       </div>
+
+      <RunVariablesDialog
+        open={showVarsDialog}
+        onOpenChange={setShowVarsDialog}
+        onConfirm={handleRunConfirm}
+        isLoading={startRun.isPending}
+      />
     </div>
   );
 }

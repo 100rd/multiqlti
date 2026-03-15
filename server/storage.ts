@@ -198,7 +198,10 @@ export class MemStorage implements IStorage {
       name: insertUser.name,
       passwordHash: insertUser.passwordHash,
       isActive: insertUser.isActive ?? true,
+      role: (insertUser.role as 'user' | 'maintainer' | 'admin') ?? 'user',
+      lastLoginAt: insertUser.lastLoginAt ?? null,
       createdAt: new Date(),
+      updatedAt: new Date(),
     };
     this.usersMap.set(id, user);
     return user;
@@ -272,6 +275,7 @@ export class MemStorage implements IStorage {
       description: insert.description ?? null,
       stages: insert.stages ?? [],
       createdBy: insert.createdBy ?? null,
+      ownerId: insert.ownerId ?? null,
       isTemplate: insert.isTemplate ?? false,
       createdAt: now,
       updatedAt: now,
@@ -318,6 +322,7 @@ export class MemStorage implements IStorage {
       currentStageIndex: insert.currentStageIndex ?? 0,
       startedAt: insert.startedAt ?? null,
       completedAt: insert.completedAt ?? null,
+      triggeredBy: insert.triggeredBy ?? null,
       createdAt: new Date(),
     };
     this.runs.set(id, run);

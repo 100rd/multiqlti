@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { authService } from "./service";
-import type { User } from "@shared/types";
+import type { User, UserRole } from "@shared/types";
 import { configLoader } from "../config/loader";
 
 declare global {
@@ -17,6 +17,8 @@ const TEST_USER: User = {
   email: "test@example.com",
   name: "Test User",
   isActive: true,
+  role: "admin",
+  lastLoginAt: null,
   createdAt: new Date(0),
 };
 
@@ -61,4 +63,62 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
   req.user = user;
   next();
+}
+
+/**
+ * Middleware factory that checks if the authenticated user has one of the
+ * specified roles. Must be used after requireAuth.
+ */
+export function requireRole(...roles: UserRole[]) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    if (!roles.includes(user.role)) {
+      res.status(403).json({ error: "Forbidden — insufficient role" });
+      return;
+    }
+
+    next();
+  };
+}
+
+/**
+ * Middleware factory that allows access if the authenticated user is the
+ * resource owner OR has one of the specified roles.
+ *
+ * @param getOwnerId - A function that extracts the owner ID from the request.
+ *   Called lazily so you can look it up from DB before this middleware runs
+ *   and pass a resolved value, or provide a getter over req state.
+ */
+export function requireOwnerOrRole(
+  getOwnerId: (req: Request) => string | null | undefined,
+  ...roles: UserRole[]
+) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const user = req.user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const ownerId = getOwnerId(req);
+
+    // Allow if user owns the resource
+    if (ownerId && ownerId === user.id) {
+      next();
+      return;
+    }
+
+    // Allow if user has a qualifying role
+    if (roles.includes(user.role)) {
+      next();
+      return;
+    }
+
+    res.status(403).json({ error: "Forbidden — must be owner or have required role" });
+  };
 }
