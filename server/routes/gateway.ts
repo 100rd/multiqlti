@@ -1,15 +1,35 @@
 import { Router } from "express";
+import { z } from "zod";
 import type { Gateway } from "../gateway/index";
 import { SDLC_TEAMS, TEAM_ORDER } from "@shared/constants";
+import { validateBody } from "../middleware/validate.js";
+
+// ─── Zod schemas ──────────────────────────────────────────────────────────────
+
+const MessageSchema = z.object({
+  role: z.enum(["user", "assistant", "system"]),
+  content: z.string().min(1).max(100000),
+});
+
+const GatewayCompleteSchema = z.object({
+  modelSlug: z.string().min(1).max(200),
+  messages: z.array(MessageSchema).min(1).max(100),
+  temperature: z.number().min(0).max(2).optional(),
+  maxTokens: z.number().int().positive().max(100000).optional(),
+});
+
+const GatewayStreamSchema = GatewayCompleteSchema;
+
+const ProbeEndpointSchema = z.object({
+  endpoint: z.string().url().max(500),
+  providerType: z.enum(["vllm", "ollama"]),
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export function registerGatewayRoutes(router: Router, gateway: Gateway) {
-  router.post("/api/gateway/complete", async (req, res) => {
-    const { modelSlug, messages, temperature, maxTokens } = req.body;
-    if (!modelSlug || !messages) {
-      return res
-        .status(400)
-        .json({ message: "modelSlug and messages are required" });
-    }
+  router.post("/api/gateway/complete", validateBody(GatewayCompleteSchema), async (req, res) => {
+    const { modelSlug, messages, temperature, maxTokens } = req.body as z.infer<typeof GatewayCompleteSchema>;
 
     try {
       const response = await gateway.complete({
@@ -20,17 +40,12 @@ export function registerGatewayRoutes(router: Router, gateway: Gateway) {
       });
       res.json(response);
     } catch (e) {
-      res.status(500).json({ message: (e as Error).message });
+      res.status(500).json({ error: (e as Error).message });
     }
   });
 
-  router.post("/api/gateway/stream", async (req, res) => {
-    const { modelSlug, messages, temperature, maxTokens } = req.body;
-    if (!modelSlug || !messages) {
-      return res
-        .status(400)
-        .json({ message: "modelSlug and messages are required" });
-    }
+  router.post("/api/gateway/stream", validateBody(GatewayStreamSchema), async (req, res) => {
+    const { modelSlug, messages, temperature, maxTokens } = req.body as z.infer<typeof GatewayStreamSchema>;
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -88,28 +103,18 @@ export function registerGatewayRoutes(router: Router, gateway: Gateway) {
       const discovered = await gateway.discoverModels();
       res.json(discovered);
     } catch (e) {
-      res.status(500).json({ message: (e as Error).message });
+      res.status(500).json({ error: (e as Error).message });
     }
   });
 
   /** Probe a custom endpoint to discover its models */
-  router.post("/api/providers/probe", async (req, res) => {
-    const { endpoint, providerType } = req.body;
-    if (!endpoint || !providerType) {
-      return res
-        .status(400)
-        .json({ message: "endpoint and providerType are required" });
-    }
-    if (providerType !== "vllm" && providerType !== "ollama") {
-      return res
-        .status(400)
-        .json({ message: "providerType must be 'vllm' or 'ollama'" });
-    }
+  router.post("/api/providers/probe", validateBody(ProbeEndpointSchema), async (req, res) => {
+    const { endpoint, providerType } = req.body as z.infer<typeof ProbeEndpointSchema>;
     try {
       const models = await gateway.discoverFromEndpoint(endpoint, providerType);
       res.json({ models });
     } catch (e) {
-      res.status(502).json({ message: (e as Error).message });
+      res.status(502).json({ error: (e as Error).message });
     }
   });
 

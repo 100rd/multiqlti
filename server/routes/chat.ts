@@ -9,25 +9,25 @@ import { validateBody } from "../middleware/validate";
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
 
 const HistoryMessageSchema = z.object({
-  role: z.string().min(1),
-  content: z.string(),
+  role: z.enum(["user", "assistant", "system"]),
+  content: z.string().max(100000),
 });
 
 const SendChatSchema = z.object({
-  content: z.string().min(1, "content is required"),
-  modelSlug: z.string().optional(),
+  content: z.string().min(1, "content is required").max(50000),
+  modelSlug: z.string().max(200).optional(),
 });
 
 const StandaloneChatSchema = z.object({
-  content: z.string().min(1, "content is required"),
-  modelSlug: z.string().optional(),
-  history: z.array(HistoryMessageSchema).optional(),
+  content: z.string().min(1, "content is required").max(50000),
+  modelSlug: z.string().max(200).optional(),
+  history: z.array(HistoryMessageSchema).max(100).optional(),
 });
 
 const StreamChatSchema = z.object({
-  content: z.string().min(1, "content is required"),
-  modelSlug: z.string().optional(),
-  history: z.array(HistoryMessageSchema).optional(),
+  content: z.string().min(1, "content is required").max(50000),
+  modelSlug: z.string().max(200).optional(),
+  history: z.array(HistoryMessageSchema).max(100).optional(),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ const CLOUD_PROVIDERS = ["anthropic", "google", "xai"] as const;
 type CloudProvider = (typeof CLOUD_PROVIDERS)[number];
 
 const SaveKeySchema = z.object({
-  key: z.string().min(1, "key must be non-empty"),
+  key: z.string().min(1, "key must be non-empty").max(500),
 });
 
 /** Source of an active key: config value (env var / config.yaml) takes precedence over DB. */
@@ -62,7 +62,10 @@ export function registerSettingsRoutes(router: Router, gateway: Gateway) {
 
     const result = SaveKeySchema.safeParse(req.body);
     if (!result.success) {
-      return res.status(400).json({ error: result.error.message });
+      return res.status(400).json({
+        error: "Validation failed",
+        issues: result.error.issues.map((i) => ({ path: i.path, message: i.message })),
+      });
     }
 
     try {

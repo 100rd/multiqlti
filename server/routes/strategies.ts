@@ -78,14 +78,14 @@ export function registerStrategyRoutes(router: Router, storage: IStorage): void 
       const stageIndex = parseInt(req.params.stageIndex, 10);
 
       if (isNaN(stageIndex) || stageIndex < 0) {
-        return res.status(400).json({ message: "Invalid stageIndex" });
+        return res.status(400).json({ error: "Invalid stageIndex" });
       }
 
       const parseResult = ExecutionStrategySchema.safeParse(req.body);
       if (!parseResult.success) {
         return res.status(400).json({
-          message: "Invalid strategy",
-          errors: parseResult.error.flatten(),
+          error: "Validation failed",
+          issues: parseResult.error.issues.map((i) => ({ path: i.path, message: i.message })),
         });
       }
 
@@ -93,12 +93,12 @@ export function registerStrategyRoutes(router: Router, storage: IStorage): void 
 
       const pipeline = await storage.getPipeline(pipelineId);
       if (!pipeline) {
-        return res.status(404).json({ message: "Pipeline not found" });
+        return res.status(404).json({ error: "Pipeline not found" });
       }
 
       const stages = pipeline.stages as PipelineStageConfig[];
       if (stageIndex >= stages.length) {
-        return res.status(400).json({ message: "Stage index out of bounds" });
+        return res.status(400).json({ error: "Stage index out of bounds" });
       }
 
       const updatedStages = stages.map((s, idx) => {
@@ -120,17 +120,20 @@ export function registerStrategyRoutes(router: Router, storage: IStorage): void 
     const schema = z.object({ presetId: z.string().min(1) });
     const parseResult = schema.safeParse(req.body);
     if (!parseResult.success) {
-      return res.status(400).json({ message: "presetId is required" });
+      return res.status(400).json({
+        error: "Validation failed",
+        issues: parseResult.error.issues.map((i) => ({ path: i.path, message: i.message })),
+      });
     }
 
     const preset = EXECUTION_STRATEGY_PRESETS.find((p) => p.id === parseResult.data.presetId);
     if (!preset) {
-      return res.status(404).json({ message: "Execution strategy preset not found" });
+      return res.status(404).json({ error: "Execution strategy preset not found" });
     }
 
     const pipeline = await storage.getPipeline(req.params.id);
     if (!pipeline) {
-      return res.status(404).json({ message: "Pipeline not found" });
+      return res.status(404).json({ error: "Pipeline not found" });
     }
 
     const stages = pipeline.stages as PipelineStageConfig[];

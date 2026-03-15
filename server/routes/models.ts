@@ -37,7 +37,10 @@ export function registerModelRoutes(router: Router, storage: IStorage) {
   router.post("/api/models", async (req, res) => {
     const result = CreateModelSchema.safeParse(req.body);
     if (!result.success) {
-      return res.status(400).json({ error: result.error.message });
+      return res.status(400).json({
+        error: "Validation failed",
+        issues: result.error.issues.map((i) => ({ path: i.path, message: i.message })),
+      });
     }
     const model = await storage.createModel(result.data);
     res.status(201).json(model);
@@ -46,7 +49,10 @@ export function registerModelRoutes(router: Router, storage: IStorage) {
   router.patch("/api/models/:id", async (req, res) => {
     const result = UpdateModelSchema.safeParse(req.body);
     if (!result.success) {
-      return res.status(400).json({ error: result.error.message });
+      return res.status(400).json({
+        error: "Validation failed",
+        issues: result.error.issues.map((i) => ({ path: i.path, message: i.message })),
+      });
     }
     try {
       const model = await storage.updateModel(req.params.id, result.data);

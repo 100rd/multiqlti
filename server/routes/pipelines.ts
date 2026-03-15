@@ -48,7 +48,10 @@ export function registerPipelineRoutes(router: Router, storage: IStorage) {
     async (req, res) => {
       const result = CreatePipelineSchema.safeParse(req.body);
       if (!result.success) {
-        return res.status(400).json({ error: result.error.message });
+        return res.status(400).json({
+          error: "Validation failed",
+          issues: result.error.issues.map((i) => ({ path: i.path, message: i.message })),
+        });
       }
       const ownerId = req.user?.id;
       const pipeline = await storage.createPipeline({
@@ -72,7 +75,10 @@ export function registerPipelineRoutes(router: Router, storage: IStorage) {
     middleware(req, res, async () => {
       const result = UpdatePipelineSchema.safeParse(req.body);
       if (!result.success) {
-        return res.status(400).json({ error: result.error.message });
+        return res.status(400).json({
+          error: "Validation failed",
+          issues: result.error.issues.map((i) => ({ path: i.path, message: i.message })),
+        });
       }
       try {
         const updated = await storage.updatePipeline(req.params.id, result.data);

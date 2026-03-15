@@ -4,6 +4,7 @@ import type { IStorage } from "../storage";
 import type { PipelineController } from "../controller/pipeline-controller";
 import { generateMarkdownReport, generateZipExport } from "../services/export-service";
 import { ephemeralVarStore } from "../run-variables/store";
+import { validateBody } from "../middleware/validate.js";
 
 /** Mask the password portion of a connection string like postgres://user:pass@host/db */
 function maskUrl(value: string): string {
@@ -17,13 +18,13 @@ function maskUrl(value: string): string {
 }
 
 const CreateRunSchema = z.object({
-  pipelineId: z.string().min(1, "pipelineId is required"),
-  input: z.string().min(1, "input must be a non-empty string"),
-  variables: z.record(z.string()).optional(),
+  pipelineId: z.string().min(1, "pipelineId is required").max(100),
+  input: z.string().min(1, "input must be a non-empty string").max(50000),
+  variables: z.record(z.string().max(10000)).refine((v) => Object.keys(v).length <= 50, { message: "variables must have at most 50 keys" }).optional(),
 });
 
 const AnswerQuestionSchema = z.object({
-  answer: z.string().min(1, "answer is required"),
+  answer: z.string().min(1, "answer is required").max(10000),
 });
 
 const ApproveStageSchema = z.object({
@@ -56,13 +57,8 @@ export function registerRunRoutes(
     res.json({ ...run, stages, questions });
   });
 
-  router.post("/api/runs", async (req, res) => {
-    const result = CreateRunSchema.safeParse(req.body);
-    if (!result.success) {
-      return res.status(400).json({ error: result.error.message });
-    }
-
-    const { pipelineId, input, variables } = result.data;
+  router.post("/api/runs", validateBody(CreateRunSchema), async (req, res) => {
+    const { pipelineId, input, variables } = req.body as z.infer<typeof CreateRunSchema>;
     try {
       const triggeredBy = req.user?.id;
       const run = await controller.startRun(pipelineId, input, variables, triggeredBy);
@@ -112,14 +108,10 @@ export function registerRunRoutes(
     res.json(questions);
   });
 
-  router.post("/api/runs/:id/questions/:qid/answer", async (req, res) => {
-    const result = AnswerQuestionSchema.safeParse(req.body);
-    if (!result.success) {
-      return res.status(400).json({ error: result.error.message });
-    }
-
+  router.post("/api/runs/:id/questions/:qid/answer", validateBody(AnswerQuestionSchema), async (req, res) => {
+    const { answer } = req.body as z.infer<typeof AnswerQuestionSchema>;
     try {
-      await controller.answerQuestion(req.params.qid, result.data.answer);
+      await controller.answerQuestion(req.params.qid, answer);
       res.json({ message: "Question answered" });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
@@ -137,38 +129,30 @@ export function registerRunRoutes(
 
   // ─── Approval Gates ────────────────────────────────────────────────────────
 
-  router.post("/api/runs/:id/stages/:stageIndex/approve", async (req, res) => {
+  router.post("/api/runs/:id/stages/:stageIndex/approve", validateBody(ApproveStageSchema), async (req, res) => {
     const stageIndex = parseInt(req.params.stageIndex, 10);
     if (isNaN(stageIndex) || stageIndex < 0) {
       return res.status(400).json({ error: "Invalid stageIndex" });
     }
 
-    const parsed = ApproveStageSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: parsed.error.message });
-    }
-
+    const { approvedBy } = req.body as z.infer<typeof ApproveStageSchema>;
     try {
-      await controller.approveStage(req.params.id, stageIndex, parsed.data.approvedBy);
+      await controller.approveStage(req.params.id, stageIndex, approvedBy);
       res.json({ message: "Stage approved" });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
     }
   });
 
-  router.post("/api/runs/:id/stages/:stageIndex/reject", async (req, res) => {
+  router.post("/api/runs/:id/stages/:stageIndex/reject", validateBody(RejectStageSchema), async (req, res) => {
     const stageIndex = parseInt(req.params.stageIndex, 10);
     if (isNaN(stageIndex) || stageIndex < 0) {
       return res.status(400).json({ error: "Invalid stageIndex" });
     }
 
-    const parsed = RejectStageSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: parsed.error.message });
-    }
-
+    const { reason } = req.body as z.infer<typeof RejectStageSchema>;
     try {
-      await controller.rejectStage(req.params.id, stageIndex, parsed.data.reason);
+      await controller.rejectStage(req.params.id, stageIndex, reason);
       res.json({ message: "Stage rejected" });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
