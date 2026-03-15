@@ -82,7 +82,7 @@ const BUILTIN_PATTERNS: PatternDefinition[] = [
   },
   {
     type: "email",
-    severity: "medium",
+    severity: "high",
     patterns: [/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi],
   },
   {
