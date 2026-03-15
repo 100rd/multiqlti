@@ -11,11 +11,16 @@ import { CodeReviewTeam } from "./code-review";
 import { DeploymentTeam } from "./deployment";
 import { MonitoringTeam } from "./monitoring";
 import { FactCheckTeam } from "./fact-check";
+import { CustomTeam } from "./custom";
 
 export class TeamRegistry {
-  private teams: Map<TeamId, BaseTeam>;
+  private teams: Map<string, BaseTeam>;
+  private gateway: Gateway;
+  private wsManager?: WsManager;
 
   constructor(gateway: Gateway, wsManager?: WsManager) {
+    this.gateway = gateway;
+    this.wsManager = wsManager;
     this.teams = new Map();
     this.teams.set("planning", new PlanningTeam(gateway, SDLC_TEAMS.planning, wsManager));
     this.teams.set("architecture", new ArchitectureTeam(gateway, SDLC_TEAMS.architecture, wsManager));
@@ -29,13 +34,25 @@ export class TeamRegistry {
 
   getTeam(teamId: TeamId): BaseTeam {
     const team = this.teams.get(teamId);
-    if (!team) throw new Error(`Unknown team: ${teamId}`);
-    return team;
+    if (team) return team;
+    // Fall back to a dynamic CustomTeam for user-defined stage IDs
+    return new CustomTeam(this.gateway, {
+      id: teamId as TeamId,
+      name: teamId,
+      description: "Custom stage",
+      defaultModelSlug: "mock",
+      systemPromptTemplate: "You are a helpful AI assistant. Process the input and provide a detailed response.",
+      inputSchema: {},
+      outputSchema: {},
+      tools: [],
+      color: "violet",
+      icon: "⚙️",
+    }, this.wsManager);
   }
 
   getAllTeams(): Array<{ id: TeamId; team: BaseTeam }> {
     return Array.from(this.teams.entries()).map(([id, team]) => ({
-      id,
+      id: id as TeamId,
       team,
     }));
   }

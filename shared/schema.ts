@@ -416,3 +416,41 @@ export const maintenanceScans = pgTable("maintenance_scans", {
 });
 
 export type MaintenanceScanRow = typeof maintenanceScans.$inferSelect;
+
+// ─── Specialization Profiles (Phase 5) ───────────────────────────────────────
+
+export const specializationProfiles = pgTable("specialization_profiles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  isBuiltIn: boolean("is_built_in").notNull().default(false),
+  assignments: jsonb("assignments").notNull().$type<Record<string, string>>().default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertSpecializationProfileSchema = createInsertSchema(specializationProfiles).omit({ id: true, createdAt: true });
+export type InsertSpecializationProfile = z.infer<typeof insertSpecializationProfileSchema>;
+export type SpecializationProfileRow = typeof specializationProfiles.$inferSelect;
+
+// ─── Skills (Phase 3.1) ───────────────────────────────────────────────────────
+
+export const skills = pgTable("skills", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  teamId: text("team_id").notNull(),
+  systemPromptOverride: text("system_prompt_override").notNull().default(""),
+  tools: jsonb("tools").notNull().$type<string[]>().default(sql`'[]'::jsonb`),
+  modelPreference: text("model_preference"),
+  outputSchema: jsonb("output_schema").$type<Record<string, unknown>>(),
+  tags: jsonb("tags").notNull().$type<string[]>().default(sql`'[]'::jsonb`),
+  isBuiltin: boolean("is_builtin").notNull().default(false),
+  isPublic: boolean("is_public").notNull().default(true),
+  createdBy: text("created_by").notNull().default("system"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertSkillSchema = createInsertSchema(skills).omit({ createdAt: true, updatedAt: true });
+export type InsertSkill = z.infer<typeof insertSkillSchema>;
+export type Skill = typeof skills.$inferSelect;
+

@@ -10,8 +10,6 @@ import { ThoughtTreeCollector } from "../pipeline/thought-tree-collector";
 import { MemoryExtractor } from "../memory/extractor";
 import { MemoryProvider } from "../memory/provider";
 import { ephemeralVarStore } from "../run-variables/store";
-import { GuardrailValidator } from "../pipeline/guardrail-validator";
-import { applyGuardrails, GuardrailError } from "../pipeline/guardrail-runner";
 
 interface ApprovalHandle {
   resolve: (approved: boolean) => void;
@@ -25,7 +23,6 @@ export class PipelineController {
   private parallelExecutor: ParallelExecutor;
   private memoryExtractor: MemoryExtractor;
   private memoryProvider: MemoryProvider;
-  private guardrailValidator: GuardrailValidator;
 
   constructor(
     private storage: IStorage,
@@ -41,7 +38,6 @@ export class PipelineController {
     );
     this.memoryExtractor = new MemoryExtractor();
     this.memoryProvider = new MemoryProvider(storage);
-    this.guardrailValidator = new GuardrailValidator(gateway ?? createNullGateway());
   }
 
   async startRun(pipelineId: string, input: string, variables?: Record<string, string>, triggeredBy?: string): Promise<PipelineRun> {
@@ -294,7 +290,7 @@ export class PipelineController {
           : undefined;
 
         // Apply skill settings (if a skill is assigned to this stage)
-        const resolvedStage = stage;
+        const resolvedStage = await this.applySkill(stage);
 
         const context = {
           runId: run.id,
@@ -340,9 +336,9 @@ export class PipelineController {
         const collector = new ThoughtTreeCollector();
         const rawOutput = result.output.raw as string | undefined;
         if (rawOutput) {
-          collector.addFromLlmResponse(rawOutput, resolvedStage.modelSlug);
+          collector.addFromLlmResponse(rawOutput, stage.modelSlug);
         } else if (typeof result.output.summary === "string") {
-          collector.addFromLlmResponse(result.output.summary as string, resolvedStage.modelSlug);
+          collector.addFromLlmResponse(result.output.summary as string, stage.modelSlug);
         }
         const thoughtTree = collector.getTree();
 
@@ -441,30 +437,6 @@ export class PipelineController {
               `Sandbox failed (exit ${sandboxResult.exitCode}): ${sandboxResult.stderr.slice(0, 500)}`,
             );
           }
-        }
-
-        // ─── Guardrail Validation ──────────────────────────────────────────
-        if (stage.guardrails && stage.guardrails.length > 0) {
-          // Build a re-execute function for 'retry' policy — re-runs the stage
-          const reExecuteStage = async (): Promise<string> => {
-            const retryResult = parallelResult !== null
-              ? parallelResult
-              : await team.execute(stageInput, context, stage.executionStrategy);
-            return JSON.stringify(retryResult.output);
-          };
-
-          const outputForValidation = JSON.stringify(result.output);
-          const guardrailRun = await applyGuardrails(outputForValidation, {
-            stageId: stageExec.id,
-            runId: run.id,
-            guardrails: stage.guardrails,
-            validator: this.guardrailValidator,
-            wsManager: this.wsManager,
-            executeStage: reExecuteStage,
-          });
-
-          // Attach guardrail results to the stage output for persistence
-          result.output.guardrailResults = guardrailRun.guardrailResults as unknown as Record<string, unknown>[];
         }
 
         // Stage completed — persist thought tree alongside output
@@ -703,6 +675,41 @@ export class PipelineController {
   }
 
   /**
+   * If the stage has a skillId, load that skill and merge its settings into
+   * the stage config (skill values act as fallbacks — explicit stage settings win).
+   */
+  private async applySkill(stage: PipelineStageConfig): Promise<PipelineStageConfig> {
+    if (!stage.skillId) return stage;
+
+    const skill = await this.storage.getSkill(stage.skillId);
+    if (!skill) return stage;
+
+    return {
+      ...stage,
+      modelSlug: stage.modelSlug || skill.modelPreference || stage.modelSlug,
+      systemPromptOverride: stage.systemPromptOverride
+        ? `${skill.systemPromptOverride}
+
+${stage.systemPromptOverride}`
+        : skill.systemPromptOverride || stage.systemPromptOverride,
+      tools: stage.tools
+        ? {
+            ...stage.tools,
+            enabled: true,
+            allowedTools: [
+              ...new Set([
+                ...(stage.tools.allowedTools ?? []),
+                ...(skill.tools as string[]),
+              ]),
+            ],
+          }
+        : (skill.tools as string[]).length > 0
+          ? { enabled: true, allowedTools: skill.tools as string[] }
+          : undefined,
+    };
+  }
+
+  /**
    * Converts a UUID string to a stable 32-bit integer for use as memory run/pipeline IDs.
    * Uses the first 8 hex chars of the UUID (32-bit prefix).
    */
@@ -710,8 +717,6 @@ export class PipelineController {
     const hex = id.replace(/-/g, "").slice(0, 8);
     return parseInt(hex, 16) || 0;
   }
-
-
 }
 
 function createNullGateway(): Gateway {

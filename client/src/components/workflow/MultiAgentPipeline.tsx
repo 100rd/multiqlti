@@ -3,20 +3,79 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Save, RotateCcw, Zap, Network } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import { Save, RotateCcw, Zap, Network, GripVertical, Plus, Trash2, Bookmark, BookmarkPlus } from "lucide-react";
+import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
+import type { DragEndEvent } from "@dnd-kit/core";
+import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import AgentNode from "./AgentNode";
-import { usePipelines, useUpdatePipeline, useModels } from "@/hooks/use-pipeline";
-import { SDLC_TEAMS, TEAM_ORDER, STRATEGY_PRESETS, EXECUTION_STRATEGY_PRESETS } from "@shared/constants";
-import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy, PrivacySettings, SandboxConfig, StageToolConfig, ParallelConfig, StageGuardrail } from "@shared/types";
+import {
+  usePipelines, useUpdatePipeline, useModels,
+  useSpecializationProfiles, useCreateSpecializationProfile, useDeleteSpecializationProfile,
+} from "@/hooks/use-pipeline";
+import { SDLC_TEAMS, STRATEGY_PRESETS, EXECUTION_STRATEGY_PRESETS } from "@shared/constants";
+import type {
+  PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy,
+  PrivacySettings, SandboxConfig, StageToolConfig, ParallelConfig, CustomStageConfig, SpecializationProfile,
+} from "@shared/types";
 
 interface MultiAgentPipelineProps {
   pipelineId?: string;
 }
 
+// ─── SortableStage wrapper ────────────────────────────────────────────────────
+
+interface SortableStageProps {
+  id: string;
+  children: (dragHandleProps: React.HTMLAttributes<HTMLElement>) => React.ReactNode;
+}
+
+function SortableStage({ id, children }: SortableStageProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+  return (
+    <div ref={setNodeRef} style={style}>
+      {children({ ...attributes, ...listeners, className: "cursor-grab active:cursor-grabbing" })}
+    </div>
+  );
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function isCustomStage(teamId: string): boolean {
+  return !(teamId in SDLC_TEAMS);
+}
+
+function getStageDisplay(teamId: string, customMeta?: CustomStageConfig): { name: string; description: string; color: string; icon: string } {
+  if (!isCustomStage(teamId)) {
+    const team = SDLC_TEAMS[teamId as keyof typeof SDLC_TEAMS];
+    return { name: team.name, description: team.description, color: team.color, icon: team.icon };
+  }
+  return {
+    name: customMeta?.name ?? teamId,
+    description: customMeta?.description ?? "Custom stage",
+    color: "violet",
+    icon: customMeta?.icon ?? "⚙️",
+  };
+}
+
+// ─── Component ───────────────────────────────────────────────────────────────
+
 export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelineProps) {
   const { data: pipelines } = usePipelines();
   const { data: models } = useModels();
   const updatePipeline = useUpdatePipeline();
+  const { data: specializationProfilesRaw } = useSpecializationProfiles();
+  const createProfile = useCreateSpecializationProfile();
+  const deleteProfile = useDeleteSpecializationProfile();
 
   const pipeline = pipelineId
     ? (Array.isArray(pipelines) ? pipelines.find((p: { id: string }) => p.id === pipelineId) : null)
@@ -28,12 +87,26 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
   const [dirty, setDirty] = useState(false);
   const [factCheckEnabled, setFactCheckEnabled] = useState(false);
 
+  // Dialog state
+  const [showSavePresetDialog, setShowSavePresetDialog] = useState(false);
+  const [savePresetName, setSavePresetName] = useState("");
+  const [showAddCustomDialog, setShowAddCustomDialog] = useState(false);
+  const [customStageDraft, setCustomStageDraft] = useState<Partial<CustomStageConfig>>({});
+
   useEffect(() => {
     if (pipelineStages.length > 0) {
       setLocalStages(pipelineStages);
       setDirty(false);
     }
   }, [pipeline?.id, JSON.stringify(pipelineStages)]);
+
+  const specializationProfiles: SpecializationProfile[] = Array.isArray(specializationProfilesRaw)
+    ? (specializationProfilesRaw as SpecializationProfile[])
+    : [];
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+
+  // ─── Stage update helpers ───────────────────────────────────────────────────
 
   const updateStageModel = (teamId: string, modelSlug: string) => {
     setLocalStages(prev => prev.map(s => s.teamId === teamId ? { ...s, modelSlug } : s));
@@ -111,12 +184,7 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
     setDirty(true);
   };
 
-  const updateGuardrails = (teamId: string, guardrails: StageGuardrail[]) => {
-    setLocalStages(prev => prev.map(s =>
-      s.teamId === teamId ? { ...s, guardrails } : s,
-    ));
-    setDirty(true);
-  };
+  // ─── Preset handlers ────────────────────────────────────────────────────────
 
   const applyPreset = (presetId: string) => {
     const preset = STRATEGY_PRESETS.find(p => p.id === presetId);
@@ -146,6 +214,77 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
     }));
     setDirty(true);
   };
+
+  const applySpecializationProfile = (profileId: string) => {
+    const profile = specializationProfiles.find(p => p.id === profileId);
+    if (!profile || Object.keys(profile.assignments).length === 0) return;
+    setLocalStages(prev => prev.map(s => {
+      const modelSlug = profile.assignments[s.teamId];
+      return modelSlug ? { ...s, modelSlug } : s;
+    }));
+    setDirty(true);
+  };
+
+  const handleSaveAsPreset = () => {
+    if (!savePresetName.trim()) return;
+    const assignments: Record<string, string> = {};
+    localStages.forEach(s => { assignments[s.teamId] = s.modelSlug; });
+    createProfile.mutate(
+      { name: savePresetName.trim(), assignments },
+      {
+        onSuccess: () => {
+          setShowSavePresetDialog(false);
+          setSavePresetName("");
+        },
+      },
+    );
+  };
+
+  // ─── Drag-to-reorder ────────────────────────────────────────────────────────
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    setLocalStages(prev => {
+      const oldIndex = prev.findIndex(s => s.teamId === String(active.id));
+      const newIndex = prev.findIndex(s => s.teamId === String(over.id));
+      if (oldIndex < 0 || newIndex < 0) return prev;
+      return arrayMove(prev, oldIndex, newIndex);
+    });
+    setDirty(true);
+  };
+
+  // ─── Custom stage handlers ───────────────────────────────────────────────────
+
+  const handleAddCustomStage = () => {
+    const id = `custom_${Date.now()}`;
+    const meta: CustomStageConfig = {
+      id,
+      name: customStageDraft.name ?? "Custom Stage",
+      description: customStageDraft.description ?? "",
+      systemPrompt: customStageDraft.systemPrompt ?? "You are a helpful AI assistant.",
+      icon: customStageDraft.icon ?? "⚙️",
+    };
+    const defaultSlug = (modelList[0]?.value as string) ?? "mock";
+    const newStage: PipelineStageConfig & { _customMeta: CustomStageConfig } = {
+      teamId: id,
+      modelSlug: defaultSlug,
+      enabled: true,
+      systemPromptOverride: meta.systemPrompt,
+      _customMeta: meta,
+    };
+    setLocalStages(prev => [...prev, newStage as unknown as PipelineStageConfig]);
+    setDirty(true);
+    setShowAddCustomDialog(false);
+    setCustomStageDraft({});
+  };
+
+  const removeStage = (teamId: string) => {
+    setLocalStages(prev => prev.filter(s => s.teamId !== teamId));
+    setDirty(true);
+  };
+
+  // ─── Save / Reset ────────────────────────────────────────────────────────────
 
   const handleSave = () => {
     if (!pipeline) return;
@@ -195,6 +334,51 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
           </Button>
         </div>
       </div>
+
+      {/* Specialization Presets */}
+      <Card className="border-border bg-card p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Bookmark className="h-4 w-4 text-blue-500" />
+            <span className="text-sm font-medium">Model Specialization Presets</span>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-xs h-7 gap-1"
+            onClick={() => setShowSavePresetDialog(true)}
+          >
+            <BookmarkPlus className="h-3 w-3" /> Save current
+          </Button>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {specializationProfiles.map(profile => (
+            <div key={profile.id} className="flex items-center gap-1">
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs h-7"
+                onClick={() => applySpecializationProfile(profile.id)}
+              >
+                {profile.name}
+              </Button>
+              {!profile.isBuiltIn && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                  onClick={() => deleteProfile.mutate(profile.id)}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              )}
+            </div>
+          ))}
+          {specializationProfiles.length === 0 && (
+            <span className="text-xs text-muted-foreground">No presets yet. Save your current model assignments.</span>
+          )}
+        </div>
+      </Card>
 
       {/* Model Presets */}
       <Card className="border-border bg-card p-4 space-y-3">
@@ -296,51 +480,95 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
         </p>
       </Card>
 
-      {/* Stage Pipeline */}
+      {/* Stage Pipeline — drag to reorder */}
       <div className="relative">
-        <div className="space-y-6">
-          {localStages.map((stage, idx) => {
-            const team = SDLC_TEAMS[stage.teamId as keyof typeof SDLC_TEAMS];
-            if (!team) return null;
-            return (
-              <AgentNode
-                key={stage.teamId}
-                id={stage.teamId}
-                role={stage.teamId}
-                model={stage.modelSlug}
-                description={team.description}
-                enabled={stage.enabled}
-                color={team.color}
-                models={modelList}
-                systemPromptOverride={stage.systemPromptOverride}
-                temperature={stage.temperature}
-                maxTokens={stage.maxTokens}
-                executionStrategy={stage.executionStrategy}
-                privacySettings={stage.privacySettings}
-                onModelChange={(_, model) => updateStageModel(stage.teamId, model)}
-                onToggle={() => toggleStage(stage.teamId)}
-                onSystemPromptChange={(_, prompt) => updateSystemPrompt(stage.teamId, prompt)}
-                onTemperatureChange={(_, temp) => updateTemperature(stage.teamId, temp)}
-                onMaxTokensChange={(_, tokens) => updateMaxTokens(stage.teamId, tokens)}
-                onStrategyChange={(_, strategy) => updateStrategy(stage.teamId, strategy)}
-                onPrivacyChange={(_, settings) => updatePrivacy(stage.teamId, settings)}
-                sandboxConfig={stage.sandbox}
-                onSandboxChange={(_, cfg) => updateSandbox(stage.teamId, cfg)}
-                toolConfig={stage.tools}
-                onToolConfigChange={(_, cfg) => updateToolConfig(stage.teamId, cfg)}
-                parallelConfig={stage.parallel as ParallelConfig | undefined}
-                onParallelChange={(_, cfg) => updateParallelConfig(stage.teamId, cfg)}
-                approvalRequired={stage.approvalRequired ?? false}
-                onApprovalChange={(_, val) => updateApprovalRequired(stage.teamId, val)}
-                guardrails={(stage as PipelineStageConfig & { guardrails?: StageGuardrail[] }).guardrails ?? []}
-                onGuardrailsChange={(_, gs) => updateGuardrails(stage.teamId, gs)}
-                isLast={idx === localStages.length - 1}
-              />
-            );
-          })}
-        </div>
-      </div>
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext items={localStages.map(s => s.teamId)} strategy={verticalListSortingStrategy}>
+            <div className="space-y-6">
+              {localStages.map((stage, idx) => {
+                const custom = isCustomStage(stage.teamId);
+                const customMeta = (stage as PipelineStageConfig & { _customMeta?: CustomStageConfig })._customMeta;
+                const display = getStageDisplay(stage.teamId, customMeta);
+                const team = custom ? null : SDLC_TEAMS[stage.teamId as keyof typeof SDLC_TEAMS];
 
+                return (
+                  <SortableStage key={stage.teamId} id={stage.teamId}>
+                    {(dragHandleProps) => (
+                      <div className="flex items-start gap-2">
+                        <button
+                          type="button"
+                          {...dragHandleProps}
+                          className="mt-4 p-1 text-muted-foreground hover:text-foreground rounded shrink-0"
+                          title="Drag to reorder"
+                        >
+                          <GripVertical className="h-4 w-4" />
+                        </button>
+                        <div className="flex-1 relative">
+                          {custom && (
+                            <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
+                              <Badge variant="outline" className="text-[9px] h-4 px-1 border-violet-500/50 text-violet-600">
+                                custom
+                              </Badge>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-5 w-5 p-0 text-muted-foreground hover:text-destructive"
+                                onClick={() => removeStage(stage.teamId)}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          )}
+                          <AgentNode
+                            key={stage.teamId}
+                            id={stage.teamId}
+                            role={stage.teamId}
+                            model={stage.modelSlug}
+                            description={team?.description ?? display.description}
+                            enabled={stage.enabled}
+                            color={team?.color ?? display.color}
+                            models={modelList}
+                            systemPromptOverride={stage.systemPromptOverride}
+                            temperature={stage.temperature}
+                            maxTokens={stage.maxTokens}
+                            executionStrategy={stage.executionStrategy}
+                            privacySettings={stage.privacySettings}
+                            onModelChange={(_, model) => updateStageModel(stage.teamId, model)}
+                            onToggle={() => toggleStage(stage.teamId)}
+                            onSystemPromptChange={(_, prompt) => updateSystemPrompt(stage.teamId, prompt)}
+                            onTemperatureChange={(_, temp) => updateTemperature(stage.teamId, temp)}
+                            onMaxTokensChange={(_, tokens) => updateMaxTokens(stage.teamId, tokens)}
+                            onStrategyChange={(_, strategy) => updateStrategy(stage.teamId, strategy)}
+                            onPrivacyChange={(_, settings) => updatePrivacy(stage.teamId, settings)}
+                            sandboxConfig={stage.sandbox}
+                            onSandboxChange={(_, cfg) => updateSandbox(stage.teamId, cfg)}
+                            toolConfig={stage.tools}
+                            onToolConfigChange={(_, cfg) => updateToolConfig(stage.teamId, cfg)}
+                            parallelConfig={stage.parallel as ParallelConfig | undefined}
+                            onParallelChange={(_, cfg) => updateParallelConfig(stage.teamId, cfg)}
+                            approvalRequired={stage.approvalRequired ?? false}
+                            onApprovalChange={(_, val) => updateApprovalRequired(stage.teamId, val)}
+                            isLast={idx === localStages.length - 1}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </SortableStage>
+                );
+              })}
+            </div>
+          </SortableContext>
+        </DndContext>
+
+        {/* Add Custom Stage button */}
+        <button
+          type="button"
+          className="mt-4 w-full border-2 border-dashed border-border rounded-lg p-3 text-xs text-muted-foreground hover:border-violet-500/50 hover:text-violet-600 transition-colors flex items-center justify-center gap-2"
+          onClick={() => { setCustomStageDraft({}); setShowAddCustomDialog(true); }}
+        >
+          <Plus className="h-3.5 w-3.5" /> Add custom stage
+        </button>
+      </div>
 
       {/* Optional Fact Check Stage */}
       <Card className="border-border bg-card p-4">
@@ -415,19 +643,25 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
 
       {/* SDLC Flow Description */}
       <Card className="border-border bg-card p-4 space-y-3">
-        <div className="text-sm font-medium">SDLC Pipeline Flow</div>
+        <div className="text-sm font-medium">Pipeline Flow</div>
         <div className="space-y-2 text-xs text-muted-foreground">
-          {TEAM_ORDER.map((teamId) => {
-            const team = SDLC_TEAMS[teamId];
-            const stage = localStages.find(s => s.teamId === teamId);
+          {localStages.map((stage) => {
+            const custom = isCustomStage(stage.teamId);
+            const customMeta = (stage as PipelineStageConfig & { _customMeta?: CustomStageConfig })._customMeta;
+            const display = getStageDisplay(stage.teamId, customMeta);
             const model = modelList.find(m => m.value === stage?.modelSlug);
             const strat = stage?.executionStrategy;
             return (
-              <div key={teamId} className="flex gap-2">
+              <div key={stage.teamId} className="flex gap-2">
                 <span className="font-mono text-blue-500">→</span>
                 <span>
-                  <span className="font-medium text-foreground">{team.name}</span>
+                  <span className="font-medium text-foreground">{display.name}</span>
                   {model && <span className="ml-1">({model.label})</span>}
+                  {custom && (
+                    <Badge variant="outline" className="ml-2 text-[9px] h-4 px-1 border-violet-500/50 text-violet-600">
+                      custom
+                    </Badge>
+                  )}
                   {stage?.systemPromptOverride && (
                     <Badge variant="outline" className="ml-2 text-[9px] h-4 px-1">custom prompt</Badge>
                   )}
@@ -441,13 +675,111 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                       privacy:{stage.privacySettings.level}
                     </Badge>
                   )}
-                  {' — '}{team.description}
+                  {' — '}{display.description}
                 </span>
               </div>
             );
           })}
         </div>
       </Card>
+
+      {/* Save Preset Dialog */}
+      <Dialog open={showSavePresetDialog} onOpenChange={setShowSavePresetDialog}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-sm">Save Model Assignments as Preset</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div>
+              <Label className="text-xs">Preset name</Label>
+              <Input
+                className="mt-1 h-8 text-xs"
+                placeholder="e.g. My Claude Setup"
+                value={savePresetName}
+                onChange={(e) => setSavePresetName(e.target.value)}
+                maxLength={100}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" className="text-xs" onClick={() => setShowSavePresetDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="text-xs"
+              disabled={!savePresetName.trim() || createProfile.isPending}
+              onClick={handleSaveAsPreset}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Custom Stage Dialog */}
+      <Dialog open={showAddCustomDialog} onOpenChange={setShowAddCustomDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-sm">Add Custom Stage</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div>
+              <Label className="text-xs">Stage name</Label>
+              <Input
+                className="mt-1 h-8 text-xs"
+                placeholder="e.g. Security Analysis"
+                value={customStageDraft.name ?? ""}
+                onChange={(e) => setCustomStageDraft(d => ({ ...d, name: e.target.value }))}
+                maxLength={80}
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Icon (emoji)</Label>
+              <Input
+                className="mt-1 h-8 text-xs w-24"
+                placeholder="⚙️"
+                value={customStageDraft.icon ?? ""}
+                onChange={(e) => setCustomStageDraft(d => ({ ...d, icon: e.target.value }))}
+                maxLength={4}
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Description</Label>
+              <Input
+                className="mt-1 h-8 text-xs"
+                placeholder="What this stage does"
+                value={customStageDraft.description ?? ""}
+                onChange={(e) => setCustomStageDraft(d => ({ ...d, description: e.target.value }))}
+                maxLength={200}
+              />
+            </div>
+            <div>
+              <Label className="text-xs">System prompt</Label>
+              <Textarea
+                className="mt-1 text-xs min-h-[80px]"
+                placeholder="You are a helpful AI assistant that..."
+                value={customStageDraft.systemPrompt ?? ""}
+                onChange={(e) => setCustomStageDraft(d => ({ ...d, systemPrompt: e.target.value }))}
+                maxLength={4000}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" className="text-xs" onClick={() => setShowAddCustomDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="text-xs"
+              disabled={!customStageDraft.name?.trim()}
+              onClick={handleAddCustomStage}
+            >
+              Add Stage
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

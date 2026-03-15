@@ -361,3 +361,44 @@ export function useExportRun() {
     },
   });
 }
+
+// ─── Specialization Profiles (Phase 5) ──────────────────────────────────────
+
+export function useSpecializationProfiles() {
+  return useQuery({
+    queryKey: ["/api/specialization-profiles"],
+    queryFn: () => apiRequest("GET", "/api/specialization-profiles"),
+  });
+}
+
+export function useCreateSpecializationProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { name: string; assignments: Record<string, string> }) =>
+      apiRequest("POST", "/api/specialization-profiles", data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/specialization-profiles"] });
+    },
+  });
+}
+
+export function useDeleteSpecializationProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiRequest("DELETE", `/api/specialization-profiles/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/specialization-profiles"] });
+    },
+  });
+}
+
+// ─── Run Comparison (Phase 5) ─────────────────────────────────────────────────
+
+export function useRunComparison(runId1: string, runId2: string) {
+  return useQuery({
+    queryKey: ["/api/runs/compare", runId1, runId2],
+    queryFn: () => apiRequest("GET", `/api/runs/compare?runIds=${runId1},${runId2}`),
+    enabled: !!runId1 && !!runId2,
+  });
+}
+

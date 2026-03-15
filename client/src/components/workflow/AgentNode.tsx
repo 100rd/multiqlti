@@ -49,7 +49,7 @@ interface AgentNodeProps {
   approvalRequired?: boolean;
   onApprovalChange: (id: string, value: boolean) => void;
   guardrails?: StageGuardrail[];
-  onGuardrailsChange: (id: string, guardrails: StageGuardrail[]) => void;
+  onGuardrailsChange?: (id: string, guardrails: StageGuardrail[]) => void;
   isLast: boolean;
 }
 
@@ -616,7 +616,7 @@ export default function AgentNode({
                   guardrails={guardrails}
                   enabled={enabled}
                   stageModelSlug={model}
-                  onChange={(updated) => onGuardrailsChange(id, updated)}
+                  onChange={(updated) => onGuardrailsChange?.(id, updated)}
                 />
               </div>
             )}

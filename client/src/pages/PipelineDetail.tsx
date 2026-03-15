@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { ArrowLeft, Play, Loader2 } from "lucide-react";
+import { ArrowLeft, Play, Loader2, GitCompare } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useLocation } from "wouter";
 import MultiAgentPipeline from "@/components/workflow/MultiAgentPipeline";
 import AgentChat from "@/components/workflow/AgentChat";
@@ -22,6 +23,7 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
   const [activeTab, setActiveTab] = useState("design");
   const [taskInput, setTaskInput] = useState("");
   const [showVarsDialog, setShowVarsDialog] = useState(false);
+  const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
 
   const { data: pipeline, isLoading } = usePipeline(id);
   const { data: runs } = useRuns(id);
@@ -47,6 +49,19 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
         },
       },
     );
+  };
+
+  const handleCompare = () => {
+    if (selectedRunIds.length !== 2) return;
+    navigate(`/pipelines/${id}/compare?runs=${selectedRunIds.join(",")}`);
+  };
+
+  const toggleRunSelection = (runId: string) => {
+    setSelectedRunIds((prev) => {
+      if (prev.includes(runId)) return prev.filter((r) => r !== runId);
+      if (prev.length >= 2) return prev;
+      return [...prev, runId];
+    });
   };
 
   if (isLoading) {
@@ -138,31 +153,73 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
             </TabsContent>
 
             <TabsContent value="history" className="h-full overflow-y-auto">
+              {Array.isArray(runs) && runs.length >= 2 && (
+                <div className="flex items-center gap-3 mb-4 p-3 bg-card border border-border rounded-lg">
+                  <span className="text-xs text-muted-foreground">
+                    {selectedRunIds.length === 0
+                      ? "Select 2 runs to compare"
+                      : selectedRunIds.length === 1
+                      ? "Select 1 more run"
+                      : "2 runs selected"}
+                  </span>
+                  <div className="ml-auto flex items-center gap-2">
+                    {selectedRunIds.length > 0 && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={() => setSelectedRunIds([])}
+                      >
+                        Clear
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      disabled={selectedRunIds.length !== 2}
+                      onClick={handleCompare}
+                    >
+                      <GitCompare className="h-3 w-3 mr-1" /> Compare Selected
+                    </Button>
+                  </div>
+                </div>
+              )}
               <div className="space-y-4">
                 {Array.isArray(runs) && runs.length > 0
                   ? runs.map((run: { id: string; input: string; currentStageIndex: number; status: string }) => (
                     <Card
                       key={run.id}
-                      className="border-border p-4 flex items-center justify-between hover:bg-accent/50 transition-colors cursor-pointer"
-                      onClick={() => navigate(`/runs/${run.id}`)}
+                      className="border-border p-4 flex items-center gap-3 hover:bg-accent/50 transition-colors"
                     >
-                      <div className="flex-1">
-                        <h4 className="font-medium text-sm truncate max-w-[400px]">{run.input}</h4>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          Run {run.id.slice(0, 8)} · Stage {run.currentStageIndex + 1}/7
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <Badge className={`text-xs ${
-                          run.status === "completed" ? "bg-emerald-500/20 text-emerald-700" :
-                          run.status === "running" ? "bg-blue-500/20 text-blue-700" :
-                          run.status === "paused" ? "bg-amber-500/20 text-amber-700" :
-                          run.status === "failed" ? "bg-red-500/20 text-red-700" :
-                          "bg-muted text-muted-foreground"
-                        }`}>
-                          {run.status}
-                        </Badge>
-                        <Button variant="outline" size="sm" className="h-7 text-xs">View</Button>
+                      <Checkbox
+                        checked={selectedRunIds.includes(run.id)}
+                        onCheckedChange={() => toggleRunSelection(run.id)}
+                        disabled={!selectedRunIds.includes(run.id) && selectedRunIds.length >= 2}
+                        className="shrink-0"
+                      />
+                      <div
+                        className="flex-1 flex items-center justify-between cursor-pointer"
+                        onClick={() => navigate(`/runs/${run.id}`)}
+                      >
+                        <div className="flex-1">
+                          <h4 className="font-medium text-sm truncate max-w-[400px]">{run.input}</h4>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Run {run.id.slice(0, 8)} · Stage {run.currentStageIndex + 1}/7
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <Badge className={`text-xs ${
+                            run.status === "completed" ? "bg-emerald-500/20 text-emerald-700" :
+                            run.status === "running" ? "bg-blue-500/20 text-blue-700" :
+                            run.status === "paused" ? "bg-amber-500/20 text-amber-700" :
+                            run.status === "failed" ? "bg-red-500/20 text-red-700" :
+                            "bg-muted text-muted-foreground"
+                          }`}>
+                            {run.status}
+                          </Badge>
+                          <Button variant="outline" size="sm" className="h-7 text-xs">View</Button>
+                        </div>
                       </div>
                     </Card>
                   ))
