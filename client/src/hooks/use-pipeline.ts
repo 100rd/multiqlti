@@ -300,3 +300,51 @@ export function useDeleteModel() {
     },
   });
 }
+
+// ─── Approval Gates ─────────────────────────────
+
+export function useApproveStage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ runId, stageIndex, approvedBy }: { runId: string; stageIndex: number; approvedBy?: string }) =>
+      apiRequest("POST", `/api/runs/${runId}/stages/${stageIndex}/approve`, { approvedBy }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["/api/runs", vars.runId] });
+    },
+  });
+}
+
+export function useRejectStage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ runId, stageIndex, reason }: { runId: string; stageIndex: number; reason?: string }) =>
+      apiRequest("POST", `/api/runs/${runId}/stages/${stageIndex}/reject`, { reason }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ["/api/runs", vars.runId] });
+    },
+  });
+}
+
+// ─── Export ─────────────────────────────────────
+
+export function useExportRun() {
+  return useMutation({
+    mutationFn: async ({ runId, format }: { runId: string; format: "markdown" | "zip" }) => {
+      const res = await fetch(`/api/runs/${runId}/export?format=${format}`);
+      if (!res.ok) {
+        const errText = await res.text().catch(() => res.statusText);
+        throw new Error(errText || res.statusText);
+      }
+      const blob = await res.blob();
+      const contentDisposition = res.headers.get("Content-Disposition") ?? "";
+      const filenameMatch = contentDisposition.match(/filename="([^"]+)"/);
+      const filename = filenameMatch?.[1] ?? (format === "zip" ? "export.zip" : "report.md");
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+  });
+}

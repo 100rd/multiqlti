@@ -14,7 +14,8 @@ export type RunStatus =
   | "paused"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "rejected";
 
 export type StageStatus =
   | "pending"
@@ -22,7 +23,10 @@ export type StageStatus =
   | "paused"
   | "completed"
   | "failed"
-  | "skipped";
+  | "skipped"
+  | "awaiting_approval";
+
+export type ApprovalStatus = "pending" | "approved" | "rejected";
 
 export type QuestionStatus = "pending" | "answered" | "dismissed";
 
@@ -181,6 +185,9 @@ export type WsEventType =
   | "stage:progress"
   | "stage:completed"
   | "stage:failed"
+  | "stage:awaiting_approval"
+  | "stage:approved"
+  | "stage:rejected"
   | "question:asked"
   | "question:answered"
   | "chat:message"
@@ -331,6 +338,7 @@ export interface PipelineStageConfig {
   temperature?: number;
   maxTokens?: number;
   enabled: boolean;
+  approvalRequired?: boolean;
   executionStrategy?: ExecutionStrategy;
   privacySettings?: PrivacySettings;
   sandbox?: SandboxConfig;

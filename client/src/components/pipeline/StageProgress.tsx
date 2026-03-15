@@ -51,6 +51,11 @@ const statusConfig: Record<
     color: "text-muted-foreground",
     bg: "bg-muted",
   },
+  awaiting_approval: {
+    icon: <Pause className="h-3.5 w-3.5" />,
+    color: "text-amber-600",
+    bg: "bg-amber-500/20",
+  },
 };
 
 export default function StageProgress({

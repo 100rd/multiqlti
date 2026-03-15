@@ -359,6 +359,10 @@ export class MemStorage implements IStorage {
       completedAt: insert.completedAt ?? null,
       sandboxResult: insert.sandboxResult ?? null,
       thoughtTree: insert.thoughtTree ?? null,
+      approvalStatus: insert.approvalStatus ?? null,
+      approvedAt: insert.approvedAt ?? null,
+      approvedBy: insert.approvedBy ?? null,
+      rejectionReason: insert.rejectionReason ?? null,
       createdAt: new Date(),
     };
     this.stages.set(id, stage);

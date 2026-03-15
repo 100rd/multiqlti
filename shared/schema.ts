@@ -125,6 +125,11 @@ export const stageExecutions = pgTable("stage_executions", {
   completedAt: timestamp("completed_at"),
   sandboxResult: jsonb("sandbox_result"),
   thoughtTree: jsonb("thought_tree"),
+  // ─── Approval Gate Fields ───────────────────────
+  approvalStatus: text("approval_status"),  // 'pending' | 'approved' | 'rejected'
+  approvedAt: timestamp("approved_at"),
+  approvedBy: text("approved_by"),
+  rejectionReason: text("rejection_reason"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
