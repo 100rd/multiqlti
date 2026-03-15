@@ -94,6 +94,7 @@ export const pipelines = pgTable("pipelines", {
   createdBy: varchar("created_by"),
   ownerId: text("owner_id").references(() => users.id, { onDelete: "set null" }),
   isTemplate: boolean("is_template").notNull().default(false),
+  dag: jsonb("dag"),   // PipelineDAG | null — null = linear mode
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -121,6 +122,7 @@ export const pipelineRuns = pgTable("pipeline_runs", {
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
   triggeredBy: text("triggered_by").references(() => users.id, { onDelete: "set null" }),
+  dagMode: boolean("dag_mode").notNull().default(false),   // true when run uses DAG executor
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -155,6 +157,7 @@ export const stageExecutions = pgTable("stage_executions", {
   approvedAt: timestamp("approved_at"),
   approvedBy: text("approved_by"),
   rejectionReason: text("rejection_reason"),
+  dagStageId: text("dag_stage_id"),   // DAGStage.id for DAG runs, null for linear
   createdAt: timestamp("created_at").defaultNow(),
 });
 

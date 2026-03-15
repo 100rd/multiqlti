@@ -239,7 +239,11 @@ export type WsEventType =
   | "guardrail:checking"
   | "guardrail:passed"
   | "guardrail:failed"
-  | "guardrail:retrying";
+  | "guardrail:retrying"
+  | "dag:stage:ready"
+  | "dag:stage:skipped"
+  | "dag:edge:evaluated"
+  | "dag:completed";
 
 export interface WsEvent {
   type: WsEventType;
@@ -882,4 +886,48 @@ export interface GuardrailResult {
   passed: boolean;
   reason?: string;
   attempts: number;
+}
+
+// ─── DAG Types (Phase 6.2) ────────────────────────────────────────────────────
+
+export type DAGConditionOperator = "eq" | "neq" | "gt" | "lt" | "contains" | "exists";
+
+export interface DAGCondition {
+  field: string;
+  operator: DAGConditionOperator;
+  value?: string | number | boolean | null;
+}
+
+export interface DAGEdge {
+  id: string;
+  from: string;
+  to: string;
+  condition?: DAGCondition;
+  label?: string;
+}
+
+export interface DAGStage {
+  id: string;
+  teamId: TeamId;
+  modelSlug: string;
+  systemPromptOverride?: string;
+  temperature?: number;
+  maxTokens?: number;
+  enabled: boolean;
+  approvalRequired?: boolean;
+  executionStrategy?: ExecutionStrategy;
+  privacySettings?: PrivacySettings;
+  sandbox?: SandboxConfig;
+  tools?: StageToolConfig;
+  parallel?: ParallelConfig;
+  guardrails?: StageGuardrail[];
+  autoModelRouting?: { enabled: boolean };
+  skillId?: string;
+  position: { x: number; y: number };
+  label?: string;
+}
+
+export interface PipelineDAG {
+  stages: DAGStage[];
+  edges: DAGEdge[];
 }
