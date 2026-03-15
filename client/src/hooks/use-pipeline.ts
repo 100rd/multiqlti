@@ -146,7 +146,7 @@ export function usePipelineRun(runId: string) {
 export function useStartRun() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { pipelineId: string; input: string }) =>
+    mutationFn: (data: { pipelineId: string; input: string; variables?: Record<string, string> }) =>
       apiRequest("POST", "/api/runs", data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/runs"] });

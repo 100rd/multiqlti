@@ -7,6 +7,8 @@ import type { WorkspaceRow } from "@shared/schema";
 import { WorkspaceManager } from "../workspace/manager";
 import { CodeChatService } from "../workspace/code-chat";
 import type { Gateway } from "../gateway/index";
+import { configLoader } from "../config/loader";
+import type { ProjectConfigResponse } from "@shared/types";
 
 // ─── Validation schemas ───────────────────────────────────────────────────────
 
@@ -71,6 +73,28 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     const [row] = await db.select().from(workspaces).where(eq(workspaces.id, req.params.id));
     if (!row) return res.status(404).json({ error: "Workspace not found" });
     res.json(row);
+  });
+
+  // ── Project config (multiqlti.yaml) ─────────────────────────────────────────
+
+  router.get("/api/workspaces/:id/config", async (req, res) => {
+    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, req.params.id));
+    if (!row) return res.status(404).json({ error: "Workspace not found" });
+
+    // Only local workspaces have a directly-readable path; remote ones use the clone path
+    const workspacePath = row.type === "local" ? row.path : `data/workspaces/${row.id}`;
+
+    try {
+      const projectConfig = configLoader.loadProjectConfig(workspacePath);
+      const response: ProjectConfigResponse = {
+        detected: projectConfig !== null,
+        projectConfig: projectConfig as Record<string, unknown> | null,
+        diff: projectConfig ? configLoader.diff(projectConfig) : [],
+      };
+      res.json(response);
+    } catch (err) {
+      res.status(422).json({ error: (err as Error).message });
+    }
   });
 
   router.post("/api/workspaces", async (req, res) => {
@@ -150,6 +174,9 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   });
 
   // ── File Operations ─────────────────────────────────────────────────────────
+  // Express 5 / path-to-regexp v8 requires named wildcards — bare `*` is not
+  // allowed. The `*path` parameter captures everything after /files/ and is
+  // accessed via req.params.path.
 
   router.get("/api/workspaces/:id/files", async (req, res) => {
     const row = await getWorkspaceById(String(req.params.id), res);
@@ -168,7 +195,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     const row = await getWorkspaceById(String(req.params.id), res);
     if (!row) return;
 
-    const filePath = extractFilePathFromUrl(req.path, String(req.params.id));
+    const filePath = decodeFilePath(req.params.path);
     if (!filePath) return res.status(400).json({ error: "File path required" });
 
     try {
@@ -183,7 +210,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     const row = await getWorkspaceById(String(req.params.id), res);
     if (!row) return;
 
-    const filePath = extractFilePathFromUrl(req.path, String(req.params.id));
+    const filePath = decodeFilePath(req.params.path);
     if (!filePath) return res.status(400).json({ error: "File path required" });
 
     const parsed = WriteFileSchema.safeParse(req.body);
@@ -205,7 +232,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     const row = await getWorkspaceById(String(req.params.id), res);
     if (!row) return;
 
-    const filePath = extractFilePathFromUrl(req.path, String(req.params.id));
+    const filePath = decodeFilePath(req.params.path);
     if (!filePath) return res.status(400).json({ error: "File path required" });
 
     try {
@@ -341,12 +368,13 @@ async function getWorkspaceById(id: string, res: Response): Promise<WorkspaceRow
 }
 
 /**
- * Extract the file path from the URL path.
- * E.g. /api/workspaces/{id}/files/src/index.ts  -> "src/index.ts"
+ * Decode the file path captured by the Express 5 named wildcard `*path`.
+ * Returns null if the path is empty.
  */
-function extractFilePathFromUrl(reqPath: string, workspaceId: string): string | null {
-  const prefix = `/api/workspaces/${workspaceId}/files/`;
-  if (!reqPath.startsWith(prefix)) return null;
-  const fp = reqPath.slice(prefix.length);
-  return fp.length > 0 ? decodeURIComponent(fp) : null;
+function decodeFilePath(rawPath: string | string[] | undefined): string | null {
+  if (!rawPath) return null;
+  const raw = Array.isArray(rawPath) ? rawPath[0] : rawPath;
+  if (!raw) return null;
+  const fp = decodeURIComponent(raw);
+  return fp.length > 0 ? fp : null;
 }

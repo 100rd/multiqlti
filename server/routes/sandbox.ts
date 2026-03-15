@@ -21,7 +21,11 @@ export function registerSandboxRoutes(router: Router): void {
   });
 
   router.get("/api/sandbox/presets", (_req, res) => {
-    res.json(SANDBOX_IMAGE_PRESETS);
+    const presets = Object.entries(SANDBOX_IMAGE_PRESETS).map(([id, preset]) => ({
+      id,
+      ...preset,
+    }));
+    res.json(presets);
   });
 
   router.post("/api/sandbox/test", async (req, res) => {

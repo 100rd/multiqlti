@@ -2,6 +2,8 @@ import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { load as loadYaml } from "js-yaml";
 import { ConfigSchema, type AppConfig } from "./schema";
+import { ProjectConfigSchema, type ProjectConfig } from "./project-schema";
+import type { ConfigDiffEntry } from "@shared/types";
 
 /**
  * Deep-merge source into target. Only plain objects are recursed into;
@@ -191,6 +193,106 @@ class ConfigLoader {
       this.load();
     }
     return this.cachedConfig!;
+  }
+
+  /**
+   * Load and validate `multiqlti.yaml` from a workspace's local path (Layer 4).
+   * Returns null if the file is absent or the path is not a local directory.
+   * Throws a descriptive error if the file is present but fails validation.
+   */
+  loadProjectConfig(workspacePath: string): ProjectConfig | null {
+    const yamlPath = join(workspacePath, "multiqlti.yaml");
+    if (!existsSync(yamlPath)) return null;
+
+    const raw = readFileSync(yamlPath, "utf-8");
+    const parsed = loadYaml(raw);
+    if (parsed === null || parsed === undefined) return null;
+    if (typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("multiqlti.yaml must be a YAML mapping (object), not a scalar or list");
+    }
+
+    const result = ProjectConfigSchema.safeParse(parsed);
+    if (!result.success) {
+      const messages = result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`);
+      throw new Error(`multiqlti.yaml validation failed:\n${messages.join("\n")}`);
+    }
+
+    return result.data;
+  }
+
+  /**
+   * Compute a diff between a project config and the current platform config.
+   * Only reports fields that are explicitly set in the project config.
+   */
+  diff(projectConfig: ProjectConfig): ConfigDiffEntry[] {
+    const platform = this.get();
+    const entries: ConfigDiffEntry[] = [];
+
+    function compare(
+      path: string,
+      platformVal: unknown,
+      projectVal: unknown,
+    ): void {
+      if (projectVal === undefined) return;
+
+      if (
+        projectVal !== null &&
+        typeof projectVal === "object" &&
+        !Array.isArray(projectVal) &&
+        platformVal !== null &&
+        typeof platformVal === "object" &&
+        !Array.isArray(platformVal)
+      ) {
+        for (const key of Object.keys(projectVal as Record<string, unknown>)) {
+          compare(
+            path ? `${path}.${key}` : key,
+            (platformVal as Record<string, unknown>)[key],
+            (projectVal as Record<string, unknown>)[key],
+          );
+        }
+        return;
+      }
+
+      if (platformVal === undefined) {
+        entries.push({ path, platformValue: undefined, projectValue: projectVal, changeType: "new" });
+      } else if (platformVal === projectVal) {
+        // unchanged — omit from diff
+      } else {
+        entries.push({ path, platformValue: platformVal, projectValue: projectVal, changeType: "override" });
+      }
+    }
+
+    // Compare known diff-able sections
+    const platformDefaults = {
+      tokenBudget: 0.5,
+      stageTimeout: 300_000,
+    };
+
+    if (projectConfig.defaults) {
+      compare("defaults.tokenBudget", platformDefaults.tokenBudget, projectConfig.defaults.tokenBudget);
+      compare("defaults.stageTimeout", platformDefaults.stageTimeout, projectConfig.defaults.stageTimeout);
+      if (projectConfig.defaults.retryPolicy) {
+        compare("defaults.retryPolicy.maxRetries", 2, projectConfig.defaults.retryPolicy.maxRetries);
+        compare("defaults.retryPolicy.backoffMs", 1000, projectConfig.defaults.retryPolicy.backoffMs);
+      }
+    }
+    if (projectConfig.privacy) {
+      compare("privacy.enabled", platform.features.privacy.enabled, projectConfig.privacy.enabled);
+      if (projectConfig.privacy.customPatterns !== undefined) {
+        entries.push({
+          path: "privacy.customPatterns",
+          platformValue: [],
+          projectValue: projectConfig.privacy.customPatterns,
+          changeType: projectConfig.privacy.customPatterns.length > 0 ? "new" : "override",
+        });
+      }
+    }
+    if (projectConfig.maintenance) {
+      compare("maintenance.enabled", platform.features.maintenance.enabled, projectConfig.maintenance.enabled);
+      compare("maintenance.schedule", platform.features.maintenance.cronSchedule, projectConfig.maintenance.schedule);
+    }
+
+    return entries;
   }
 }
 
