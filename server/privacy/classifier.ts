@@ -7,7 +7,7 @@ interface PatternDefinition {
   allowlist?: string[];
 }
 
-interface CustomPattern {
+export interface CustomPattern {
   type: EntityType;
   severity: EntitySeverity;
   pattern: RegExp;
