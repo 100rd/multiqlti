@@ -1,7 +1,7 @@
 import type { IStorage } from "../storage";
 import type { TeamRegistry } from "../teams/registry";
 import type { WsManager } from "../ws/manager";
-import type { PipelineStageConfig, WsEvent, SandboxFile } from "@shared/types";
+import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput } from "@shared/types";
 import type { PipelineRun } from "@shared/schema";
 import { SandboxExecutor } from "../sandbox/executor";
 
@@ -107,15 +107,16 @@ export class PipelineController {
     startFromIndex = 0,
   ): Promise<void> {
     const previousOutputs: Record<string, unknown>[] = [];
+    const fullContext: StageOutput[] = [];
 
     // Collect outputs from already-completed stages (for resume)
     if (startFromIndex > 0) {
       const executions = await this.storage.getStageExecutions(run.id);
       for (let i = 0; i < startFromIndex; i++) {
         const exec = executions.find((e) => e.stageIndex === i);
-        previousOutputs.push(
-          (exec?.output as Record<string, unknown>) ?? {},
-        );
+        const output = (exec?.output as Record<string, unknown>) ?? {};
+        previousOutputs.push(output);
+        fullContext.push({ teamId: stages[i]?.teamId ?? "", output, stageIndex: i });
       }
     }
 
@@ -125,6 +126,7 @@ export class PipelineController {
       const stage = stages[i];
       if (!stage.enabled) {
         previousOutputs.push({});
+        fullContext.push({ teamId: stage.teamId, output: {}, stageIndex: i });
         continue;
       }
 
@@ -176,6 +178,7 @@ export class PipelineController {
           temperature: stage.temperature,
           maxTokens: stage.maxTokens,
           previousOutputs,
+          fullContext,
           // Privacy: use the run ID as a stable sessionId for the full run
           privacySettings: stage.privacySettings?.enabled
             ? stage.privacySettings
@@ -284,6 +287,7 @@ export class PipelineController {
         });
 
         previousOutputs.push(result.output);
+        fullContext.push({ teamId: stage.teamId, output: result.output, stageIndex: i });
 
         this.broadcast(run.id, {
           type: "stage:completed",

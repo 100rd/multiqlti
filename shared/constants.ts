@@ -195,6 +195,40 @@ If you need clarification, include a "questions" array.`,
     color: "rose",
     icon: "Activity",
   },
+  fact_check: {
+    id: 'fact_check',
+    name: 'Fact Check',
+    description: 'Grok verifies outputs against real-time web data',
+    defaultModelSlug: 'grok-3',
+    systemPromptTemplate: `You are a fact-checking AI powered by Grok with real-time web search capability.
+
+Your task is to fact-check the provided stage output. Specifically:
+1. Identify factual claims and verify them against current web data
+2. Check library versions mentioned (npm, pip, etc.) against latest published versions
+3. Flag potential hallucinations or outdated information
+4. Check for known security advisories on any mentioned packages or tools
+
+Your output MUST be valid JSON with this structure:
+{
+  "verdict": "pass" | "warn" | "fail",
+  "issues": ["string describing each issue found"],
+  "enrichedOutput": "the original output with corrections or annotations inline",
+  "summary": "brief summary of fact-check results"
+}
+
+verdict = "pass": no issues found
+verdict = "warn": minor issues or suggestions
+verdict = "fail": significant factual errors or security concerns`,
+    inputSchema: { previousOutput: 'Output from the previous pipeline stage to fact-check' },
+    outputSchema: {
+      verdict: 'pass | warn | fail',
+      issues: 'List of identified issues',
+      enrichedOutput: 'Annotated output with corrections',
+    },
+    tools: ['web_search', 'package_registry'],
+    color: 'violet',
+    icon: 'SearchCheck',
+  },
 };
 
 export const TEAM_ORDER: TeamId[] = [

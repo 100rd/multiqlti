@@ -32,6 +32,7 @@ import {
   useGatewayStatus,
   useDiscoverProviderModels,
   useProbeEndpoint,
+  useCreateModel,
 } from "@/hooks/use-pipeline";
 import { cn } from "@/lib/utils";
 import { useQueryClient, useMutation, useQuery } from "@tanstack/react-query";
@@ -157,6 +158,47 @@ export default function Settings() {
 
   const modelList: Array<Record<string, unknown>> = Array.isArray(models) ? models as Array<Record<string, unknown>> : [];
   const registeredSlugs = new Set(modelList.map((m) => m.slug as string));
+
+  // Manual model entry form state
+  const createModel = useCreateModel();
+  const [manualName, setManualName] = useState('');
+  const [manualProvider, setManualProvider] = useState<string>('ollama');
+  const [manualSlug, setManualSlug] = useState('');
+  const [manualEndpoint, setManualEndpoint] = useState('');
+  const [manualError, setManualError] = useState<string | null>(null);
+
+  const handleAddManual = () => {
+    setManualError(null);
+    if (!manualName.trim() || !manualSlug.trim()) {
+      setManualError('Name and Model ID/slug are required');
+      return;
+    }
+    const slug = manualSlug.trim().replace(/[^a-z0-9-]/gi, '-').toLowerCase();
+    if (registeredSlugs.has(slug)) {
+      setManualError('A model with this slug is already registered');
+      return;
+    }
+    createModel.mutate(
+      {
+        name: manualName.trim(),
+        provider: manualProvider,
+        slug,
+        endpoint: manualEndpoint.trim() || undefined,
+        contextLimit: 4096,
+        capabilities: ['general'],
+        isActive: true,
+      },
+      {
+        onSuccess: () => {
+          setManualName('');
+          setManualSlug('');
+          setManualEndpoint('');
+          setManualError(null);
+        },
+        onError: (err) => setManualError(err.message),
+      },
+    );
+  };
 
   const handleProbe = () => {
     if (!probeUrl.trim()) return;
@@ -636,6 +678,86 @@ export default function Settings() {
                   })}
                 </div>
               )}
+            </CardContent>
+          </Card>
+
+
+          {/* ── Add Model Manually ──────────────────────── */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Plus className="h-4 w-4" /> Add Model Manually
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-muted-foreground">
+                Add non-discoverable models such as private vLLM or Ollama deployments.
+              </p>
+              <div className="grid grid-cols-1 gap-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-1 block">Model Name</label>
+                    <Input
+                      className="h-8 text-xs"
+                      placeholder="My Custom Model"
+                      value={manualName}
+                      onChange={(e) => setManualName(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-muted-foreground mb-1 block">Provider</label>
+                    <Select value={manualProvider} onValueChange={setManualProvider}>
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="ollama">Ollama</SelectItem>
+                        <SelectItem value="vllm">vLLM</SelectItem>
+                        <SelectItem value="anthropic">Anthropic</SelectItem>
+                        <SelectItem value="google">Google</SelectItem>
+                        <SelectItem value="xai">xAI</SelectItem>
+                        <SelectItem value="mock">Mock</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1 block">Model ID / Slug</label>
+                  <Input
+                    className="h-8 text-xs font-mono"
+                    placeholder="my-custom-model"
+                    value={manualSlug}
+                    onChange={(e) => setManualSlug(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground mb-1 block">Endpoint URL (optional)</label>
+                  <Input
+                    className="h-8 text-xs"
+                    placeholder="http://localhost:11434"
+                    value={manualEndpoint}
+                    onChange={(e) => setManualEndpoint(e.target.value)}
+                  />
+                </div>
+                {manualError && (
+                  <div className="text-xs text-destructive p-2 rounded border border-destructive/30 bg-destructive/5">
+                    {manualError}
+                  </div>
+                )}
+                <Button
+                  size="sm"
+                  className="h-8 text-xs w-full"
+                  onClick={handleAddManual}
+                  disabled={createModel.isPending}
+                >
+                  {createModel.isPending ? (
+                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                  ) : (
+                    <Plus className="h-3 w-3 mr-1" />
+                  )}
+                  Add Model
+                </Button>
+              </div>
             </CardContent>
           </Card>
 

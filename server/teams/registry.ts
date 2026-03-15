@@ -10,6 +10,7 @@ import { TestingTeam } from "./testing";
 import { CodeReviewTeam } from "./code-review";
 import { DeploymentTeam } from "./deployment";
 import { MonitoringTeam } from "./monitoring";
+import { FactCheckTeam } from "./fact-check";
 
 export class TeamRegistry {
   private teams: Map<TeamId, BaseTeam>;
@@ -23,6 +24,7 @@ export class TeamRegistry {
     this.teams.set("code_review", new CodeReviewTeam(gateway, SDLC_TEAMS.code_review, wsManager));
     this.teams.set("deployment", new DeploymentTeam(gateway, SDLC_TEAMS.deployment, wsManager));
     this.teams.set("monitoring", new MonitoringTeam(gateway, SDLC_TEAMS.monitoring, wsManager));
+    this.teams.set("fact_check", new FactCheckTeam(gateway, SDLC_TEAMS.fact_check, wsManager));
   }
 
   getTeam(teamId: TeamId): BaseTeam {

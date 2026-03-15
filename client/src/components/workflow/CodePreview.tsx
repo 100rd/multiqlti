@@ -4,6 +4,7 @@ import { Copy, Check, ChevronDown } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { useRuns, usePipelineRun } from "@/hooks/use-pipeline";
+import { CodeBlock } from "@/components/ui/CodeBlock";
 
 interface CodeFile {
   path: string;
@@ -99,11 +100,6 @@ export default function CodePreview({ pipelineId }: CodePreviewProps) {
                 <>
                   <div className="border-t border-border px-4 py-3 bg-muted/50">
                     <div className="flex items-center gap-2">
-                      {block.language && (
-                        <span className="text-xs font-mono text-muted-foreground px-2 py-1 rounded bg-background">
-                          {block.language}
-                        </span>
-                      )}
                       {block.description && (
                         <span className="text-xs text-muted-foreground truncate">{block.description}</span>
                       )}
@@ -123,9 +119,13 @@ export default function CodePreview({ pipelineId }: CodePreviewProps) {
                     </div>
                   </div>
 
-                  <pre className="p-4 bg-background text-foreground text-xs font-mono overflow-x-auto max-h-96 border-t border-border">
-                    <code>{block.content}</code>
-                  </pre>
+                  <CodeBlock
+                    code={block.content}
+                    language={block.language}
+                    filePath={block.path}
+                    maxHeight="384px"
+                    className="rounded-none border-0 border-t border-border"
+                  />
                 </>
               )}
             </Card>

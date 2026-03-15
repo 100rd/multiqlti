@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import StrategyViewer from "./StrategyViewer";
 import SandboxOutput from "./SandboxOutput";
+import { CodeBlock, detectLanguageFromPath } from "@/components/ui/CodeBlock";
 import type { StrategyResult, SandboxResult } from "@shared/types";
 
 interface StageOutputProps {
@@ -76,7 +76,7 @@ export default function StageOutput({
             <p className="text-sm text-muted-foreground">{summary}</p>
           )}
 
-          {/* Code files */}
+          {/* Code files with syntax highlighting */}
           {allFiles.length > 0 && (
             <div className="space-y-3">
               {allFiles.map((file, idx) => (
@@ -100,17 +100,19 @@ export default function StageOutput({
                       )}
                     </Button>
                   </div>
-                  <ScrollArea className="max-h-[300px]">
-                    <pre className="p-3 text-xs font-mono whitespace-pre-wrap leading-relaxed">
-                      {file.content}
-                    </pre>
-                  </ScrollArea>
+                  <CodeBlock
+                    code={file.content}
+                    language={file.language}
+                    filePath={file.path}
+                    maxHeight="300px"
+                    className="rounded-none border-0"
+                  />
                 </div>
               ))}
             </div>
           )}
 
-          {/* JSON data (for non-file outputs) */}
+          {/* JSON data (for non-file outputs) with syntax highlighting */}
           {allFiles.length === 0 && (
             <div className="rounded-lg border border-border overflow-hidden">
               <div className="flex items-center justify-between px-3 py-1.5 bg-muted/50 border-b border-border">
@@ -135,11 +137,12 @@ export default function StageOutput({
                   )}
                 </Button>
               </div>
-              <ScrollArea className="max-h-[300px]">
-                <pre className="p-3 text-xs font-mono whitespace-pre-wrap leading-relaxed">
-                  {JSON.stringify(output, null, 2)}
-                </pre>
-              </ScrollArea>
+              <CodeBlock
+                code={JSON.stringify(output, null, 2)}
+                language="json"
+                maxHeight="300px"
+                className="rounded-none border-0"
+              />
             </div>
           )}
 

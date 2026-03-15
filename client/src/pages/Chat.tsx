@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Send, Bot, User, Settings2, Paperclip } from "lucide-react";
+import { Send, Bot, User, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useModels, useStandaloneChat } from "@/hooks/use-pipeline";
 
@@ -12,14 +12,66 @@ interface ChatMsg {
   content: string;
 }
 
+const HISTORY_STORAGE_KEY = "chat-history-standalone";
+
+function loadHistory(): ChatMsg[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw) as ChatMsg[];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(msgs: ChatMsg[]): void {
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(msgs));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+const DEFAULT_GREETING: ChatMsg = {
+  role: "assistant",
+  content: "Local environment initialized. Sandboxes are active. I am restricted from external network access. How can I help you today?",
+};
+
 export default function Chat() {
-  const [messages, setMessages] = useState<ChatMsg[]>([
-    { role: "assistant", content: "Local environment initialized. Sandboxes are active. I am restricted from external network access. How can I help you today?" }
-  ]);
-  const [input, setInput] = useState("");
-  const [selectedModel, setSelectedModel] = useState("llama3-70b");
   const { data: models } = useModels();
   const chatMutation = useStandaloneChat();
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const modelList = Array.isArray(models)
+    ? models.filter((m: Record<string, unknown>) => m.isActive)
+    : [];
+
+  // Default model: first active model slug, falls back to empty string
+  const [selectedModel, setSelectedModel] = useState<string>("");
+  const [messages, setMessages] = useState<ChatMsg[]>(() => {
+    const saved = loadHistory();
+    return saved.length > 0 ? saved : [DEFAULT_GREETING];
+  });
+  const [input, setInput] = useState("");
+
+  // Set default model once models are loaded
+  useEffect(() => {
+    if (!selectedModel && modelList.length > 0) {
+      setSelectedModel((modelList[0] as Record<string, unknown>).slug as string);
+    }
+  }, [modelList, selectedModel]);
+
+  // Persist chat history on every message change
+  useEffect(() => {
+    saveHistory(messages);
+  }, [messages]);
+
+  // Scroll to bottom on new messages
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages]);
 
   const handleSend = () => {
     if (!input.trim() || chatMutation.isPending) return;
@@ -35,13 +87,13 @@ export default function Chat() {
         history: updatedMessages.slice(-10),
       },
       {
-        onSuccess: (data) => {
+        onSuccess: (data: { content: string }) => {
           setMessages((prev) => [
             ...prev,
             { role: "assistant", content: data.content },
           ]);
         },
-        onError: (error) => {
+        onError: (error: Error) => {
           setMessages((prev) => [
             ...prev,
             { role: "assistant", content: `Error: ${error.message}` },
@@ -49,6 +101,12 @@ export default function Chat() {
         },
       },
     );
+  };
+
+  const handleClearHistory = () => {
+    const fresh = [DEFAULT_GREETING];
+    setMessages(fresh);
+    saveHistory(fresh);
   };
 
   return (
@@ -68,15 +126,15 @@ export default function Chat() {
               <SelectValue placeholder="Select Model" />
             </SelectTrigger>
             <SelectContent>
-              {Array.isArray(models) && models.filter((m: any) => m.isActive).map((m: any) => (
-                <SelectItem key={m.slug} value={m.slug}>
-                  {m.name}
-                  <span className="text-muted-foreground ml-1">({m.provider})</span>
+              {modelList.map((m: Record<string, unknown>) => (
+                <SelectItem key={m.slug as string} value={m.slug as string}>
+                  {m.name as string}
+                  <span className="text-muted-foreground ml-1">({m.provider as string})</span>
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-          <Button variant="outline" size="icon" className="h-8 w-8">
+          <Button variant="outline" size="icon" className="h-8 w-8" onClick={handleClearHistory} title="Clear history">
             <Settings2 className="h-4 w-4" />
           </Button>
         </div>
@@ -84,7 +142,7 @@ export default function Chat() {
 
       {/* Chat Area */}
       <ScrollArea className="flex-1 p-6">
-        <div className="max-w-3xl mx-auto space-y-6 pb-4">
+        <div ref={scrollRef} className="max-w-3xl mx-auto space-y-6 pb-4">
           {messages.map((msg, i) => (
             <div key={i} className={cn(
               "flex gap-4",
@@ -127,11 +185,8 @@ export default function Chat() {
       {/* Input Area */}
       <div className="p-6 bg-background shrink-0 border-t border-border">
         <div className="max-w-3xl mx-auto relative flex items-center">
-          <Button variant="ghost" size="icon" className="absolute left-2 h-8 w-8 text-muted-foreground hover:text-foreground rounded-full z-10">
-            <Paperclip className="h-4 w-4" />
-          </Button>
           <Input
-            className="w-full pl-12 pr-12 py-6 rounded-full border-border bg-card shadow-sm focus-visible:ring-1"
+            className="w-full pr-12 py-6 rounded-full border-border bg-card shadow-sm focus-visible:ring-1"
             placeholder="Instruct the local agent..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -148,7 +203,7 @@ export default function Chat() {
           </Button>
         </div>
         <p className="text-center text-[10px] text-muted-foreground mt-3 font-mono">
-          Model: {selectedModel} • All processing is performed strictly on-device.
+          Model: {selectedModel || "not selected"} &bull; All processing is performed strictly on-device.
         </p>
       </div>
     </div>

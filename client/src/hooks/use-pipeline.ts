@@ -111,6 +111,8 @@ export function useDeletePipeline() {
 }
 
 // ─── Runs ───────────────────────────────────────
+// Polling removed: live run/stage data is delivered via WebSocket.
+// A single fetch fires on mount to hydrate the list; WS events keep it fresh.
 
 export function useRuns(pipelineId?: string) {
   const url = pipelineId
@@ -119,7 +121,7 @@ export function useRuns(pipelineId?: string) {
   return useQuery({
     queryKey: ["/api/runs", pipelineId],
     queryFn: () => apiRequest("GET", url),
-    refetchInterval: 5000,
+    // No refetchInterval — WS handles live updates; invalidate via mutation onSuccess
   });
 }
 
@@ -128,7 +130,7 @@ export function usePipelineRun(runId: string) {
     queryKey: ["/api/runs", runId],
     queryFn: () => apiRequest("GET", `/api/runs/${runId}`),
     enabled: !!runId,
-    refetchInterval: 3000,
+    // No refetchInterval — WS delivers stage/status events in real time
   });
 }
 
@@ -155,6 +157,7 @@ export function useCancelRun() {
 }
 
 // ─── Questions ──────────────────────────────────
+// Keep polling for questions since they don't arrive via WS reliably on load
 
 export function usePendingQuestions() {
   return useQuery({
@@ -210,13 +213,14 @@ export function useDismissQuestion() {
 }
 
 // ─── Chat ───────────────────────────────────────
+// Chat messages for a run are delivered via WS; no polling needed
 
 export function useChatMessages(runId?: string) {
   return useQuery({
     queryKey: ["/api/chat", runId, "messages"],
     queryFn: () => apiRequest("GET", `/api/chat/${runId}/messages`),
     enabled: !!runId,
-    refetchInterval: 3000,
+    // No refetchInterval — WS delivers chat:message events
   });
 }
 

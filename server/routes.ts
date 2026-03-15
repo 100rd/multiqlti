@@ -62,5 +62,32 @@ export async function registerRoutes(
     res.json(pending);
   });
 
+  // Stats summary endpoint — aggregates real data for the Dashboard
+  app.get("/api/stats/summary", async (_req, res) => {
+    const [allRuns, allPipelines, allModels] = await Promise.all([
+      storage.getPipelineRuns(),
+      storage.getPipelines(),
+      storage.getModels(),
+    ]);
+
+    const totalRuns = allRuns.length;
+    const activePipelines = allPipelines.filter((p) => !p.isTemplate).length;
+    const modelsConfigured = allModels.filter((m) => m.isActive).length;
+
+    // Aggregate runs per day for the last 7 days (UTC)
+    const now = Date.now();
+    const dayMs = 86_400_000;
+    const runsLast7Days: number[] = Array.from({ length: 7 }, (_, offset) => {
+      const dayStart = now - (6 - offset) * dayMs;
+      const dayEnd = dayStart + dayMs;
+      return allRuns.filter((r) => {
+        const ts = r.startedAt ? new Date(r.startedAt).getTime() : 0;
+        return ts >= dayStart && ts < dayEnd;
+      }).length;
+    });
+
+    res.json({ totalRuns, activePipelines, modelsConfigured, runsLast7Days });
+  });
+
   return httpServer;
 }
