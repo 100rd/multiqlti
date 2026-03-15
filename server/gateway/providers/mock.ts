@@ -218,14 +218,55 @@ function extractUserInput(messages: Array<{ role: string; content: string }>): s
   return userMsg?.content ?? "";
 }
 
+export interface MockCall {
+  messages: Array<{ role: string; content: string }>;
+  team: TeamId;
+  timestamp: Date;
+}
+
 export class MockProvider {
+  private calls: MockCall[] = [];
+  private fixtures: Map<TeamId, string> = new Map();
+
+  // ─── Call capture ──────────────────────────────────────────────────────────
+
+  getCalls(): MockCall[] {
+    return [...this.calls];
+  }
+
+  clearCalls(): void {
+    this.calls = [];
+  }
+
+  getCallCount(): number {
+    return this.calls.length;
+  }
+
+  // ─── Fixture overrides ─────────────────────────────────────────────────────
+
+  loadFixture(team: TeamId, response: string): void {
+    this.fixtures.set(team, response);
+  }
+
+  clearFixtures(): void {
+    this.fixtures.clear();
+  }
+
+  // ─── Core provider methods ─────────────────────────────────────────────────
+
   async complete(
     messages: Array<{ role: string; content: string }>,
     _options?: { maxTokens?: number },
   ): Promise<{ content: string; tokensUsed: number; finishReason?: "stop" | "tool_use" }> {
     const team = detectTeam(messages);
+
+    this.calls.push({ messages, team, timestamp: new Date() });
+
     const input = extractUserInput(messages);
-    const content = MOCK_RESPONSES[team](input);
+    const content = this.fixtures.has(team)
+      ? (this.fixtures.get(team) as string)
+      : MOCK_RESPONSES[team](input);
+
     return { content, tokensUsed: Math.floor(content.length / 4), finishReason: "stop" as const };
   }
 
