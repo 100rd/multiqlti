@@ -1,9 +1,11 @@
-import { eq, desc, and, gte, lte, sql as drizzleSql } from "drizzle-orm";
+import { eq, desc, and, or, ilike, lt, ne, gte, lte, sql as drizzleSql } from "drizzle-orm";
 import { db } from "./db";
 import type { IStorage, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint } from "./storage";
+import type { Memory, InsertMemory, MemoryScope, MemoryType } from "@shared/types";
 import {
   users, models, pipelines, pipelineRuns,
   stageExecutions, questions, chatMessages, llmRequests,
+  memories,
   type User, type InsertUser,
   type Model, type InsertModel,
   type Pipeline, type InsertPipeline,
@@ -416,5 +418,114 @@ export class PgStorage implements IStorage {
       tokens: r.tokens,
       costUsd: r.costUsd,
     }));
+  }
+
+  // ─── Memories ───────────────────────────────────────
+
+  private rowToMemory(row: typeof memories.$inferSelect): Memory {
+    return {
+      id: row.id,
+      scope: row.scope as Memory['scope'],
+      scopeId: row.scopeId ?? null,
+      type: row.type as Memory['type'],
+      key: row.key,
+      content: row.content,
+      source: row.source ?? null,
+      confidence: row.confidence,
+      tags: row.tags ?? [],
+      createdAt: row.createdAt ?? null,
+      updatedAt: row.updatedAt ?? null,
+      expiresAt: row.expiresAt ?? null,
+      createdByRunId: row.createdByRunId ?? null,
+    };
+  }
+
+  async getMemories(scope: MemoryScope, scopeId?: string | null, type?: MemoryType): Promise<Memory[]> {
+    const conditions = [eq(memories.scope, scope)];
+
+    if (scopeId !== undefined) {
+      conditions.push(scopeId === null
+        ? drizzleSql`${memories.scopeId} IS NULL`
+        : eq(memories.scopeId, scopeId));
+    }
+
+    if (type) {
+      conditions.push(eq(memories.type, type));
+    }
+
+    const rows = await db.select().from(memories).where(and(...conditions));
+    return rows.map((r) => this.rowToMemory(r));
+  }
+
+  async searchMemories(query: string, scope?: MemoryScope): Promise<Memory[]> {
+    const searchPattern = `%${query}%`;
+    const textMatch = or(
+      ilike(memories.key, searchPattern),
+      ilike(memories.content, searchPattern),
+    );
+
+    const condition = scope
+      ? and(textMatch, eq(memories.scope, scope))
+      : textMatch;
+
+    const rows = await db.select().from(memories).where(condition);
+    return rows.map((r) => this.rowToMemory(r));
+  }
+
+  async upsertMemory(insert: InsertMemory): Promise<Memory> {
+    const [row] = await db
+      .insert(memories)
+      .values({
+        scope: insert.scope,
+        scopeId: insert.scopeId ?? null,
+        type: insert.type,
+        key: insert.key,
+        content: insert.content,
+        source: insert.source ?? null,
+        confidence: insert.confidence ?? 1.0,
+        tags: insert.tags ?? [],
+        expiresAt: insert.expiresAt ?? null,
+        createdByRunId: insert.createdByRunId ?? null,
+      })
+      .onConflictDoUpdate({
+        target: [memories.scope, memories.scopeId, memories.key],
+        set: {
+          content: insert.content,
+          confidence: insert.confidence ?? 1.0,
+          source: insert.source ?? null,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return this.rowToMemory(row);
+  }
+
+  async deleteMemory(id: number): Promise<void> {
+    await db.delete(memories).where(eq(memories.id, id));
+  }
+
+  async decayMemories(excludeRunId: number, decayAmount: number): Promise<number> {
+    const result = await db
+      .update(memories)
+      .set({
+        confidence: drizzleSql`${memories.confidence} - ${decayAmount}`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          ne(memories.createdByRunId, excludeRunId),
+          drizzleSql`${memories.confidence} > ${decayAmount}`,
+        ),
+      )
+      .returning({ id: memories.id });
+    return result.length;
+  }
+
+  async deleteStaleMemories(threshold: number): Promise<number> {
+    const result = await db
+      .delete(memories)
+      .where(lt(memories.confidence, threshold))
+      .returning({ id: memories.id });
+    return result.length;
   }
 }

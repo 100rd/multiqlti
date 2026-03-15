@@ -7,7 +7,7 @@ export class DeploymentTeam extends BaseTeam {
     context: StageContext,
   ): Array<{ role: string; content: string }> {
     return [
-      { role: "system", content: this.buildSystemMessage() },
+      { role: "system", content: this.buildSystemMessage(context) },
       {
         role: "user",
         content: `Generate deployment configurations based on all prior phase outputs:\n\n${this.serializeInput({ allOutputs: context.previousOutputs, ...input })}`,

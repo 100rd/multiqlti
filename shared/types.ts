@@ -298,6 +298,7 @@ export interface StageContext {
   userAnswers?: Record<string, string>;
   privacySettings?: PrivacySettings;
   sessionId?: string;
+  memoryContext?: string;
 }
 
 export interface TeamResult {
@@ -393,3 +394,43 @@ export interface ThoughtNode {
 }
 
 export type ThoughtTree = ThoughtNode[];
+
+// ─── Memory Types ─────────────────────────────────────────────────────────────
+
+export type MemoryScope = 'global' | 'workspace' | 'pipeline' | 'run';
+export type MemoryType = 'decision' | 'pattern' | 'fact' | 'preference' | 'issue' | 'dependency';
+
+export interface Memory {
+  id: number;
+  scope: MemoryScope;
+  scopeId: string | null;
+  type: MemoryType;
+  key: string;
+  content: string;
+  source: string | null;
+  confidence: number;
+  tags: string[] | null;
+  createdAt: Date | null;
+  updatedAt: Date | null;
+  expiresAt: Date | null;
+  createdByRunId: number | null;
+}
+
+export interface InsertMemory {
+  scope: MemoryScope;
+  scopeId?: string | null;
+  type: MemoryType;
+  key: string;
+  content: string;
+  source?: string | null;
+  confidence?: number;
+  tags?: string[];
+  expiresAt?: Date | null;
+  createdByRunId?: number | null;
+}
+
+export interface TeamMemoryHint {
+  key: string;
+  content: string;
+  type: MemoryType;
+}

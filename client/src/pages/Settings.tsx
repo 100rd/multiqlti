@@ -23,6 +23,7 @@ import {
   Save,
   Eye,
   EyeOff,
+  Brain,
 } from "lucide-react";
 import {
   useModels,
@@ -61,6 +62,86 @@ const CLOUD_PROVIDERS: Array<{
   { key: "google",    name: "Google (Gemini)",    envVar: "GOOGLE_API_KEY"    },
   { key: "xai",       name: "xAI (Grok)",         envVar: "XAI_API_KEY"       },
 ];
+
+const PREFERENCE_ROWS = [
+  { key: "preferred-language", label: "Preferred Language", placeholder: "e.g. TypeScript" },
+  { key: "error-handling-style", label: "Error Handling Style", placeholder: "e.g. throw exceptions, return Result types" },
+  { key: "preferred-db", label: "Preferred Database", placeholder: "e.g. PostgreSQL, SQLite" },
+  { key: "code-style", label: "Code Style", placeholder: "e.g. functional, OOP" },
+  { key: "test-framework", label: "Test Framework", placeholder: "e.g. Jest, Vitest" },
+];
+
+function MemoryPreferences() {
+  const qc = useQueryClient();
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [saved, setSaved] = useState<Record<string, boolean>>({});
+
+  const savePreference = useMutation({
+    mutationFn: async ({ key, value }: { key: string; value: string }) => {
+      const res = await fetch("/api/memories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope: "global",
+          type: "preference",
+          key,
+          content: value,
+          confidence: 1.0,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to save preference");
+      return res.json();
+    },
+    onSuccess: (_data, { key }) => {
+      setSaved((prev) => ({ ...prev, [key]: true }));
+      void qc.invalidateQueries({ queryKey: ["/api/memories"] });
+      setTimeout(() => setSaved((prev) => ({ ...prev, [key]: false })), 2000);
+    },
+  });
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Brain className="h-4 w-4" /> Project Memory Preferences
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-xs text-muted-foreground">
+          These preferences are stored as global memories and injected into every pipeline stage, helping the AI make consistent decisions aligned with your preferences.
+        </p>
+        {PREFERENCE_ROWS.map(({ key, label, placeholder }) => (
+          <div key={key} className="flex items-center gap-3">
+            <label className="text-xs font-medium w-44 shrink-0">{label}</label>
+            <Input
+              className="h-8 text-xs flex-1"
+              placeholder={placeholder}
+              value={values[key] ?? ""}
+              onChange={(e) => setValues((prev) => ({ ...prev, [key]: e.target.value }))}
+            />
+            <Button
+              size="sm"
+              className="h-8 text-xs shrink-0"
+              disabled={!values[key]?.trim() || savePreference.isPending}
+              onClick={() => {
+                const value = values[key]?.trim();
+                if (value) savePreference.mutate({ key, value });
+              }}
+            >
+              {saved[key] ? (
+                <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+              ) : savePreference.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <><Save className="h-3 w-3 mr-1" /> Save</>
+              )}
+            </Button>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function Settings() {
   const { data: models, isLoading: modelsLoading } = useModels();
@@ -841,6 +922,10 @@ export default function Settings() {
               )}
             </CardContent>
           </Card>
+
+          {/* ── Memory Preferences ──────────────────────── */}
+          <MemoryPreferences />
+
         </div>
       </ScrollArea>
     </div>

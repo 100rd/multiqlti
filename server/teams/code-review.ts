@@ -15,7 +15,7 @@ export class CodeReviewTeam extends BaseTeam {
     };
 
     return [
-      { role: "system", content: this.buildSystemMessage() },
+      { role: "system", content: this.buildSystemMessage(context) },
       {
         role: "user",
         content: `Review the following code and tests for quality and security:\n\n${this.serializeInput(combined)}`,

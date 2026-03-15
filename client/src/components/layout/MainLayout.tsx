@@ -9,6 +9,7 @@ import {
   MessageCircleQuestion,
   ShieldCheck,
   BarChart3,
+  Brain,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -32,6 +33,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
       badge: pendingCount > 0 ? pendingCount : undefined,
     },
     { icon: BarChart3, label: "Statistics", href: "/stats" },
+    { icon: Brain, label: "Memory", href: "/memories" },
     { icon: ShieldCheck, label: "Privacy", href: "/privacy" },
     { icon: Settings, label: "Settings", href: "/settings" },
   ];

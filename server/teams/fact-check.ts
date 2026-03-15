@@ -15,7 +15,7 @@ export class FactCheckTeam extends BaseTeam {
     const outputText = JSON.stringify(previousOutput, null, 2).slice(0, TRUNCATE_CHARS);
 
     return [
-      { role: "system", content: this.buildSystemMessage() },
+      { role: "system", content: this.buildSystemMessage(context) },
       {
         role: "user",
         content: `Fact-check the following pipeline stage output:\n\n\`\`\`json\n${outputText}\n\`\`\`\n\nUse your web search capability to verify claims, library versions, and check for security advisories.`,

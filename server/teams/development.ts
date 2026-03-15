@@ -12,7 +12,7 @@ export class DevelopmentTeam extends BaseTeam {
       : input;
 
     return [
-      { role: "system", content: this.buildSystemMessage() },
+      { role: "system", content: this.buildSystemMessage(context) },
       {
         role: "user",
         content: `Generate production-ready code based on this architecture:\n\n${this.serializeInput(combined)}`,

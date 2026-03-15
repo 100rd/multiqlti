@@ -16,6 +16,7 @@ import PipelineRun from "@/pages/PipelineRun";
 import Settings from "@/pages/Settings";
 import Privacy from "@/pages/Privacy";
 import Statistics from "@/pages/Statistics";
+import Memory from "@/pages/Memory";
 
 function Router() {
   return (
@@ -50,6 +51,9 @@ function Router() {
         )} />
         <Route path="/stats" component={() => (
           <ErrorBoundary><Statistics /></ErrorBoundary>
+        )} />
+        <Route path="/memories" component={() => (
+          <ErrorBoundary><Memory /></ErrorBoundary>
         )} />
         <Route component={NotFound} />
       </Switch>

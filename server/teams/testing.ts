@@ -12,7 +12,7 @@ export class TestingTeam extends BaseTeam {
       : input;
 
     return [
-      { role: "system", content: this.buildSystemMessage() },
+      { role: "system", content: this.buildSystemMessage(context) },
       {
         role: "user",
         content: `Generate comprehensive tests for the following code:\n\n${this.serializeInput(combined)}`,

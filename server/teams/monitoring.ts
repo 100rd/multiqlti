@@ -12,7 +12,7 @@ export class MonitoringTeam extends BaseTeam {
       : input;
 
     return [
-      { role: "system", content: this.buildSystemMessage() },
+      { role: "system", content: this.buildSystemMessage(context) },
       {
         role: "user",
         content: `Set up monitoring and observability for:\n\n${this.serializeInput(combined)}`,

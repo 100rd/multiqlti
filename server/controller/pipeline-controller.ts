@@ -5,10 +5,14 @@ import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput } from "@sh
 import type { PipelineRun } from "@shared/schema";
 import { SandboxExecutor } from "../sandbox/executor";
 import { ThoughtTreeCollector } from "../pipeline/thought-tree-collector";
+import { MemoryExtractor } from "../memory/extractor";
+import { MemoryProvider } from "../memory/provider";
 
 export class PipelineController {
   private activeRuns: Map<string, AbortController> = new Map();
   private sandboxExecutor: SandboxExecutor;
+  private memoryExtractor: MemoryExtractor;
+  private memoryProvider: MemoryProvider;
 
   constructor(
     private storage: IStorage,
@@ -16,6 +20,8 @@ export class PipelineController {
     private wsManager: WsManager,
   ) {
     this.sandboxExecutor = new SandboxExecutor();
+    this.memoryExtractor = new MemoryExtractor();
+    this.memoryProvider = new MemoryProvider(storage);
   }
 
   async startRun(pipelineId: string, input: string): Promise<PipelineRun> {
@@ -121,6 +127,10 @@ export class PipelineController {
       }
     }
 
+    // Numeric run id for memory operations (hash the UUID string to a stable int)
+    const numericRunId = this.hashRunId(run.id);
+    const numericPipelineId = this.hashRunId(run.pipelineId);
+
     for (let i = startFromIndex; i < stages.length; i++) {
       if (signal.aborted) return;
 
@@ -172,6 +182,17 @@ export class PipelineController {
           input: stageInput,
         });
 
+        // Fetch relevant memories before execution
+        const relevantMemories = await this.memoryProvider.getRelevantMemories({
+          pipelineId: numericPipelineId,
+          runId: numericRunId,
+          teamId: stage.teamId,
+          maxTokenBudget: 2000,
+        });
+        const memoryContext = relevantMemories.length > 0
+          ? this.memoryProvider.formatForPrompt(relevantMemories)
+          : undefined;
+
         const context = {
           runId: run.id,
           stageIndex: i,
@@ -185,6 +206,7 @@ export class PipelineController {
             ? stage.privacySettings
             : undefined,
           sessionId: run.id,
+          memoryContext,
         };
 
         // Pass execution strategy (undefined = single, handled in BaseTeam)
@@ -199,6 +221,15 @@ export class PipelineController {
           collector.addFromLlmResponse(result.output.summary as string, stage.modelSlug);
         }
         const thoughtTree = collector.getTree();
+
+        // Extract and persist memories from stage output
+        const newMemories = await this.memoryExtractor.extractFromStageResult(
+          stage.teamId,
+          numericRunId,
+          numericPipelineId,
+          result.output ?? {},
+        );
+        await Promise.all(newMemories.map((m) => this.storage.upsertMemory(m)));
 
         // Check if team needs clarification
         if (result.questions && result.questions.length > 0) {
@@ -311,6 +342,7 @@ export class PipelineController {
             output: result.output,
             tokensUsed: result.tokensUsed,
             strategyResult: result.strategyResult ?? null,
+            memoriesUsed: relevantMemories.length,
           },
           timestamp: new Date().toISOString(),
         });
@@ -367,7 +399,9 @@ export class PipelineController {
       }
     }
 
-    // All stages complete
+    // All stages complete — decay unconfirmed memories
+    await this.memoryProvider.decayUnconfirmedMemories(numericRunId);
+
     const allOutputs = previousOutputs;
     await this.storage.updatePipelineRun(run.id, {
       status: "completed",
@@ -473,5 +507,14 @@ export class PipelineController {
 
   private broadcast(runId: string, event: WsEvent): void {
     this.wsManager.broadcastToRun(runId, event);
+  }
+
+  /**
+   * Converts a UUID string to a stable 32-bit integer for use as memory run/pipeline IDs.
+   * Uses the first 8 hex chars of the UUID (32-bit prefix).
+   */
+  private hashRunId(id: string): number {
+    const hex = id.replace(/-/g, "").slice(0, 8);
+    return parseInt(hex, 16) || 0;
   }
 }
