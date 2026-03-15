@@ -27,7 +27,7 @@ vi.mock("../../server/config/loader.js", () => ({
       auth: { jwtSecret: TEST_JWT_SECRET, bcryptRounds: 4, sessionTtlDays: 1 },
       server: { nodeEnv: "test", port: 3000 },
       database: { url: undefined },
-      providers: { anthropic: {}, google: {}, xai: {} },
+      providers: { anthropic: {}, google: {}, xai: {}, vllm: { endpoint: undefined }, ollama: { endpoint: undefined }, tavily: {} },
       features: {
         sandbox: { enabled: false },
         privacy: { enabled: true },
