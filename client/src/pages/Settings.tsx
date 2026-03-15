@@ -24,6 +24,9 @@ import {
   Eye,
   EyeOff,
   Brain,
+  Wrench,
+  Terminal,
+  Link2,
 } from "lucide-react";
 import {
   useModels,
@@ -157,6 +160,8 @@ export default function Settings() {
   const [probeType, setProbeType] = useState<"vllm" | "ollama">("ollama");
   const [probeResults, setProbeResults] = useState<unknown[] | null>(null);
   const [probeError, setProbeError] = useState<string | null>(null);
+  const [mcpForm, setMcpForm] = useState({ name: "", transport: "stdio", command: "", url: "", autoConnect: false });
+  const [mcpError, setMcpError] = useState<string | null>(null);
 
   // Per-provider test state: key → result or null (null = idle/loading)
   const [testResults, setTestResults] = useState<Partial<Record<CloudProvider, ProviderTestResult | null>>>({});
@@ -236,6 +241,78 @@ export default function Settings() {
       void qc.invalidateQueries({ queryKey: ["/api/gateway/status"] });
     },
   });
+
+
+  // MCP Servers
+  const { data: mcpServers, refetch: refetchMcpServers } = useQuery({
+    queryKey: ["/api/mcp/servers"],
+    queryFn: async () => {
+      const res = await fetch("/api/mcp/servers");
+      if (!res.ok) return [];
+      return res.json() as Promise<Array<Record<string, unknown>>>;
+    },
+  });
+
+  const { data: toolsStatus } = useQuery({
+    queryKey: ["/api/tools/status"],
+    queryFn: async () => {
+      const res = await fetch("/api/tools/status");
+      if (!res.ok) return {};
+      return res.json() as Promise<Record<string, { configured: boolean; keySource: string; premium?: boolean }>>;
+    },
+  });
+
+  const connectMcpServer = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/mcp/servers/${id}/connect`, { method: "POST" });
+      return res.json();
+    },
+    onSuccess: () => void refetchMcpServers(),
+  });
+
+  const disconnectMcpServer = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/mcp/servers/${id}/disconnect`, { method: "POST" });
+      return res.json();
+    },
+    onSuccess: () => void refetchMcpServers(),
+  });
+
+  const deleteMcpServer = useMutation({
+    mutationFn: async (id: number) => {
+      await fetch(`/api/mcp/servers/${id}`, { method: "DELETE" });
+    },
+    onSuccess: () => void refetchMcpServers(),
+  });
+
+  const addMcpServer = useMutation({
+    mutationFn: async (data: typeof mcpForm) => {
+      const res = await fetch("/api/mcp/servers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: data.name,
+          transport: data.transport,
+          command: data.transport === "stdio" ? data.command || undefined : undefined,
+          url: data.transport !== "stdio" ? data.url || undefined : undefined,
+          autoConnect: data.autoConnect,
+          enabled: true,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json() as { error: unknown };
+        throw new Error(JSON.stringify(err.error));
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      setMcpForm({ name: "", transport: "stdio", command: "", url: "", autoConnect: false });
+      setMcpError(null);
+      void refetchMcpServers();
+    },
+    onError: (err: Error) => setMcpError(err.message),
+  });
+
 
   const modelList: Array<Record<string, unknown>> = Array.isArray(models) ? models as Array<Record<string, unknown>> : [];
   const registeredSlugs = new Set(modelList.map((m) => m.slug as string));
@@ -920,6 +997,182 @@ export default function Settings() {
                   ))}
                 </div>
               )}
+            </CardContent>
+          </Card>
+
+
+          {/* ── Tools & MCP ────────────────────────────── */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Wrench className="h-4 w-4" /> Tools & MCP
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Built-in tools grid */}
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-2">Built-in Tools</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { name: "web_search", label: "Web Search", desc: (toolsStatus as Record<string, { keySource: string; premium?: boolean }> | undefined)?.web_search?.premium ? "Tavily (premium)" : "DuckDuckGo (fallback)" },
+                    { name: "url_reader", label: "URL Reader", desc: "Jina AI (free)" },
+                    { name: "knowledge_search", label: "Knowledge Search", desc: "Internal storage" },
+                    { name: "memory_search", label: "Memory Search", desc: "Internal storage" },
+                  ].map((tool) => (
+                    <div key={tool.name} className="flex items-start gap-2 p-3 rounded-lg border border-border bg-card">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <div className="text-xs font-medium font-mono">{tool.name}</div>
+                        <div className="text-xs text-muted-foreground">{tool.desc}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Set <code className="font-mono bg-muted px-1 rounded">TAVILY_API_KEY</code> for premium web search results.
+                </p>
+              </div>
+
+              {/* MCP Servers */}
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-2">MCP Servers</p>
+                {mcpServers && (mcpServers as Array<Record<string, unknown>>).length > 0 ? (
+                  <div className="space-y-2 mb-3">
+                    {(mcpServers as Array<Record<string, unknown>>).map((server) => (
+                      <div key={server.id as number} className="flex items-center gap-3 p-3 rounded-lg border border-border bg-card">
+                        <Terminal className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-medium">{server.name as string}</div>
+                          <div className="text-xs text-muted-foreground font-mono">
+                            {server.transport as string}
+                            {server.command ? ` · ${server.command as string}` : ""}
+                            {server.url ? ` · ${server.url as string}` : ""}
+                          </div>
+                        </div>
+                        <Badge
+                          variant={server.connected ? "default" : "secondary"}
+                          className="text-[10px] shrink-0"
+                        >
+                          {server.connected ? "Connected" : "Disconnected"}
+                          {server.toolCount ? ` (${server.toolCount as number})` : ""}
+                        </Badge>
+                        {server.connected ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs shrink-0"
+                            onClick={() => disconnectMcpServer.mutate(server.id as number)}
+                            disabled={disconnectMcpServer.isPending}
+                          >
+                            Disconnect
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs shrink-0"
+                            onClick={() => connectMcpServer.mutate(server.id as number)}
+                            disabled={connectMcpServer.isPending}
+                          >
+                            <Link2 className="h-3 w-3 mr-1" />
+                            Connect
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-destructive shrink-0"
+                          onClick={() => deleteMcpServer.mutate(server.id as number)}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted-foreground p-3 border border-dashed rounded-lg mb-3">
+                    No MCP servers configured.
+                  </div>
+                )}
+
+                {/* Add MCP Server Form */}
+                <div className="space-y-2 p-3 border border-border rounded-lg bg-muted/10">
+                  <p className="text-xs font-medium">Add MCP Server</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">Name</label>
+                      <Input
+                        className="h-7 text-xs"
+                        placeholder="my-mcp-server"
+                        value={mcpForm.name}
+                        onChange={(e) => setMcpForm((f) => ({ ...f, name: e.target.value }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">Transport</label>
+                      <Select
+                        value={mcpForm.transport}
+                        onValueChange={(v) => setMcpForm((f) => ({ ...f, transport: v }))}
+                      >
+                        <SelectTrigger className="h-7 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="stdio">stdio</SelectItem>
+                          <SelectItem value="sse">SSE</SelectItem>
+                          <SelectItem value="streamable-http">Streamable HTTP</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  {mcpForm.transport === "stdio" ? (
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">Command</label>
+                      <Input
+                        className="h-7 text-xs font-mono"
+                        placeholder="npx -y @modelcontextprotocol/server-filesystem /"
+                        value={mcpForm.command}
+                        onChange={(e) => setMcpForm((f) => ({ ...f, command: e.target.value }))}
+                      />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">URL</label>
+                      <Input
+                        className="h-7 text-xs font-mono"
+                        placeholder="http://localhost:3001/mcp"
+                        value={mcpForm.url}
+                        onChange={(e) => setMcpForm((f) => ({ ...f, url: e.target.value }))}
+                      />
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={mcpForm.autoConnect}
+                      onCheckedChange={(v) => setMcpForm((f) => ({ ...f, autoConnect: v }))}
+                    />
+                    <span className="text-xs text-muted-foreground">Auto-connect on save</span>
+                  </div>
+                  {mcpError && (
+                    <div className="text-xs text-destructive p-2 rounded border border-destructive/30 bg-destructive/5">
+                      {mcpError}
+                    </div>
+                  )}
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs w-full"
+                    onClick={() => addMcpServer.mutate(mcpForm)}
+                    disabled={!mcpForm.name.trim() || addMcpServer.isPending}
+                  >
+                    {addMcpServer.isPending ? (
+                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    ) : (
+                      <Plus className="h-3 w-3 mr-1" />
+                    )}
+                    Add Server
+                  </Button>
+                </div>
+              </div>
             </CardContent>
           </Card>
 

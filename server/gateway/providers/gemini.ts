@@ -48,7 +48,7 @@ export class GeminiProvider implements ILLMProvider {
       .join("\n");
 
     const history: Content[] = messages
-      .filter((m) => m.role !== "system")
+      .filter((m) => m.role !== "system" && m.role !== "tool")
       .map((m) => ({
         role: m.role === "assistant" ? "model" : "user",
         parts: [{ text: m.content }],
@@ -64,7 +64,7 @@ export class GeminiProvider implements ILLMProvider {
     modelId: string,
     messages: ProviderMessage[],
     options?: ILLMProviderOptions,
-  ): Promise<{ content: string; tokensUsed: number }> {
+  ): Promise<{ content: string; tokensUsed: number; finishReason?: "stop" | "tool_use" }> {
     const { systemInstruction, history } = this.mapMessages(messages);
 
     // The last message must be the user turn; it's sent via sendMessage
@@ -92,7 +92,7 @@ export class GeminiProvider implements ILLMProvider {
     const content = response.text();
     const tokensUsed = response.usageMetadata?.totalTokenCount ?? 0;
 
-    return { content, tokensUsed };
+    return { content, tokensUsed, finishReason: "stop" as const };
   }
 
   async *stream(

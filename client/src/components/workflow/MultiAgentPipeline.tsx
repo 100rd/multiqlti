@@ -7,7 +7,7 @@ import { Save, RotateCcw, Zap, Network } from "lucide-react";
 import AgentNode from "./AgentNode";
 import { usePipelines, useUpdatePipeline, useModels } from "@/hooks/use-pipeline";
 import { SDLC_TEAMS, TEAM_ORDER, STRATEGY_PRESETS, EXECUTION_STRATEGY_PRESETS } from "@shared/constants";
-import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy, PrivacySettings, SandboxConfig } from "@shared/types";
+import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy, PrivacySettings, SandboxConfig, StageToolConfig } from "@shared/types";
 
 interface MultiAgentPipelineProps {
   pipelineId?: string;
@@ -86,6 +86,13 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
   const updateSandbox = (teamId: string, config: SandboxConfig | undefined) => {
     setLocalStages(prev => prev.map(s =>
       s.teamId === teamId ? { ...s, sandbox: config } : s,
+    ));
+    setDirty(true);
+  };
+
+  const updateToolConfig = (teamId: string, config: StageToolConfig) => {
+    setLocalStages(prev => prev.map(s =>
+      s.teamId === teamId ? { ...s, tools: config } : s,
     ));
     setDirty(true);
   };
@@ -292,6 +299,8 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                 onPrivacyChange={(_, settings) => updatePrivacy(stage.teamId, settings)}
                 sandboxConfig={stage.sandbox}
                 onSandboxChange={(_, cfg) => updateSandbox(stage.teamId, cfg)}
+                toolConfig={stage.tools}
+                onToolConfigChange={(_, cfg) => updateToolConfig(stage.teamId, cfg)}
                 isLast={idx === localStages.length - 1}
               />
             );

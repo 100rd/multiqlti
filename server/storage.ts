@@ -16,7 +16,7 @@ import {
   type LlmRequest,
   type InsertLlmRequest,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
 
@@ -139,6 +139,13 @@ export interface IStorage {
   deleteMemory(id: number): Promise<void>;
   decayMemories(excludeRunId: number, decayAmount: number): Promise<number>;
   deleteStaleMemories(threshold: number): Promise<number>;
+
+  // MCP Servers
+  getMcpServers(): Promise<McpServerConfig[]>;
+  getMcpServer(id: number): Promise<McpServerConfig | undefined>;
+  createMcpServer(config: Omit<McpServerConfig, 'id'>): Promise<McpServerConfig>;
+  updateMcpServer(id: number, updates: Partial<McpServerConfig>): Promise<McpServerConfig>;
+  deleteMcpServer(id: number): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -153,6 +160,8 @@ export class MemStorage implements IStorage {
   private llmRequestIdSeq: number;
   private memoriesMap: Map<number, Memory>;
   private nextMemoryId: number;
+  private mcpServersMap: Map<number, McpServerConfig>;
+  private nextMcpServerId: number;
 
   constructor() {
     this.users = new Map();
@@ -166,6 +175,8 @@ export class MemStorage implements IStorage {
     this.llmRequestIdSeq = 1;
     this.memoriesMap = new Map();
     this.nextMemoryId = 1;
+    this.mcpServersMap = new Map();
+    this.nextMcpServerId = 1;
   }
 
   // ─── Users ──────────────────────────────────────
@@ -715,6 +726,41 @@ export class MemStorage implements IStorage {
     }
     return count;
   }
+
+  // ─── MCP Servers ───────────────────────────────
+
+  async getMcpServers(): Promise<McpServerConfig[]> {
+    return Array.from(this.mcpServersMap.values()).filter((s) => true);
+  }
+
+  async getMcpServer(id: number): Promise<McpServerConfig | undefined> {
+    return this.mcpServersMap.get(id);
+  }
+
+  async createMcpServer(config: Omit<McpServerConfig, 'id'>): Promise<McpServerConfig> {
+    const id = this.nextMcpServerId++;
+    const server: McpServerConfig = {
+      ...config,
+      id,
+      toolCount: config.toolCount ?? 0,
+      createdAt: new Date(),
+    };
+    this.mcpServersMap.set(id, server);
+    return server;
+  }
+
+  async updateMcpServer(id: number, updates: Partial<McpServerConfig>): Promise<McpServerConfig> {
+    const server = this.mcpServersMap.get(id);
+    if (!server) throw new Error(`MCP server not found: ${id}`);
+    const updated = { ...server, ...updates };
+    this.mcpServersMap.set(id, updated);
+    return updated;
+  }
+
+  async deleteMcpServer(id: number): Promise<void> {
+    this.mcpServersMap.delete(id);
+  }
+
 }
 
 export const storage: IStorage = process.env.DATABASE_URL

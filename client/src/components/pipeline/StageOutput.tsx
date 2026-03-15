@@ -7,7 +7,8 @@ import StrategyViewer from "./StrategyViewer";
 import SandboxOutput from "./SandboxOutput";
 import ThoughtTree from "./ThoughtTree";
 import { CodeBlock } from "@/components/ui/CodeBlock";
-import type { StrategyResult, SandboxResult, ThoughtTree as ThoughtTreeType } from "@shared/types";
+import type { StrategyResult, SandboxResult, ThoughtTree as ThoughtTreeType, ToolCallLogEntry } from "@shared/types";
+import ToolCallLog from "./ToolCallLog";
 
 interface StageOutputProps {
   teamId: string;
@@ -16,6 +17,7 @@ interface StageOutputProps {
   strategyResult?: StrategyResult | null;
   isActive?: boolean;
   thoughtTree?: ThoughtTreeType | null;
+  toolCallLog?: ToolCallLogEntry[] | null;
 }
 
 export default function StageOutput({
@@ -25,6 +27,7 @@ export default function StageOutput({
   strategyResult,
   isActive,
   thoughtTree,
+  toolCallLog,
 }: StageOutputProps) {
   const [expanded, setExpanded] = useState(isActive ?? false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -160,6 +163,11 @@ export default function StageOutput({
           {/* Thought Tree */}
           {thoughtTree && thoughtTree.length > 0 && (
             <ThoughtTree nodes={thoughtTree} />
+          )}
+
+          {/* Tool call log */}
+          {toolCallLog && toolCallLog.length > 0 && (
+            <ToolCallLog entries={toolCallLog} />
           )}
 
           {/* Strategy intermediate outputs */}

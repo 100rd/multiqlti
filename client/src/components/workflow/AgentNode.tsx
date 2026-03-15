@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { SDLC_TEAMS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, MIN_TEMPERATURE, MAX_TEMPERATURE, TEMPERATURE_STEP } from "@shared/constants";
 import StrategyConfig from "./StrategyConfig";
 import SandboxConfig from "./SandboxConfig";
-import type { ExecutionStrategy, PrivacySettings, SandboxConfig as SandboxConfigType } from "@shared/types";
+import type { ExecutionStrategy, PrivacySettings, SandboxConfig as SandboxConfigType, StageToolConfig } from "@shared/types";
 
 interface ModelOption {
   label: string;
@@ -41,6 +41,8 @@ interface AgentNodeProps {
   onPrivacyChange: (id: string, settings: PrivacySettings) => void;
   sandboxConfig?: SandboxConfigType;
   onSandboxChange: (id: string, config: SandboxConfigType | undefined) => void;
+  toolConfig?: StageToolConfig;
+  onToolConfigChange: (id: string, config: StageToolConfig) => void;
   isLast: boolean;
 }
 
@@ -63,6 +65,18 @@ const DOT_COLOR_MAP: Record<string, string> = {
   cyan: "bg-cyan-500",
   rose: "bg-rose-500",
 };
+
+const DEFAULT_TEAM_TOOLS: Record<string, string[]> = {
+  planning:     ['web_search', 'knowledge_search', 'memory_search'],
+  architecture: ['web_search', 'knowledge_search', 'memory_search'],
+  development:  ['web_search', 'knowledge_search'],
+  testing:      ['knowledge_search'],
+  code_review:  ['web_search', 'knowledge_search', 'memory_search'],
+  deployment:   ['web_search', 'knowledge_search'],
+  monitoring:   ['web_search', 'knowledge_search'],
+};
+
+const ALL_BUILTIN_TOOLS = ['web_search', 'url_reader', 'knowledge_search', 'memory_search'];
 
 const DEFAULT_PRIVACY: PrivacySettings = {
   enabled: false,
@@ -93,6 +107,8 @@ export default function AgentNode({
   onPrivacyChange,
   sandboxConfig,
   onSandboxChange,
+  toolConfig,
+  onToolConfigChange,
   isLast,
 }: AgentNodeProps) {
   const team = SDLC_TEAMS[role as keyof typeof SDLC_TEAMS];
@@ -100,6 +116,7 @@ export default function AgentNode({
 
   const [promptExpanded, setPromptExpanded] = useState(false);
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
+  const [toolsExpanded, setToolsExpanded] = useState(false);
   const [localPrompt, setLocalPrompt] = useState(systemPromptOverride ?? "");
   const [localMaxTokens, setLocalMaxTokens] = useState(
     String(maxTokens ?? DEFAULT_MAX_TOKENS),
@@ -324,6 +341,92 @@ export default function AgentNode({
             enabled={enabled}
             onChange={(s) => onStrategyChange(id, s)}
           />
+
+
+          {/* Tools Config */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setToolsExpanded((prev) => !prev)}
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              disabled={!enabled}
+            >
+              <span>Tools</span>
+              {toolsExpanded
+                ? <ChevronUp className="h-3 w-3 ml-1" />
+                : <ChevronDown className="h-3 w-3 ml-1" />}
+            </button>
+
+            {toolsExpanded && (
+              <div className="mt-3 space-y-3 p-3 rounded border border-border bg-muted/30">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-muted-foreground">Enable tool calling</label>
+                  <Switch
+                    checked={toolConfig?.enabled ?? false}
+                    onCheckedChange={(checked) =>
+                      onToolConfigChange(id, {
+                        ...(toolConfig ?? { enabled: false }),
+                        enabled: checked,
+                        allowedTools: toolConfig?.allowedTools ?? (DEFAULT_TEAM_TOOLS[role] ?? []),
+                      })
+                    }
+                    disabled={!enabled}
+                  />
+                </div>
+
+                {(toolConfig?.enabled ?? false) && (
+                  <>
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Available Tools</label>
+                      <div className="space-y-1">
+                        {ALL_BUILTIN_TOOLS.map((toolName) => {
+                          const isAllowed = (toolConfig?.allowedTools ?? DEFAULT_TEAM_TOOLS[role] ?? []).includes(toolName);
+                          return (
+                            <div key={toolName} className="flex items-center justify-between">
+                              <span className="text-xs font-mono">{toolName}</span>
+                              <Switch
+                                checked={isAllowed}
+                                onCheckedChange={(checked) => {
+                                  const current = toolConfig?.allowedTools ?? DEFAULT_TEAM_TOOLS[role] ?? [];
+                                  const updated = checked
+                                    ? [...current, toolName]
+                                    : current.filter((t: string) => t !== toolName);
+                                  onToolConfigChange(id, { ...(toolConfig ?? { enabled: true }), allowedTools: updated });
+                                }}
+                                disabled={!enabled}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-medium text-muted-foreground">
+                          Max tool calls
+                        </label>
+                        <span className="text-xs font-mono text-foreground">
+                          {toolConfig?.maxToolCalls ?? 10}
+                        </span>
+                      </div>
+                      <Slider
+                        min={1}
+                        max={10}
+                        step={1}
+                        value={[toolConfig?.maxToolCalls ?? 10]}
+                        onValueChange={([val]) =>
+                          onToolConfigChange(id, { ...(toolConfig ?? { enabled: true }), maxToolCalls: val })
+                        }
+                        disabled={!enabled}
+                        className="h-4"
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Sandbox Config */}
           <SandboxConfig

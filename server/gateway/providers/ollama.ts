@@ -44,7 +44,7 @@ export class OllamaProvider {
     model: string,
     messages: Array<{ role: string; content: string }>,
     options?: { maxTokens?: number; temperature?: number },
-  ): Promise<{ content: string; tokensUsed: number }> {
+  ): Promise<{ content: string; tokensUsed: number; finishReason?: "stop" | "tool_use" }> {
     const res = await fetch(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -73,6 +73,7 @@ export class OllamaProvider {
     return {
       content: data.message?.content ?? "",
       tokensUsed: (data.eval_count ?? 0) + (data.prompt_eval_count ?? 0),
+      finishReason: "stop" as const,
     };
   }
 

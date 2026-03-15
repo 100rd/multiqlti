@@ -267,6 +267,61 @@ export interface PrivacySettings {
   auditLog: boolean;    // default: true
 }
 
+// ─── Tool Types ───────────────────────────────────────────────────────────────
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;  // JSON Schema
+  source: 'builtin' | 'mcp';
+  mcpServer?: string;
+  tags?: string[];
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface ToolResult {
+  toolCallId: string;
+  content: string;
+  isError?: boolean;
+}
+
+export interface ToolCallLogEntry {
+  iteration: number;
+  call: ToolCall;
+  result: ToolResult;
+  durationMs: number;
+}
+
+export interface StageToolConfig {
+  enabled: boolean;
+  allowedTools?: string[];
+  blockedTools?: string[];
+  maxToolCalls?: number;       // default 10
+  toolChoice?: 'auto' | 'none' | 'required';
+}
+
+// ─── MCP Server Config ────────────────────────────────────────────────────────
+
+export interface McpServerConfig {
+  id: number;
+  name: string;
+  transport: 'stdio' | 'sse' | 'streamable-http';
+  command?: string | null;
+  args?: string[] | null;
+  url?: string | null;
+  env?: Record<string, string> | null;
+  enabled: boolean;
+  autoConnect: boolean;
+  toolCount: number;
+  lastConnectedAt?: Date | null;
+  createdAt?: Date | null;
+}
+
 // ─── Pipeline Stage Config ────────────────────────────────────────────────────
 
 export interface PipelineStageConfig {
@@ -279,6 +334,7 @@ export interface PipelineStageConfig {
   executionStrategy?: ExecutionStrategy;
   privacySettings?: PrivacySettings;
   sandbox?: SandboxConfig;
+  tools?: StageToolConfig;
 }
 
 export interface StageOutput {
@@ -299,6 +355,7 @@ export interface StageContext {
   privacySettings?: PrivacySettings;
   sessionId?: string;
   memoryContext?: string;
+  stageConfig?: PipelineStageConfig;
 }
 
 export interface TeamResult {
@@ -307,9 +364,15 @@ export interface TeamResult {
   raw: string;
   questions?: string[];
   strategyResult?: StrategyResult;
+  toolCallLog?: ToolCallLogEntry[];
 }
 
-export type ProviderMessage = { role: string; content: string };
+// ─── Provider Message ─────────────────────────────────────────────────────────
+
+export type ProviderMessage =
+  | { role: 'system' | 'user'; content: string }
+  | { role: 'assistant'; content: string; toolCalls?: ToolCall[] }
+  | { role: 'tool'; toolCallId: string; content: string };
 
 export interface ILLMProviderOptions {
   maxTokens?: number;
@@ -322,17 +385,21 @@ export interface ILLMProviderOptions {
   stageExecutionId?: string;
   /** Team identifier for cost/usage grouping. */
   teamId?: string;
+  /** Tools to make available for this completion. */
+  tools?: ToolDefinition[];
+  /** How the model chooses tools. */
+  toolChoice?: 'auto' | 'none' | 'required';
 }
 
 export interface ILLMProvider {
   /**
-   * Non-streaming completion. Returns full content and token count.
+   * Non-streaming completion. Returns full content, token count, and optional tool calls.
    */
   complete(
     modelId: string,
     messages: ProviderMessage[],
     options?: ILLMProviderOptions,
-  ): Promise<{ content: string; tokensUsed: number }>;
+  ): Promise<{ content: string; tokensUsed: number; toolCalls?: ToolCall[]; finishReason?: 'stop' | 'tool_use' }>;
 
   /**
    * Streaming completion. Yields text delta chunks as they arrive.

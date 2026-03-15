@@ -222,11 +222,11 @@ export class MockProvider {
   async complete(
     messages: Array<{ role: string; content: string }>,
     _options?: { maxTokens?: number },
-  ): Promise<{ content: string; tokensUsed: number }> {
+  ): Promise<{ content: string; tokensUsed: number; finishReason?: "stop" | "tool_use" }> {
     const team = detectTeam(messages);
     const input = extractUserInput(messages);
     const content = MOCK_RESPONSES[team](input);
-    return { content, tokensUsed: Math.floor(content.length / 4) };
+    return { content, tokensUsed: Math.floor(content.length / 4), finishReason: "stop" as const };
   }
 
   async *stream(
