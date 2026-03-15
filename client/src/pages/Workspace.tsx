@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useRoute } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, GitBranch, Eye, MessageSquare, Code2 } from "lucide-react";
+import { RefreshCw, GitBranch, Eye, MessageSquare, Code2, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { FileTree } from "@/components/workspace/FileTree";
 import { CodeViewer } from "@/components/workspace/CodeViewer";
 import { ReviewPanel } from "@/components/workspace/ReviewPanel";
 import { ChatPanel } from "@/components/workspace/ChatPanel";
+import { ConfigDiffView } from "@/components/workspace/ConfigDiffView";
 import type { WorkspaceRow } from "@shared/schema";
 import type { FileEntry, GitStatus, ReviewResult } from "@shared/types";
 import type { Model } from "@shared/schema";
@@ -110,6 +111,7 @@ export default function Workspace() {
   const [chatModel, setChatModel] = useState<string[]>([]);
   const [reviewResults, setReviewResults] = useState<Record<string, ReviewResult>>({});
   const [isReviewing, setIsReviewing] = useState(false);
+  const [showConfigDiff, setShowConfigDiff] = useState(false);
   const qc = useQueryClient();
 
   const { data: workspace } = useQuery<WorkspaceRow>({
@@ -197,6 +199,19 @@ export default function Workspace() {
         {gitStatus && <GitStatusBadge status={gitStatus} />}
 
         <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => setShowConfigDiff((v) => !v)}
+            className={cn(
+              "flex items-center gap-1 text-xs px-2 py-1 rounded border transition-colors",
+              showConfigDiff
+                ? "border-primary/50 text-primary bg-primary/5"
+                : "border-border text-muted-foreground hover:border-primary/50",
+            )}
+          >
+            <Settings2 className="h-3 w-3" />
+            Config
+          </button>
+
           {workspace.type === "remote" && (
             <button
               onClick={() => syncMutation.mutate()}
@@ -209,6 +224,16 @@ export default function Workspace() {
           )}
         </div>
       </div>
+
+      {/* Config diff banner */}
+      {showConfigDiff && (
+        <div className="border-b border-border px-4 py-3 bg-card/50">
+          <ConfigDiffView
+            workspaceId={workspaceId}
+            onIgnore={() => setShowConfigDiff(false)}
+          />
+        </div>
+      )}
 
       {/* Main layout: file tree | code viewer | right panel */}
       <div className="flex-1 flex overflow-hidden">

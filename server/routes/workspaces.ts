@@ -7,6 +7,8 @@ import type { WorkspaceRow } from "@shared/schema";
 import { WorkspaceManager } from "../workspace/manager";
 import { CodeChatService } from "../workspace/code-chat";
 import type { Gateway } from "../gateway/index";
+import { configLoader } from "../config/loader";
+import type { ProjectConfigResponse } from "@shared/types";
 
 // ─── Validation schemas ───────────────────────────────────────────────────────
 
@@ -71,6 +73,28 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     const [row] = await db.select().from(workspaces).where(eq(workspaces.id, req.params.id));
     if (!row) return res.status(404).json({ error: "Workspace not found" });
     res.json(row);
+  });
+
+  // ── Project config (multiqlti.yaml) ─────────────────────────────────────────
+
+  router.get("/api/workspaces/:id/config", async (req, res) => {
+    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, req.params.id));
+    if (!row) return res.status(404).json({ error: "Workspace not found" });
+
+    // Only local workspaces have a directly-readable path; remote ones use the clone path
+    const workspacePath = row.type === "local" ? row.path : `data/workspaces/${row.id}`;
+
+    try {
+      const projectConfig = configLoader.loadProjectConfig(workspacePath);
+      const response: ProjectConfigResponse = {
+        detected: projectConfig !== null,
+        projectConfig: projectConfig as Record<string, unknown> | null,
+        diff: projectConfig ? configLoader.diff(projectConfig) : [],
+      };
+      res.json(response);
+    } catch (err) {
+      res.status(422).json({ error: (err as Error).message });
+    }
   });
 
   router.post("/api/workspaces", async (req, res) => {

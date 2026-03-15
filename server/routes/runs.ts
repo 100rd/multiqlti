@@ -3,10 +3,23 @@ import { z } from "zod";
 import type { IStorage } from "../storage";
 import type { PipelineController } from "../controller/pipeline-controller";
 import { generateMarkdownReport, generateZipExport } from "../services/export-service";
+import { ephemeralVarStore } from "../run-variables/store";
+
+/** Mask the password portion of a connection string like postgres://user:pass@host/db */
+function maskUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.password) url.password = "***";
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
 
 const CreateRunSchema = z.object({
   pipelineId: z.string().min(1, "pipelineId is required"),
   input: z.string().min(1, "input must be a non-empty string"),
+  variables: z.record(z.string()).optional(),
 });
 
 const AnswerQuestionSchema = z.object({
@@ -49,13 +62,34 @@ export function registerRunRoutes(
       return res.status(400).json({ error: result.error.message });
     }
 
-    const { pipelineId, input } = result.data;
+    const { pipelineId, input, variables } = result.data;
     try {
-      const run = await controller.startRun(pipelineId, input);
+      const run = await controller.startRun(pipelineId, input, variables);
       res.status(201).json(run);
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
     }
+  });
+
+  // ── Ephemeral run variable management ────────────────────────────────────────
+
+  router.get("/api/runs/:id/variables", (req, res) => {
+    const state = ephemeralVarStore.getState(req.params.id);
+    if (!state) return res.status(404).json({ error: "No variables for this run" });
+
+    // Mask secret-looking values (anything containing '@' or '://' in the value)
+    const maskedVars: Record<string, string> = {};
+    for (const [k, v] of Object.entries(state.variables)) {
+      maskedVars[k] = v.includes("://") ? maskUrl(v) : v;
+    }
+
+    res.json({ ...state, variables: maskedVars });
+  });
+
+  router.delete("/api/runs/:id/variables", (req, res) => {
+    const cleared = ephemeralVarStore.clearManually(req.params.id);
+    if (!cleared) return res.status(404).json({ error: "No variables to clear" });
+    res.json({ cleared: true });
   });
 
   router.post("/api/runs/:id/cancel", async (req, res) => {
