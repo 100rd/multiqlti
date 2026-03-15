@@ -32,7 +32,8 @@ export type TeamId =
   | "code_review"
   | "deployment"
   | "monitoring"
-  | "fact_check";
+  | "fact_check"
+  | string; // custom stage IDs (Phase 5)
 
 export type RunStatus =
   | "pending"
@@ -365,6 +366,7 @@ export interface McpServerConfig {
 export interface PipelineStageConfig {
   teamId: TeamId;
   modelSlug: string;
+  skillId?: string;
   systemPromptOverride?: string;
   temperature?: number;
   maxTokens?: number;
@@ -819,3 +821,24 @@ export interface ParallelExecutionMeta {
   failedCount: number;
   totalTokens: number;
 }
+
+// ─── Phase 5: Custom Stage Config ─────────────────────────────────────────────
+
+export interface CustomStageConfig {
+  id: string;
+  name: string;
+  description: string;
+  systemPrompt: string;
+  icon: string;
+}
+
+// ─── Phase 5: Specialization Profile ──────────────────────────────────────────
+
+export interface SpecializationProfile {
+  id: string;
+  name: string;
+  isBuiltIn: boolean;
+  assignments: Record<string, string>; // teamId → modelSlug
+  createdAt?: Date;
+}
+
