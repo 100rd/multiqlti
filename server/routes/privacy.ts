@@ -13,9 +13,20 @@ import { configLoader } from "../config/loader";
 
 const anonymizer = new AnonymizerService();
 
+const customPatternItemSchema = z.object({
+  name: z.string().min(1).max(100),
+  pattern: z.string().min(1).refine(
+    (p) => { try { new RegExp(p); return true; } catch { return false; } },
+    { message: "Invalid regular expression" },
+  ),
+  replacement: z.string().optional(),
+  severity: z.enum(["critical", "high", "medium", "low"]).default("high"),
+});
+
 const testSchema = z.object({
   text: z.string().min(1),
   level: z.enum(["off", "standard", "strict"]),
+  customPatterns: z.array(customPatternItemSchema).optional(),
 });
 
 const createPatternSchema = insertAnonymizationPatternSchema.extend({
@@ -39,14 +50,27 @@ export function registerPrivacyRoutes(router: Router): void {
       return res.status(400).json({ error: parsed.error.flatten() });
     }
 
-    const { text, level } = parsed.data;
+    const { text, level, customPatterns } = parsed.data;
 
     if (level === "off") {
       return res.json({ anonymized: text, entities: [] });
     }
 
+    // Convert validated custom patterns to the format expected by DataClassifier
+    const classifierCustomPatterns = customPatterns?.map((cp) => ({
+      type: "custom_pattern" as const,
+      severity: cp.severity,
+      pattern: new RegExp(cp.pattern, "g"),
+    }));
+
     const sessionId = crypto.randomUUID();
-    const result = anonymizer.anonymize(text, sessionId, level as AnonymizationLevel);
+    const result = anonymizer.anonymize(
+      text,
+      sessionId,
+      level as AnonymizationLevel,
+      undefined,
+      classifierCustomPatterns,
+    );
     anonymizer.clearSession(sessionId);
 
     return res.json({
