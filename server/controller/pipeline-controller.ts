@@ -711,8 +711,6 @@ export class PipelineController {
     return parseInt(hex, 16) || 0;
   }
 
-  /**
-   * If the stage has a skillId, load that skill and merge its settings into
 
 function createNullGateway(): Gateway {
   return {
