@@ -189,7 +189,7 @@ describe("DelegationService", () => {
       });
 
       const promise = svc.delegate("run-1", makeRequest({ timeout: 100 }), []);
-      vi.advanceTimersByTime(200);
+      await vi.advanceTimersByTimeAsync(200);
 
       await expect(promise).rejects.toBeInstanceOf(DelegationTimeoutError);
       vi.useRealTimers();
@@ -212,7 +212,7 @@ describe("DelegationService", () => {
       });
 
       const promise = svc.delegate("run-1", makeRequest({ timeout: 100 }), []);
-      vi.advanceTimersByTime(200);
+      await vi.advanceTimersByTimeAsync(200);
 
       await expect(promise).rejects.toBeInstanceOf(DelegationTimeoutError);
 
@@ -241,7 +241,7 @@ describe("DelegationService", () => {
       });
 
       const promise = svc.delegate("run-1", makeRequest({ timeout: 100 }), []);
-      vi.advanceTimersByTime(200);
+      await vi.advanceTimersByTimeAsync(200);
 
       await expect(promise).rejects.toBeInstanceOf(DelegationTimeoutError);
 
