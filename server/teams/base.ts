@@ -110,6 +110,11 @@ export abstract class BaseTeam {
       context.privacySettings
         ? { privacy: context.privacySettings, sessionId: context.sessionId }
         : undefined,
+      {
+        runId: context.runId,
+        stageExecutionId: context.stageExecutionId,
+        teamId: this.config.id,
+      },
     );
 
     const parsed = this.parseOutput(response.content);

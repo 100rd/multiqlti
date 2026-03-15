@@ -389,6 +389,7 @@ export interface StageOutput {
 export interface StageContext {
   runId: string;
   stageIndex: number;
+  stageExecutionId?: string;
   modelSlug?: string;
   temperature?: number;
   maxTokens?: number;
@@ -399,6 +400,7 @@ export interface StageContext {
   sessionId?: string;
   memoryContext?: string;
   stageConfig?: PipelineStageConfig;
+  variables?: Record<string, string>;
 }
 
 export interface TeamResult {

@@ -10,6 +10,7 @@ const PipelineStageConfigSchema = z.object({
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().int().positive().max(100000).optional(),
   enabled: z.boolean(),
+  approvalRequired: z.boolean().optional(),
 });
 
 const CreatePipelineSchema = z.object({
