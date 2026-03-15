@@ -120,7 +120,7 @@ export function registerRunRoutes(
   router.post("/api/runs/:id/questions/:qid/answer", validateBody(AnswerQuestionSchema), async (req, res) => {
     const { answer } = req.body as z.infer<typeof AnswerQuestionSchema>;
     try {
-      await controller.answerQuestion(req.params.qid, answer);
+      await controller.answerQuestion(req.params.qid as string, answer);
       res.json({ message: "Question answered" });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
@@ -129,7 +129,7 @@ export function registerRunRoutes(
 
   router.post("/api/runs/:id/questions/:qid/dismiss", async (req, res) => {
     try {
-      await controller.dismissQuestion(req.params.qid);
+      await controller.dismissQuestion(req.params.qid as string);
       res.json({ message: "Question dismissed" });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
@@ -139,14 +139,14 @@ export function registerRunRoutes(
   // ─── Approval Gates ────────────────────────────────────────────────────────
 
   router.post("/api/runs/:id/stages/:stageIndex/approve", validateBody(ApproveStageSchema), async (req, res) => {
-    const stageIndex = parseInt(req.params.stageIndex, 10);
+    const stageIndex = parseInt(req.params.stageIndex as string, 10);
     if (isNaN(stageIndex) || stageIndex < 0) {
       return res.status(400).json({ error: "Invalid stageIndex" });
     }
 
     const { approvedBy } = req.body as z.infer<typeof ApproveStageSchema>;
     try {
-      await controller.approveStage(req.params.id, stageIndex, approvedBy);
+      await controller.approveStage(req.params.id as string, stageIndex, approvedBy);
       res.json({ message: "Stage approved" });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
@@ -154,14 +154,14 @@ export function registerRunRoutes(
   });
 
   router.post("/api/runs/:id/stages/:stageIndex/reject", validateBody(RejectStageSchema), async (req, res) => {
-    const stageIndex = parseInt(req.params.stageIndex, 10);
+    const stageIndex = parseInt(req.params.stageIndex as string, 10);
     if (isNaN(stageIndex) || stageIndex < 0) {
       return res.status(400).json({ error: "Invalid stageIndex" });
     }
 
     const { reason } = req.body as z.infer<typeof RejectStageSchema>;
     try {
-      await controller.rejectStage(req.params.id, stageIndex, reason);
+      await controller.rejectStage(req.params.id as string, stageIndex, reason);
       res.json({ message: "Stage rejected" });
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });

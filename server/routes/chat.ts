@@ -44,7 +44,7 @@ export function registerChatRoutes(
 ) {
   router.get("/api/chat/:runId/messages", validateQuery(GetChatMessagesQuerySchema), async (req, res) => {
     const { limit } = req.query as z.infer<typeof GetChatMessagesQuerySchema>;
-    const messages = await storage.getChatMessages(req.params["runId"], limit);
+    const messages = await storage.getChatMessages(req.params["runId"] as string, limit);
     res.json(messages);
   });
 
