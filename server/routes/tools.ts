@@ -3,6 +3,7 @@ import { z } from "zod";
 import { toolRegistry } from "../tools/index";
 import { mcpClientManager } from "../tools/mcp-client";
 import type { IStorage } from "../storage";
+import { configLoader } from "../config/loader";
 
 const createMcpServerSchema = z.object({
   name: z.string().min(1).max(100),
@@ -33,7 +34,7 @@ export function registerToolRoutes(app: Express, storage: IStorage): void {
 
   /** GET /api/tools/status — configuration status of each tool */
   app.get("/api/tools/status", (_req, res) => {
-    const hasTavily = !!process.env.TAVILY_API_KEY;
+    const hasTavily = !!configLoader.get().providers.tavily?.apiKey;
 
     res.json({
       web_search: {

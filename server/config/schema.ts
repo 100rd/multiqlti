@@ -22,6 +22,7 @@ export const ConfigSchema = z.object({
     xai: z.object({ apiKey: z.string().optional() }).default({}),
     vllm: z.object({ endpoint: z.string().url().optional() }).default({}),
     ollama: z.object({ endpoint: z.string().url().optional() }).default({}),
+    tavily: z.object({ apiKey: z.string().optional() }).default({}),
   }).default({}),
   features: z.object({
     sandbox: z.object({
