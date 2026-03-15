@@ -294,7 +294,7 @@ export class PipelineController {
           : undefined;
 
         // Apply skill settings (if a skill is assigned to this stage)
-        const resolvedStage = await this.applySkill(stage);
+        const resolvedStage = stage;
 
         const context = {
           runId: run.id,
@@ -713,40 +713,6 @@ export class PipelineController {
 
   /**
    * If the stage has a skillId, load that skill and merge its settings into
-   * the stage config (skill values act as fallbacks — explicit stage settings win).
-   */
-  private async applySkill(stage: PipelineStageConfig): Promise<PipelineStageConfig> {
-    if (!stage.skillId) return stage;
-
-    const skill = await this.storage.getSkill(stage.skillId);
-    if (!skill) return stage;
-
-    return {
-      ...stage,
-      // Skill's model preference is a fallback — stage explicit setting wins
-      modelSlug: stage.modelSlug || skill.modelPreference || stage.modelSlug,
-      // Skill system prompt override (prepend to any stage override)
-      systemPromptOverride: stage.systemPromptOverride
-        ? `${skill.systemPromptOverride}\n\n${stage.systemPromptOverride}`
-        : skill.systemPromptOverride || stage.systemPromptOverride,
-      // Merge skill tools into stage tools (union)
-      tools: stage.tools
-        ? {
-            ...stage.tools,
-            enabled: true,
-            allowedTools: [
-              ...new Set([
-                ...(stage.tools.allowedTools ?? []),
-                ...(skill.tools as string[]),
-              ]),
-            ],
-          }
-        : skill.tools.length > 0
-          ? { enabled: true, allowedTools: skill.tools as string[] }
-          : undefined,
-    };
-  }
-}
 
 function createNullGateway(): Gateway {
   return {
