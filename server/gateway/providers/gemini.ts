@@ -2,8 +2,11 @@ import {
   GoogleGenerativeAI,
   type Content,
   type GenerateContentStreamResult,
+  type Tool,
+  type FunctionDeclaration,
+  type FunctionDeclarationSchema,
 } from "@google/generative-ai";
-import type { ILLMProvider, ILLMProviderOptions, ProviderMessage } from "@shared/types";
+import type { ILLMProvider, ILLMProviderOptions, ProviderMessage, ToolCall } from "@shared/types";
 
 /** Returns true for errors that warrant a single retry. */
 function isRetryable(e: unknown): boolean {
@@ -25,6 +28,22 @@ async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
     }
     throw e;
   }
+}
+
+/** Map our ToolDefinition[] to Gemini FunctionDeclaration[]. */
+function toGeminiFunctionDeclarations(
+  tools: ILLMProviderOptions["tools"],
+): Tool[] | undefined {
+  if (!tools || tools.length === 0) return undefined;
+
+  const declarations: FunctionDeclaration[] = tools.map((t) => ({
+    name: t.name,
+    description: t.description,
+    // Cast via unknown — our inputSchema is compatible JSON Schema at runtime
+    parameters: t.inputSchema as unknown as FunctionDeclarationSchema,
+  }));
+
+  return [{ functionDeclarations: declarations }];
 }
 
 export class GeminiProvider implements ILLMProvider {
@@ -64,16 +83,19 @@ export class GeminiProvider implements ILLMProvider {
     modelId: string,
     messages: ProviderMessage[],
     options?: ILLMProviderOptions,
-  ): Promise<{ content: string; tokensUsed: number; finishReason?: "stop" | "tool_use" }> {
+  ): Promise<{ content: string; tokensUsed: number; toolCalls?: ToolCall[]; finishReason?: "stop" | "tool_use" }> {
     const { systemInstruction, history } = this.mapMessages(messages);
 
     // The last message must be the user turn; it's sent via sendMessage
     const lastMessage = history.pop();
     if (!lastMessage) throw new Error("GeminiProvider: no user message");
 
+    const geminiTools = toGeminiFunctionDeclarations(options?.tools);
+
     const model = this.client.getGenerativeModel({
       model: modelId,
       ...(systemInstruction ? { systemInstruction } : {}),
+      ...(geminiTools ? { tools: geminiTools } : {}),
       generationConfig: {
         maxOutputTokens: options?.maxTokens ?? 4096,
         temperature: options?.temperature ?? 0.7,
@@ -81,7 +103,7 @@ export class GeminiProvider implements ILLMProvider {
     });
 
     const chat = model.startChat({ history });
-    const userText = lastMessage.parts.map((p) => p.text ?? "").join("");
+    const userText = lastMessage.parts.map((p) => (p as { text?: string }).text ?? "").join("");
 
     const result = await withRetry(
       () => chat.sendMessage(userText),
@@ -89,10 +111,32 @@ export class GeminiProvider implements ILLMProvider {
     );
 
     const response = result.response;
-    const content = response.text();
     const tokensUsed = response.usageMetadata?.totalTokenCount ?? 0;
 
-    return { content, tokensUsed, finishReason: "stop" as const };
+    // Extract function calls from response parts
+    const parts = response.candidates?.[0]?.content?.parts ?? [];
+    const functionCallParts = parts.filter(
+      (p): p is typeof p & { functionCall: { name: string; args: Record<string, unknown> } } =>
+        p != null && "functionCall" in p && p.functionCall != null,
+    );
+
+    if (functionCallParts.length > 0) {
+      const toolCalls: ToolCall[] = functionCallParts.map((p) => ({
+        id: crypto.randomUUID(),
+        name: p.functionCall.name,
+        arguments: (p.functionCall.args ?? {}) as Record<string, unknown>,
+      }));
+
+      return {
+        content: "",
+        tokensUsed,
+        toolCalls,
+        finishReason: "tool_use",
+      };
+    }
+
+    const content = response.text();
+    return { content, tokensUsed, finishReason: "stop" };
   }
 
   async *stream(
@@ -105,9 +149,12 @@ export class GeminiProvider implements ILLMProvider {
     const lastMessage = history.pop();
     if (!lastMessage) throw new Error("GeminiProvider: no user message");
 
+    const geminiTools = toGeminiFunctionDeclarations(options?.tools);
+
     const model = this.client.getGenerativeModel({
       model: modelId,
       ...(systemInstruction ? { systemInstruction } : {}),
+      ...(geminiTools ? { tools: geminiTools } : {}),
       generationConfig: {
         maxOutputTokens: options?.maxTokens ?? 4096,
         temperature: options?.temperature ?? 0.7,
@@ -115,7 +162,7 @@ export class GeminiProvider implements ILLMProvider {
     });
 
     const chat = model.startChat({ history });
-    const userText = lastMessage.parts.map((p) => p.text ?? "").join("");
+    const userText = lastMessage.parts.map((p) => (p as { text?: string }).text ?? "").join("");
 
     const result: GenerateContentStreamResult = await withRetry(
       () => chat.sendMessageStream(userText),

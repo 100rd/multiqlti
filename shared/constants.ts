@@ -702,3 +702,16 @@ export function estimateCostUsd(
     (outputTokens / 1_000_000) * pricing.outputPer1M
   );
 }
+
+// ─── Default Tools per Team ───────────────────────────────────────────────────
+
+export const DEFAULT_TEAM_TOOLS: Record<TeamId, string[]> = {
+  planning:     ["web_search", "knowledge_search", "memory_search"],
+  architecture: ["web_search", "knowledge_search", "memory_search", "code_search"],
+  development:  ["web_search", "code_search", "file_read", "knowledge_search"],
+  testing:      ["code_search", "file_read", "knowledge_search"],
+  code_review:  ["web_search", "code_search", "file_read", "knowledge_search", "memory_search"],
+  deployment:   ["web_search", "knowledge_search", "memory_search"],
+  monitoring:   ["web_search", "knowledge_search"],
+  fact_check:   ["web_search", "knowledge_search"],
+};
