@@ -18,6 +18,7 @@ import { registerToolRoutes } from "./routes/tools";
 import { registerWorkspaceRoutes } from "./routes/workspaces";
 import { registerAuthRoutes } from "./routes/auth";
 import { registerSandboxRoutes } from "./routes/sandbox";
+import { registerSettingsRoutes } from "./routes/settings";
 import { requireAuth } from "./auth/middleware";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
@@ -67,6 +68,7 @@ export async function registerRoutes(
   registerToolRoutes(app, storage);
   registerWorkspaceRoutes(app, gateway);
   registerSandboxRoutes(app as unknown as Router);
+  registerSettingsRoutes(app as unknown as Router, gateway);
 
   // Seed default models
   const existingModels = await storage.getModels();
