@@ -26,7 +26,7 @@ import { createServer } from "http";
  * Create a WsManager with a real (non-listening) HTTP server.
  */
 async function createManager() {
-  const { WsManager } = await import("../../server/ws/manager.js");
+  const { WsManager } = await import("../../../server/ws/manager.js");
   const httpServer = createServer();
   const manager = new WsManager(httpServer);
   return { manager, httpServer };

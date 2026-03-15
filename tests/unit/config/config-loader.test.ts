@@ -21,7 +21,7 @@ import fs from "fs";
 /** Create an isolated ConfigLoader instance with a clean env. */
 async function makeLoader() {
   // Re-import to get access to the class constructor.
-  const mod = await import("../../server/config/loader.js");
+  const mod = await import("../../../server/config/loader.js");
   // The module only exports the singleton. We need to test load() behaviour
   // through a clean instantiation. Since ConfigLoader is not exported directly,
   // we test via the singleton's methods but reset the private cache between tests
@@ -45,19 +45,19 @@ describe("ConfigLoader.load() — defaults", () => {
   });
 
   it("returns config with correct server port default (5000)", async () => {
-    const { ConfigLoader } = await import("../../server/config/loader.js") as {
-      ConfigLoader?: new () => { load: (dir?: string) => import("../../server/config/schema.js").AppConfig };
+    const { ConfigLoader } = await import("../../../server/config/loader.js") as {
+      ConfigLoader?: new () => { load: (dir?: string) => import("../../../server/config/schema.js").AppConfig };
     };
     if (!ConfigLoader) {
       // ConfigLoader class not exported — test via the load() method directly
       // by checking the well-known defaults.
       vi.stubEnv("PORT", "");
       vi.stubEnv("MULTI_SERVER_PORT", "");
-      const { configLoader } = await import("../../server/config/loader.js");
+      const { configLoader } = await import("../../../server/config/loader.js");
       // We can only verify the type through get() when already loaded;
       // create a brand-new loader by invalidating the module cache via workaround.
       // Instead, assert the schema default directly.
-      const { ConfigSchema } = await import("../../server/config/schema.js");
+      const { ConfigSchema } = await import("../../../server/config/schema.js");
       const defaultCfg = ConfigSchema.parse({});
       expect(defaultCfg.server.port).toBe(5000);
       return;
@@ -75,38 +75,38 @@ describe("ConfigLoader — env var overrides via ConfigSchema defaults", () => {
   });
 
   it("default port is 5000 from ConfigSchema", async () => {
-    const { ConfigSchema } = await import("../../server/config/schema.js");
+    const { ConfigSchema } = await import("../../../server/config/schema.js");
     const cfg = ConfigSchema.parse({});
     expect(cfg.server.port).toBe(5000);
   });
 
   it("default nodeEnv is development", async () => {
-    const { ConfigSchema } = await import("../../server/config/schema.js");
+    const { ConfigSchema } = await import("../../../server/config/schema.js");
     const cfg = ConfigSchema.parse({});
     expect(cfg.server.nodeEnv).toBe("development");
   });
 
   it("database.url is undefined when DATABASE_URL is not set", async () => {
-    const { ConfigSchema } = await import("../../server/config/schema.js");
+    const { ConfigSchema } = await import("../../../server/config/schema.js");
     const cfg = ConfigSchema.parse({});
     expect(cfg.database.url).toBeUndefined();
   });
 
   it("provider apiKeys are undefined by default", async () => {
-    const { ConfigSchema } = await import("../../server/config/schema.js");
+    const { ConfigSchema } = await import("../../../server/config/schema.js");
     const cfg = ConfigSchema.parse({});
     expect(cfg.providers.anthropic.apiKey).toBeUndefined();
     expect(cfg.providers.tavily.apiKey).toBeUndefined();
   });
 
   it("sandbox is disabled by default", async () => {
-    const { ConfigSchema } = await import("../../server/config/schema.js");
+    const { ConfigSchema } = await import("../../../server/config/schema.js");
     const cfg = ConfigSchema.parse({});
     expect(cfg.features.sandbox.enabled).toBe(false);
   });
 
   it("privacy is enabled by default", async () => {
-    const { ConfigSchema } = await import("../../server/config/schema.js");
+    const { ConfigSchema } = await import("../../../server/config/schema.js");
     const cfg = ConfigSchema.parse({});
     expect(cfg.features.privacy.enabled).toBe(true);
   });
@@ -125,7 +125,7 @@ describe("ConfigLoader — ENV_MAPPINGS resolution", () => {
 
     // Import fresh — we need a fresh instance so the cache is clear.
     // Since the module is cached by Node/Vitest, we test the logic directly.
-    const { ConfigSchema } = await import("../../server/config/schema.js");
+    const { ConfigSchema } = await import("../../../server/config/schema.js");
 
     // Simulate what buildEnvOverrides + deepMerge does for this mapping.
     const overrideInput = { server: { port: 9000 } };
@@ -134,7 +134,7 @@ describe("ConfigLoader — ENV_MAPPINGS resolution", () => {
   });
 
   it("DATABASE_URL sets database.url", async () => {
-    const { ConfigSchema } = await import("../../server/config/schema.js");
+    const { ConfigSchema } = await import("../../../server/config/schema.js");
     const cfg = ConfigSchema.parse({
       database: { url: "postgres://user:pass@localhost:5432/testdb" },
     });
@@ -142,7 +142,7 @@ describe("ConfigLoader — ENV_MAPPINGS resolution", () => {
   });
 
   it("TAVILY_API_KEY sets providers.tavily.apiKey", async () => {
-    const { ConfigSchema } = await import("../../server/config/schema.js");
+    const { ConfigSchema } = await import("../../../server/config/schema.js");
     const cfg = ConfigSchema.parse({
       providers: { tavily: { apiKey: "tvly-test-key" } },
     });
@@ -153,7 +153,7 @@ describe("ConfigLoader — ENV_MAPPINGS resolution", () => {
     // MULTI_SERVER_PORT should override PORT when both are present.
     // We verify the ENV_MAPPINGS order: MULTI_* entries come after legacy aliases.
     // Test: if we merge legacy (port=3000) then MULTI_* (port=9999), result is 9999.
-    const { ConfigSchema } = await import("../../server/config/schema.js");
+    const { ConfigSchema } = await import("../../../server/config/schema.js");
     const afterLegacy = ConfigSchema.parse({ server: { port: 3000 } });
     // Then MULTI_SERVER_PORT override
     const afterMulti = ConfigSchema.parse({ server: { port: 9999 } });
@@ -164,19 +164,19 @@ describe("ConfigLoader — ENV_MAPPINGS resolution", () => {
   });
 
   it("invalid port value (non-number) is rejected by ConfigSchema", async () => {
-    const { ConfigSchema } = await import("../../server/config/schema.js");
+    const { ConfigSchema } = await import("../../../server/config/schema.js");
     const result = ConfigSchema.safeParse({ server: { port: "not-a-number" } });
     expect(result.success).toBe(false);
   });
 
   it("port out of range is rejected (> 65535)", async () => {
-    const { ConfigSchema } = await import("../../server/config/schema.js");
+    const { ConfigSchema } = await import("../../../server/config/schema.js");
     const result = ConfigSchema.safeParse({ server: { port: 99999 } });
     expect(result.success).toBe(false);
   });
 
   it("port out of range is rejected (< 1)", async () => {
-    const { ConfigSchema } = await import("../../server/config/schema.js");
+    const { ConfigSchema } = await import("../../../server/config/schema.js");
     const result = ConfigSchema.safeParse({ server: { port: 0 } });
     expect(result.success).toBe(false);
   });
@@ -184,7 +184,7 @@ describe("ConfigLoader — ENV_MAPPINGS resolution", () => {
 
 describe("ConfigLoader singleton — get() returns same object as load()", () => {
   it("get() returns a config object with default port 5000 after load", async () => {
-    const { configLoader } = await import("../../server/config/loader.js");
+    const { configLoader } = await import("../../../server/config/loader.js");
     const cfg = configLoader.get();
     // The singleton has already been loaded (possibly with env vars from other tests).
     // We only verify the shape — that it has the expected structure.
@@ -194,7 +194,7 @@ describe("ConfigLoader singleton — get() returns same object as load()", () =>
   });
 
   it("get() returns the same object reference as a subsequent get()", async () => {
-    const { configLoader } = await import("../../server/config/loader.js");
+    const { configLoader } = await import("../../../server/config/loader.js");
     const first = configLoader.get();
     const second = configLoader.get();
     expect(first).toBe(second);

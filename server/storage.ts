@@ -19,8 +19,9 @@ import {
   type SpecializationProfileRow,
   type Skill,
   type InsertSkill,
+  type TriggerRow,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TriggerType } from "@shared/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
 import { configLoader } from "./config/loader";
@@ -163,6 +164,14 @@ export interface IStorage {
   createSkill(data: InsertSkill): Promise<Skill>;
   updateSkill(id: string, updates: Partial<InsertSkill>): Promise<Skill>;
   deleteSkill(id: string): Promise<void>;
+
+  // Triggers (Phase 6.3)
+  getTriggers(pipelineId: string): Promise<TriggerRow[]>;
+  getTrigger(id: string): Promise<TriggerRow | undefined>;
+  getEnabledTriggersByType(type: TriggerType): Promise<TriggerRow[]>;
+  createTrigger(data: Omit<TriggerRow, "id" | "createdAt" | "updatedAt">): Promise<TriggerRow>;
+  updateTrigger(id: string, updates: Partial<TriggerRow>): Promise<TriggerRow>;
+  deleteTrigger(id: string): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -180,6 +189,7 @@ export class MemStorage implements IStorage {
   private mcpServersMap: Map<number, McpServerConfig>;
   private nextMcpServerId: number;
   private specializationProfilesMap: Map<string, SpecializationProfileRow>;
+  private triggersMap: Map<string, TriggerRow>;
 
   constructor() {
     this.usersMap = new Map();
@@ -196,6 +206,7 @@ export class MemStorage implements IStorage {
     this.mcpServersMap = new Map();
     this.nextMcpServerId = 1;
     this.specializationProfilesMap = new Map();
+    this.triggersMap = new Map();
   }
 
   // ─── Users ──────────────────────────────────────
@@ -878,6 +889,45 @@ export class MemStorage implements IStorage {
 
   async deleteSkill(id: string): Promise<void> {
     this.skillsMap.delete(id);
+  }
+
+  // ─── Triggers (Phase 6.3) ────────────────────────────────────────────────
+
+  async getTriggers(pipelineId: string): Promise<TriggerRow[]> {
+    return Array.from(this.triggersMap.values()).filter((t) => t.pipelineId === pipelineId);
+  }
+
+  async getTrigger(id: string): Promise<TriggerRow | undefined> {
+    return this.triggersMap.get(id);
+  }
+
+  async getEnabledTriggersByType(type: TriggerType): Promise<TriggerRow[]> {
+    return Array.from(this.triggersMap.values()).filter((t) => t.enabled && t.type === type);
+  }
+
+  async createTrigger(data: Omit<TriggerRow, "id" | "createdAt" | "updatedAt">): Promise<TriggerRow> {
+    const id = randomUUID();
+    const now = new Date();
+    const trigger: TriggerRow = {
+      ...data,
+      id,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.triggersMap.set(id, trigger);
+    return trigger;
+  }
+
+  async updateTrigger(id: string, updates: Partial<TriggerRow>): Promise<TriggerRow> {
+    const existing = this.triggersMap.get(id);
+    if (!existing) throw new Error(`Trigger not found: ${id}`);
+    const updated: TriggerRow = { ...existing, ...updates, updatedAt: new Date() };
+    this.triggersMap.set(id, updated);
+    return updated;
+  }
+
+  async deleteTrigger(id: string): Promise<void> {
+    this.triggersMap.delete(id);
   }
 
 }
