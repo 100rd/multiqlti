@@ -57,6 +57,57 @@ export function registerRunRoutes(
     res.json(runs);
   });
 
+  // ─── Run Comparison — MUST be registered before /:id ────────────────────────
+
+  router.get("/api/runs/compare", async (req, res) => {
+    const raw = req.query.runIds as string | undefined;
+    if (!raw) {
+      return res.status(400).json({ error: "runIds query parameter is required" });
+    }
+    const ids = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    if (ids.length !== 2) {
+      return res.status(400).json({ error: "Exactly two runIds must be provided" });
+    }
+    const [id1, id2] = ids;
+
+    const [run1, run2] = await Promise.all([
+      storage.getPipelineRun(id1),
+      storage.getPipelineRun(id2),
+    ]);
+
+    if (!run1) return res.status(404).json({ error: `Run not found: ${id1}` });
+    if (!run2) return res.status(404).json({ error: `Run not found: ${id2}` });
+
+    // Must belong to the same pipeline
+    if (run1.pipelineId !== run2.pipelineId) {
+      return res.status(400).json({ error: "Runs must belong to the same pipeline" });
+    }
+
+    // Ownership check: each run must have been triggered by the requesting user (unless admin)
+    const userId = req.user?.id;
+    const isAdmin = req.user?.role === "admin";
+    if (!isAdmin) {
+      if (run1.triggeredBy && run1.triggeredBy !== userId) {
+        return res.status(403).json({ error: "Access denied for run " + id1 });
+      }
+      if (run2.triggeredBy && run2.triggeredBy !== userId) {
+        return res.status(403).json({ error: "Access denied for run " + id2 });
+      }
+    }
+
+    const [stages1, stages2] = await Promise.all([
+      storage.getStageExecutions(id1),
+      storage.getStageExecutions(id2),
+    ]);
+
+    res.json({
+      runs: [
+        { ...run1, stages: stages1 },
+        { ...run2, stages: stages2 },
+      ],
+    });
+  });
+
   router.get("/api/runs/:id", async (req, res) => {
     const run = await storage.getPipelineRun(req.params.id);
     if (!run) return res.status(404).json({ error: "Run not found" });

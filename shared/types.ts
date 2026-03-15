@@ -32,7 +32,8 @@ export type TeamId =
   | "code_review"
   | "deployment"
   | "monitoring"
-  | "fact_check";
+  | "fact_check"
+  | string; // custom stage IDs (Phase 5)
 
 export type RunStatus =
   | "pending"
@@ -234,7 +235,11 @@ export type WsEventType =
   | "parallel:split"
   | "parallel:subtask:started"
   | "parallel:subtask:completed"
-  | "parallel:merged";
+  | "parallel:merged"
+  | "guardrail:checking"
+  | "guardrail:passed"
+  | "guardrail:failed"
+  | "guardrail:retrying";
 
 export interface WsEvent {
   type: WsEventType;
@@ -375,6 +380,7 @@ export interface PipelineStageConfig {
   sandbox?: SandboxConfig;
   tools?: StageToolConfig;
   parallel?: ParallelConfig;
+  guardrails?: StageGuardrail[];
   autoModelRouting?: {
     enabled: boolean;
   };
@@ -819,4 +825,61 @@ export interface ParallelExecutionMeta {
   succeededCount: number;
   failedCount: number;
   totalTokens: number;
+}
+
+// ─── Custom Stage Types (Phase 5) ────────────────────────────────────────────
+
+export interface CustomStageConfig {
+  id: string;         // e.g. "custom_summarize_abc123"
+  name: string;
+  description: string;
+  systemPrompt: string;
+  icon: string;       // emoji, e.g. "🗒️"
+}
+
+// ─── Specialization Profile Types (Phase 5) ──────────────────────────────────
+
+export interface SpecializationProfile {
+  id: string;
+  name: string;
+  isBuiltIn: boolean;
+  assignments: Record<string, string>; // teamId → modelSlug
+  createdAt?: Date;
+}
+
+// ─── Guardrail Types (Phase 6.1) ─────────────────────────────────────────────
+
+export type GuardrailType = "json_schema" | "regex" | "custom" | "llm_check";
+export type GuardrailOnFail = "retry" | "skip" | "fail" | "fallback";
+
+export interface GuardrailConfig {
+  /** JSON Schema object — for "json_schema" type */
+  schema?: Record<string, unknown>;
+  /** Regex string — for "regex" type */
+  pattern?: string;
+  /** JS expression returning boolean — for "custom" type (sandboxed) */
+  validatorCode?: string;
+  /** Validation prompt — for "llm_check" type */
+  llmPrompt?: string;
+  /** Model to use for llm_check (defaults to cheapest/mock) */
+  llmModelSlug?: string;
+}
+
+export interface StageGuardrail {
+  id: string;
+  type: GuardrailType;
+  config: GuardrailConfig;
+  onFail: GuardrailOnFail;
+  /** Applies to "retry" action only; default 1 */
+  maxRetries: number;
+  /** Applies to "fallback" action */
+  fallbackValue?: string;
+  enabled: boolean;
+}
+
+export interface GuardrailResult {
+  guardrailId: string;
+  passed: boolean;
+  reason?: string;
+  attempts: number;
 }

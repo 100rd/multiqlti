@@ -15,6 +15,8 @@ import {
   type InsertChatMessage,
   type LlmRequest,
   type InsertLlmRequest,
+  type InsertSpecializationProfile,
+  type SpecializationProfileRow,
   type Skill,
   type InsertSkill,
 } from "@shared/schema";
@@ -150,6 +152,11 @@ export interface IStorage {
   updateMcpServer(id: number, updates: Partial<McpServerConfig>): Promise<McpServerConfig>;
   deleteMcpServer(id: number): Promise<void>;
 
+  // Specialization Profiles (Phase 5)
+  getSpecializationProfiles(): Promise<SpecializationProfileRow[]>;
+  createSpecializationProfile(profile: InsertSpecializationProfile): Promise<SpecializationProfileRow>;
+  deleteSpecializationProfile(id: string): Promise<void>;
+
   // Skills
   getSkills(filter?: { teamId?: string; isBuiltin?: boolean }): Promise<Skill[]>;
   getSkill(id: string): Promise<Skill | undefined>;
@@ -172,6 +179,7 @@ export class MemStorage implements IStorage {
   private nextMemoryId: number;
   private mcpServersMap: Map<number, McpServerConfig>;
   private nextMcpServerId: number;
+  private specializationProfilesMap: Map<string, SpecializationProfileRow>;
 
   constructor() {
     this.usersMap = new Map();
@@ -187,6 +195,7 @@ export class MemStorage implements IStorage {
     this.nextMemoryId = 1;
     this.mcpServersMap = new Map();
     this.nextMcpServerId = 1;
+    this.specializationProfilesMap = new Map();
   }
 
   // ─── Users ──────────────────────────────────────
@@ -783,6 +792,29 @@ export class MemStorage implements IStorage {
 
   async deleteMcpServer(id: number): Promise<void> {
     this.mcpServersMap.delete(id);
+  }
+
+  // ─── Specialization Profiles ──────────────────
+
+  async getSpecializationProfiles(): Promise<SpecializationProfileRow[]> {
+    return Array.from(this.specializationProfilesMap.values());
+  }
+
+  async createSpecializationProfile(profile: InsertSpecializationProfile): Promise<SpecializationProfileRow> {
+    const id = randomUUID();
+    const row: SpecializationProfileRow = {
+      id,
+      name: profile.name,
+      isBuiltIn: profile.isBuiltIn ?? false,
+      assignments: (profile.assignments ?? {}) as Record<string, string>,
+      createdAt: new Date(),
+    };
+    this.specializationProfilesMap.set(id, row);
+    return row;
+  }
+
+  async deleteSpecializationProfile(id: string): Promise<void> {
+    this.specializationProfilesMap.delete(id);
   }
 
   // ─── Skills ─────────────────────────────────────

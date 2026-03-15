@@ -196,6 +196,7 @@ export abstract class BaseTeam {
   }
 
   protected buildSystemMessage(context?: StageContext): string {
+    // If a skill override is set, it replaces the default team system prompt
     let base = context?.stageConfig?.systemPromptOverride || this.config.systemPromptTemplate;
     if (context?.memoryContext) {
       base = `${base}\n\n${context.memoryContext}`;

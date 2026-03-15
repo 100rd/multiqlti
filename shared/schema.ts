@@ -417,6 +417,20 @@ export const maintenanceScans = pgTable("maintenance_scans", {
 
 export type MaintenanceScanRow = typeof maintenanceScans.$inferSelect;
 
+// ─── Specialization Profiles (Phase 5) ───────────────────────────────────────
+
+export const specializationProfiles = pgTable("specialization_profiles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  isBuiltIn: boolean("is_built_in").notNull().default(false),
+  assignments: jsonb("assignments").notNull().$type<Record<string, string>>().default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertSpecializationProfileSchema = createInsertSchema(specializationProfiles).omit({ id: true, createdAt: true });
+export type InsertSpecializationProfile = z.infer<typeof insertSpecializationProfileSchema>;
+export type SpecializationProfileRow = typeof specializationProfiles.$inferSelect;
+
 // ─── Skills (Phase 3.1b) ─────────────────────────────────────────────────────
 
 export const skills = pgTable("skills", {

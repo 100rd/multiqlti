@@ -7,6 +7,7 @@ import {
   stageExecutions, questions, chatMessages, llmRequests,
   memories,
   mcpServers,
+  specializationProfiles,
   skills,
   type UserRow, type InsertUser,
   type Model, type InsertModel,
@@ -16,6 +17,8 @@ import {
   type Question, type InsertQuestion,
   type ChatMessage, type InsertChatMessage,
   type LlmRequest, type InsertLlmRequest,
+  type InsertSpecializationProfile,
+  type SpecializationProfileRow,
   type Skill, type InsertSkill,
 } from "@shared/schema";
 
@@ -603,6 +606,25 @@ export class PgStorage implements IStorage {
 
   async deleteMcpServer(id: number): Promise<void> {
     await db.delete(mcpServers).where(eq(mcpServers.id, id));
+  }
+
+  // ─── Specialization Profiles (Phase 5) ──────────────────────────────────────
+
+  async getSpecializationProfiles(): Promise<SpecializationProfileRow[]> {
+    return db.select().from(specializationProfiles).orderBy(specializationProfiles.createdAt);
+  }
+
+  async createSpecializationProfile(profile: InsertSpecializationProfile): Promise<SpecializationProfileRow> {
+    const [row] = await db.insert(specializationProfiles).values({
+      name: profile.name,
+      isBuiltIn: profile.isBuiltIn ?? false,
+      assignments: (profile.assignments ?? {}) as Record<string, string>,
+    }).returning();
+    return row;
+  }
+
+  async deleteSpecializationProfile(id: string): Promise<void> {
+    await db.delete(specializationProfiles).where(eq(specializationProfiles.id, id));
   }
 
   // ─── Skills ─────────────────────────────────────────────────────────────────
