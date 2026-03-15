@@ -39,6 +39,10 @@ const BranchSchema = z.object({
   name: z.string().min(1).max(200).regex(/^[a-zA-Z0-9_/.-]+$/, "Invalid branch name"),
 });
 
+const SwitchBranchSchema = z.object({
+  branch: z.string().min(1).max(200).regex(/^[a-zA-Z0-9_/.-]+$/, "Invalid branch name"),
+});
+
 const ReviewSchema = z.object({
   filePaths: z.array(z.string().min(1)).min(1).max(20),
   models: z.array(z.string().min(1)).min(1).max(10),
@@ -56,6 +60,22 @@ const ChatSchema = z.object({
     .optional(),
 });
 
+// ─── Per-workspace sync rate limiter (A4) ────────────────────────────────────
+// Allows at most one sync per workspace per SYNC_COOLDOWN_MS milliseconds.
+
+const SYNC_COOLDOWN_MS = 60_000; // 60 seconds
+const lastSyncTime = new Map<string, number>();
+
+function isSyncThrottled(workspaceId: string): boolean {
+  const last = lastSyncTime.get(workspaceId);
+  if (last === undefined) return false;
+  return Date.now() - last < SYNC_COOLDOWN_MS;
+}
+
+function recordSync(workspaceId: string): void {
+  lastSyncTime.set(workspaceId, Date.now());
+}
+
 // ─── Route registration ───────────────────────────────────────────────────────
 
 export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void {
@@ -70,7 +90,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   });
 
   router.get("/api/workspaces/:id", async (req, res) => {
-    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, req.params.id));
+    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, req.params.id as string));
     if (!row) return res.status(404).json({ error: "Workspace not found" });
     res.json(row);
   });
@@ -78,7 +98,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   // ── Project config (multiqlti.yaml) ─────────────────────────────────────────
 
   router.get("/api/workspaces/:id/config", async (req, res) => {
-    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, req.params.id));
+    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, req.params.id as string));
     if (!row) return res.status(404).json({ error: "Workspace not found" });
 
     // Only local workspaces have a directly-readable path; remote ones use the clone path
@@ -143,10 +163,10 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   });
 
   router.delete("/api/workspaces/:id", async (req, res) => {
-    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, req.params.id));
+    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, req.params.id as string));
     if (!row) return res.status(404).json({ error: "Workspace not found" });
 
-    await db.delete(workspaces).where(eq(workspaces.id, req.params.id));
+    await db.delete(workspaces).where(eq(workspaces.id, req.params.id as string));
 
     if (row.type === "remote") {
       await manager.removeClone(row.id).catch(() => undefined);
@@ -156,12 +176,20 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   });
 
   router.post("/api/workspaces/:id/sync", async (req, res) => {
-    const row = await getWorkspaceById(String(req.params.id), res);
+    const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
+
+    // Rate limiting: one sync per workspace per 60 s (A4)
+    if (isSyncThrottled(row.id)) {
+      return res
+        .status(429)
+        .json({ error: "Sync throttled: please wait 60 seconds between syncs" });
+    }
 
     try {
       await db.update(workspaces).set({ status: "syncing" }).where(eq(workspaces.id, row.id));
       await manager.sync(row);
+      recordSync(row.id);
       await db
         .update(workspaces)
         .set({ status: "active", lastSyncAt: new Date() })
@@ -179,7 +207,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   // accessed via req.params.path.
 
   router.get("/api/workspaces/:id/files", async (req, res) => {
-    const row = await getWorkspaceById(String(req.params.id), res);
+    const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
 
     try {
@@ -192,7 +220,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   });
 
   router.get("/api/workspaces/:id/files/*path", async (req: Request, res: Response) => {
-    const row = await getWorkspaceById(String(req.params.id), res);
+    const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
 
     const filePath = decodeFilePath(req.params.path);
@@ -207,7 +235,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   });
 
   router.put("/api/workspaces/:id/files/*path", async (req: Request, res: Response) => {
-    const row = await getWorkspaceById(String(req.params.id), res);
+    const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
 
     const filePath = decodeFilePath(req.params.path);
@@ -229,7 +257,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   });
 
   router.delete("/api/workspaces/:id/files/*path", async (req: Request, res: Response) => {
-    const row = await getWorkspaceById(String(req.params.id), res);
+    const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
 
     const filePath = decodeFilePath(req.params.path);
@@ -246,7 +274,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   // ── Git Operations ──────────────────────────────────────────────────────────
 
   router.get("/api/workspaces/:id/git/status", async (req, res) => {
-    const row = await getWorkspaceById(String(req.params.id), res);
+    const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
 
     try {
@@ -258,7 +286,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   });
 
   router.get("/api/workspaces/:id/git/diff", async (req, res) => {
-    const row = await getWorkspaceById(String(req.params.id), res);
+    const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
 
     try {
@@ -270,7 +298,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   });
 
   router.post("/api/workspaces/:id/git/commit", async (req, res) => {
-    const row = await getWorkspaceById(String(req.params.id), res);
+    const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
 
     const parsed = CommitSchema.safeParse(req.body);
@@ -285,7 +313,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   });
 
   router.post("/api/workspaces/:id/git/branch", async (req, res) => {
-    const row = await getWorkspaceById(String(req.params.id), res);
+    const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
 
     const parsed = BranchSchema.safeParse(req.body);
@@ -300,7 +328,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   });
 
   router.get("/api/workspaces/:id/git/log", async (req, res) => {
-    const row = await getWorkspaceById(String(req.params.id), res);
+    const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
 
     const limit = Math.min(parseInt(String(req.query.limit ?? "20"), 10) || 20, 100);
@@ -313,10 +341,53 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     }
   });
 
+  // ── Branch Management (A1) ──────────────────────────────────────────────────
+
+  /**
+   * GET /api/workspaces/:id/branches — list all branches (local + remote-tracking).
+   * Returns { current: string, branches: string[] }
+   */
+  router.get("/api/workspaces/:id/branches", async (req, res) => {
+    const row = await getWorkspaceById(req.params.id as string, res);
+    if (!row) return;
+
+    try {
+      const result = await manager.listBranches(row);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  /**
+   * POST /api/workspaces/:id/branches — switch to an existing branch.
+   * Body: { branch: string }
+   * Distinct from POST /git/branch which creates a new branch.
+   */
+  router.post("/api/workspaces/:id/branches", async (req, res) => {
+    const row = await getWorkspaceById(req.params.id as string, res);
+    if (!row) return;
+
+    const parsed = SwitchBranchSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
+
+    try {
+      await manager.switchBranch(row, parsed.data.branch);
+      // Update stored branch name in DB
+      await db
+        .update(workspaces)
+        .set({ branch: parsed.data.branch })
+        .where(eq(workspaces.id, row.id));
+      res.json({ message: `Switched to branch '${parsed.data.branch}'` });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // ── AI Operations ───────────────────────────────────────────────────────────
 
   router.post("/api/workspaces/:id/review", async (req, res) => {
-    const row = await getWorkspaceById(String(req.params.id), res);
+    const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
 
     const parsed = ReviewSchema.safeParse(req.body);
@@ -335,23 +406,59 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     }
   });
 
-  router.post("/api/workspaces/:id/chat", async (req, res) => {
-    const row = await getWorkspaceById(String(req.params.id), res);
+  /**
+   * POST /api/workspaces/:id/chat — AI chat about workspace code (A2).
+   *
+   * Two modes based on Accept header:
+   *   text/event-stream  → SSE streaming (data: {"chunk":"..."} per token, data: [DONE] at end)
+   *   application/json   → Non-streaming fallback ({ reply: string })
+   */
+  router.post("/api/workspaces/:id/chat", async (req: Request, res: Response) => {
+    const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
 
     const parsed = ChatSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
 
+    const acceptsSSE = (req.headers.accept ?? "").includes("text/event-stream");
+
     try {
-      const reply = await codeChatService.chat(
-        row,
-        parsed.data.message,
-        parsed.data.modelSlug,
-        parsed.data.context,
-      );
-      res.json({ reply });
+      if (acceptsSSE) {
+        // ── SSE streaming path ──
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        res.flushHeaders();
+
+        await codeChatService.chatStream(
+          row,
+          parsed.data.message,
+          parsed.data.modelSlug,
+          parsed.data.context,
+          (chunk: string) => {
+            res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
+          },
+        );
+
+        res.write(`data: [DONE]\n\n`);
+        res.end();
+      } else {
+        // ── Non-streaming fallback (backward compatible) ──
+        const reply = await codeChatService.chat(
+          row,
+          parsed.data.message,
+          parsed.data.modelSlug,
+          parsed.data.context,
+        );
+        res.json({ reply });
+      }
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      if (!res.headersSent) {
+        res.status(500).json({ error: (err as Error).message });
+      } else {
+        res.write(`data: ${JSON.stringify({ error: (err as Error).message })}\n\n`);
+        res.end();
+      }
     }
   });
 }
