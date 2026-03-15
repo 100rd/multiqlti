@@ -13,6 +13,7 @@ import {
   FolderGit2,
   LogOut,
   Users,
+  Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -48,6 +49,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: BarChart3, label: "Statistics", href: "/stats" },
     { icon: Brain, label: "Memory", href: "/memories" },
     { icon: ShieldCheck, label: "Privacy", href: "/privacy" },
+    { icon: Wrench, label: "Maintenance", href: "/maintenance" },
     { icon: Settings, label: "Settings", href: "/settings" },
     // Admin-only: User Management
     ...(user?.role === "admin"
