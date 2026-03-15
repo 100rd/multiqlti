@@ -5,6 +5,7 @@ import { usePipelineEvents } from "@/hooks/use-websocket";
 import StageProgress from "@/components/pipeline/StageProgress";
 import QuestionPanel from "@/components/pipeline/QuestionPanel";
 import StageOutput from "@/components/pipeline/StageOutput";
+import DelegationLog from "@/components/pipeline/DelegationLog";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -242,7 +243,7 @@ export default function PipelineRun() {
         {/* Main area */}
         <div className="flex-1 overflow-hidden">
           <Tabs defaultValue="output" className="h-full flex flex-col">
-            <TabsList className="mx-6 mt-4 grid w-auto grid-cols-3 max-w-md">
+            <TabsList className="mx-6 mt-4 grid w-auto grid-cols-4 max-w-xl">
               <TabsTrigger value="output" className="text-xs">
                 Output
               </TabsTrigger>
@@ -251,6 +252,9 @@ export default function PipelineRun() {
               </TabsTrigger>
               <TabsTrigger value="raw" className="text-xs">
                 Raw Data
+              </TabsTrigger>
+              <TabsTrigger value="delegations" className="text-xs">
+                Delegations
               </TabsTrigger>
             </TabsList>
 
@@ -333,6 +337,13 @@ export default function PipelineRun() {
                     {JSON.stringify(run, null, 2)}
                   </pre>
                 </ScrollArea>
+              </TabsContent>
+
+              <TabsContent value="delegations" className="h-full overflow-y-auto">
+                <DelegationLog
+                  runId={runId}
+                  isActive={run.status === "running"}
+                />
               </TabsContent>
             </div>
           </Tabs>
