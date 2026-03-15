@@ -7,7 +7,9 @@ import type {
   MaintenanceCategoryConfig,
   ScoutFinding,
   HealthScore,
+  MaintenancePolicy,
 } from "@shared/types";
+import { computeAnalyticsReport } from "../maintenance/analytics";
 
 // ─── Validation Schemas ───────────────────────────────────────────────────────
 
@@ -415,4 +417,63 @@ export function registerMaintenanceRoutes(router: Router): void {
       res.status(500).json({ error: (err as Error).message });
     }
   });
+
+  // ── Analytics ─────────────────────────────────────────────────────────────────
+
+  router.get("/api/maintenance/analytics/:workspaceId", async (req, res) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+
+      const [policies, scans] = await Promise.all([
+        db
+          .select()
+          .from(maintenancePolicies)
+          .where(eq(maintenancePolicies.workspaceId, workspaceId)),
+        db
+          .select()
+          .from(maintenanceScans)
+          .where(
+            and(
+              eq(maintenanceScans.workspaceId, workspaceId),
+              eq(maintenanceScans.status, "completed"),
+            ),
+          )
+          .orderBy(desc(maintenanceScans.completedAt)),
+      ]);
+
+      // Use the first policy for recommendation context, or a sensible default
+      const policy: MaintenancePolicy = policies[0]
+        ? {
+            id: policies[0].id,
+            workspaceId: policies[0].workspaceId ?? null,
+            enabled: policies[0].enabled,
+            schedule: policies[0].schedule,
+            categories: (policies[0].categories as MaintenancePolicy["categories"]) ?? [],
+            severityThreshold: policies[0].severityThreshold as MaintenancePolicy["severityThreshold"],
+            autoMerge: policies[0].autoMerge,
+            notifyChannels: (policies[0].notifyChannels as string[]) ?? [],
+            createdAt: policies[0].createdAt ?? new Date(),
+            updatedAt: policies[0].updatedAt ?? new Date(),
+          }
+        : {
+            id: "",
+            workspaceId,
+            enabled: false,
+            schedule: "0 9 * * 1",
+            categories: [],
+            severityThreshold: "high",
+            autoMerge: false,
+            notifyChannels: [],
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+
+      const report = computeAnalyticsReport(policy, scans as import("@shared/types").MaintenanceScan[]);
+
+      res.json(report);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
 }

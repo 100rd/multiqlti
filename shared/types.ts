@@ -773,7 +773,6 @@ export interface ParallelExecutionMeta {
 
 // ─── Parallel Split Execution Types (Phase 3.8) ───────────────────────────────
 
-export type MergeStrategy = "concatenate" | "review" | "auto";
 
 export interface ParallelConfig {
   enabled: boolean;

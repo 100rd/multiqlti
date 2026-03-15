@@ -24,6 +24,7 @@ import Workspace from "@/pages/Workspace";
 import Login from "@/pages/Login";
 import UserManagement from "@/pages/UserManagement";
 import ProfileSettings from "@/pages/ProfileSettings";
+import Maintenance from "@/pages/Maintenance";
 
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
@@ -86,6 +87,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/memories" component={() => (
           <ErrorBoundary><Memory /></ErrorBoundary>
+        )} />
+        <Route path="/maintenance" component={() => (
+          <ErrorBoundary><Maintenance /></ErrorBoundary>
         )} />
         <Route component={NotFound} />
       </Switch>
