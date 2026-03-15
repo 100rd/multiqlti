@@ -416,3 +416,33 @@ export const maintenanceScans = pgTable("maintenance_scans", {
 });
 
 export type MaintenanceScanRow = typeof maintenanceScans.$inferSelect;
+
+// ─── Delegation Requests (Phase 6.4) ─────────────────────────────────────────
+
+export const delegationRequests = pgTable("delegation_requests", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  runId: varchar("run_id").notNull(),
+  fromStage: text("from_stage").notNull(),
+  toStage: text("to_stage").notNull(),
+  task: text("task").notNull(),
+  context: jsonb("context").notNull().default(sql`'{}'::jsonb`),
+  priority: text("priority").notNull().default("blocking"),
+  timeout: integer("timeout").notNull().default(30000),
+  depth: integer("depth").notNull().default(0),
+  status: text("status").notNull().default("pending"),
+  result: jsonb("result"),
+  errorMessage: text("error_message"),
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertDelegationRequestSchema = createInsertSchema(delegationRequests).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertDelegationRequest = z.infer<typeof insertDelegationRequestSchema>;
+export type DelegationRequestRow = typeof delegationRequests.$inferSelect;

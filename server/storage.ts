@@ -14,6 +14,8 @@ import {
   type ChatMessage,
   type InsertChatMessage,
   type LlmRequest,
+  type InsertDelegationRequest,
+  type DelegationRequestRow,
   type InsertLlmRequest,
 } from "@shared/schema";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
@@ -147,6 +149,11 @@ export interface IStorage {
   createMcpServer(config: Omit<McpServerConfig, 'id'>): Promise<McpServerConfig>;
   updateMcpServer(id: number, updates: Partial<McpServerConfig>): Promise<McpServerConfig>;
   deleteMcpServer(id: number): Promise<void>;
+
+  // Delegation Requests (Phase 6.4)
+  createDelegationRequest(data: InsertDelegationRequest): Promise<DelegationRequestRow>;
+  getDelegationRequests(runId: string): Promise<DelegationRequestRow[]>;
+  updateDelegationRequest(id: string, updates: Partial<DelegationRequestRow>): Promise<DelegationRequestRow>;
 }
 
 export class MemStorage implements IStorage {
@@ -163,6 +170,7 @@ export class MemStorage implements IStorage {
   private nextMemoryId: number;
   private mcpServersMap: Map<number, McpServerConfig>;
   private nextMcpServerId: number;
+  private delegationsMap: Map<string, DelegationRequestRow>;
 
   constructor() {
     this.usersMap = new Map();
@@ -178,6 +186,7 @@ export class MemStorage implements IStorage {
     this.nextMemoryId = 1;
     this.mcpServersMap = new Map();
     this.nextMcpServerId = 1;
+    this.delegationsMap = new Map();
   }
 
   // ─── Users ──────────────────────────────────────
@@ -774,6 +783,49 @@ export class MemStorage implements IStorage {
 
   async deleteMcpServer(id: number): Promise<void> {
     this.mcpServersMap.delete(id);
+  }
+
+  // ─── Delegation Requests (Phase 6.4) ────────────────────────────────────
+
+  async createDelegationRequest(data: InsertDelegationRequest): Promise<DelegationRequestRow> {
+    const id = randomUUID();
+    const now = new Date();
+    const row: DelegationRequestRow = {
+      id,
+      runId: data.runId,
+      fromStage: data.fromStage,
+      toStage: data.toStage,
+      task: data.task,
+      context: (data.context ?? {}) as Record<string, unknown>,
+      priority: data.priority ?? "blocking",
+      timeout: data.timeout ?? 30000,
+      depth: data.depth ?? 0,
+      status: data.status ?? "pending",
+      result: (data.result ?? null) as Record<string, unknown> | null,
+      errorMessage: data.errorMessage ?? null,
+      startedAt: data.startedAt ?? now,
+      completedAt: data.completedAt ?? null,
+      createdAt: now,
+    };
+    this.delegationsMap.set(id, row);
+    return row;
+  }
+
+  async getDelegationRequests(runId: string): Promise<DelegationRequestRow[]> {
+    return Array.from(this.delegationsMap.values())
+      .filter((d) => d.runId === runId)
+      .sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0));
+  }
+
+  async updateDelegationRequest(
+    id: string,
+    updates: Partial<DelegationRequestRow>,
+  ): Promise<DelegationRequestRow> {
+    const row = this.delegationsMap.get(id);
+    if (!row) throw new Error(`Delegation request not found: ${id}`);
+    const updated = { ...row, ...updates };
+    this.delegationsMap.set(id, updated);
+    return updated;
   }
 
 }

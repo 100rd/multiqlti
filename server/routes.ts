@@ -21,6 +21,8 @@ import { registerSandboxRoutes } from "./routes/sandbox";
 import { registerSettingsRoutes } from "./routes/settings";
 import { registerMaintenanceRoutes } from "./routes/maintenance";
 import { registerGuardrailRoutes } from "./routes/guardrails";
+import { registerDelegationRoutes } from "./routes/delegations";
+import { DelegationService } from "./pipeline/delegation-service";
 import { requireAuth } from "./auth/middleware";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
@@ -33,7 +35,8 @@ export async function registerRoutes(
   const wsManager = new WsManager(httpServer);
   const gateway = new Gateway(storage);
   const teamRegistry = new TeamRegistry(gateway, wsManager);
-  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway);
+  const delegationService = new DelegationService(storage, teamRegistry, wsManager, gateway);
+  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService);
 
   // Register auth routes first (public routes included)
   registerAuthRoutes(app);
@@ -76,6 +79,7 @@ export async function registerRoutes(
   registerSettingsRoutes(app as unknown as Router, gateway);
   registerMaintenanceRoutes(app as unknown as Router);
   registerGuardrailRoutes(app, storage, gateway);
+  registerDelegationRoutes(app, storage);
 
 
   // Seed default models

@@ -2,7 +2,8 @@ import type { IStorage } from "../storage";
 import type { TeamRegistry } from "../teams/registry";
 import type { WsManager } from "../ws/manager";
 import type { Gateway } from "../gateway/index";
-import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput } from "@shared/types";
+import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput, DelegationRequest, DelegateFn } from "@shared/types";
+import { DelegationService } from "../pipeline/delegation-service";
 import { ParallelExecutor } from "../pipeline/parallel-executor";
 import type { PipelineRun } from "@shared/schema";
 import { SandboxExecutor } from "../sandbox/executor";
@@ -26,12 +27,14 @@ export class PipelineController {
   private memoryExtractor: MemoryExtractor;
   private memoryProvider: MemoryProvider;
   private guardrailValidator: GuardrailValidator;
+  private delegationService?: DelegationService;
 
   constructor(
     private storage: IStorage,
     private teamRegistry: TeamRegistry,
     private wsManager: WsManager,
     gateway?: Gateway,
+    delegationService?: DelegationService,
   ) {
     this.sandboxExecutor = new SandboxExecutor();
     this.parallelExecutor = new ParallelExecutor(
@@ -42,6 +45,7 @@ export class PipelineController {
     this.memoryExtractor = new MemoryExtractor();
     this.memoryProvider = new MemoryProvider(storage);
     this.guardrailValidator = new GuardrailValidator(gateway ?? createNullGateway());
+    this.delegationService = delegationService;
   }
 
   async startRun(pipelineId: string, input: string, variables?: Record<string, string>, triggeredBy?: string): Promise<PipelineRun> {
@@ -314,6 +318,7 @@ export class PipelineController {
           // Ephemeral run variables (in-memory only, never persisted)
           variables: ephemeralVarStore.get(run.id) ?? undefined,
           stageConfig: resolvedStage,
+          delegate: this.buildDelegateFn(run.id, stage.teamId, resolvedStage),
         };
 
         // Pass execution strategy (undefined = single, handled in BaseTeam)
@@ -700,6 +705,17 @@ export class PipelineController {
 
   private broadcast(runId: string, event: WsEvent): void {
     this.wsManager.broadcastToRun(runId, event);
+  }
+
+  private buildDelegateFn(
+    runId: string,
+    fromStage: string,
+    stage: PipelineStageConfig,
+  ): DelegateFn | undefined {
+    if (!this.delegationService) return undefined;
+    if (!stage.delegationEnabled) return undefined;
+    return (request: DelegationRequest) =>
+      this.delegationService!.delegate(runId, request, [fromStage]);
   }
 
   /**

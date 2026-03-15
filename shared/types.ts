@@ -239,7 +239,10 @@ export type WsEventType =
   | "guardrail:checking"
   | "guardrail:passed"
   | "guardrail:failed"
-  | "guardrail:retrying";
+  | "guardrail:retrying"
+  | "delegation:requested"
+  | "delegation:completed"
+  | "delegation:failed";
 
 export interface WsEvent {
   type: WsEventType;
@@ -385,6 +388,7 @@ export interface PipelineStageConfig {
     enabled: boolean;
   };
   skillId?: string;
+  delegationEnabled?: boolean; // default false; stage must opt-in to receive delegate fn
 }
 
 export interface StageOutput {
@@ -408,6 +412,7 @@ export interface StageContext {
   memoryContext?: string;
   stageConfig?: PipelineStageConfig;
   variables?: Record<string, string>;
+  delegate?: DelegateFn; // present when DelegationService is active and stage has delegationEnabled
 }
 
 export interface TeamResult {
@@ -883,3 +888,54 @@ export interface GuardrailResult {
   reason?: string;
   attempts: number;
 }
+
+// ─── Agent Delegation Types (Phase 6.4) ──────────────────────────────────────
+
+export const MAX_DELEGATION_DEPTH = 2;
+
+export type DelegationPriority = "blocking" | "async";
+
+export type DelegationStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "timeout"
+  | "rejected";
+
+export interface DelegationRequest {
+  fromStage: TeamId;
+  toStage: TeamId;
+  task: string;
+  context: Record<string, unknown>;
+  priority: DelegationPriority;
+  timeout: number; // ms — only enforced for blocking calls
+}
+
+export interface DelegationResult {
+  output: Record<string, unknown>;
+  raw: string;
+  tokensUsed: number;
+  durationMs: number;
+}
+
+export interface DelegationRecord {
+  id: string;
+  runId: string;
+  fromStage: TeamId;
+  toStage: TeamId;
+  task: string;
+  context: Record<string, unknown>;
+  priority: DelegationPriority;
+  timeout: number;
+  depth: number;
+  status: DelegationStatus;
+  result: DelegationResult | null;
+  errorMessage: string | null;
+  startedAt: Date;
+  completedAt: Date | null;
+  createdAt: Date;
+}
+
+// Passed into StageContext so a team can invoke delegation
+export type DelegateFn = (request: DelegationRequest) => Promise<DelegationResult>;
