@@ -66,6 +66,7 @@ class AuthService {
 
   async validateToken(token: string): Promise<User | null> {
     const { jwtSecret } = configLoader.get().auth;
+    if (!jwtSecret) return null;
     let payload: JwtPayload;
     try {
       payload = jwt.verify(token, jwtSecret) as JwtPayload;
@@ -93,6 +94,7 @@ class AuthService {
 
   private async createSession(user: { id: string; email: string; name: string; isActive: boolean; createdAt: Date }): Promise<AuthSession> {
     const { jwtSecret, sessionTtlDays } = configLoader.get().auth;
+    if (!jwtSecret) throw new Error("[auth] JWT_SECRET is not configured");
     const sessionMs = sessionTtlDays * 24 * 60 * 60 * 1000;
     const expiresAt = new Date(Date.now() + sessionMs);
     const sessionId = crypto.randomUUID();

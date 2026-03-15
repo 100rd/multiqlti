@@ -6,10 +6,10 @@ export const ConfigSchema = z.object({
     nodeEnv: z.enum(["development", "production", "test"]).default("development"),
   }),
   database: z.object({
-    url: z.string().url(),
+    url: z.string().url().optional(),
   }),
   auth: z.object({
-    jwtSecret: z.string().min(32),
+    jwtSecret: z.string().min(32).optional(),
     sessionTtlDays: z.number().int().min(1).max(365).default(7),
     bcryptRounds: z.number().int().min(10).max(14).default(12),
   }),

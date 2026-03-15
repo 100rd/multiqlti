@@ -3,11 +3,8 @@ import { Pool } from "pg";
 import * as schema from "@shared/schema";
 import { configLoader } from "./config/loader";
 
-// db is only imported by PgStorage, which is only instantiated when database.url is set.
-// The pool constructor is deferred so that importing this module does not throw
-// when database.url is absent — MemStorage is used in that case.
-const connectionString = configLoader.get().database.url;
-
-const pool = new Pool({ connectionString });
+// database.url is optional — PgStorage will throw at query time if absent,
+// but importing this module is safe even when DATABASE_URL is not set (e.g. in tests).
+const pool = new Pool({ connectionString: configLoader.get().database.url });
 
 export const db = drizzle(pool, { schema });

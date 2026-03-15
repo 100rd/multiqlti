@@ -183,16 +183,14 @@ class ConfigLoader {
   }
 
   /**
-   * Return the cached config. Must be called after load().
-   * Throws if load() has not been called yet.
+   * Return the cached config. Lazily calls load() if not yet initialized.
+   * This allows test environments to use configLoader without explicit setup.
    */
   get(): AppConfig {
     if (this.cachedConfig === null) {
-      throw new Error(
-        "[config] ConfigLoader.get() called before load(). Call configLoader.load() at startup.",
-      );
+      this.load();
     }
-    return this.cachedConfig;
+    return this.cachedConfig!;
   }
 }
 
