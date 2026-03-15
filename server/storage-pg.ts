@@ -1,4 +1,4 @@
-import { eq, desc, and, or, ilike, lt, ne, gte, lte, sql as drizzleSql } from "drizzle-orm";
+import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, sql as drizzleSql } from "drizzle-orm";
 import { db } from "./db";
 import type { IStorage, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint } from "./storage";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
@@ -7,6 +7,7 @@ import {
   stageExecutions, questions, chatMessages, llmRequests,
   memories,
   mcpServers,
+  delegationRequests,
   type UserRow, type InsertUser,
   type Model, type InsertModel,
   type Pipeline, type InsertPipeline,
@@ -15,6 +16,7 @@ import {
   type Question, type InsertQuestion,
   type ChatMessage, type InsertChatMessage,
   type LlmRequest, type InsertLlmRequest,
+  type InsertDelegationRequest, type DelegationRequestRow,
 } from "@shared/schema";
 
 export class PgStorage implements IStorage {
@@ -601,6 +603,34 @@ export class PgStorage implements IStorage {
 
   async deleteMcpServer(id: number): Promise<void> {
     await db.delete(mcpServers).where(eq(mcpServers.id, id));
+  }
+
+  // ─── Delegation Requests (Phase 6.4) ────────────────────────────────────
+
+  async createDelegationRequest(data: InsertDelegationRequest): Promise<DelegationRequestRow> {
+    const [row] = await db.insert(delegationRequests).values(data).returning();
+    return row;
+  }
+
+  async getDelegationRequests(runId: string): Promise<DelegationRequestRow[]> {
+    return db
+      .select()
+      .from(delegationRequests)
+      .where(eq(delegationRequests.runId, runId))
+      .orderBy(asc(delegationRequests.createdAt));
+  }
+
+  async updateDelegationRequest(
+    id: string,
+    updates: Partial<DelegationRequestRow>,
+  ): Promise<DelegationRequestRow> {
+    const [row] = await db
+      .update(delegationRequests)
+      .set(updates)
+      .where(eq(delegationRequests.id, id))
+      .returning();
+    if (!row) throw new Error(`Delegation request not found: ${id}`);
+    return row;
   }
 
 }
