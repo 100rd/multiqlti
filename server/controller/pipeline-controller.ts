@@ -1,7 +1,9 @@
 import type { IStorage } from "../storage";
 import type { TeamRegistry } from "../teams/registry";
 import type { WsManager } from "../ws/manager";
+import type { Gateway } from "../gateway/index";
 import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput } from "@shared/types";
+import { ParallelExecutor } from "../pipeline/parallel-executor";
 import type { PipelineRun } from "@shared/schema";
 import { SandboxExecutor } from "../sandbox/executor";
 import { ThoughtTreeCollector } from "../pipeline/thought-tree-collector";
@@ -18,6 +20,7 @@ export class PipelineController {
   private activeRuns: Map<string, AbortController> = new Map();
   private pendingApprovals: Map<string, ApprovalHandle> = new Map();
   private sandboxExecutor: SandboxExecutor;
+  private parallelExecutor: ParallelExecutor;
   private memoryExtractor: MemoryExtractor;
   private memoryProvider: MemoryProvider;
 
@@ -25,8 +28,14 @@ export class PipelineController {
     private storage: IStorage,
     private teamRegistry: TeamRegistry,
     private wsManager: WsManager,
+    gateway?: Gateway,
   ) {
     this.sandboxExecutor = new SandboxExecutor();
+    this.parallelExecutor = new ParallelExecutor(
+      gateway ?? createNullGateway(),
+      teamRegistry,
+      wsManager,
+    );
     this.memoryExtractor = new MemoryExtractor();
     this.memoryProvider = new MemoryProvider(storage);
   }
@@ -300,7 +309,24 @@ export class PipelineController {
         };
 
         // Pass execution strategy (undefined = single, handled in BaseTeam)
-        const result = await team.execute(stageInput, context, stage.executionStrategy);
+        // Attempt parallel execution first; falls back to single-agent if not enabled or shouldSplit=false
+        const parallelResult = await this.parallelExecutor.executeParallel(
+          stage,
+          stageInput,
+          context,
+          stageExec.id,
+        );
+
+        const result = parallelResult !== null
+          ? {
+              output: parallelResult.output,
+              tokensUsed: parallelResult.tokensUsed,
+              raw: parallelResult.raw,
+              questions: undefined,
+              strategyResult: undefined,
+              toolCallLog: undefined,
+            }
+          : await team.execute(stageInput, context, stage.executionStrategy);
 
         // Collect thought tree from stage output
         const collector = new ThoughtTreeCollector();
@@ -652,4 +678,12 @@ export class PipelineController {
     const hex = id.replace(/-/g, "").slice(0, 8);
     return parseInt(hex, 16) || 0;
   }
+}
+
+function createNullGateway(): Gateway {
+  return {
+    complete: async () => ({ content: "", tokensUsed: 0, modelSlug: "null", finishReason: "stop" }),
+    stream: async function* () { yield ""; },
+    completeWithTools: async () => ({ content: "", tokensUsed: 0, modelSlug: "null", finishReason: "stop", toolCalls: [] }),
+  } as unknown as Gateway;
 }

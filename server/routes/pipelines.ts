@@ -3,6 +3,15 @@ import { z } from "zod";
 import type { IStorage } from "../storage";
 import { requireRole, requireOwnerOrRole } from "../auth/middleware";
 
+const ParallelConfigSchema = z.object({
+  enabled: z.boolean(),
+  mode: z.enum(["auto", "manual"]),
+  maxAgents: z.number().int().min(1).max(10),
+  splitterModelSlug: z.string().max(200).optional(),
+  mergerModelSlug: z.string().max(200).optional(),
+  mergeStrategy: z.enum(["concatenate", "review", "auto"]),
+}).optional();
+
 const PipelineStageConfigSchema = z.object({
   teamId: z.string().min(1).max(100),
   modelSlug: z.string().min(1).max(200),
@@ -11,7 +20,8 @@ const PipelineStageConfigSchema = z.object({
   maxTokens: z.number().int().positive().max(100000).optional(),
   enabled: z.boolean(),
   approvalRequired: z.boolean().optional(),
-});
+  parallel: ParallelConfigSchema,
+}).passthrough();
 
 const CreatePipelineSchema = z.object({
   name: z.string().min(1).max(100).transform((s) => s.replace(/<[^>]*>/g, "").trim()),
