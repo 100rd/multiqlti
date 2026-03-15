@@ -1,7 +1,36 @@
 import { Router } from "express";
+import type { RequestHandler } from "express";
+import { z } from "zod";
 import type { IStorage } from "../storage";
 import type { Gateway } from "../gateway/index";
 import type { WsManager } from "../ws/manager";
+import { validateBody } from "../middleware/validate";
+
+// ─── Zod schemas ─────────────────────────────────────────────────────────────
+
+const HistoryMessageSchema = z.object({
+  role: z.string().min(1),
+  content: z.string(),
+});
+
+const SendChatSchema = z.object({
+  content: z.string().min(1, "content is required"),
+  modelSlug: z.string().optional(),
+});
+
+const StandaloneChatSchema = z.object({
+  content: z.string().min(1, "content is required"),
+  modelSlug: z.string().optional(),
+  history: z.array(HistoryMessageSchema).optional(),
+});
+
+const StreamChatSchema = z.object({
+  content: z.string().min(1, "content is required"),
+  modelSlug: z.string().optional(),
+  history: z.array(HistoryMessageSchema).optional(),
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export function registerChatRoutes(
   router: Router,
@@ -11,48 +40,48 @@ export function registerChatRoutes(
 ) {
   router.get("/api/chat/:runId/messages", async (req, res) => {
     const limit = req.query.limit ? parseInt(req.query.limit as string) : undefined;
-    const messages = await storage.getChatMessages(req.params.runId, limit);
+    const messages = await storage.getChatMessages(req.params["runId"], limit);
     res.json(messages);
   });
 
-  router.post("/api/chat/:runId/messages", async (req, res) => {
-    const { content, modelSlug } = req.body;
-    if (!content) {
-      return res.status(400).json({ message: "content is required" });
-    }
+  const sendChatHandler: RequestHandler = async (req, res) => {
+    const body = req.body as z.infer<typeof SendChatSchema>;
+    const content: string = body.content;
+    const modelSlug: string | undefined = body.modelSlug;
+    const runId = String(req.params["runId"]);
 
     // Save user message
     const userMsg = await storage.createChatMessage({
-      runId: req.params.runId,
+      runId,
       role: "user",
       content,
     });
 
     // Get conversation history
-    const history = await storage.getChatMessages(req.params.runId, 20);
+    const history = await storage.getChatMessages(runId, 20);
     const messages = history.map((m) => ({
       role: m.role === "agent" ? "assistant" : m.role,
       content: m.content,
     }));
 
     // Get response from gateway
-    const slug = modelSlug ?? "llama3-70b";
+    const slug: string = modelSlug ?? "llama3-70b";
     const response = await gateway.complete({
       modelSlug: slug,
       messages,
     });
 
     const assistantMsg = await storage.createChatMessage({
-      runId: req.params.runId,
+      runId,
       role: "assistant",
       modelSlug: slug,
       content: response.content,
     });
 
     // Broadcast via WebSocket
-    wsManager.broadcastToRun(req.params.runId, {
+    wsManager.broadcastToRun(runId, {
       type: "chat:message",
-      runId: req.params.runId,
+      runId,
       payload: {
         messageId: assistantMsg.id,
         role: "assistant",
@@ -63,22 +92,20 @@ export function registerChatRoutes(
     });
 
     res.json({ userMessage: userMsg, assistantMessage: assistantMsg });
-  });
+  };
+  router.post("/api/chat/:runId/messages", validateBody(SendChatSchema), sendChatHandler);
 
   // Standalone chat (no pipeline)
-  router.post("/api/chat/standalone", async (req, res) => {
-    const { content, modelSlug, history } = req.body;
-    if (!content) {
-      return res.status(400).json({ message: "content is required" });
-    }
+  const standaloneChatHandler: RequestHandler = async (req, res) => {
+    const body = req.body as z.infer<typeof StandaloneChatSchema>;
+    const content: string = body.content;
+    const modelSlug: string | undefined = body.modelSlug;
+    const history = body.history;
 
-    const slug = modelSlug ?? "llama3-70b";
+    const slug: string = modelSlug ?? "llama3-70b";
     const messages = [
       ...(Array.isArray(history)
-        ? history.map((h: { role: string; content: string }) => ({
-            role: h.role,
-            content: h.content,
-          }))
+        ? history.map((h) => ({ role: h.role, content: h.content }))
         : []),
       { role: "user", content },
     ];
@@ -89,22 +116,20 @@ export function registerChatRoutes(
       modelSlug: slug,
       tokensUsed: response.tokensUsed,
     });
-  });
+  };
+  router.post("/api/chat/standalone", validateBody(StandaloneChatSchema), standaloneChatHandler);
 
   // SSE streaming endpoint for standalone chat
-  router.post("/api/chat/stream", async (req, res) => {
-    const { content, modelSlug, history } = req.body;
-    if (!content) {
-      return res.status(400).json({ message: "content is required" });
-    }
+  const streamChatHandler: RequestHandler = async (req, res) => {
+    const body = req.body as z.infer<typeof StreamChatSchema>;
+    const content: string = body.content;
+    const modelSlug: string | undefined = body.modelSlug;
+    const history = body.history;
 
-    const slug = modelSlug ?? "llama3-70b";
+    const slug: string = modelSlug ?? "llama3-70b";
     const messages = [
       ...(Array.isArray(history)
-        ? history.map((h: { role: string; content: string }) => ({
-            role: h.role,
-            content: h.content,
-          }))
+        ? history.map((h) => ({ role: h.role, content: h.content }))
         : []),
       { role: "user", content },
     ];
@@ -124,5 +149,6 @@ export function registerChatRoutes(
       );
     }
     res.end();
-  });
+  };
+  router.post("/api/chat/stream", validateBody(StreamChatSchema), streamChatHandler);
 }
