@@ -1,5 +1,5 @@
 import type { IStorage } from "../storage";
-import type { GatewayRequest, GatewayResponse, ILLMProvider, PrivacySettings } from "@shared/types";
+import type { GatewayRequest, GatewayResponse, ILLMProvider, ILLMProviderOptions, PrivacySettings, ProviderMessage } from "@shared/types";
 import { MockProvider } from "./providers/mock";
 import { VllmProvider } from "./providers/vllm";
 import { OllamaProvider } from "./providers/ollama";
@@ -7,10 +7,17 @@ import { ClaudeProvider } from "./providers/claude";
 import { GeminiProvider } from "./providers/gemini";
 import { GrokProvider } from "./providers/grok";
 import { AnonymizerService } from "../privacy/anonymizer";
+import { estimateCostUsd } from "@shared/constants";
 
 export interface GatewayPrivacyOptions {
   privacy?: PrivacySettings;
   sessionId?: string;
+}
+
+export interface GatewayLoggingOptions {
+  runId?: string;
+  stageExecutionId?: string;
+  teamId?: string;
 }
 
 type CloudProviderKey = "anthropic" | "google" | "xai";
@@ -97,9 +104,63 @@ export class Gateway {
     return !!(privacy?.enabled && privacy.level !== "off");
   }
 
+  /**
+   * Extract system prompt from messages array (for logging — does NOT mutate).
+   */
+  private extractSystemPrompt(messages: ProviderMessage[]): string | undefined {
+    const systemParts = messages.filter((m) => m.role === "system").map((m) => m.content);
+    return systemParts.length > 0 ? systemParts.join("\n") : undefined;
+  }
+
+  /**
+   * Log an LLM request to storage. Errors here are swallowed so they never
+   * interrupt actual pipeline execution.
+   */
+  private async logRequest(params: {
+    modelSlug: string;
+    providerKey: string;
+    messages: ProviderMessage[];
+    options?: ILLMProviderOptions & GatewayLoggingOptions;
+    result?: { content: string; tokensUsed: number; inputTokens?: number; outputTokens?: number };
+    latencyMs: number;
+    status: 'success' | 'error';
+    errorMessage?: string;
+  }): Promise<void> {
+    try {
+      const inputTokens = params.result?.inputTokens ?? 0;
+      const outputTokens = params.result?.outputTokens ?? 0;
+      const totalTokens = params.result?.tokensUsed ?? 0;
+      const costUsd = estimateCostUsd(params.modelSlug, inputTokens, outputTokens);
+
+      await this.storage.createLlmRequest({
+        runId: params.options?.runId ?? null,
+        stageExecutionId: params.options?.stageExecutionId ?? null,
+        modelSlug: params.modelSlug,
+        provider: params.providerKey,
+        messages: params.messages as unknown as Record<string, unknown>[],
+        systemPrompt: this.extractSystemPrompt(params.messages),
+        temperature: params.options?.temperature ?? null,
+        maxTokens: params.options?.maxTokens ?? null,
+        responseContent: params.result?.content ?? "",
+        inputTokens,
+        outputTokens,
+        totalTokens,
+        latencyMs: params.latencyMs,
+        estimatedCostUsd: costUsd > 0 ? costUsd : null,
+        status: params.status,
+        errorMessage: params.errorMessage ?? null,
+        teamId: params.options?.teamId ?? null,
+        tags: [],
+      });
+    } catch (logErr) {
+      console.warn("[gateway] Failed to log LLM request:", logErr);
+    }
+  }
+
   async complete(
     request: GatewayRequest,
     privacyOptions?: GatewayPrivacyOptions,
+    loggingOptions?: GatewayLoggingOptions,
   ): Promise<GatewayResponse> {
     const model = await this.storage.getModelBySlug(request.modelSlug);
     const providerKey = model?.provider ?? "mock";
@@ -123,21 +184,47 @@ export class Gateway {
       }));
     }
 
+    const start = Date.now();
     let result: { content: string; tokensUsed: number };
-    if (provider) {
-      result = await provider.complete(modelId, messages, {
-        maxTokens: request.maxTokens,
-        temperature: request.temperature,
+    try {
+      if (provider) {
+        result = await provider.complete(modelId, messages, {
+          maxTokens: request.maxTokens,
+          temperature: request.temperature,
+        });
+      } else {
+        result = await this.mockProvider.complete(messages, {
+          maxTokens: request.maxTokens,
+        });
+      }
+    } catch (err) {
+      const latencyMs = Date.now() - start;
+      await this.logRequest({
+        modelSlug: request.modelSlug,
+        providerKey,
+        messages,
+        options: { ...request, ...loggingOptions },
+        latencyMs,
+        status: 'error',
+        errorMessage: String(err),
       });
-    } else {
-      result = await this.mockProvider.complete(messages, {
-        maxTokens: request.maxTokens,
-      });
+      throw err;
     }
 
+    const latencyMs = Date.now() - start;
     const content = this.shouldAnonymize(privacy)
       ? this.anonymizer.rehydrate(result.content, sessionId)
       : result.content;
+
+    await this.logRequest({
+      modelSlug: request.modelSlug,
+      providerKey,
+      messages,
+      options: { ...request, ...loggingOptions },
+      result: { content, tokensUsed: result.tokensUsed, inputTokens: 0, outputTokens: 0 },
+      latencyMs,
+      status: 'success',
+    });
 
     return {
       content,

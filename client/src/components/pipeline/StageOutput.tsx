@@ -5,8 +5,9 @@ import { ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import StrategyViewer from "./StrategyViewer";
 import SandboxOutput from "./SandboxOutput";
-import { CodeBlock, detectLanguageFromPath } from "@/components/ui/CodeBlock";
-import type { StrategyResult, SandboxResult } from "@shared/types";
+import ThoughtTree from "./ThoughtTree";
+import { CodeBlock } from "@/components/ui/CodeBlock";
+import type { StrategyResult, SandboxResult, ThoughtTree as ThoughtTreeType } from "@shared/types";
 
 interface StageOutputProps {
   teamId: string;
@@ -14,6 +15,7 @@ interface StageOutputProps {
   output: Record<string, unknown>;
   strategyResult?: StrategyResult | null;
   isActive?: boolean;
+  thoughtTree?: ThoughtTreeType | null;
 }
 
 export default function StageOutput({
@@ -22,6 +24,7 @@ export default function StageOutput({
   output,
   strategyResult,
   isActive,
+  thoughtTree,
 }: StageOutputProps) {
   const [expanded, setExpanded] = useState(isActive ?? false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -152,6 +155,11 @@ export default function StageOutput({
               <p className="text-xs font-medium text-muted-foreground">Sandbox Execution</p>
               <SandboxOutput result={sandboxResult} />
             </div>
+          )}
+
+          {/* Thought Tree */}
+          {thoughtTree && thoughtTree.length > 0 && (
+            <ThoughtTree nodes={thoughtTree} />
           )}
 
           {/* Strategy intermediate outputs */}

@@ -13,9 +13,67 @@ import {
   type InsertQuestion,
   type ChatMessage,
   type InsertChatMessage,
+  type LlmRequest,
+  type InsertLlmRequest,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
+
+// ─── LLM Request query filters ───────────────────────────────────────────────
+
+export interface LlmRequestFilters {
+  runId?: string;
+  provider?: string;
+  modelSlug?: string;
+  status?: string;
+  from?: Date;
+  to?: Date;
+  page?: number;
+  limit?: number;
+}
+
+export interface LlmRequestStats {
+  totalRequests: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCostUsd: number;
+}
+
+export interface LlmStatsByModel {
+  modelSlug: string;
+  provider: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  avgLatencyMs: number;
+  errorRate: number;
+}
+
+export interface LlmStatsByProvider {
+  provider: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  avgLatencyMs: number;
+  errorRate: number;
+}
+
+export interface LlmStatsByTeam {
+  teamId: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
+
+export interface LlmTimelinePoint {
+  date: string;
+  requests: number;
+  tokens: number;
+  costUsd: number;
+}
 
 export interface IStorage {
   // Users
@@ -62,6 +120,16 @@ export interface IStorage {
   // Chat Messages
   getChatMessages(runId?: string, limit?: number): Promise<ChatMessage[]>;
   createChatMessage(message: InsertChatMessage): Promise<ChatMessage>;
+
+  // LLM Requests
+  createLlmRequest(data: InsertLlmRequest): Promise<LlmRequest>;
+  getLlmRequests(filters: LlmRequestFilters): Promise<{ rows: LlmRequest[]; total: number }>;
+  getLlmRequestById(id: number): Promise<LlmRequest | undefined>;
+  getLlmRequestStats(): Promise<LlmRequestStats>;
+  getLlmStatsByModel(): Promise<LlmStatsByModel[]>;
+  getLlmStatsByProvider(): Promise<LlmStatsByProvider[]>;
+  getLlmStatsByTeam(): Promise<LlmStatsByTeam[]>;
+  getLlmTimeline(from: Date, to: Date, granularity: 'day' | 'week'): Promise<LlmTimelinePoint[]>;
 }
 
 export class MemStorage implements IStorage {
@@ -72,6 +140,8 @@ export class MemStorage implements IStorage {
   private stages: Map<string, StageExecution>;
   private questionsMap: Map<string, Question>;
   private messages: Map<string, ChatMessage>;
+  private llmRequestsMap: Map<number, LlmRequest>;
+  private llmRequestIdSeq: number;
 
   constructor() {
     this.users = new Map();
@@ -81,6 +151,8 @@ export class MemStorage implements IStorage {
     this.stages = new Map();
     this.questionsMap = new Map();
     this.messages = new Map();
+    this.llmRequestsMap = new Map();
+    this.llmRequestIdSeq = 1;
   }
 
   // ─── Users ──────────────────────────────────────
@@ -262,6 +334,7 @@ export class MemStorage implements IStorage {
       startedAt: insert.startedAt ?? null,
       completedAt: insert.completedAt ?? null,
       sandboxResult: insert.sandboxResult ?? null,
+      thoughtTree: insert.thoughtTree ?? null,
       createdAt: new Date(),
     };
     this.stages.set(id, stage);
@@ -366,6 +439,178 @@ export class MemStorage implements IStorage {
     };
     this.messages.set(id, msg);
     return msg;
+  }
+
+  // ─── LLM Requests ───────────────────────────────
+
+  async createLlmRequest(data: InsertLlmRequest): Promise<LlmRequest> {
+    const id = this.llmRequestIdSeq++;
+    const req: LlmRequest = {
+      id,
+      runId: data.runId ?? null,
+      stageExecutionId: data.stageExecutionId ?? null,
+      modelSlug: data.modelSlug,
+      provider: data.provider,
+      messages: data.messages,
+      systemPrompt: data.systemPrompt ?? null,
+      temperature: data.temperature ?? null,
+      maxTokens: data.maxTokens ?? null,
+      responseContent: data.responseContent ?? "",
+      inputTokens: data.inputTokens ?? 0,
+      outputTokens: data.outputTokens ?? 0,
+      totalTokens: data.totalTokens ?? 0,
+      latencyMs: data.latencyMs ?? 0,
+      estimatedCostUsd: data.estimatedCostUsd ?? null,
+      status: data.status ?? "success",
+      errorMessage: data.errorMessage ?? null,
+      teamId: data.teamId ?? null,
+      tags: data.tags ?? [],
+      createdAt: new Date(),
+    };
+    this.llmRequestsMap.set(id, req);
+    return req;
+  }
+
+  async getLlmRequests(filters: LlmRequestFilters): Promise<{ rows: LlmRequest[]; total: number }> {
+    let rows = Array.from(this.llmRequestsMap.values());
+
+    if (filters.runId) rows = rows.filter((r) => r.runId === filters.runId);
+    if (filters.provider) rows = rows.filter((r) => r.provider === filters.provider);
+    if (filters.modelSlug) rows = rows.filter((r) => r.modelSlug === filters.modelSlug);
+    if (filters.status) rows = rows.filter((r) => r.status === filters.status);
+    if (filters.from) rows = rows.filter((r) => r.createdAt && r.createdAt >= filters.from!);
+    if (filters.to) rows = rows.filter((r) => r.createdAt && r.createdAt <= filters.to!);
+
+    rows.sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0));
+
+    const total = rows.length;
+    const page = filters.page ?? 1;
+    const limit = filters.limit ?? 50;
+    const start = (page - 1) * limit;
+    rows = rows.slice(start, start + limit);
+
+    return { rows, total };
+  }
+
+  async getLlmRequestById(id: number): Promise<LlmRequest | undefined> {
+    return this.llmRequestsMap.get(id);
+  }
+
+  async getLlmRequestStats(): Promise<LlmRequestStats> {
+    const all = Array.from(this.llmRequestsMap.values());
+    return {
+      totalRequests: all.length,
+      totalInputTokens: all.reduce((s, r) => s + (r.inputTokens ?? 0), 0),
+      totalOutputTokens: all.reduce((s, r) => s + (r.outputTokens ?? 0), 0),
+      totalCostUsd: all.reduce((s, r) => s + (r.estimatedCostUsd ?? 0), 0),
+    };
+  }
+
+  async getLlmStatsByModel(): Promise<LlmStatsByModel[]> {
+    const all = Array.from(this.llmRequestsMap.values());
+    const map = new Map<string, LlmStatsByModel>();
+    for (const r of all) {
+      const key = r.modelSlug;
+      const existing = map.get(key) ?? {
+        modelSlug: r.modelSlug,
+        provider: r.provider,
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        avgLatencyMs: 0,
+        errorRate: 0,
+      };
+      existing.requests++;
+      existing.inputTokens += r.inputTokens ?? 0;
+      existing.outputTokens += r.outputTokens ?? 0;
+      existing.costUsd += r.estimatedCostUsd ?? 0;
+      existing.avgLatencyMs += r.latencyMs ?? 0;
+      if (r.status === "error") existing.errorRate++;
+      map.set(key, existing);
+    }
+    return Array.from(map.values()).map((s) => ({
+      ...s,
+      avgLatencyMs: s.requests > 0 ? s.avgLatencyMs / s.requests : 0,
+      errorRate: s.requests > 0 ? s.errorRate / s.requests : 0,
+    }));
+  }
+
+  async getLlmStatsByProvider(): Promise<LlmStatsByProvider[]> {
+    const all = Array.from(this.llmRequestsMap.values());
+    const map = new Map<string, LlmStatsByProvider>();
+    for (const r of all) {
+      const key = r.provider;
+      const existing = map.get(key) ?? {
+        provider: r.provider,
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        avgLatencyMs: 0,
+        errorRate: 0,
+      };
+      existing.requests++;
+      existing.inputTokens += r.inputTokens ?? 0;
+      existing.outputTokens += r.outputTokens ?? 0;
+      existing.costUsd += r.estimatedCostUsd ?? 0;
+      existing.avgLatencyMs += r.latencyMs ?? 0;
+      if (r.status === "error") existing.errorRate++;
+      map.set(key, existing);
+    }
+    return Array.from(map.values()).map((s) => ({
+      ...s,
+      avgLatencyMs: s.requests > 0 ? s.avgLatencyMs / s.requests : 0,
+      errorRate: s.requests > 0 ? s.errorRate / s.requests : 0,
+    }));
+  }
+
+  async getLlmStatsByTeam(): Promise<LlmStatsByTeam[]> {
+    const all = Array.from(this.llmRequestsMap.values()).filter((r) => r.teamId);
+    const map = new Map<string, LlmStatsByTeam>();
+    for (const r of all) {
+      const key = r.teamId!;
+      const existing = map.get(key) ?? {
+        teamId: key,
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      };
+      existing.requests++;
+      existing.inputTokens += r.inputTokens ?? 0;
+      existing.outputTokens += r.outputTokens ?? 0;
+      existing.costUsd += r.estimatedCostUsd ?? 0;
+      map.set(key, existing);
+    }
+    return Array.from(map.values());
+  }
+
+  async getLlmTimeline(from: Date, to: Date, granularity: 'day' | 'week'): Promise<LlmTimelinePoint[]> {
+    const all = Array.from(this.llmRequestsMap.values()).filter((r) => {
+      const ts = r.createdAt;
+      return ts && ts >= from && ts <= to;
+    });
+
+    const buckets = new Map<string, LlmTimelinePoint>();
+    for (const r of all) {
+      const d = r.createdAt!;
+      let key: string;
+      if (granularity === 'week') {
+        const weekStart = new Date(d);
+        weekStart.setDate(d.getDate() - d.getDay());
+        key = weekStart.toISOString().slice(0, 10);
+      } else {
+        key = d.toISOString().slice(0, 10);
+      }
+      const existing = buckets.get(key) ?? { date: key, requests: 0, tokens: 0, costUsd: 0 };
+      existing.requests++;
+      existing.tokens += (r.inputTokens ?? 0) + (r.outputTokens ?? 0);
+      existing.costUsd += r.estimatedCostUsd ?? 0;
+      buckets.set(key, existing);
+    }
+
+    return Array.from(buckets.values()).sort((a, b) => a.date.localeCompare(b.date));
   }
 }
 

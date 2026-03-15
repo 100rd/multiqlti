@@ -1,9 +1,9 @@
-import { eq, desc, and } from "drizzle-orm";
+import { eq, desc, and, gte, lte, sql as drizzleSql } from "drizzle-orm";
 import { db } from "./db";
-import type { IStorage } from "./storage";
+import type { IStorage, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint } from "./storage";
 import {
   users, models, pipelines, pipelineRuns,
-  stageExecutions, questions, chatMessages,
+  stageExecutions, questions, chatMessages, llmRequests,
   type User, type InsertUser,
   type Model, type InsertModel,
   type Pipeline, type InsertPipeline,
@@ -11,6 +11,7 @@ import {
   type StageExecution, type InsertStageExecution,
   type Question, type InsertQuestion,
   type ChatMessage, type InsertChatMessage,
+  type LlmRequest, type InsertLlmRequest,
 } from "@shared/schema";
 
 export class PgStorage implements IStorage {
@@ -250,5 +251,170 @@ export class PgStorage implements IStorage {
   async createChatMessage(message: InsertChatMessage): Promise<ChatMessage> {
     const [row] = await db.insert(chatMessages).values(message).returning();
     return row;
+  }
+
+  // ─── LLM Requests ───────────────────────────────────
+
+  async createLlmRequest(data: InsertLlmRequest): Promise<LlmRequest> {
+    const [row] = await db.insert(llmRequests).values(data).returning();
+    return row;
+  }
+
+  async getLlmRequests(filters: LlmRequestFilters): Promise<{ rows: LlmRequest[]; total: number }> {
+    const conditions = [];
+    if (filters.runId) conditions.push(eq(llmRequests.runId, filters.runId));
+    if (filters.provider) conditions.push(eq(llmRequests.provider, filters.provider));
+    if (filters.modelSlug) conditions.push(eq(llmRequests.modelSlug, filters.modelSlug));
+    if (filters.status) conditions.push(eq(llmRequests.status, filters.status));
+    if (filters.from) conditions.push(gte(llmRequests.createdAt, filters.from));
+    if (filters.to) conditions.push(lte(llmRequests.createdAt, filters.to));
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    // Count total
+    const [countRow] = await db
+      .select({ count: drizzleSql<number>`count(*)::int` })
+      .from(llmRequests)
+      .where(whereClause);
+    const total = countRow?.count ?? 0;
+
+    // Paginated rows
+    const page = filters.page ?? 1;
+    const limit = filters.limit ?? 50;
+    const offset = (page - 1) * limit;
+
+    const rows = await db
+      .select()
+      .from(llmRequests)
+      .where(whereClause)
+      .orderBy(desc(llmRequests.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    return { rows, total };
+  }
+
+  async getLlmRequestById(id: number): Promise<LlmRequest | undefined> {
+    const [row] = await db
+      .select()
+      .from(llmRequests)
+      .where(eq(llmRequests.id, id));
+    return row;
+  }
+
+  async getLlmRequestStats(): Promise<LlmRequestStats> {
+    const [row] = await db
+      .select({
+        totalRequests: drizzleSql<number>`count(*)::int`,
+        totalInputTokens: drizzleSql<number>`coalesce(sum(input_tokens), 0)::int`,
+        totalOutputTokens: drizzleSql<number>`coalesce(sum(output_tokens), 0)::int`,
+        totalCostUsd: drizzleSql<number>`coalesce(sum(estimated_cost_usd), 0)::float`,
+      })
+      .from(llmRequests);
+
+    return {
+      totalRequests: row?.totalRequests ?? 0,
+      totalInputTokens: row?.totalInputTokens ?? 0,
+      totalOutputTokens: row?.totalOutputTokens ?? 0,
+      totalCostUsd: row?.totalCostUsd ?? 0,
+    };
+  }
+
+  async getLlmStatsByModel(): Promise<LlmStatsByModel[]> {
+    const rows = await db
+      .select({
+        modelSlug: llmRequests.modelSlug,
+        provider: llmRequests.provider,
+        requests: drizzleSql<number>`count(*)::int`,
+        inputTokens: drizzleSql<number>`coalesce(sum(input_tokens), 0)::int`,
+        outputTokens: drizzleSql<number>`coalesce(sum(output_tokens), 0)::int`,
+        costUsd: drizzleSql<number>`coalesce(sum(estimated_cost_usd), 0)::float`,
+        avgLatencyMs: drizzleSql<number>`coalesce(avg(latency_ms), 0)::float`,
+        errorCount: drizzleSql<number>`count(*) filter (where status = 'error')::int`,
+      })
+      .from(llmRequests)
+      .groupBy(llmRequests.modelSlug, llmRequests.provider);
+
+    return rows.map((r) => ({
+      modelSlug: r.modelSlug,
+      provider: r.provider,
+      requests: r.requests,
+      inputTokens: r.inputTokens,
+      outputTokens: r.outputTokens,
+      costUsd: r.costUsd,
+      avgLatencyMs: r.avgLatencyMs,
+      errorRate: r.requests > 0 ? r.errorCount / r.requests : 0,
+    }));
+  }
+
+  async getLlmStatsByProvider(): Promise<LlmStatsByProvider[]> {
+    const rows = await db
+      .select({
+        provider: llmRequests.provider,
+        requests: drizzleSql<number>`count(*)::int`,
+        inputTokens: drizzleSql<number>`coalesce(sum(input_tokens), 0)::int`,
+        outputTokens: drizzleSql<number>`coalesce(sum(output_tokens), 0)::int`,
+        costUsd: drizzleSql<number>`coalesce(sum(estimated_cost_usd), 0)::float`,
+        avgLatencyMs: drizzleSql<number>`coalesce(avg(latency_ms), 0)::float`,
+        errorCount: drizzleSql<number>`count(*) filter (where status = 'error')::int`,
+      })
+      .from(llmRequests)
+      .groupBy(llmRequests.provider);
+
+    return rows.map((r) => ({
+      provider: r.provider,
+      requests: r.requests,
+      inputTokens: r.inputTokens,
+      outputTokens: r.outputTokens,
+      costUsd: r.costUsd,
+      avgLatencyMs: r.avgLatencyMs,
+      errorRate: r.requests > 0 ? r.errorCount / r.requests : 0,
+    }));
+  }
+
+  async getLlmStatsByTeam(): Promise<LlmStatsByTeam[]> {
+    const rows = await db
+      .select({
+        teamId: llmRequests.teamId,
+        requests: drizzleSql<number>`count(*)::int`,
+        inputTokens: drizzleSql<number>`coalesce(sum(input_tokens), 0)::int`,
+        outputTokens: drizzleSql<number>`coalesce(sum(output_tokens), 0)::int`,
+        costUsd: drizzleSql<number>`coalesce(sum(estimated_cost_usd), 0)::float`,
+      })
+      .from(llmRequests)
+      .where(drizzleSql`team_id is not null`)
+      .groupBy(llmRequests.teamId);
+
+    return rows
+      .filter((r) => r.teamId !== null)
+      .map((r) => ({
+        teamId: r.teamId as string,
+        requests: r.requests,
+        inputTokens: r.inputTokens,
+        outputTokens: r.outputTokens,
+        costUsd: r.costUsd,
+      }));
+  }
+
+  async getLlmTimeline(from: Date, to: Date, granularity: 'day' | 'week'): Promise<LlmTimelinePoint[]> {
+    const truncFn = granularity === 'week' ? 'week' : 'day';
+    const rows = await db
+      .select({
+        date: drizzleSql<string>`date_trunc('${drizzleSql.raw(truncFn)}', created_at)::date::text`,
+        requests: drizzleSql<number>`count(*)::int`,
+        tokens: drizzleSql<number>`coalesce(sum(input_tokens + output_tokens), 0)::int`,
+        costUsd: drizzleSql<number>`coalesce(sum(estimated_cost_usd), 0)::float`,
+      })
+      .from(llmRequests)
+      .where(and(gte(llmRequests.createdAt, from), lte(llmRequests.createdAt, to)))
+      .groupBy(drizzleSql`date_trunc('${drizzleSql.raw(truncFn)}', created_at)`)
+      .orderBy(drizzleSql`date_trunc('${drizzleSql.raw(truncFn)}', created_at)`);
+
+    return rows.map((r) => ({
+      date: r.date,
+      requests: r.requests,
+      tokens: r.tokens,
+      costUsd: r.costUsd,
+    }));
   }
 }

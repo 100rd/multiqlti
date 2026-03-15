@@ -652,3 +652,30 @@ export const SANDBOX_DEFAULTS = {
   workdir: "/workspace",
   failOnNonZero: true,
 } as const;
+
+// ─── Model Pricing ───────────────────────────────────────────────────────────
+
+export const MODEL_PRICING: Record<string, { inputPer1M: number; outputPer1M: number }> = {
+  "claude-sonnet-4-6": { inputPer1M: 3.00,  outputPer1M: 15.00 },
+  "claude-haiku-4-5":  { inputPer1M: 0.80,  outputPer1M: 4.00 },
+  "gemini-2.0-flash":  { inputPer1M: 0.075, outputPer1M: 0.30 },
+  "grok-3":            { inputPer1M: 3.00,  outputPer1M: 15.00 },
+  "grok-3-mini":       { inputPer1M: 0.30,  outputPer1M: 0.50 },
+};
+
+/**
+ * Estimate cost in USD for a given model and token counts.
+ * Returns 0 for vllm/ollama/mock or unknown models (no cloud cost).
+ */
+export function estimateCostUsd(
+  modelSlug: string,
+  inputTokens: number,
+  outputTokens: number,
+): number {
+  const pricing = MODEL_PRICING[modelSlug];
+  if (!pricing) return 0;
+  return (
+    (inputTokens / 1_000_000) * pricing.inputPer1M +
+    (outputTokens / 1_000_000) * pricing.outputPer1M
+  );
+}

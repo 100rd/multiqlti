@@ -4,6 +4,7 @@ import type { WsManager } from "../ws/manager";
 import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput } from "@shared/types";
 import type { PipelineRun } from "@shared/schema";
 import { SandboxExecutor } from "../sandbox/executor";
+import { ThoughtTreeCollector } from "../pipeline/thought-tree-collector";
 
 export class PipelineController {
   private activeRuns: Map<string, AbortController> = new Map();
@@ -189,6 +190,16 @@ export class PipelineController {
         // Pass execution strategy (undefined = single, handled in BaseTeam)
         const result = await team.execute(stageInput, context, stage.executionStrategy);
 
+        // Collect thought tree from stage output
+        const collector = new ThoughtTreeCollector();
+        const rawOutput = result.output.raw as string | undefined;
+        if (rawOutput) {
+          collector.addFromLlmResponse(rawOutput, stage.modelSlug);
+        } else if (typeof result.output.summary === "string") {
+          collector.addFromLlmResponse(result.output.summary as string, stage.modelSlug);
+        }
+        const thoughtTree = collector.getTree();
+
         // Check if team needs clarification
         if (result.questions && result.questions.length > 0) {
           for (const q of result.questions) {
@@ -277,12 +288,13 @@ export class PipelineController {
           }
         }
 
-        // Stage completed
+        // Stage completed — persist thought tree alongside output
         await this.storage.updateStageExecution(stageExec.id, {
           status: "completed",
           output: result.output,
           tokensUsed: result.tokensUsed,
           completedAt: new Date(),
+          thoughtTree: thoughtTree.length > 0 ? (thoughtTree as unknown as Record<string, unknown>[]) : null,
           ...(sandboxResult ? { sandboxResult } : {}),
         });
 
@@ -302,6 +314,17 @@ export class PipelineController {
           },
           timestamp: new Date().toISOString(),
         });
+
+        // Broadcast thought tree if present
+        if (thoughtTree.length > 0) {
+          this.broadcast(run.id, {
+            type: "stage:thought_tree",
+            runId: run.id,
+            stageExecutionId: stageExec.id,
+            payload: { stageIndex: i, nodes: thoughtTree },
+            timestamp: new Date().toISOString(),
+          });
+        }
 
         // Also send a chat message for the stage output
         await this.storage.createChatMessage({
