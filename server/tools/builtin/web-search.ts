@@ -1,4 +1,5 @@
 import type { ToolHandler } from "../registry";
+import { configLoader } from "../../config/loader";
 
 interface TavilyResult {
   title: string;
@@ -23,7 +24,7 @@ interface DdgResponse {
 }
 
 async function searchWithTavily(query: string, limit: number): Promise<string> {
-  const apiKey = process.env.TAVILY_API_KEY;
+  const apiKey = configLoader.get().providers.tavily?.apiKey;
   if (!apiKey) throw new Error("No Tavily API key");
 
   const res = await fetch("https://api.tavily.com/search", {
