@@ -78,12 +78,14 @@ describe("ThoughtTreeCollector.addFromLlmResponse — <thinking> extraction", ()
     expect(node.metadata).toBeUndefined();
   });
 
-  it("ignores empty <thinking> blocks", () => {
+  it("ignores empty <thinking> blocks (creates fallback Response node for non-empty input)", () => {
     const collector = makeCollector();
     collector.addFromLlmResponse("<thinking></thinking>");
-    // No structured thought found — fallback node for non-empty content,
-    // but content is empty so tree stays empty
-    expect(collector.getTree()).toHaveLength(0);
+    // The thinking content is empty so no thinking node is created.
+    // The full input string is non-empty, so the fallback "Response" node fires.
+    const tree = collector.getTree();
+    expect(tree).toHaveLength(1);
+    expect(tree[0].label).toBe("Response");
   });
 });
 
