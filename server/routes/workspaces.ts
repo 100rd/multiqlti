@@ -164,7 +164,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     }
   });
 
-  router.get("/api/workspaces/:id/files/*", async (req: Request, res: Response) => {
+  router.get("/api/workspaces/:id/files/*path", async (req: Request, res: Response) => {
     const row = await getWorkspaceById(String(req.params.id), res);
     if (!row) return;
 
@@ -179,7 +179,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     }
   });
 
-  router.put("/api/workspaces/:id/files/*", async (req: Request, res: Response) => {
+  router.put("/api/workspaces/:id/files/*path", async (req: Request, res: Response) => {
     const row = await getWorkspaceById(String(req.params.id), res);
     if (!row) return;
 
@@ -201,7 +201,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     }
   });
 
-  router.delete("/api/workspaces/:id/files/*", async (req: Request, res: Response) => {
+  router.delete("/api/workspaces/:id/files/*path", async (req: Request, res: Response) => {
     const row = await getWorkspaceById(String(req.params.id), res);
     if (!row) return;
 
