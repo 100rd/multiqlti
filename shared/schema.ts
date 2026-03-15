@@ -431,7 +431,7 @@ export const insertSpecializationProfileSchema = createInsertSchema(specializati
 export type InsertSpecializationProfile = z.infer<typeof insertSpecializationProfileSchema>;
 export type SpecializationProfileRow = typeof specializationProfiles.$inferSelect;
 
-// ─── Skills (Phase 3.1) ───────────────────────────────────────────────────────
+// ─── Skills (Phase 3.1b) ─────────────────────────────────────────────────────
 
 export const skills = pgTable("skills", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -453,4 +453,3 @@ export const skills = pgTable("skills", {
 export const insertSkillSchema = createInsertSchema(skills).omit({ createdAt: true, updatedAt: true });
 export type InsertSkill = z.infer<typeof insertSkillSchema>;
 export type Skill = typeof skills.$inferSelect;
-
