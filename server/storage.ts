@@ -15,6 +15,8 @@ import {
   type InsertChatMessage,
   type LlmRequest,
   type InsertLlmRequest,
+  type Skill,
+  type InsertSkill,
 } from "@shared/schema";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
 import { randomUUID } from "crypto";
@@ -147,6 +149,13 @@ export interface IStorage {
   createMcpServer(config: Omit<McpServerConfig, 'id'>): Promise<McpServerConfig>;
   updateMcpServer(id: number, updates: Partial<McpServerConfig>): Promise<McpServerConfig>;
   deleteMcpServer(id: number): Promise<void>;
+
+  // Skills
+  getSkills(filter?: { teamId?: string; isBuiltin?: boolean }): Promise<Skill[]>;
+  getSkill(id: string): Promise<Skill | undefined>;
+  createSkill(data: InsertSkill): Promise<Skill>;
+  updateSkill(id: string, updates: Partial<InsertSkill>): Promise<Skill>;
+  deleteSkill(id: string): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -774,6 +783,66 @@ export class MemStorage implements IStorage {
 
   async deleteMcpServer(id: number): Promise<void> {
     this.mcpServersMap.delete(id);
+  }
+
+  // ─── Skills ─────────────────────────────────────
+
+  private skillsMap: Map<string, Skill> = new Map();
+
+  async getSkills(filter?: { teamId?: string; isBuiltin?: boolean }): Promise<Skill[]> {
+    let result = Array.from(this.skillsMap.values());
+    if (filter?.teamId !== undefined) {
+      result = result.filter((s) => s.teamId === filter.teamId);
+    }
+    if (filter?.isBuiltin !== undefined) {
+      result = result.filter((s) => s.isBuiltin === filter.isBuiltin);
+    }
+    return result.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async getSkill(id: string): Promise<Skill | undefined> {
+    return this.skillsMap.get(id);
+  }
+
+  async createSkill(data: InsertSkill): Promise<Skill> {
+    const id = (data.id as string | undefined) ?? randomUUID();
+    const now = new Date();
+    const skill: Skill = {
+      id,
+      name: data.name,
+      description: data.description ?? "",
+      teamId: data.teamId,
+      systemPromptOverride: data.systemPromptOverride ?? "",
+      tools: (data.tools as string[] | undefined) ?? [],
+      modelPreference: data.modelPreference ?? null,
+      outputSchema: (data.outputSchema as Record<string, unknown> | undefined) ?? null,
+      tags: (data.tags as string[] | undefined) ?? [],
+      isBuiltin: data.isBuiltin ?? false,
+      isPublic: data.isPublic ?? true,
+      createdBy: data.createdBy ?? "system",
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.skillsMap.set(id, skill);
+    return skill;
+  }
+
+  async updateSkill(id: string, updates: Partial<InsertSkill>): Promise<Skill> {
+    const existing = this.skillsMap.get(id);
+    if (!existing) throw new Error(`Skill not found: ${id}`);
+    const updated: Skill = {
+      ...existing,
+      ...updates,
+      tools: (updates.tools as string[] | undefined) ?? existing.tools,
+      tags: (updates.tags as string[] | undefined) ?? existing.tags,
+      updatedAt: new Date(),
+    };
+    this.skillsMap.set(id, updated);
+    return updated;
+  }
+
+  async deleteSkill(id: string): Promise<void> {
+    this.skillsMap.delete(id);
   }
 
 }

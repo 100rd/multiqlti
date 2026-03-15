@@ -378,6 +378,7 @@ export interface PipelineStageConfig {
   autoModelRouting?: {
     enabled: boolean;
   };
+  skillId?: string;
 }
 
 export interface StageOutput {

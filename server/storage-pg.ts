@@ -7,6 +7,7 @@ import {
   stageExecutions, questions, chatMessages, llmRequests,
   memories,
   mcpServers,
+  skills,
   type UserRow, type InsertUser,
   type Model, type InsertModel,
   type Pipeline, type InsertPipeline,
@@ -15,6 +16,7 @@ import {
   type Question, type InsertQuestion,
   type ChatMessage, type InsertChatMessage,
   type LlmRequest, type InsertLlmRequest,
+  type Skill, type InsertSkill,
 } from "@shared/schema";
 
 export class PgStorage implements IStorage {
@@ -601,6 +603,42 @@ export class PgStorage implements IStorage {
 
   async deleteMcpServer(id: number): Promise<void> {
     await db.delete(mcpServers).where(eq(mcpServers.id, id));
+  }
+
+  // ─── Skills ─────────────────────────────────────────────────────────────────
+
+  async getSkills(filter?: { teamId?: string; isBuiltin?: boolean }): Promise<Skill[]> {
+    const conditions = [];
+    if (filter?.teamId !== undefined) conditions.push(eq(skills.teamId, filter.teamId));
+    if (filter?.isBuiltin !== undefined) conditions.push(eq(skills.isBuiltin, filter.isBuiltin));
+
+    return conditions.length > 0
+      ? db.select().from(skills).where(and(...conditions)).orderBy(skills.name)
+      : db.select().from(skills).orderBy(skills.name);
+  }
+
+  async getSkill(id: string): Promise<Skill | undefined> {
+    const [row] = await db.select().from(skills).where(eq(skills.id, id));
+    return row;
+  }
+
+  async createSkill(data: InsertSkill): Promise<Skill> {
+    const [row] = await db.insert(skills).values(data).returning();
+    return row;
+  }
+
+  async updateSkill(id: string, updates: Partial<InsertSkill>): Promise<Skill> {
+    const [row] = await db
+      .update(skills)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(skills.id, id))
+      .returning();
+    if (!row) throw new Error(`Skill not found: ${id}`);
+    return row;
+  }
+
+  async deleteSkill(id: string): Promise<void> {
+    await db.delete(skills).where(eq(skills.id, id));
   }
 
 }
