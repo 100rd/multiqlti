@@ -189,9 +189,10 @@ describe("DelegationService", () => {
       });
 
       const promise = svc.delegate("run-1", makeRequest({ timeout: 100 }), []);
+      // Attach rejection handler BEFORE advancing timers to avoid unhandled rejection
+      const assertion = expect(promise).rejects.toBeInstanceOf(DelegationTimeoutError);
       await vi.advanceTimersByTimeAsync(200);
-
-      await expect(promise).rejects.toBeInstanceOf(DelegationTimeoutError);
+      await assertion;
       vi.useRealTimers();
     });
 
@@ -212,9 +213,9 @@ describe("DelegationService", () => {
       });
 
       const promise = svc.delegate("run-1", makeRequest({ timeout: 100 }), []);
+      const assertion = expect(promise).rejects.toBeInstanceOf(DelegationTimeoutError);
       await vi.advanceTimersByTimeAsync(200);
-
-      await expect(promise).rejects.toBeInstanceOf(DelegationTimeoutError);
+      await assertion;
 
       expect(storage.updateDelegationRequest).toHaveBeenCalledWith(
         expect.any(String),
@@ -241,9 +242,9 @@ describe("DelegationService", () => {
       });
 
       const promise = svc.delegate("run-1", makeRequest({ timeout: 100 }), []);
+      const assertion = expect(promise).rejects.toBeInstanceOf(DelegationTimeoutError);
       await vi.advanceTimersByTimeAsync(200);
-
-      await expect(promise).rejects.toBeInstanceOf(DelegationTimeoutError);
+      await assertion;
 
       expect(ws.broadcastToRun).toHaveBeenCalledWith(
         "run-1",
