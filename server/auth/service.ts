@@ -1,34 +1,22 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { db } from "../db";
-import { users, sessions } from "@shared/schema";
-import { eq, count } from "drizzle-orm";
 import type { User, AuthSession } from "@shared/types";
+import type { InsertUser } from "@shared/schema";
 import { configLoader } from "../config/loader";
+import { authStorage, MemAuthStorage } from "./storage";
 
 interface JwtPayload {
   userId: string;
   sessionId: string;
 }
 
-function rowToUser(row: { id: string; email: string; name: string; isActive: boolean; createdAt: Date }): User {
-  return {
-    id: row.id,
-    email: row.email,
-    name: row.name,
-    isActive: row.isActive,
-    createdAt: row.createdAt,
-  };
-}
-
 class AuthService {
   async hasUsers(): Promise<boolean> {
-    const result = await db.select({ total: count() }).from(users);
-    return (result[0]?.total ?? 0) > 0;
+    return authStorage.hasUsers();
   }
 
   async register(email: string, name: string, password: string): Promise<AuthSession> {
-    const alreadyHasUsers = await this.hasUsers();
+    const alreadyHasUsers = await authStorage.hasUsers();
     if (alreadyHasUsers) {
       const err = new Error("Registration is closed — admin account already exists");
       (err as NodeJS.ErrnoException).code = "REGISTRATION_CLOSED";
@@ -37,18 +25,25 @@ class AuthService {
 
     const { bcryptRounds } = configLoader.get().auth;
     const passwordHash = await bcrypt.hash(password, bcryptRounds);
-    const [user] = await db.insert(users).values({ email, name, passwordHash }).returning();
 
-    return this.createSession(user);
+    const userData: InsertUser = { email, name, passwordHash };
+    const user = await authStorage.createUser(userData);
+
+    return this.buildSession(user);
   }
 
   async login(email: string, password: string): Promise<AuthSession> {
-    const [user] = await db.select().from(users).where(eq(users.email, email));
+    const user = await authStorage.getUserByEmail(email);
     if (!user) {
       throw new Error("Invalid credentials");
     }
 
-    const valid = await bcrypt.compare(password, user.passwordHash);
+    const passwordHash = await this.getPasswordHash(email);
+    if (!passwordHash) {
+      throw new Error("Invalid credentials");
+    }
+
+    const valid = await bcrypt.compare(password, passwordHash);
     if (!valid) {
       throw new Error("Invalid credentials");
     }
@@ -57,11 +52,11 @@ class AuthService {
       throw new Error("Account is disabled");
     }
 
-    return this.createSession(user);
+    return this.buildSession(user);
   }
 
   async logout(token: string): Promise<void> {
-    await db.delete(sessions).where(eq(sessions.token, token));
+    await authStorage.deleteSession(token);
   }
 
   async validateToken(token: string): Promise<User | null> {
@@ -74,25 +69,35 @@ class AuthService {
       return null;
     }
 
-    const [session] = await db
-      .select()
-      .from(sessions)
-      .where(eq(sessions.token, token));
-
+    const session = await authStorage.getSession(token);
     if (!session) return null;
     if (session.expiresAt < new Date()) {
-      await db.delete(sessions).where(eq(sessions.id, session.id));
+      await authStorage.deleteSessionById(session.id);
       return null;
     }
     if (session.userId !== payload.userId) return null;
 
-    const [user] = await db.select().from(users).where(eq(users.id, payload.userId));
+    const user = await authStorage.getUserById(payload.userId);
     if (!user || !user.isActive) return null;
 
-    return rowToUser(user);
+    return user;
   }
 
-  private async createSession(user: { id: string; email: string; name: string; isActive: boolean; createdAt: Date }): Promise<AuthSession> {
+  private async getPasswordHash(email: string): Promise<string | undefined> {
+    if (authStorage instanceof MemAuthStorage) {
+      const user = await authStorage.getUserByEmail(email);
+      if (!user) return undefined;
+      return authStorage.getPasswordHash(user.id);
+    }
+    // PgAuthStorage: fetch password hash directly
+    const { PgAuthStorage } = await import("./storage");
+    if (authStorage instanceof PgAuthStorage) {
+      return authStorage.getPasswordHashFromDb(email);
+    }
+    return undefined;
+  }
+
+  private async buildSession(user: User): Promise<AuthSession> {
     const { jwtSecret, sessionTtlDays } = configLoader.get().auth;
     if (!jwtSecret) throw new Error("[auth] JWT_SECRET is not configured");
     const sessionMs = sessionTtlDays * 24 * 60 * 60 * 1000;
@@ -105,18 +110,9 @@ class AuthService {
       { expiresIn: `${sessionTtlDays}d` },
     );
 
-    await db.insert(sessions).values({
-      id: sessionId,
-      userId: user.id,
-      token,
-      expiresAt,
-    });
+    await authStorage.createSession(sessionId, user.id, token, expiresAt);
 
-    return {
-      token,
-      user: rowToUser(user),
-      expiresAt,
-    };
+    return { token, user, expiresAt };
   }
 }
 
