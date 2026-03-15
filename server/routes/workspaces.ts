@@ -150,6 +150,9 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
   });
 
   // ── File Operations ─────────────────────────────────────────────────────────
+  // Express 5 / path-to-regexp v8 requires named wildcards — bare `*` is not
+  // allowed. The `*path` parameter captures everything after /files/ and is
+  // accessed via req.params.path.
 
   router.get("/api/workspaces/:id/files", async (req, res) => {
     const row = await getWorkspaceById(String(req.params.id), res);
@@ -168,7 +171,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     const row = await getWorkspaceById(String(req.params.id), res);
     if (!row) return;
 
-    const filePath = extractFilePathFromUrl(req.path, String(req.params.id));
+    const filePath = decodeFilePath(req.params.path);
     if (!filePath) return res.status(400).json({ error: "File path required" });
 
     try {
@@ -183,7 +186,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     const row = await getWorkspaceById(String(req.params.id), res);
     if (!row) return;
 
-    const filePath = extractFilePathFromUrl(req.path, String(req.params.id));
+    const filePath = decodeFilePath(req.params.path);
     if (!filePath) return res.status(400).json({ error: "File path required" });
 
     const parsed = WriteFileSchema.safeParse(req.body);
@@ -205,7 +208,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     const row = await getWorkspaceById(String(req.params.id), res);
     if (!row) return;
 
-    const filePath = extractFilePathFromUrl(req.path, String(req.params.id));
+    const filePath = decodeFilePath(req.params.path);
     if (!filePath) return res.status(400).json({ error: "File path required" });
 
     try {
@@ -341,12 +344,13 @@ async function getWorkspaceById(id: string, res: Response): Promise<WorkspaceRow
 }
 
 /**
- * Extract the file path from the URL path.
- * E.g. /api/workspaces/{id}/files/src/index.ts  -> "src/index.ts"
+ * Decode the file path captured by the Express 5 named wildcard `*path`.
+ * Returns null if the path is empty.
  */
-function extractFilePathFromUrl(reqPath: string, workspaceId: string): string | null {
-  const prefix = `/api/workspaces/${workspaceId}/files/`;
-  if (!reqPath.startsWith(prefix)) return null;
-  const fp = reqPath.slice(prefix.length);
-  return fp.length > 0 ? decodeURIComponent(fp) : null;
+function decodeFilePath(rawPath: string | string[] | undefined): string | null {
+  if (!rawPath) return null;
+  const raw = Array.isArray(rawPath) ? rawPath[0] : rawPath;
+  if (!raw) return null;
+  const fp = decodeURIComponent(raw);
+  return fp.length > 0 ? fp : null;
 }
