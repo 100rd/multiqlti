@@ -230,7 +230,11 @@ export type WsEventType =
   | "sandbox:output"
   | "sandbox:completed"
   | "stage:thought_tree"
-  | "stage:model_downgraded";
+  | "stage:model_downgraded"
+  | "parallel:split"
+  | "parallel:subtask:started"
+  | "parallel:subtask:completed"
+  | "parallel:merged";
 
 export interface WsEvent {
   type: WsEventType;
@@ -370,6 +374,7 @@ export interface PipelineStageConfig {
   privacySettings?: PrivacySettings;
   sandbox?: SandboxConfig;
   tools?: StageToolConfig;
+  parallel?: ParallelConfig;
   autoModelRouting?: {
     enabled: boolean;
   };
@@ -620,4 +625,146 @@ export interface RunVariableState {
   preserveReason?: string;        // e.g. "run failed at stage: deployment"
   createdAt: Date;
   clearedAt: Date | null;
+}
+
+// ─── Maintenance Autopilot Types (Phase 4.5) ─────────────────────────────────
+
+export type MaintenanceCategory =
+  | "dependency_update"
+  | "breaking_change"
+  | "security_advisory"
+  | "license_compliance"
+  | "api_deprecation"
+  | "config_drift"
+  | "best_practices"
+  | "documentation"
+  | "access_control"
+  | "data_retention"
+  | "cert_expiry"
+  | "infra_drift"
+  | "vendor_status"
+  | "system_hardening";
+
+export type MaintenanceSeverity = "critical" | "high" | "medium" | "low" | "info";
+
+export interface MaintenanceCategoryConfig {
+  category: MaintenanceCategory;
+  enabled: boolean;
+  severity: MaintenanceSeverity;
+  customRules?: Record<string, unknown>;
+}
+
+export interface MaintenancePolicy {
+  id: string;
+  workspaceId: string | null;
+  enabled: boolean;
+  schedule: string;
+  categories: MaintenanceCategoryConfig[];
+  severityThreshold: MaintenanceSeverity;
+  autoMerge: boolean;
+  notifyChannels: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ScoutFinding {
+  id: string;
+  scanId: string;
+  category: MaintenanceCategory;
+  severity: MaintenanceSeverity;
+  title: string;
+  description: string;
+  currentValue: string;
+  recommendedValue: string;
+  effort: "trivial" | "small" | "medium" | "large";
+  references: string[];
+  autoFixable: boolean;
+  complianceRefs: string[];
+  status: "open" | "actioned" | "dismissed";
+}
+
+export interface MaintenanceScan {
+  id: string;
+  policyId: string;
+  workspaceId: string;
+  status: "running" | "completed" | "failed";
+  findings: ScoutFinding[];
+  importantCount: number;
+  triggeredPipelineId: string | null;
+  startedAt: Date;
+  completedAt: Date | null;
+  createdAt: Date;
+}
+
+export interface HealthScore {
+  score: number;
+  breakdown: {
+    openFindings: number;
+    complianceCoverage: number;
+    meanTimeToFix: number;
+    scanFrequency: number;
+  };
+  trend: "improving" | "stable" | "declining";
+}
+
+export interface Recommendation {
+  type:
+    | "increase_frequency"
+    | "enable_category"
+    | "review_stale"
+    | "upgrade_threshold";
+  message: string;
+  priority: "high" | "medium" | "low";
+  actionable: boolean;
+  suggestedChange?: Partial<MaintenancePolicy>;
+}
+
+// ─── Parallel Split Execution Types (Phase 3.8) ───────────────────────────────
+
+export type MergeStrategy = "concatenate" | "review" | "auto";
+
+export interface ParallelConfig {
+  enabled: boolean;
+  mode: "auto" | "manual";
+  maxAgents: number;
+  splitterModelSlug?: string;
+  mergerModelSlug?: string;
+  mergeStrategy: MergeStrategy;
+}
+
+export interface ModelParallelCapabilities {
+  maxConcurrentAgents: number;
+  supportedMergeStrategies: MergeStrategy[];
+  recommendedForSplitting: boolean;
+}
+
+export interface SubTask {
+  id: string;
+  title: string;
+  description: string;
+  context: string[];
+  suggestedModel?: string;
+  estimatedComplexity: "low" | "medium" | "high";
+}
+
+export interface SplitPlan {
+  shouldSplit: boolean;
+  reason: string;
+  subtasks: SubTask[];
+}
+
+export interface SubTaskResult {
+  subtask: SubTask;
+  output: string;
+  tokensUsed: number;
+  modelSlug: string;
+  durationMs: number;
+}
+
+export interface ParallelExecutionMeta {
+  parallelExecution: true;
+  subtaskCount: number;
+  succeededCount: number;
+  failedCount: number;
+  totalTokens: number;
 }
