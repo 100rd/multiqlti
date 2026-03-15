@@ -3,6 +3,9 @@ import type { WsManager } from "../ws/manager";
 import type { TeamConfig, StageContext, TeamResult, ExecutionStrategy, ProviderMessage } from "@shared/types";
 import { StrategyExecutor } from "../services/strategy-executor";
 
+const CONTEXT_STAGES_TO_SHOW = 3;
+const CONTEXT_TRUNCATE_CHARS = 500;
+
 export abstract class BaseTeam {
   private strategyExecutor: StrategyExecutor;
 
@@ -140,6 +143,29 @@ export abstract class BaseTeam {
 
   protected serializeInput(input: Record<string, unknown>): string {
     return JSON.stringify(input, null, 2);
+  }
+
+  /**
+   * Builds a summarized context block showing the last N completed stage outputs,
+   * truncated for prompt efficiency. Used by subclass buildPrompt implementations
+   * to give downstream stages awareness of the full pipeline run so far.
+   */
+  protected buildContextSummary(context: StageContext): string {
+    const outputs = context.previousOutputs;
+    if (outputs.length === 0) return "";
+
+    const recent = outputs.slice(-CONTEXT_STAGES_TO_SHOW);
+    const startIdx = Math.max(0, outputs.length - CONTEXT_STAGES_TO_SHOW);
+
+    const lines: string[] = ["--- Pipeline context (recent stages) ---"];
+    for (let j = 0; j < recent.length; j++) {
+      const stageIdx = startIdx + j;
+      const text = JSON.stringify(recent[j]).slice(0, CONTEXT_TRUNCATE_CHARS);
+      const truncated = text.length === CONTEXT_TRUNCATE_CHARS ? text + "..." : text;
+      lines.push(`Stage ${stageIdx}: ${truncated}`);
+    }
+    lines.push("--- End context ---");
+    return lines.join("\n");
   }
 }
 

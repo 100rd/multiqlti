@@ -189,6 +189,18 @@ const MOCK_RESPONSES: Record<TeamId, (input: string) => string> = {
       null,
       2,
     ),
+
+  fact_check: (input) =>
+    JSON.stringify(
+      {
+        verdict: "pass",
+        issues: [],
+        enrichedOutput: input.slice(0, 200),
+        summary: "Mock fact-check: no issues found. (Note: real fact-check requires xAI Grok with web search capability.)",
+      },
+      null,
+      2,
+    ),
 };
 
 function detectTeam(messages: Array<{ role: string; content: string }>): TeamId {

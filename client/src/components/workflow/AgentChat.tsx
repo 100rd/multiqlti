@@ -15,6 +15,7 @@ const TEAM_COLORS: Record<string, string> = {
   code_review: "bg-orange-500/20 text-orange-700",
   deployment: "bg-cyan-500/20 text-cyan-700",
   monitoring: "bg-rose-500/20 text-rose-700",
+  fact_check: "bg-violet-500/20 text-violet-700",
 };
 
 interface AgentChatProps {

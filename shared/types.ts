@@ -5,7 +5,8 @@ export type TeamId =
   | "testing"
   | "code_review"
   | "deployment"
-  | "monitoring";
+  | "monitoring"
+  | "fact_check";
 
 export type RunStatus =
   | "pending"
@@ -276,6 +277,13 @@ export interface PipelineStageConfig {
   enabled: boolean;
   executionStrategy?: ExecutionStrategy;
   privacySettings?: PrivacySettings;
+  sandbox?: SandboxConfig;
+}
+
+export interface StageOutput {
+  teamId: string;
+  output: Record<string, unknown>;
+  stageIndex: number;
 }
 
 export interface StageContext {
@@ -285,6 +293,7 @@ export interface StageContext {
   temperature?: number;
   maxTokens?: number;
   previousOutputs: Record<string, unknown>[];
+  fullContext?: StageOutput[];
   userAnswers?: Record<string, string>;
   privacySettings?: PrivacySettings;
   sessionId?: string;
@@ -346,4 +355,13 @@ export interface ExecutionStrategyPreset {
   label: string;
   description: string;
   stageStrategies: Partial<Record<TeamId, ExecutionStrategy>>;
+}
+
+// ─── Fact Check Output ────────────────────────────────────────────────────────
+
+export interface FactCheckOutput {
+  verdict: "pass" | "warn" | "fail";
+  issues: string[];
+  enrichedOutput: string;
+  summary: string;
 }

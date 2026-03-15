@@ -7,7 +7,7 @@ import { Save, RotateCcw, Zap, Network } from "lucide-react";
 import AgentNode from "./AgentNode";
 import { usePipelines, useUpdatePipeline, useModels } from "@/hooks/use-pipeline";
 import { SDLC_TEAMS, TEAM_ORDER, STRATEGY_PRESETS, EXECUTION_STRATEGY_PRESETS } from "@shared/constants";
-import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy, PrivacySettings } from "@shared/types";
+import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy, PrivacySettings, SandboxConfig } from "@shared/types";
 
 interface MultiAgentPipelineProps {
   pipelineId?: string;
@@ -26,6 +26,7 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
 
   const [localStages, setLocalStages] = useState<PipelineStageConfig[]>(pipelineStages);
   const [dirty, setDirty] = useState(false);
+  const [factCheckEnabled, setFactCheckEnabled] = useState(false);
 
   useEffect(() => {
     if (pipelineStages.length > 0) {
@@ -78,6 +79,13 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
   const updatePrivacy = (teamId: string, settings: PrivacySettings) => {
     setLocalStages(prev => prev.map(s =>
       s.teamId === teamId ? { ...s, privacySettings: settings } : s,
+    ));
+    setDirty(true);
+  };
+
+  const updateSandbox = (teamId: string, config: SandboxConfig | undefined) => {
+    setLocalStages(prev => prev.map(s =>
+      s.teamId === teamId ? { ...s, sandbox: config } : s,
     ));
     setDirty(true);
   };
@@ -282,12 +290,61 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                 onMaxTokensChange={(_, tokens) => updateMaxTokens(stage.teamId, tokens)}
                 onStrategyChange={(_, strategy) => updateStrategy(stage.teamId, strategy)}
                 onPrivacyChange={(_, settings) => updatePrivacy(stage.teamId, settings)}
+                sandboxConfig={stage.sandbox}
+                onSandboxChange={(_, cfg) => updateSandbox(stage.teamId, cfg)}
                 isLast={idx === localStages.length - 1}
               />
             );
           })}
         </div>
       </div>
+
+
+      {/* Optional Fact Check Stage */}
+      <Card className="border-border bg-card p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">Fact Check Stage</span>
+            <span className="text-xs text-muted-foreground">(optional — Grok verifies outputs via web search)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">
+              {factCheckEnabled ? "Enabled — will run after the last active stage" : "Disabled"}
+            </span>
+            <button
+              type="button"
+              className={[
+                "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors",
+                factCheckEnabled ? "bg-violet-500" : "bg-muted",
+              ].join(" ")}
+              onClick={() => {
+                const next = !factCheckEnabled;
+                setFactCheckEnabled(next);
+                if (next) {
+                  const factStage = SDLC_TEAMS["fact_check" as keyof typeof SDLC_TEAMS];
+                  const defaultSlug = (modelList[0]?.value as string) ?? "grok-3";
+                  setLocalStages(prev => {
+                    if (prev.find(s => s.teamId === "fact_check")) {
+                      return prev.map(s => s.teamId === "fact_check" ? { ...s, enabled: true } : s);
+                    }
+                    return [...prev, { teamId: "fact_check" as const, modelSlug: defaultSlug, enabled: true, description: factStage?.description ?? "" } as unknown as PipelineStageConfig];
+                  });
+                } else {
+                  setLocalStages(prev => prev.filter(s => s.teamId !== "fact_check"));
+                }
+                setDirty(true);
+              }}
+            >
+              <span
+                className={[
+                  "pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-lg ring-0 transition",
+                  factCheckEnabled ? "translate-x-4" : "translate-x-0",
+                ].join(" ")}
+              />
+            </button>
+          </div>
+        </div>
+      </Card>
 
       {/* Pipeline Configuration */}
       <Card className="border-border bg-muted/30 p-4">

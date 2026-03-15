@@ -195,3 +195,38 @@ export const providerKeys = pgTable("provider_keys", {
 });
 
 export type ProviderKey = typeof providerKeys.$inferSelect;
+
+// ─── Anonymization Patterns ──────────────────────────────────────────────────
+
+export const anonymizationPatterns = pgTable("anonymization_patterns", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  entityType: text("entity_type").notNull().default("custom_pattern"),
+  regexPattern: text("regex_pattern").notNull(),
+  severity: text("severity").notNull().default("high"),
+  pseudonymTemplate: text("pseudonym_template"),
+  allowlist: jsonb("allowlist").$type<string[]>().default([]).notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertAnonymizationPatternSchema = createInsertSchema(anonymizationPatterns).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type AnonymizationPattern = typeof anonymizationPatterns.$inferSelect;
+
+// ─── Anonymization Audit Log ─────────────────────────────────────────────────
+
+export const anonymizationLog = pgTable("anonymization_log", {
+  id: serial("id").primaryKey(),
+  runId: text("run_id"),
+  sessionId: text("session_id").notNull(),
+  level: text("level").notNull(),
+  entitiesFound: integer("entities_found").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export type AnonymizationLogEntry = typeof anonymizationLog.$inferSelect;

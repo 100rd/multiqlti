@@ -10,7 +10,8 @@ import { ChevronDown, ChevronUp, Pencil, ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SDLC_TEAMS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, MIN_TEMPERATURE, MAX_TEMPERATURE, TEMPERATURE_STEP } from "@shared/constants";
 import StrategyConfig from "./StrategyConfig";
-import type { ExecutionStrategy, PrivacySettings } from "@shared/types";
+import SandboxConfig from "./SandboxConfig";
+import type { ExecutionStrategy, PrivacySettings, SandboxConfig as SandboxConfigType } from "@shared/types";
 
 interface ModelOption {
   label: string;
@@ -38,6 +39,8 @@ interface AgentNodeProps {
   onMaxTokensChange: (id: string, maxTokens: number) => void;
   onStrategyChange: (id: string, strategy: ExecutionStrategy) => void;
   onPrivacyChange: (id: string, settings: PrivacySettings) => void;
+  sandboxConfig?: SandboxConfigType;
+  onSandboxChange: (id: string, config: SandboxConfigType | undefined) => void;
   isLast: boolean;
 }
 
@@ -88,6 +91,8 @@ export default function AgentNode({
   onMaxTokensChange,
   onStrategyChange,
   onPrivacyChange,
+  sandboxConfig,
+  onSandboxChange,
   isLast,
 }: AgentNodeProps) {
   const team = SDLC_TEAMS[role as keyof typeof SDLC_TEAMS];
