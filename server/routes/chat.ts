@@ -4,13 +4,17 @@ import { z } from "zod";
 import type { IStorage } from "../storage";
 import type { Gateway } from "../gateway/index";
 import type { WsManager } from "../ws/manager";
-import { validateBody } from "../middleware/validate";
+import { validateBody, validateQuery } from "../middleware/validate";
 
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
 
 const HistoryMessageSchema = z.object({
   role: z.enum(["user", "assistant", "system"]),
-  content: z.string().max(100000),
+  content: z.string().min(1).max(100000),
+});
+
+const GetChatMessagesQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(500).optional(),
 });
 
 const SendChatSchema = z.object({
@@ -38,8 +42,8 @@ export function registerChatRoutes(
   gateway: Gateway,
   wsManager: WsManager,
 ) {
-  router.get("/api/chat/:runId/messages", async (req, res) => {
-    const limit = req.query.limit ? parseInt(req.query.limit as string) : undefined;
+  router.get("/api/chat/:runId/messages", validateQuery(GetChatMessagesQuerySchema), async (req, res) => {
+    const { limit } = req.query as z.infer<typeof GetChatMessagesQuerySchema>;
     const messages = await storage.getChatMessages(req.params["runId"], limit);
     res.json(messages);
   });

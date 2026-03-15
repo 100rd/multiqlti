@@ -20,7 +20,16 @@ function maskUrl(value: string): string {
 const CreateRunSchema = z.object({
   pipelineId: z.string().min(1, "pipelineId is required").max(100),
   input: z.string().min(1, "input must be a non-empty string").max(50000),
-  variables: z.record(z.string().max(10000)).refine((v) => Object.keys(v).length <= 50, { message: "variables must have at most 50 keys" }).optional(),
+  variables: z.record(z.string().max(10000))
+    .refine(
+      (v) => Object.keys(v).length <= 50,
+      { message: "variables must have at most 50 keys" }
+    )
+    .refine(
+      (v) => Object.keys(v).every((k) => k.length <= 200),
+      { message: "variable key names must be at most 200 characters" }
+    )
+    .optional(),
 });
 
 const AnswerQuestionSchema = z.object({

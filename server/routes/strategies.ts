@@ -7,44 +7,44 @@ import type { ExecutionStrategy, PipelineStageConfig, TeamId } from "@shared/typ
 // ─── Zod schemas for input validation ────────────────────────────────────────
 
 const ProposerConfigSchema = z.object({
-  modelSlug: z.string().min(1),
-  role: z.string().optional(),
+  modelSlug: z.string().min(1).max(200),
+  role: z.string().max(200).optional(),
   temperature: z.number().min(0).max(2).optional(),
 });
 
 const AggregatorConfigSchema = z.object({
-  modelSlug: z.string().min(1),
-  systemPrompt: z.string().optional(),
+  modelSlug: z.string().min(1).max(200),
+  systemPrompt: z.string().max(10000).optional(),
 });
 
 const MoaStrategySchema = z.object({
   type: z.literal("moa"),
   proposers: z.array(ProposerConfigSchema).min(1).max(5),
   aggregator: AggregatorConfigSchema,
-  proposerPromptOverride: z.string().optional(),
+  proposerPromptOverride: z.string().max(10000).optional(),
 });
 
 const DebateParticipantSchema = z.object({
-  modelSlug: z.string().min(1),
+  modelSlug: z.string().min(1).max(200),
   role: z.enum(["proposer", "critic", "devil_advocate"]),
-  persona: z.string().optional(),
+  persona: z.string().max(500).optional(),
 });
 
 const JudgeConfigSchema = z.object({
-  modelSlug: z.string().min(1),
-  criteria: z.array(z.string()).optional(),
+  modelSlug: z.string().min(1).max(200),
+  criteria: z.array(z.string().max(500)).max(20).optional(),
 });
 
 const DebateStrategySchema = z.object({
   type: z.literal("debate"),
-  participants: z.array(DebateParticipantSchema).min(2),
+  participants: z.array(DebateParticipantSchema).min(2).max(20),
   judge: JudgeConfigSchema,
   rounds: z.number().int().min(1).max(5),
   stopEarly: z.boolean().optional(),
 });
 
 const CandidateConfigSchema = z.object({
-  modelSlug: z.string().min(1),
+  modelSlug: z.string().min(1).max(200),
   temperature: z.number().min(0).max(2).optional(),
 });
 

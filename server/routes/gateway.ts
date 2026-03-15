@@ -4,6 +4,20 @@ import type { Gateway } from "../gateway/index";
 import { SDLC_TEAMS, TEAM_ORDER } from "@shared/constants";
 import { validateBody } from "../middleware/validate.js";
 
+// ─── SSRF denylist ────────────────────────────────────────────────────────────
+
+const SSRF_DENYLIST_PATTERNS = [
+  /^https?:\/\/169\.254\./,           // AWS IMDSv1
+  /^https?:\/\/\[?fd00:ec2/i,         // AWS IMDSv2 IPv6
+  /^https?:\/\/metadata\.google/,     // GCP metadata
+  /^https?:\/\/metadata\.internal/,   // GCP alt
+  /^https?:\/\/169\.254\.169\.254/,   // Common cloud metadata
+];
+
+function isSsrfBlocked(url: string): boolean {
+  return SSRF_DENYLIST_PATTERNS.some((re) => re.test(url));
+}
+
 // ─── Zod schemas ──────────────────────────────────────────────────────────────
 
 const MessageSchema = z.object({
@@ -110,6 +124,9 @@ export function registerGatewayRoutes(router: Router, gateway: Gateway) {
   /** Probe a custom endpoint to discover its models */
   router.post("/api/providers/probe", validateBody(ProbeEndpointSchema), async (req, res) => {
     const { endpoint, providerType } = req.body as z.infer<typeof ProbeEndpointSchema>;
+    if (isSsrfBlocked(endpoint)) {
+      return res.status(400).json({ error: "Endpoint not allowed" });
+    }
     try {
       const models = await gateway.discoverFromEndpoint(endpoint, providerType);
       res.json({ models });

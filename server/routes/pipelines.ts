@@ -4,19 +4,19 @@ import type { IStorage } from "../storage";
 import { requireRole, requireOwnerOrRole } from "../auth/middleware";
 
 const PipelineStageConfigSchema = z.object({
-  teamId: z.string().min(1),
-  modelSlug: z.string().min(1),
-  systemPromptOverride: z.string().optional(),
+  teamId: z.string().min(1).max(100),
+  modelSlug: z.string().min(1).max(200),
+  systemPromptOverride: z.string().max(50000).optional(),
   temperature: z.number().min(0).max(2).optional(),
-  maxTokens: z.number().int().positive().optional(),
+  maxTokens: z.number().int().positive().max(100000).optional(),
   enabled: z.boolean(),
 });
 
 const CreatePipelineSchema = z.object({
   name: z.string().min(1).max(100).transform((s) => s.replace(/<[^>]*>/g, "").trim()),
-  description: z.string().optional().transform((s) => s?.replace(/<[^>]*>/g, "").trim()),
-  stages: z.array(PipelineStageConfigSchema).default([]),
-  createdBy: z.string().optional(),
+  description: z.string().max(2000).optional().transform((s) => s?.replace(/<[^>]*>/g, "").trim()),
+  stages: z.array(PipelineStageConfigSchema).max(50).default([]),
+  createdBy: z.string().max(100).optional(),
   isTemplate: z.boolean().optional(),
 });
 
