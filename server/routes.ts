@@ -22,6 +22,7 @@ import { registerSettingsRoutes } from "./routes/settings";
 import { registerMaintenanceRoutes } from "./routes/maintenance";
 import { registerSpecializationRoutes } from "./routes/specialization";
 import { registerSkillRoutes } from "./routes/skills";
+import { registerGuardrailRoutes } from "./routes/guardrails";
 import { BUILTIN_SKILLS } from "./skills/builtin";
 import { requireAuth } from "./auth/middleware";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
@@ -62,6 +63,7 @@ export async function registerRoutes(
   app.use("/api/maintenance", requireAuth);
   app.use("/api/specialization-profiles", requireAuth);
   app.use("/api/skills", requireAuth);
+  app.use("/api/guardrails", requireAuth);
 
   // Register route implementations
   registerModelRoutes(app, storage);
@@ -80,6 +82,7 @@ export async function registerRoutes(
   registerMaintenanceRoutes(app as unknown as Router);
   registerSpecializationRoutes(app, storage);
   registerSkillRoutes(app, storage);
+  registerGuardrailRoutes(app, storage, gateway);
 
   // Seed built-in skills (idempotent — checks each by ID)
   for (const skill of BUILTIN_SKILLS) {

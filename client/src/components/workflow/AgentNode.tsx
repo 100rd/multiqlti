@@ -11,7 +11,8 @@ import { cn } from "@/lib/utils";
 import { SDLC_TEAMS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, MIN_TEMPERATURE, MAX_TEMPERATURE, TEMPERATURE_STEP } from "@shared/constants";
 import StrategyConfig from "./StrategyConfig";
 import SandboxConfig from "./SandboxConfig";
-import type { ExecutionStrategy, PrivacySettings, SandboxConfig as SandboxConfigType, StageToolConfig, ParallelConfig, MergeStrategy } from "@shared/types";
+import type { ExecutionStrategy, PrivacySettings, SandboxConfig as SandboxConfigType, StageToolConfig, ParallelConfig, MergeStrategy, StageGuardrail } from "@shared/types";
+import GuardrailEditor from '../pipeline/GuardrailEditor';
 
 interface ModelOption {
   label: string;
@@ -47,6 +48,8 @@ interface AgentNodeProps {
   onParallelChange: (id: string, config: ParallelConfig | undefined) => void;
   approvalRequired?: boolean;
   onApprovalChange: (id: string, value: boolean) => void;
+  guardrails?: StageGuardrail[];
+  onGuardrailsChange: (id: string, guardrails: StageGuardrail[]) => void;
   isLast: boolean;
 }
 
@@ -236,6 +239,8 @@ export default function AgentNode({
   onApprovalChange,
   parallelConfig,
   onParallelChange,
+  guardrails = [],
+  onGuardrailsChange,
   isLast,
 }: AgentNodeProps) {
   const team = SDLC_TEAMS[role as keyof typeof SDLC_TEAMS];
@@ -245,6 +250,7 @@ export default function AgentNode({
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
   const [toolsExpanded, setToolsExpanded] = useState(false);
   const [parallelExpanded, setParallelExpanded] = useState(false);
+  const [guardrailsExpanded, setGuardrailsExpanded] = useState(false);
   const [localPrompt, setLocalPrompt] = useState(systemPromptOverride ?? "");
   const [localMaxTokens, setLocalMaxTokens] = useState(
     String(maxTokens ?? DEFAULT_MAX_TOKENS),
@@ -585,6 +591,32 @@ export default function AgentNode({
                   defaultModelSlug={model}
                   enabled={enabled}
                   onChange={(cfg) => onParallelChange(id, cfg)}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Guardrails */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setGuardrailsExpanded((prev) => !prev)}
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              disabled={!enabled}
+            >
+              <span>Guardrails {guardrails.length > 0 ? `(${guardrails.length})` : ''}</span>
+              {guardrailsExpanded
+                ? <ChevronUp className="h-3 w-3 ml-1" />
+                : <ChevronDown className="h-3 w-3 ml-1" />}
+            </button>
+
+            {guardrailsExpanded && (
+              <div className="mt-3 p-3 rounded border border-border bg-muted/30">
+                <GuardrailEditor
+                  guardrails={guardrails}
+                  enabled={enabled}
+                  stageModelSlug={model}
+                  onChange={(updated) => onGuardrailsChange(id, updated)}
                 />
               </div>
             )}

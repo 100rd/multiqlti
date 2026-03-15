@@ -235,7 +235,11 @@ export type WsEventType =
   | "parallel:split"
   | "parallel:subtask:started"
   | "parallel:subtask:completed"
-  | "parallel:merged";
+  | "parallel:merged"
+  | "guardrail:checking"
+  | "guardrail:passed"
+  | "guardrail:failed"
+  | "guardrail:retrying";
 
 export interface WsEvent {
   type: WsEventType;
@@ -366,7 +370,6 @@ export interface McpServerConfig {
 export interface PipelineStageConfig {
   teamId: TeamId;
   modelSlug: string;
-  skillId?: string;
   systemPromptOverride?: string;
   temperature?: number;
   maxTokens?: number;
@@ -377,9 +380,11 @@ export interface PipelineStageConfig {
   sandbox?: SandboxConfig;
   tools?: StageToolConfig;
   parallel?: ParallelConfig;
+  guardrails?: StageGuardrail[];
   autoModelRouting?: {
     enabled: boolean;
   };
+  skillId?: string;
 }
 
 export interface StageOutput {
@@ -822,17 +827,17 @@ export interface ParallelExecutionMeta {
   totalTokens: number;
 }
 
-// ─── Phase 5: Custom Stage Config ─────────────────────────────────────────────
+// ─── Custom Stage Types (Phase 5) ────────────────────────────────────────────
 
 export interface CustomStageConfig {
-  id: string;
+  id: string;         // e.g. "custom_summarize_abc123"
   name: string;
   description: string;
   systemPrompt: string;
-  icon: string;
+  icon: string;       // emoji, e.g. "🗒️"
 }
 
-// ─── Phase 5: Specialization Profile ──────────────────────────────────────────
+// ─── Specialization Profile Types (Phase 5) ──────────────────────────────────
 
 export interface SpecializationProfile {
   id: string;
@@ -842,3 +847,39 @@ export interface SpecializationProfile {
   createdAt?: Date;
 }
 
+// ─── Guardrail Types (Phase 6.1) ─────────────────────────────────────────────
+
+export type GuardrailType = "json_schema" | "regex" | "custom" | "llm_check";
+export type GuardrailOnFail = "retry" | "skip" | "fail" | "fallback";
+
+export interface GuardrailConfig {
+  /** JSON Schema object — for "json_schema" type */
+  schema?: Record<string, unknown>;
+  /** Regex string — for "regex" type */
+  pattern?: string;
+  /** JS expression returning boolean — for "custom" type (sandboxed) */
+  validatorCode?: string;
+  /** Validation prompt — for "llm_check" type */
+  llmPrompt?: string;
+  /** Model to use for llm_check (defaults to cheapest/mock) */
+  llmModelSlug?: string;
+}
+
+export interface StageGuardrail {
+  id: string;
+  type: GuardrailType;
+  config: GuardrailConfig;
+  onFail: GuardrailOnFail;
+  /** Applies to "retry" action only; default 1 */
+  maxRetries: number;
+  /** Applies to "fallback" action */
+  fallbackValue?: string;
+  enabled: boolean;
+}
+
+export interface GuardrailResult {
+  guardrailId: string;
+  passed: boolean;
+  reason?: string;
+  attempts: number;
+}
