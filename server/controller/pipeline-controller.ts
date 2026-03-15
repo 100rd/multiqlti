@@ -712,6 +712,8 @@ export class PipelineController {
   }
 
 
+}
+
 function createNullGateway(): Gateway {
   return {
     complete: async () => ({ content: "", tokensUsed: 0, modelSlug: "null", finishReason: "stop" }),
