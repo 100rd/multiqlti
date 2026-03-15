@@ -14,6 +14,7 @@ import {
   LogOut,
   Users,
   Wrench,
+  Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -45,6 +46,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
       href: "/pipelines",
       badge: pendingCount > 0 ? pendingCount : undefined,
     },
+    { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
     { icon: BarChart3, label: "Statistics", href: "/stats" },
     { icon: Brain, label: "Memory", href: "/memories" },

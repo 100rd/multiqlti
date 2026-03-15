@@ -20,9 +20,13 @@ import { registerAuthRoutes } from "./routes/auth";
 import { registerSandboxRoutes } from "./routes/sandbox";
 import { registerSettingsRoutes } from "./routes/settings";
 import { registerMaintenanceRoutes } from "./routes/maintenance";
+import { registerSpecializationRoutes } from "./routes/specialization";
+import { registerSkillRoutes } from "./routes/skills";
 import { registerGuardrailRoutes } from "./routes/guardrails";
 import { registerDelegationRoutes } from "./routes/delegations";
 import { DelegationService } from "./pipeline/delegation-service";
+import { registerDAGRoutes } from "./routes/dag";
+import { BUILTIN_SKILLS } from "./skills/builtin";
 import { requireAuth } from "./auth/middleware";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
@@ -61,6 +65,8 @@ export async function registerRoutes(
   app.use("/api/teams", requireAuth);
   app.use("/api/sandbox", requireAuth);
   app.use("/api/maintenance", requireAuth);
+  app.use("/api/specialization-profiles", requireAuth);
+  app.use("/api/skills", requireAuth);
   app.use("/api/guardrails", requireAuth);
 
   // Register route implementations
@@ -78,9 +84,19 @@ export async function registerRoutes(
   registerSandboxRoutes(app as unknown as Router);
   registerSettingsRoutes(app as unknown as Router, gateway);
   registerMaintenanceRoutes(app as unknown as Router);
+  registerSpecializationRoutes(app, storage);
+  registerSkillRoutes(app, storage);
   registerGuardrailRoutes(app, storage, gateway);
   registerDelegationRoutes(app, storage);
+  registerDAGRoutes(app, storage);
 
+  // Seed built-in skills (idempotent — checks each by ID)
+  for (const skill of BUILTIN_SKILLS) {
+    const existing = await storage.getSkill(skill.id as string);
+    if (!existing) {
+      await storage.createSkill(skill);
+    }
+  }
 
   // Seed default models
   const existingModels = await storage.getModels();

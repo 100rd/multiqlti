@@ -10,10 +10,11 @@ import {
   serial,
   real,
   unique,
+  index,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding } from "./types.js";
+import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -91,6 +92,7 @@ export const pipelines = pgTable("pipelines", {
   name: text("name").notNull(),
   description: text("description"),
   stages: jsonb("stages").notNull().default(sql`'[]'::jsonb`),
+  dag: jsonb("dag"),
   createdBy: varchar("created_by"),
   ownerId: text("owner_id").references(() => users.id, { onDelete: "set null" }),
   isTemplate: boolean("is_template").notNull().default(false),
@@ -121,6 +123,7 @@ export const pipelineRuns = pgTable("pipeline_runs", {
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
   triggeredBy: text("triggered_by").references(() => users.id, { onDelete: "set null" }),
+  dagMode: boolean("dag_mode").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -155,6 +158,7 @@ export const stageExecutions = pgTable("stage_executions", {
   approvedAt: timestamp("approved_at"),
   approvedBy: text("approved_by"),
   rejectionReason: text("rejection_reason"),
+  dagStageId: text("dag_stage_id"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -446,3 +450,78 @@ export const insertDelegationRequestSchema = createInsertSchema(delegationReques
 
 export type InsertDelegationRequest = z.infer<typeof insertDelegationRequestSchema>;
 export type DelegationRequestRow = typeof delegationRequests.$inferSelect;
+// ─── Specialization Profiles (Phase 5) ───────────────────────────────────────
+
+export const specializationProfiles = pgTable("specialization_profiles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  isBuiltIn: boolean("is_built_in").notNull().default(false),
+  assignments: jsonb("assignments").notNull().$type<Record<string, string>>().default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertSpecializationProfileSchema = createInsertSchema(specializationProfiles).omit({ id: true, createdAt: true });
+export type InsertSpecializationProfile = z.infer<typeof insertSpecializationProfileSchema>;
+export type SpecializationProfileRow = typeof specializationProfiles.$inferSelect;
+
+// ─── Skills (Phase 3.1b) ─────────────────────────────────────────────────────
+
+export const skills = pgTable("skills", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  teamId: text("team_id").notNull(),
+  systemPromptOverride: text("system_prompt_override").notNull().default(""),
+  tools: jsonb("tools").notNull().$type<string[]>().default(sql`'[]'::jsonb`),
+  modelPreference: text("model_preference"),
+  outputSchema: jsonb("output_schema").$type<Record<string, unknown>>(),
+  tags: jsonb("tags").notNull().$type<string[]>().default(sql`'[]'::jsonb`),
+  isBuiltin: boolean("is_builtin").notNull().default(false),
+  isPublic: boolean("is_public").notNull().default(true),
+  createdBy: text("created_by").notNull().default("system"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const insertSkillSchema = createInsertSchema(skills).omit({ createdAt: true, updatedAt: true });
+export type InsertSkill = z.infer<typeof insertSkillSchema>;
+export type Skill = typeof skills.$inferSelect;
+
+// ─── Pipeline Triggers (Phase 6.3) ───────────────────────────────────────────
+
+export const TRIGGER_TYPES = ["webhook", "schedule", "github_event", "file_change"] as const;
+
+
+export const triggers = pgTable(
+  "triggers",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    pipelineId: varchar("pipeline_id")
+      .notNull()
+      .references(() => pipelines.id, { onDelete: "cascade" }),
+    type: text("type").notNull().$type<TriggerType>(),
+    config: jsonb("config").notNull().default(sql`'{}'::jsonb`).$type<TriggerConfig>(),
+    secretEncrypted: text("secret_encrypted"),
+    enabled: boolean("enabled").notNull().default(true),
+    lastTriggeredAt: timestamp("last_triggered_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    pipelineIdIdx: index("triggers_pipeline_id_idx").on(table.pipelineId),
+    enabledTypeIdx: index("triggers_enabled_type_idx").on(table.enabled, table.type),
+  }),
+);
+
+export const insertTriggerSchema = createInsertSchema(triggers).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  lastTriggeredAt: true,
+  secretEncrypted: true,
+});
+
+export type TriggerRow = typeof triggers.$inferSelect;
+export type InsertTriggerRow = z.infer<typeof insertTriggerSchema>;

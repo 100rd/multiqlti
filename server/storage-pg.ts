@@ -8,6 +8,9 @@ import {
   memories,
   mcpServers,
   delegationRequests,
+  specializationProfiles,
+  skills,
+  triggers,
   type UserRow, type InsertUser,
   type Model, type InsertModel,
   type Pipeline, type InsertPipeline,
@@ -17,6 +20,9 @@ import {
   type ChatMessage, type InsertChatMessage,
   type LlmRequest, type InsertLlmRequest,
   type InsertDelegationRequest, type DelegationRequestRow,
+  type InsertSpecializationProfile,
+  type SpecializationProfileRow,
+  type Skill, type InsertSkill,
 } from "@shared/schema";
 
 export class PgStorage implements IStorage {
@@ -631,6 +637,61 @@ export class PgStorage implements IStorage {
       .returning();
     if (!row) throw new Error(`Delegation request not found: ${id}`);
     return row;
+  }
+
+  // ─── Specialization Profiles (Phase 5) ──────────────────────────────────────
+
+  async getSpecializationProfiles(): Promise<SpecializationProfileRow[]> {
+    return db.select().from(specializationProfiles).orderBy(specializationProfiles.createdAt);
+  }
+
+  async createSpecializationProfile(profile: InsertSpecializationProfile): Promise<SpecializationProfileRow> {
+    const [row] = await db.insert(specializationProfiles).values({
+      name: profile.name,
+      isBuiltIn: profile.isBuiltIn ?? false,
+      assignments: (profile.assignments ?? {}) as Record<string, string>,
+    }).returning();
+    return row;
+  }
+
+  async deleteSpecializationProfile(id: string): Promise<void> {
+    await db.delete(specializationProfiles).where(eq(specializationProfiles.id, id));
+  }
+
+  // ─── Skills ─────────────────────────────────────────────────────────────────
+
+  async getSkills(filter?: { teamId?: string; isBuiltin?: boolean }): Promise<Skill[]> {
+    const conditions = [];
+    if (filter?.teamId !== undefined) conditions.push(eq(skills.teamId, filter.teamId));
+    if (filter?.isBuiltin !== undefined) conditions.push(eq(skills.isBuiltin, filter.isBuiltin));
+
+    return conditions.length > 0
+      ? db.select().from(skills).where(and(...conditions)).orderBy(skills.name)
+      : db.select().from(skills).orderBy(skills.name);
+  }
+
+  async getSkill(id: string): Promise<Skill | undefined> {
+    const [row] = await db.select().from(skills).where(eq(skills.id, id));
+    return row;
+  }
+
+  async createSkill(data: InsertSkill): Promise<Skill> {
+    const [row] = await db.insert(skills).values(data).returning();
+    return row;
+  }
+
+  async updateSkill(id: string, updates: Partial<InsertSkill>): Promise<Skill> {
+    const [row] = await db
+      .update(skills)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(skills.id, id))
+      .returning();
+    if (!row) throw new Error(`Skill not found: ${id}`);
+    return row;
+  }
+
+  async deleteSkill(id: string): Promise<void> {
+    await db.delete(skills).where(eq(skills.id, id));
   }
 
 }
