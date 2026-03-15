@@ -7,7 +7,7 @@ import { Save, RotateCcw, Zap, Network } from "lucide-react";
 import AgentNode from "./AgentNode";
 import { usePipelines, useUpdatePipeline, useModels } from "@/hooks/use-pipeline";
 import { SDLC_TEAMS, TEAM_ORDER, STRATEGY_PRESETS, EXECUTION_STRATEGY_PRESETS } from "@shared/constants";
-import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy, PrivacySettings, SandboxConfig, StageToolConfig } from "@shared/types";
+import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy, PrivacySettings, SandboxConfig, StageToolConfig, ParallelConfig } from "@shared/types";
 
 interface MultiAgentPipelineProps {
   pipelineId?: string;
@@ -86,6 +86,13 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
   const updateSandbox = (teamId: string, config: SandboxConfig | undefined) => {
     setLocalStages(prev => prev.map(s =>
       s.teamId === teamId ? { ...s, sandbox: config } : s,
+    ));
+    setDirty(true);
+  };
+
+  const updateParallelConfig = (teamId: string, config: ParallelConfig | undefined) => {
+    setLocalStages(prev => prev.map(s =>
+      s.teamId === teamId ? { ...s, parallel: config } : s,
     ));
     setDirty(true);
   };
@@ -314,6 +321,8 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                 onSandboxChange={(_, cfg) => updateSandbox(stage.teamId, cfg)}
                 toolConfig={stage.tools}
                 onToolConfigChange={(_, cfg) => updateToolConfig(stage.teamId, cfg)}
+                parallelConfig={stage.parallel as ParallelConfig | undefined}
+                onParallelChange={(_, cfg) => updateParallelConfig(stage.teamId, cfg)}
                 approvalRequired={stage.approvalRequired ?? false}
                 onApprovalChange={(_, val) => updateApprovalRequired(stage.teamId, val)}
                 isLast={idx === localStages.length - 1}

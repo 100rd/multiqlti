@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { SDLC_TEAMS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, MIN_TEMPERATURE, MAX_TEMPERATURE, TEMPERATURE_STEP } from "@shared/constants";
 import StrategyConfig from "./StrategyConfig";
 import SandboxConfig from "./SandboxConfig";
-import type { ExecutionStrategy, PrivacySettings, SandboxConfig as SandboxConfigType, StageToolConfig } from "@shared/types";
+import type { ExecutionStrategy, PrivacySettings, SandboxConfig as SandboxConfigType, StageToolConfig, ParallelConfig, MergeStrategy } from "@shared/types";
 
 interface ModelOption {
   label: string;
@@ -43,9 +43,130 @@ interface AgentNodeProps {
   onSandboxChange: (id: string, config: SandboxConfigType | undefined) => void;
   toolConfig?: StageToolConfig;
   onToolConfigChange: (id: string, config: StageToolConfig) => void;
+  parallelConfig?: ParallelConfig;
+  onParallelChange: (id: string, config: ParallelConfig | undefined) => void;
   approvalRequired?: boolean;
   onApprovalChange: (id: string, value: boolean) => void;
   isLast: boolean;
+}
+
+
+interface ParallelConfigPanelProps {
+  config: ParallelConfig | undefined;
+  models: Array<{ label: string; value: string; provider: string }>;
+  defaultModelSlug: string;
+  enabled: boolean;
+  onChange: (cfg: ParallelConfig | undefined) => void;
+}
+
+function ParallelConfigPanel({
+  config,
+  models,
+  defaultModelSlug: _defaultModelSlug,
+  enabled,
+  onChange,
+}: ParallelConfigPanelProps) {
+  const MERGE_STRATEGIES: Array<{ value: MergeStrategy; label: string }> = [
+    { value: "auto", label: "Auto (team default)" },
+    { value: "concatenate", label: "Concatenate" },
+    { value: "review", label: "LLM Review" },
+  ];
+
+  const current: ParallelConfig = config ?? {
+    enabled: false,
+    mode: "auto",
+    maxAgents: 3,
+    mergeStrategy: "auto",
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <label className="text-xs font-medium text-muted-foreground">Enable parallel execution</label>
+        <Switch
+          checked={current.enabled}
+          onCheckedChange={(checked) => onChange({ ...current, enabled: checked })}
+          disabled={!enabled}
+        />
+      </div>
+
+      {current.enabled && (
+        <div className="space-y-2 pl-2 border-l-2 border-border">
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-medium text-muted-foreground">Max agents</label>
+              <span className="text-xs font-mono text-foreground">{current.maxAgents}</span>
+            </div>
+            <Slider
+              min={1}
+              max={10}
+              step={1}
+              value={[current.maxAgents]}
+              onValueChange={([val]) => onChange({ ...current, maxAgents: val })}
+              disabled={!enabled}
+              className="h-4"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Merge strategy</label>
+            <Select
+              value={current.mergeStrategy}
+              onValueChange={(v) => onChange({ ...current, mergeStrategy: v as MergeStrategy })}
+              disabled={!enabled}
+            >
+              <SelectTrigger className="h-7 text-xs bg-background border-border">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {MERGE_STRATEGIES.map((s) => (
+                  <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Splitter model (optional)</label>
+            <Select
+              value={current.splitterModelSlug ?? ""}
+              onValueChange={(v) => onChange({ ...current, splitterModelSlug: v || undefined })}
+              disabled={!enabled}
+            >
+              <SelectTrigger className="h-7 text-xs bg-background border-border">
+                <SelectValue placeholder="Same as stage model" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">Same as stage model</SelectItem>
+                {models.map((m) => (
+                  <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Merger model (optional)</label>
+            <Select
+              value={current.mergerModelSlug ?? ""}
+              onValueChange={(v) => onChange({ ...current, mergerModelSlug: v || undefined })}
+              disabled={!enabled}
+            >
+              <SelectTrigger className="h-7 text-xs bg-background border-border">
+                <SelectValue placeholder="Same as stage model" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">Same as stage model</SelectItem>
+                {models.map((m) => (
+                  <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 const COLOR_MAP: Record<string, string> = {
@@ -113,6 +234,8 @@ export default function AgentNode({
   onToolConfigChange,
   approvalRequired = false,
   onApprovalChange,
+  parallelConfig,
+  onParallelChange,
   isLast,
 }: AgentNodeProps) {
   const team = SDLC_TEAMS[role as keyof typeof SDLC_TEAMS];
@@ -121,6 +244,7 @@ export default function AgentNode({
   const [promptExpanded, setPromptExpanded] = useState(false);
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
   const [toolsExpanded, setToolsExpanded] = useState(false);
+  const [parallelExpanded, setParallelExpanded] = useState(false);
   const [localPrompt, setLocalPrompt] = useState(systemPromptOverride ?? "");
   const [localMaxTokens, setLocalMaxTokens] = useState(
     String(maxTokens ?? DEFAULT_MAX_TOKENS),
@@ -438,6 +562,33 @@ export default function AgentNode({
             enabled={enabled}
             onChange={(cfg) => onSandboxChange(id, cfg)}
           />
+
+          {/* Parallel Split Execution */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setParallelExpanded((prev) => !prev)}
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              disabled={!enabled}
+            >
+              <span>Parallel execution</span>
+              {parallelExpanded
+                ? <ChevronUp className="h-3 w-3 ml-1" />
+                : <ChevronDown className="h-3 w-3 ml-1" />}
+            </button>
+
+            {parallelExpanded && (
+              <div className="mt-3 p-3 rounded border border-border bg-muted/30">
+                <ParallelConfigPanel
+                  config={parallelConfig}
+                  models={models}
+                  defaultModelSlug={model}
+                  enabled={enabled}
+                  onChange={(cfg) => onParallelChange(id, cfg)}
+                />
+              </div>
+            )}
+          </div>
 
           {/* Approval Gate */}
           <div className="pt-1 border-t border-border">

@@ -32,7 +32,7 @@ export async function registerRoutes(
   const wsManager = new WsManager(httpServer);
   const gateway = new Gateway(storage);
   const teamRegistry = new TeamRegistry(gateway, wsManager);
-  const controller = new PipelineController(storage, teamRegistry, wsManager);
+  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway);
 
   // Register auth routes first (public routes included)
   registerAuthRoutes(app);

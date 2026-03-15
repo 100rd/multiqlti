@@ -52,7 +52,7 @@ export async function createTestApp(): Promise<TestApp> {
   const wsManager = new WsManager(httpServer);
 
   const teamRegistry = new TeamRegistry(gateway, wsManager);
-  const controller = new PipelineController(storage, teamRegistry, wsManager);
+  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway);
 
   const app = express();
   app.use(express.json());

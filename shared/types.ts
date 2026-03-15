@@ -770,3 +770,53 @@ export interface ParallelExecutionMeta {
   failedCount: number;
   totalTokens: number;
 }
+
+// ─── Parallel Split Execution Types (Phase 3.8) ───────────────────────────────
+
+export type MergeStrategy = "concatenate" | "review" | "auto";
+
+export interface ParallelConfig {
+  enabled: boolean;
+  mode: "auto" | "manual";
+  maxAgents: number;
+  splitterModelSlug?: string;
+  mergerModelSlug?: string;
+  mergeStrategy: MergeStrategy;
+}
+
+export interface ModelParallelCapabilities {
+  maxConcurrentAgents: number;
+  supportedMergeStrategies: MergeStrategy[];
+  recommendedForSplitting: boolean;
+}
+
+export interface SubTask {
+  id: string;
+  title: string;
+  description: string;
+  context: string[];
+  suggestedModel?: string;
+  estimatedComplexity: "low" | "medium" | "high";
+}
+
+export interface SplitPlan {
+  shouldSplit: boolean;
+  reason: string;
+  subtasks: SubTask[];
+}
+
+export interface SubTaskResult {
+  subtask: SubTask;
+  output: string;
+  tokensUsed: number;
+  modelSlug: string;
+  durationMs: number;
+}
+
+export interface ParallelExecutionMeta {
+  parallelExecution: true;
+  subtaskCount: number;
+  succeededCount: number;
+  failedCount: number;
+  totalTokens: number;
+}
