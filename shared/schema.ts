@@ -10,7 +10,6 @@ import {
   serial,
   real,
   unique,
-  index,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -95,7 +94,6 @@ export const pipelines = pgTable("pipelines", {
   createdBy: varchar("created_by"),
   ownerId: text("owner_id").references(() => users.id, { onDelete: "set null" }),
   isTemplate: boolean("is_template").notNull().default(false),
-  dag: jsonb("dag"),   // PipelineDAG | null — null = linear mode
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -123,7 +121,6 @@ export const pipelineRuns = pgTable("pipeline_runs", {
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
   triggeredBy: text("triggered_by").references(() => users.id, { onDelete: "set null" }),
-  dagMode: boolean("dag_mode").notNull().default(false),   // true when run uses DAG executor
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -158,7 +155,6 @@ export const stageExecutions = pgTable("stage_executions", {
   approvedAt: timestamp("approved_at"),
   approvedBy: text("approved_by"),
   rejectionReason: text("rejection_reason"),
-  dagStageId: text("dag_stage_id"),   // DAGStage.id for DAG runs, null for linear
   createdAt: timestamp("created_at").defaultNow(),
 });
 
@@ -435,7 +431,7 @@ export const insertSpecializationProfileSchema = createInsertSchema(specializati
 export type InsertSpecializationProfile = z.infer<typeof insertSpecializationProfileSchema>;
 export type SpecializationProfileRow = typeof specializationProfiles.$inferSelect;
 
-// ─── Skills (Phase 3.1) ───────────────────────────────────────────────────────
+// ─── Skills (Phase 3.1b) ─────────────────────────────────────────────────────
 
 export const skills = pgTable("skills", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -457,44 +453,3 @@ export const skills = pgTable("skills", {
 export const insertSkillSchema = createInsertSchema(skills).omit({ createdAt: true, updatedAt: true });
 export type InsertSkill = z.infer<typeof insertSkillSchema>;
 export type Skill = typeof skills.$inferSelect;
-
-
-// ─── Pipeline Triggers (Phase 6.3) ───────────────────────────────────────────
-
-export const TRIGGER_TYPES = ["webhook", "schedule", "github_event", "file_change"] as const;
-
-import type { TriggerConfig, TriggerType } from "./types.js";
-
-export const triggers = pgTable(
-  "triggers",
-  {
-    id: varchar("id")
-      .primaryKey()
-      .default(sql`gen_random_uuid()`),
-    pipelineId: varchar("pipeline_id")
-      .notNull()
-      .references(() => pipelines.id, { onDelete: "cascade" }),
-    type: text("type").notNull().$type<TriggerType>(),
-    config: jsonb("config").notNull().default(sql`'{}'::jsonb`).$type<TriggerConfig>(),
-    secretEncrypted: text("secret_encrypted"),  // AES-256-GCM encrypted raw secret; null when no secret
-    enabled: boolean("enabled").notNull().default(true),
-    lastTriggeredAt: timestamp("last_triggered_at"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
-  },
-  (table) => ({
-    pipelineIdIdx: index("triggers_pipeline_id_idx").on(table.pipelineId),
-    enabledTypeIdx: index("triggers_enabled_type_idx").on(table.enabled, table.type),
-  }),
-);
-
-export const insertTriggerSchema = createInsertSchema(triggers).omit({
-  id: true,
-  createdAt: true,
-  updatedAt: true,
-  lastTriggeredAt: true,
-  secretEncrypted: true,
-});
-
-export type TriggerRow = typeof triggers.$inferSelect;
-export type InsertTriggerRow = z.infer<typeof insertTriggerSchema>;
