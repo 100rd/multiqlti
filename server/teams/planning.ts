@@ -4,13 +4,13 @@ import type { StageContext } from "@shared/types";
 export class PlanningTeam extends BaseTeam {
   buildPrompt(
     input: Record<string, unknown>,
-    _context: StageContext,
+    context: StageContext,
   ): Array<{ role: string; content: string }> {
     const taskDescription =
       (input.taskDescription as string) ?? JSON.stringify(input);
 
     return [
-      { role: "system", content: this.buildSystemMessage() },
+      { role: "system", content: this.buildSystemMessage(context) },
       {
         role: "user",
         content: `Analyze and plan the following task:\n\n${taskDescription}`,

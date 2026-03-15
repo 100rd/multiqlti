@@ -12,7 +12,7 @@ export class ArchitectureTeam extends BaseTeam {
       : input;
 
     return [
-      { role: "system", content: this.buildSystemMessage() },
+      { role: "system", content: this.buildSystemMessage(context) },
       {
         role: "user",
         content: `Design the architecture based on this planning output:\n\n${this.serializeInput(combined)}`,

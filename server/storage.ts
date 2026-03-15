@@ -16,6 +16,7 @@ import {
   type LlmRequest,
   type InsertLlmRequest,
 } from "@shared/schema";
+import type { Memory, InsertMemory, MemoryScope, MemoryType } from "@shared/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
 
@@ -130,6 +131,14 @@ export interface IStorage {
   getLlmStatsByProvider(): Promise<LlmStatsByProvider[]>;
   getLlmStatsByTeam(): Promise<LlmStatsByTeam[]>;
   getLlmTimeline(from: Date, to: Date, granularity: 'day' | 'week'): Promise<LlmTimelinePoint[]>;
+
+  // Memories
+  getMemories(scope: MemoryScope, scopeId?: string | null, type?: MemoryType): Promise<Memory[]>;
+  searchMemories(query: string, scope?: MemoryScope): Promise<Memory[]>;
+  upsertMemory(memory: InsertMemory): Promise<Memory>;
+  deleteMemory(id: number): Promise<void>;
+  decayMemories(excludeRunId: number, decayAmount: number): Promise<number>;
+  deleteStaleMemories(threshold: number): Promise<number>;
 }
 
 export class MemStorage implements IStorage {
@@ -142,6 +151,8 @@ export class MemStorage implements IStorage {
   private messages: Map<string, ChatMessage>;
   private llmRequestsMap: Map<number, LlmRequest>;
   private llmRequestIdSeq: number;
+  private memoriesMap: Map<number, Memory>;
+  private nextMemoryId: number;
 
   constructor() {
     this.users = new Map();
@@ -153,6 +164,8 @@ export class MemStorage implements IStorage {
     this.messages = new Map();
     this.llmRequestsMap = new Map();
     this.llmRequestIdSeq = 1;
+    this.memoriesMap = new Map();
+    this.nextMemoryId = 1;
   }
 
   // ─── Users ──────────────────────────────────────
@@ -611,6 +624,96 @@ export class MemStorage implements IStorage {
     }
 
     return Array.from(buckets.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  // ─── Memories ───────────────────────────────────
+
+  async getMemories(scope: MemoryScope, scopeId?: string | null, type?: MemoryType): Promise<Memory[]> {
+    return Array.from(this.memoriesMap.values()).filter((m) => {
+      if (m.scope !== scope) return false;
+      if (scopeId !== undefined && m.scopeId !== scopeId) return false;
+      if (type && m.type !== type) return false;
+      return true;
+    });
+  }
+
+  async searchMemories(query: string, scope?: MemoryScope): Promise<Memory[]> {
+    const lower = query.toLowerCase();
+    return Array.from(this.memoriesMap.values()).filter((m) => {
+      if (scope && m.scope !== scope) return false;
+      return (
+        m.key.toLowerCase().includes(lower) ||
+        m.content.toLowerCase().includes(lower)
+      );
+    });
+  }
+
+  async upsertMemory(insert: InsertMemory): Promise<Memory> {
+    const existing = Array.from(this.memoriesMap.values()).find(
+      (m) =>
+        m.scope === insert.scope &&
+        m.scopeId === (insert.scopeId ?? null) &&
+        m.key === insert.key,
+    );
+
+    if (existing) {
+      const updated: Memory = {
+        ...existing,
+        content: insert.content,
+        confidence: insert.confidence ?? existing.confidence,
+        source: insert.source ?? existing.source,
+        updatedAt: new Date(),
+      };
+      this.memoriesMap.set(existing.id, updated);
+      return updated;
+    }
+
+    const id = this.nextMemoryId++;
+    const now = new Date();
+    const memory: Memory = {
+      id,
+      scope: insert.scope,
+      scopeId: insert.scopeId ?? null,
+      type: insert.type,
+      key: insert.key,
+      content: insert.content,
+      source: insert.source ?? null,
+      confidence: insert.confidence ?? 1.0,
+      tags: insert.tags ?? [],
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: insert.expiresAt ?? null,
+      createdByRunId: insert.createdByRunId ?? null,
+    };
+    this.memoriesMap.set(id, memory);
+    return memory;
+  }
+
+  async deleteMemory(id: number): Promise<void> {
+    this.memoriesMap.delete(id);
+  }
+
+  async decayMemories(excludeRunId: number, decayAmount: number): Promise<number> {
+    let count = 0;
+    for (const [id, m] of this.memoriesMap) {
+      if (m.createdByRunId !== excludeRunId) {
+        const updated = { ...m, confidence: m.confidence - decayAmount, updatedAt: new Date() };
+        this.memoriesMap.set(id, updated);
+        count++;
+      }
+    }
+    return count;
+  }
+
+  async deleteStaleMemories(threshold: number): Promise<number> {
+    let count = 0;
+    for (const [id, m] of this.memoriesMap) {
+      if (m.confidence < threshold) {
+        this.memoriesMap.delete(id);
+        count++;
+      }
+    }
+    return count;
   }
 }
 

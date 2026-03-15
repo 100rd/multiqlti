@@ -137,8 +137,12 @@ export abstract class BaseTeam {
     }
   }
 
-  protected buildSystemMessage(): string {
-    return this.config.systemPromptTemplate;
+  protected buildSystemMessage(context?: StageContext): string {
+    let base = this.config.systemPromptTemplate;
+    if (context?.memoryContext) {
+      base = `${base}\n\n${context.memoryContext}`;
+    }
+    return base;
   }
 
   protected serializeInput(input: Record<string, unknown>): string {

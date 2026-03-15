@@ -9,6 +9,7 @@ import {
   jsonb,
   serial,
   real,
+  unique,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -265,3 +266,25 @@ export const insertLlmRequestSchema = createInsertSchema(llmRequests).omit({
 
 export type InsertLlmRequest = z.infer<typeof insertLlmRequestSchema>;
 export type LlmRequest = typeof llmRequests.$inferSelect;
+
+// ─── Memories ────────────────────────────────────────────────────────────────
+
+export const memories = pgTable("memories", {
+  id: serial("id").primaryKey(),
+  scope: text("scope").notNull(),
+  scopeId: text("scope_id"),
+  type: text("type").notNull(),
+  key: text("key").notNull(),
+  content: text("content").notNull(),
+  source: text("source"),
+  confidence: real("confidence").notNull().default(1.0),
+  tags: text("tags").array().default(sql`'{}'::text[]`),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+  expiresAt: timestamp("expires_at"),
+  createdByRunId: integer("created_by_run_id"),
+}, (table) => ({
+  scopeKeyUnique: unique().on(table.scope, table.scopeId, table.key),
+}));
+
+export type MemoryRow = typeof memories.$inferSelect;
