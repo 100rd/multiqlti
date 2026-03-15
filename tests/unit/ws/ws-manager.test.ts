@@ -5,16 +5,17 @@
  * construction time. In tests we create a real HTTP server but never
  * listen on it, so no port is bound and no network I/O occurs.
  *
- * The WebSocket subscribe/unsubscribe/emit behaviour is tested using
- * real WebSocket objects in OPEN state created via jest-compatible fakes
- * (we construct them from the 'ws' package directly with a mock socket).
+ * The subscribe/unsubscribe/broadcastToRun behaviour is tested using
+ * fake WebSocket stubs with a controlled readyState and a send() spy.
  *
  * Tests:
  *   - emit with a registered subscriber delivers the event
- *   - subscribe returns an unsubscribe function; after calling it no more events
+ *   - unsubscribe removes the listener; no more events are received
  *   - multiple subscribers all receive the event
  *   - emit with no subscribers does not crash
- *   - emitted event shape is preserved exactly
+ *   - emitted event shape is preserved exactly (JSON.stringify matches)
+ *   - subscriber for a different runId does not receive the event
+ *   - closed/closing WebSocket stubs are skipped during broadcast
  */
 import { describe, it, expect, vi } from "vitest";
 import { createServer } from "http";
@@ -23,8 +24,6 @@ import { createServer } from "http";
 
 /**
  * Create a WsManager with a real (non-listening) HTTP server.
- * The manager's WebSocketServer is bound to the server but since the server
- * never listens, no connections arrive from the outside.
  */
 async function createManager() {
   const { WsManager } = await import("../../server/ws/manager.js");
@@ -34,13 +33,20 @@ async function createManager() {
 }
 
 /**
- * Create a minimal fake WebSocket stub that satisfies the broadcastToRun
- * call signature. We only need readyState = OPEN and a send() spy.
+ * Fake WebSocket stub with a send() spy.
+ * readyState 1 = WebSocket.OPEN (will receive broadcasts).
  */
-function makeFakeWs(readyState: number = 1 /* WebSocket.OPEN */) {
+function makeFakeWs(readyState: number = 1) {
+  return { readyState, send: vi.fn() };
+}
+
+/** Minimal valid WsEvent using an event type present in WsEventType. */
+function makeEvent(runId: string) {
   return {
-    readyState,
-    send: vi.fn(),
+    type: "pipeline:started" as const,
+    runId,
+    payload: {},
+    timestamp: new Date().toISOString(),
   };
 }
 
@@ -52,12 +58,7 @@ describe("WsManager.subscribe + broadcastToRun", () => {
     const fakeWs = makeFakeWs();
 
     manager.subscribe(fakeWs as never, "run-001");
-    manager.broadcastToRun("run-001", {
-      type: "run:started",
-      runId: "run-001",
-      payload: {},
-      timestamp: new Date().toISOString(),
-    });
+    manager.broadcastToRun("run-001", makeEvent("run-001"));
 
     expect(fakeWs.send).toHaveBeenCalledTimes(1);
   });
@@ -67,7 +68,7 @@ describe("WsManager.subscribe + broadcastToRun", () => {
     const fakeWs = makeFakeWs();
 
     const event = {
-      type: "run:completed" as const,
+      type: "pipeline:completed" as const,
       runId: "run-002",
       payload: { result: "success", stagesCompleted: 3 },
       timestamp: "2026-01-01T00:00:00.000Z",
@@ -83,54 +84,39 @@ describe("WsManager.subscribe + broadcastToRun", () => {
     const { manager } = await createManager();
 
     expect(() => {
-      manager.broadcastToRun("run-no-subs", {
-        type: "run:started",
-        runId: "run-no-subs",
-        payload: {},
-        timestamp: new Date().toISOString(),
-      });
+      manager.broadcastToRun("run-no-subs", makeEvent("run-no-subs"));
     }).not.toThrow();
   });
 
   it("multiple subscribers all receive the same event", async () => {
     const { manager } = await createManager();
-    const fakeWs1 = makeFakeWs();
-    const fakeWs2 = makeFakeWs();
-    const fakeWs3 = makeFakeWs();
+    const ws1 = makeFakeWs();
+    const ws2 = makeFakeWs();
+    const ws3 = makeFakeWs();
 
-    manager.subscribe(fakeWs1 as never, "run-multi");
-    manager.subscribe(fakeWs2 as never, "run-multi");
-    manager.subscribe(fakeWs3 as never, "run-multi");
+    manager.subscribe(ws1 as never, "run-multi");
+    manager.subscribe(ws2 as never, "run-multi");
+    manager.subscribe(ws3 as never, "run-multi");
 
-    manager.broadcastToRun("run-multi", {
-      type: "run:stage_complete",
-      runId: "run-multi",
-      payload: { stageIndex: 1 },
-      timestamp: new Date().toISOString(),
-    });
+    manager.broadcastToRun("run-multi", makeEvent("run-multi"));
 
-    expect(fakeWs1.send).toHaveBeenCalledTimes(1);
-    expect(fakeWs2.send).toHaveBeenCalledTimes(1);
-    expect(fakeWs3.send).toHaveBeenCalledTimes(1);
+    expect(ws1.send).toHaveBeenCalledTimes(1);
+    expect(ws2.send).toHaveBeenCalledTimes(1);
+    expect(ws3.send).toHaveBeenCalledTimes(1);
   });
 
-  it("subscriber for different runId does not receive event", async () => {
+  it("subscriber for a different runId does not receive the event", async () => {
     const { manager } = await createManager();
-    const fakeWsA = makeFakeWs();
-    const fakeWsB = makeFakeWs();
+    const wsA = makeFakeWs();
+    const wsB = makeFakeWs();
 
-    manager.subscribe(fakeWsA as never, "run-aaa");
-    manager.subscribe(fakeWsB as never, "run-bbb");
+    manager.subscribe(wsA as never, "run-aaa");
+    manager.subscribe(wsB as never, "run-bbb");
 
-    manager.broadcastToRun("run-aaa", {
-      type: "run:started",
-      runId: "run-aaa",
-      payload: {},
-      timestamp: new Date().toISOString(),
-    });
+    manager.broadcastToRun("run-aaa", makeEvent("run-aaa"));
 
-    expect(fakeWsA.send).toHaveBeenCalledTimes(1);
-    expect(fakeWsB.send).toHaveBeenCalledTimes(0);
+    expect(wsA.send).toHaveBeenCalledTimes(1);
+    expect(wsB.send).toHaveBeenCalledTimes(0);
   });
 });
 
@@ -144,12 +130,7 @@ describe("WsManager.unsubscribe", () => {
     manager.subscribe(fakeWs as never, "run-unsub");
     manager.unsubscribe(fakeWs as never, "run-unsub");
 
-    manager.broadcastToRun("run-unsub", {
-      type: "run:started",
-      runId: "run-unsub",
-      payload: {},
-      timestamp: new Date().toISOString(),
-    });
+    manager.broadcastToRun("run-unsub", makeEvent("run-unsub"));
 
     expect(fakeWs.send).toHaveBeenCalledTimes(0);
   });
@@ -163,7 +144,7 @@ describe("WsManager.unsubscribe", () => {
     }).not.toThrow();
   });
 
-  it("other subscribers still receive events after one unsubscribes", async () => {
+  it("remaining subscribers still receive events after one unsubscribes", async () => {
     const { manager } = await createManager();
     const staying = makeFakeWs();
     const leaving = makeFakeWs();
@@ -172,48 +153,57 @@ describe("WsManager.unsubscribe", () => {
     manager.subscribe(leaving as never, "run-partial");
     manager.unsubscribe(leaving as never, "run-partial");
 
-    manager.broadcastToRun("run-partial", {
-      type: "run:started",
-      runId: "run-partial",
-      payload: {},
-      timestamp: new Date().toISOString(),
-    });
+    manager.broadcastToRun("run-partial", makeEvent("run-partial"));
 
     expect(staying.send).toHaveBeenCalledTimes(1);
     expect(leaving.send).toHaveBeenCalledTimes(0);
   });
 });
 
-// ─── CLOSED state ─────────────────────────────────────────────────────────────
+// ─── closed/closing WebSocket handling ───────────────────────────────────────
 
-describe("WsManager — closed WebSocket is skipped", () => {
-  it("does not send to a subscriber whose readyState is CLOSING (2)", async () => {
+describe("WsManager — non-OPEN WebSocket states are skipped", () => {
+  it("does not send to a subscriber with readyState CONNECTING (0)", async () => {
     const { manager } = await createManager();
-    const closingWs = makeFakeWs(2 /* WebSocket.CLOSING */);
+    const connectingWs = makeFakeWs(0);
+
+    manager.subscribe(connectingWs as never, "run-connecting");
+    manager.broadcastToRun("run-connecting", makeEvent("run-connecting"));
+
+    expect(connectingWs.send).toHaveBeenCalledTimes(0);
+  });
+
+  it("does not send to a subscriber with readyState CLOSING (2)", async () => {
+    const { manager } = await createManager();
+    const closingWs = makeFakeWs(2);
 
     manager.subscribe(closingWs as never, "run-closing");
-    manager.broadcastToRun("run-closing", {
-      type: "run:started",
-      runId: "run-closing",
-      payload: {},
-      timestamp: new Date().toISOString(),
-    });
+    manager.broadcastToRun("run-closing", makeEvent("run-closing"));
 
     expect(closingWs.send).toHaveBeenCalledTimes(0);
   });
 
-  it("does not send to a subscriber whose readyState is CLOSED (3)", async () => {
+  it("does not send to a subscriber with readyState CLOSED (3)", async () => {
     const { manager } = await createManager();
-    const closedWs = makeFakeWs(3 /* WebSocket.CLOSED */);
+    const closedWs = makeFakeWs(3);
 
     manager.subscribe(closedWs as never, "run-closed");
-    manager.broadcastToRun("run-closed", {
-      type: "run:started",
-      runId: "run-closed",
-      payload: {},
-      timestamp: new Date().toISOString(),
-    });
+    manager.broadcastToRun("run-closed", makeEvent("run-closed"));
 
+    expect(closedWs.send).toHaveBeenCalledTimes(0);
+  });
+
+  it("sends only to OPEN subscribers when mixed with closed ones", async () => {
+    const { manager } = await createManager();
+    const openWs = makeFakeWs(1);
+    const closedWs = makeFakeWs(3);
+
+    manager.subscribe(openWs as never, "run-mixed");
+    manager.subscribe(closedWs as never, "run-mixed");
+
+    manager.broadcastToRun("run-mixed", makeEvent("run-mixed"));
+
+    expect(openWs.send).toHaveBeenCalledTimes(1);
     expect(closedWs.send).toHaveBeenCalledTimes(0);
   });
 });
