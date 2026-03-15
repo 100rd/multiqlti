@@ -10,6 +10,8 @@ import { ThoughtTreeCollector } from "../pipeline/thought-tree-collector";
 import { MemoryExtractor } from "../memory/extractor";
 import { MemoryProvider } from "../memory/provider";
 import { ephemeralVarStore } from "../run-variables/store";
+import { GuardrailValidator } from "../pipeline/guardrail-validator";
+import { applyGuardrails, GuardrailError } from "../pipeline/guardrail-runner";
 
 interface ApprovalHandle {
   resolve: (approved: boolean) => void;
@@ -23,6 +25,7 @@ export class PipelineController {
   private parallelExecutor: ParallelExecutor;
   private memoryExtractor: MemoryExtractor;
   private memoryProvider: MemoryProvider;
+  private guardrailValidator: GuardrailValidator;
 
   constructor(
     private storage: IStorage,
@@ -38,6 +41,7 @@ export class PipelineController {
     );
     this.memoryExtractor = new MemoryExtractor();
     this.memoryProvider = new MemoryProvider(storage);
+    this.guardrailValidator = new GuardrailValidator(gateway ?? createNullGateway());
   }
 
   async startRun(pipelineId: string, input: string, variables?: Record<string, string>, triggeredBy?: string): Promise<PipelineRun> {
@@ -289,29 +293,33 @@ export class PipelineController {
           ? this.memoryProvider.formatForPrompt(relevantMemories)
           : undefined;
 
+        // Apply skill settings (if a skill is assigned to this stage)
+        const resolvedStage = await this.applySkill(stage);
+
         const context = {
           runId: run.id,
           stageIndex: i,
           stageExecutionId: stageExec.id,
-          modelSlug: stage.modelSlug,
-          temperature: stage.temperature,
-          maxTokens: stage.maxTokens,
+          modelSlug: resolvedStage.modelSlug,
+          temperature: resolvedStage.temperature,
+          maxTokens: resolvedStage.maxTokens,
           previousOutputs,
           fullContext,
           // Privacy: use the run ID as a stable sessionId for the full run
-          privacySettings: stage.privacySettings?.enabled
-            ? stage.privacySettings
+          privacySettings: resolvedStage.privacySettings?.enabled
+            ? resolvedStage.privacySettings
             : undefined,
           sessionId: run.id,
           memoryContext,
           // Ephemeral run variables (in-memory only, never persisted)
           variables: ephemeralVarStore.get(run.id) ?? undefined,
+          stageConfig: resolvedStage,
         };
 
         // Pass execution strategy (undefined = single, handled in BaseTeam)
         // Attempt parallel execution first; falls back to single-agent if not enabled or shouldSplit=false
         const parallelResult = await this.parallelExecutor.executeParallel(
-          stage,
+          resolvedStage,
           stageInput,
           context,
           stageExec.id,
@@ -326,15 +334,15 @@ export class PipelineController {
               strategyResult: undefined,
               toolCallLog: undefined,
             }
-          : await team.execute(stageInput, context, stage.executionStrategy);
+          : await team.execute(stageInput, context, resolvedStage.executionStrategy);
 
         // Collect thought tree from stage output
         const collector = new ThoughtTreeCollector();
         const rawOutput = result.output.raw as string | undefined;
         if (rawOutput) {
-          collector.addFromLlmResponse(rawOutput, stage.modelSlug);
+          collector.addFromLlmResponse(rawOutput, resolvedStage.modelSlug);
         } else if (typeof result.output.summary === "string") {
-          collector.addFromLlmResponse(result.output.summary as string, stage.modelSlug);
+          collector.addFromLlmResponse(result.output.summary as string, resolvedStage.modelSlug);
         }
         const thoughtTree = collector.getTree();
 
@@ -433,6 +441,30 @@ export class PipelineController {
               `Sandbox failed (exit ${sandboxResult.exitCode}): ${sandboxResult.stderr.slice(0, 500)}`,
             );
           }
+        }
+
+        // ─── Guardrail Validation ──────────────────────────────────────────
+        if (stage.guardrails && stage.guardrails.length > 0) {
+          // Build a re-execute function for 'retry' policy — re-runs the stage
+          const reExecuteStage = async (): Promise<string> => {
+            const retryResult = parallelResult !== null
+              ? parallelResult
+              : await team.execute(stageInput, context, stage.executionStrategy);
+            return JSON.stringify(retryResult.output);
+          };
+
+          const outputForValidation = JSON.stringify(result.output);
+          const guardrailRun = await applyGuardrails(outputForValidation, {
+            stageId: stageExec.id,
+            runId: run.id,
+            guardrails: stage.guardrails,
+            validator: this.guardrailValidator,
+            wsManager: this.wsManager,
+            executeStage: reExecuteStage,
+          });
+
+          // Attach guardrail results to the stage output for persistence
+          result.output.guardrailResults = guardrailRun.guardrailResults as unknown as Record<string, unknown>[];
         }
 
         // Stage completed — persist thought tree alongside output
@@ -677,6 +709,42 @@ export class PipelineController {
   private hashRunId(id: string): number {
     const hex = id.replace(/-/g, "").slice(0, 8);
     return parseInt(hex, 16) || 0;
+  }
+
+  /**
+   * If the stage has a skillId, load that skill and merge its settings into
+   * the stage config (skill values act as fallbacks — explicit stage settings win).
+   */
+  private async applySkill(stage: PipelineStageConfig): Promise<PipelineStageConfig> {
+    if (!stage.skillId) return stage;
+
+    const skill = await this.storage.getSkill(stage.skillId);
+    if (!skill) return stage;
+
+    return {
+      ...stage,
+      // Skill's model preference is a fallback — stage explicit setting wins
+      modelSlug: stage.modelSlug || skill.modelPreference || stage.modelSlug,
+      // Skill system prompt override (prepend to any stage override)
+      systemPromptOverride: stage.systemPromptOverride
+        ? `${skill.systemPromptOverride}\n\n${stage.systemPromptOverride}`
+        : skill.systemPromptOverride || stage.systemPromptOverride,
+      // Merge skill tools into stage tools (union)
+      tools: stage.tools
+        ? {
+            ...stage.tools,
+            enabled: true,
+            allowedTools: [
+              ...new Set([
+                ...(stage.tools.allowedTools ?? []),
+                ...(skill.tools as string[]),
+              ]),
+            ],
+          }
+        : skill.tools.length > 0
+          ? { enabled: true, allowedTools: skill.tools as string[] }
+          : undefined,
+    };
   }
 }
 

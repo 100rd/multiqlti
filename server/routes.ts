@@ -20,6 +20,10 @@ import { registerAuthRoutes } from "./routes/auth";
 import { registerSandboxRoutes } from "./routes/sandbox";
 import { registerSettingsRoutes } from "./routes/settings";
 import { registerMaintenanceRoutes } from "./routes/maintenance";
+import { registerGuardrailRoutes } from "./routes/guardrails";
+import { registerSpecializationRoutes } from "./routes/specialization";
+import { registerSkillRoutes } from "./routes/skills";
+import { BUILTIN_SKILLS } from "./skills/builtin";
 import { requireAuth } from "./auth/middleware";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
@@ -57,6 +61,9 @@ export async function registerRoutes(
   app.use("/api/teams", requireAuth);
   app.use("/api/sandbox", requireAuth);
   app.use("/api/maintenance", requireAuth);
+  app.use("/api/guardrails", requireAuth);
+  app.use("/api/specialization-profiles", requireAuth);
+  app.use("/api/skills", requireAuth);
 
   // Register route implementations
   registerModelRoutes(app, storage);
@@ -73,6 +80,17 @@ export async function registerRoutes(
   registerSandboxRoutes(app as unknown as Router);
   registerSettingsRoutes(app as unknown as Router, gateway);
   registerMaintenanceRoutes(app as unknown as Router);
+  registerGuardrailRoutes(app, storage, gateway);
+  registerSpecializationRoutes(app, storage);
+  registerSkillRoutes(app, storage);
+
+  // Seed built-in skills (idempotent — checks each by ID)
+  for (const skill of BUILTIN_SKILLS) {
+    const existing = await storage.getSkill(skill.id!);
+    if (!existing) {
+      await storage.createSkill(skill);
+    }
+  }
 
   // Seed default models
   const existingModels = await storage.getModels();

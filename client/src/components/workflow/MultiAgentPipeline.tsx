@@ -7,7 +7,7 @@ import { Save, RotateCcw, Zap, Network } from "lucide-react";
 import AgentNode from "./AgentNode";
 import { usePipelines, useUpdatePipeline, useModels } from "@/hooks/use-pipeline";
 import { SDLC_TEAMS, TEAM_ORDER, STRATEGY_PRESETS, EXECUTION_STRATEGY_PRESETS } from "@shared/constants";
-import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy, PrivacySettings, SandboxConfig, StageToolConfig, ParallelConfig } from "@shared/types";
+import type { PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy, PrivacySettings, SandboxConfig, StageToolConfig, ParallelConfig, StageGuardrail } from "@shared/types";
 
 interface MultiAgentPipelineProps {
   pipelineId?: string;
@@ -107,6 +107,13 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
   const updateApprovalRequired = (teamId: string, value: boolean) => {
     setLocalStages(prev => prev.map(s =>
       s.teamId === teamId ? { ...s, approvalRequired: value } : s,
+    ));
+    setDirty(true);
+  };
+
+  const updateGuardrails = (teamId: string, guardrails: StageGuardrail[]) => {
+    setLocalStages(prev => prev.map(s =>
+      s.teamId === teamId ? { ...s, guardrails } : s,
     ));
     setDirty(true);
   };
@@ -325,6 +332,8 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                 onParallelChange={(_, cfg) => updateParallelConfig(stage.teamId, cfg)}
                 approvalRequired={stage.approvalRequired ?? false}
                 onApprovalChange={(_, val) => updateApprovalRequired(stage.teamId, val)}
+                guardrails={(stage as PipelineStageConfig & { guardrails?: StageGuardrail[] }).guardrails ?? []}
+                onGuardrailsChange={(_, gs) => updateGuardrails(stage.teamId, gs)}
                 isLast={idx === localStages.length - 1}
               />
             );
