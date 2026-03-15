@@ -1,10 +1,21 @@
+import { toolRegistry } from "../tools/index";
 import type { Gateway } from "../gateway/index";
 import type { WsManager } from "../ws/manager";
-import type { TeamConfig, StageContext, TeamResult, ExecutionStrategy, ProviderMessage } from "@shared/types";
+import type { TeamConfig, StageContext, TeamResult, ExecutionStrategy, ProviderMessage, TeamId } from "@shared/types";
 import { StrategyExecutor } from "../services/strategy-executor";
 
 const CONTEXT_STAGES_TO_SHOW = 3;
 const CONTEXT_TRUNCATE_CHARS = 500;
+
+const DEFAULT_TEAM_TOOLS: Partial<Record<TeamId, string[]>> = {
+  planning:     ['web_search', 'knowledge_search', 'memory_search'],
+  architecture: ['web_search', 'knowledge_search', 'memory_search'],
+  development:  ['web_search', 'knowledge_search'],
+  testing:      ['knowledge_search'],
+  code_review:  ['web_search', 'knowledge_search', 'memory_search'],
+  deployment:   ['web_search', 'knowledge_search'],
+  monitoring:   ['web_search', 'knowledge_search'],
+};
 
 export abstract class BaseTeam {
   private strategyExecutor: StrategyExecutor;
@@ -32,7 +43,7 @@ export abstract class BaseTeam {
     context: StageContext,
     executionStrategy?: ExecutionStrategy,
   ): Promise<TeamResult> {
-    const messages = this.buildPrompt(input, context);
+    const messages: ProviderMessage[] = this.buildPrompt(input, context) as unknown as ProviderMessage[];
 
     const strategy = executionStrategy ?? { type: "single" as const };
 
@@ -47,6 +58,48 @@ export abstract class BaseTeam {
     messages: ProviderMessage[],
     context: StageContext,
   ): Promise<TeamResult> {
+    const toolConfig = context.stageConfig?.tools;
+    const defaultTools = DEFAULT_TEAM_TOOLS[this.config.id] ?? [];
+    const useTools = toolConfig?.enabled ?? defaultTools.length > 0;
+
+    if (useTools) {
+      // Filter tools per stage config
+      let allowedNames: string[] | undefined = toolConfig?.allowedTools ?? defaultTools;
+      const blockedNames = toolConfig?.blockedTools ?? [];
+      if (blockedNames.length > 0) {
+        allowedNames = allowedNames.filter((n) => !blockedNames.includes(n));
+      }
+
+      const tools = toolRegistry.getAvailableTools().filter(
+        (t) => allowedNames === undefined || allowedNames.includes(t.name),
+      );
+
+      if (tools.length > 0) {
+        const result = await this.gateway.completeWithTools({
+          modelSlug: context.modelSlug || this.config.defaultModelSlug,
+          messages,
+          tools,
+          options: {
+            temperature: context.temperature,
+            maxTokens: context.maxTokens,
+            toolChoice: toolConfig?.toolChoice ?? 'auto',
+          },
+          maxIterations: toolConfig?.maxToolCalls ?? 10,
+        });
+
+        const parsed = this.parseOutput(result.content);
+        const questions = this.extractQuestions(parsed);
+
+        return {
+          output: parsed,
+          tokensUsed: result.tokensUsed,
+          raw: result.content,
+          questions: questions.length > 0 ? questions : undefined,
+          toolCallLog: result.toolCallLog.length > 0 ? result.toolCallLog : undefined,
+        };
+      }
+    }
+
     const response = await this.gateway.complete(
       {
         modelSlug: context.modelSlug || this.config.defaultModelSlug,
@@ -102,7 +155,7 @@ export abstract class BaseTeam {
     context: StageContext,
   ): AsyncGenerator<string> {
     // Streaming always uses single model — intermediate strategy steps are WS events only
-    const messages = this.buildPrompt(input, context);
+    const messages: ProviderMessage[] = this.buildPrompt(input, context) as unknown as ProviderMessage[];
     yield* this.gateway.stream(
       {
         modelSlug: context.modelSlug || this.config.defaultModelSlug,

@@ -288,3 +288,28 @@ export const memories = pgTable("memories", {
 }));
 
 export type MemoryRow = typeof memories.$inferSelect;
+
+// ─── MCP Servers ─────────────────────────────────────────────────────────────
+
+export const mcpServers = pgTable("mcp_servers", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  transport: text("transport").notNull(),  // 'stdio' | 'sse' | 'streamable-http'
+  command: text("command"),
+  args: jsonb("args").$type<string[]>(),
+  url: text("url"),
+  env: jsonb("env").$type<Record<string, string>>(),
+  enabled: boolean("enabled").notNull().default(true),
+  autoConnect: boolean("auto_connect").notNull().default(false),
+  toolCount: integer("tool_count").default(0),
+  lastConnectedAt: timestamp("last_connected_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const insertMcpServerSchema = createInsertSchema(mcpServers).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertMcpServer = z.infer<typeof insertMcpServerSchema>;
+export type McpServerRow = typeof mcpServers.$inferSelect;

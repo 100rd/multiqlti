@@ -1,11 +1,12 @@
 import { eq, desc, and, or, ilike, lt, ne, gte, lte, sql as drizzleSql } from "drizzle-orm";
 import { db } from "./db";
 import type { IStorage, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint } from "./storage";
-import type { Memory, InsertMemory, MemoryScope, MemoryType } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
 import {
   users, models, pipelines, pipelineRuns,
   stageExecutions, questions, chatMessages, llmRequests,
   memories,
+  mcpServers,
   type User, type InsertUser,
   type Model, type InsertModel,
   type Pipeline, type InsertPipeline,
@@ -528,4 +529,77 @@ export class PgStorage implements IStorage {
       .returning({ id: memories.id });
     return result.length;
   }
+  // ─── MCP Servers ────────────────────────────────────
+
+  private rowToMcpServer(row: typeof mcpServers.$inferSelect): McpServerConfig {
+    return {
+      id: row.id,
+      name: row.name,
+      transport: row.transport as McpServerConfig['transport'],
+      command: row.command ?? null,
+      args: (row.args as string[] | null) ?? null,
+      url: row.url ?? null,
+      env: (row.env as Record<string, string> | null) ?? null,
+      enabled: row.enabled,
+      autoConnect: row.autoConnect,
+      toolCount: row.toolCount ?? 0,
+      lastConnectedAt: row.lastConnectedAt ?? null,
+      createdAt: row.createdAt ?? null,
+    };
+  }
+
+  async getMcpServers(): Promise<McpServerConfig[]> {
+    const rows = await db.select().from(mcpServers).orderBy(mcpServers.name);
+    return rows.map((r) => this.rowToMcpServer(r));
+  }
+
+  async getMcpServer(id: number): Promise<McpServerConfig | undefined> {
+    const [row] = await db.select().from(mcpServers).where(eq(mcpServers.id, id));
+    return row ? this.rowToMcpServer(row) : undefined;
+  }
+
+  async createMcpServer(config: Omit<McpServerConfig, 'id'>): Promise<McpServerConfig> {
+    const [row] = await db
+      .insert(mcpServers)
+      .values({
+        name: config.name,
+        transport: config.transport,
+        command: config.command ?? null,
+        args: config.args ?? null,
+        url: config.url ?? null,
+        env: config.env ?? null,
+        enabled: config.enabled,
+        autoConnect: config.autoConnect,
+        toolCount: config.toolCount ?? 0,
+        lastConnectedAt: config.lastConnectedAt ?? null,
+      })
+      .returning();
+    return this.rowToMcpServer(row);
+  }
+
+  async updateMcpServer(id: number, updates: Partial<McpServerConfig>): Promise<McpServerConfig> {
+    const [row] = await db
+      .update(mcpServers)
+      .set({
+        ...(updates.name !== undefined && { name: updates.name }),
+        ...(updates.transport !== undefined && { transport: updates.transport }),
+        ...(updates.command !== undefined && { command: updates.command }),
+        ...(updates.args !== undefined && { args: updates.args }),
+        ...(updates.url !== undefined && { url: updates.url }),
+        ...(updates.env !== undefined && { env: updates.env }),
+        ...(updates.enabled !== undefined && { enabled: updates.enabled }),
+        ...(updates.autoConnect !== undefined && { autoConnect: updates.autoConnect }),
+        ...(updates.toolCount !== undefined && { toolCount: updates.toolCount }),
+        ...(updates.lastConnectedAt !== undefined && { lastConnectedAt: updates.lastConnectedAt }),
+      })
+      .where(eq(mcpServers.id, id))
+      .returning();
+    if (!row) throw new Error(`MCP server not found: ${id}`);
+    return this.rowToMcpServer(row);
+  }
+
+  async deleteMcpServer(id: number): Promise<void> {
+    await db.delete(mcpServers).where(eq(mcpServers.id, id));
+  }
+
 }

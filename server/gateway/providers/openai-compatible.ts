@@ -1,7 +1,16 @@
-import type { ILLMProvider, ILLMProviderOptions, ProviderMessage } from "@shared/types";
+import type { ILLMProvider, ILLMProviderOptions, ProviderMessage, ToolCall } from "@shared/types";
+
+interface OpenAIToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
 
 interface OpenAIChoice {
-  message: { content: string };
+  message: { content: string | null; tool_calls?: OpenAIToolCall[] };
   finish_reason: string;
 }
 
@@ -48,6 +57,34 @@ async function fetchWithRetry(
   throw lastError ?? new Error("Request failed after retry");
 }
 
+/** Convert ProviderMessage[] to OpenAI chat messages format. */
+function toOpenAIMessages(messages: ProviderMessage[]): unknown[] {
+  return messages.map((m) => {
+    if (m.role === "tool") {
+      return {
+        role: "tool",
+        tool_call_id: m.toolCallId,
+        content: m.content,
+      };
+    }
+    if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
+      return {
+        role: "assistant",
+        content: m.content || null,
+        tool_calls: m.toolCalls.map((tc) => ({
+          id: tc.id,
+          type: "function",
+          function: {
+            name: tc.name,
+            arguments: JSON.stringify(tc.arguments),
+          },
+        })),
+      };
+    }
+    return { role: m.role, content: m.content };
+  });
+}
+
 export class OpenAICompatibleProvider implements ILLMProvider {
   constructor(
     protected readonly baseUrl: string,
@@ -67,20 +104,50 @@ export class OpenAICompatibleProvider implements ILLMProvider {
     modelId: string,
     messages: ProviderMessage[],
     options?: ILLMProviderOptions,
-  ): Promise<{ content: string; tokensUsed: number }> {
+  ): Promise<{ content: string; tokensUsed: number; toolCalls?: ToolCall[]; finishReason?: 'stop' | 'tool_use' }> {
     const timeoutMs = options?.timeoutMs ?? this.defaultTimeout;
+
+    // Build tools array for OpenAI API if provided
+    const openAiTools =
+      options?.tools && options.tools.length > 0
+        ? options.tools.map((t) => ({
+            type: "function" as const,
+            function: {
+              name: t.name,
+              description: t.description,
+              parameters: t.inputSchema,
+            },
+          }))
+        : undefined;
+
+    const toolChoice =
+      openAiTools
+        ? options?.toolChoice === "none"
+          ? "none"
+          : options?.toolChoice === "required"
+          ? "required"
+          : "auto"
+        : undefined;
+
+    const body: Record<string, unknown> = {
+      model: modelId,
+      messages: toOpenAIMessages(messages),
+      max_tokens: options?.maxTokens ?? 4096,
+      temperature: options?.temperature ?? 0.7,
+      stream: false,
+    };
+
+    if (openAiTools) {
+      body.tools = openAiTools;
+      body.tool_choice = toolChoice;
+    }
+
     const res = await fetchWithRetry(
       `${this.baseUrl}/v1/chat/completions`,
       {
         method: "POST",
         headers: this.buildHeaders(),
-        body: JSON.stringify({
-          model: modelId,
-          messages,
-          max_tokens: options?.maxTokens ?? 4096,
-          temperature: options?.temperature ?? 0.7,
-          stream: false,
-        }),
+        body: JSON.stringify(body),
       },
       timeoutMs,
     );
@@ -95,9 +162,32 @@ export class OpenAICompatibleProvider implements ILLMProvider {
       usage: { total_tokens: number };
     };
 
+    const choice = data.choices[0];
+    const content = choice?.message?.content ?? "";
+    const finishReason: 'stop' | 'tool_use' =
+      choice?.finish_reason === "tool_calls" ? "tool_use" : "stop";
+
+    // Extract tool calls if any
+    const rawToolCalls = choice?.message?.tool_calls ?? [];
+    const toolCalls: ToolCall[] = rawToolCalls.map((tc) => {
+      let args: Record<string, unknown> = {};
+      try {
+        args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+      } catch {
+        args = { _raw: tc.function.arguments };
+      }
+      return {
+        id: tc.id,
+        name: tc.function.name,
+        arguments: args,
+      };
+    });
+
     return {
-      content: data.choices[0]?.message?.content ?? "",
+      content,
       tokensUsed: data.usage?.total_tokens ?? 0,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      finishReason,
     };
   }
 
@@ -114,7 +204,7 @@ export class OpenAICompatibleProvider implements ILLMProvider {
         headers: this.buildHeaders(),
         body: JSON.stringify({
           model: modelId,
-          messages,
+          messages: toOpenAIMessages(messages),
           max_tokens: options?.maxTokens ?? 4096,
           temperature: options?.temperature ?? 0.7,
           stream: true,

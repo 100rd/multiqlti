@@ -1,5 +1,6 @@
 import type { IStorage } from "../storage";
-import type { GatewayRequest, GatewayResponse, ILLMProvider, ILLMProviderOptions, PrivacySettings, ProviderMessage } from "@shared/types";
+import { toolRegistry } from "../tools/index";
+import type { GatewayRequest, GatewayResponse, ILLMProvider, ILLMProviderOptions, PrivacySettings, ProviderMessage, ToolDefinition, ToolCallLogEntry } from "@shared/types";
 import { MockProvider } from "./providers/mock";
 import { VllmProvider } from "./providers/vllm";
 import { OllamaProvider } from "./providers/ollama";
@@ -171,7 +172,7 @@ export class Gateway {
     const privacy = privacyOptions?.privacy;
     const sessionId = privacyOptions?.sessionId ?? crypto.randomUUID();
 
-    let messages = request.messages;
+    let messages: ProviderMessage[] = request.messages as ProviderMessage[];
     if (this.shouldAnonymize(privacy)) {
       messages = request.messages.map((m) => ({
         ...m,
@@ -181,7 +182,7 @@ export class Gateway {
           privacy!.level,
           privacy!.vaultTtlMs,
         ).anonymizedText,
-      }));
+      })) as unknown as ProviderMessage[];
     }
 
     const start = Date.now();
@@ -247,7 +248,7 @@ export class Gateway {
     const privacy = privacyOptions?.privacy;
     const sessionId = privacyOptions?.sessionId ?? crypto.randomUUID();
 
-    let messages = request.messages;
+    let messages: ProviderMessage[] = request.messages as ProviderMessage[];
     if (this.shouldAnonymize(privacy)) {
       messages = request.messages.map((m) => ({
         ...m,
@@ -257,7 +258,7 @@ export class Gateway {
           privacy!.level,
           privacy!.vaultTtlMs,
         ).anonymizedText,
-      }));
+      })) as unknown as ProviderMessage[];
     }
 
     if (provider) {
@@ -304,6 +305,92 @@ export class Gateway {
     }
 
     return results;
+  }
+
+
+  /**
+   * Agentic tool loop: calls provider with tools, executes tool calls, feeds results back.
+   * Loops up to maxIterations (default 10) until provider stops calling tools.
+   */
+  async completeWithTools(params: {
+    modelSlug: string;
+    messages: ProviderMessage[];
+    tools: ToolDefinition[];
+    options?: ILLMProviderOptions;
+    maxIterations?: number;
+  }): Promise<{ content: string; tokensUsed: number; toolCallLog: ToolCallLogEntry[] }> {
+    const { modelSlug, tools, options } = params;
+    const maxIterations = params.maxIterations ?? 10;
+    const toolCallLog: ToolCallLogEntry[] = [];
+
+    const model = await this.storage.getModelBySlug(modelSlug);
+    const providerKey = model?.provider ?? 'mock';
+    const modelId = model?.modelId ?? model?.name ?? modelSlug;
+    const provider = this.getProvider(providerKey);
+
+    let messages: ProviderMessage[] = [...params.messages];
+    let totalTokensUsed = 0;
+    let iteration = 0;
+
+    while (iteration < maxIterations) {
+      iteration++;
+
+      let result: { content: string; tokensUsed: number; toolCalls?: import('@shared/types').ToolCall[]; finishReason?: 'stop' | 'tool_use' };
+
+      if (provider) {
+        result = await provider.complete(modelId, messages, {
+          ...options,
+          tools,
+          toolChoice: options?.toolChoice ?? 'auto',
+        });
+      } else {
+        const mockResult = await this.mockProvider.complete(
+          messages.map((m) => ({ role: m.role, content: 'content' in m ? m.content : '' })),
+          options,
+        );
+        result = { ...mockResult, finishReason: 'stop' as const };
+      }
+
+      totalTokensUsed += result.tokensUsed;
+
+      // If no tool calls or provider says stop, we're done
+      if (!result.toolCalls || result.toolCalls.length === 0 || result.finishReason !== 'tool_use') {
+        return { content: result.content, tokensUsed: totalTokensUsed, toolCallLog };
+      }
+
+      // Append assistant message with tool calls
+      messages.push({
+        role: 'assistant',
+        content: result.content,
+        toolCalls: result.toolCalls,
+      });
+
+      // Execute each tool call and collect results
+      for (const call of result.toolCalls) {
+        const callStart = Date.now();
+        const toolResult = await toolRegistry.execute(call);
+        const durationMs = Date.now() - callStart;
+
+        toolCallLog.push({
+          iteration,
+          call,
+          result: toolResult,
+          durationMs,
+        });
+
+        // Append tool result message
+        messages.push({
+          role: 'tool',
+          toolCallId: toolResult.toolCallId,
+          content: toolResult.content,
+        });
+      }
+    }
+
+    // Max iterations reached — return final content from last assistant message
+    const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+    const content = lastAssistant && 'content' in lastAssistant ? lastAssistant.content : '';
+    return { content, tokensUsed: totalTokensUsed, toolCallLog };
   }
 
   async discoverFromEndpoint(
