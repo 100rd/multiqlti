@@ -53,7 +53,13 @@ export function validateQuery<T>(schema: ZodSchema<T>) {
       });
       return;
     }
-    req.query = result.data as Record<string, string>;
+    // req.query is a read-only getter in Express 5 — override via defineProperty
+    Object.defineProperty(req, "query", {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: result.data,
+    });
     next();
   };
 }
