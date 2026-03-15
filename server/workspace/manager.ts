@@ -5,7 +5,7 @@ import type { FileEntry, GitStatus } from "@shared/types";
 import type { WorkspaceRow } from "@shared/schema";
 
 const WORKSPACE_DATA_DIR = path.resolve("data/workspaces");
-const MAX_FILE_SIZE_BYTES = 1_048_576; // 1 MB
+const MAX_FILE_SIZE_BYTES = 512 * 1024; // 500 KB (spec §4.5)
 const MAX_CLONE_SIZE_BYTES = 500 * 1_048_576; // 500 MB
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", ".next", "__pycache__"]);
 const ALLOWED_WRITE_EXTENSIONS = new Set([
@@ -115,7 +115,7 @@ export class WorkspaceManager {
     const full = this.guardPath(root, filePath);
     const stat = await fs.stat(full);
     if (stat.size > MAX_FILE_SIZE_BYTES) {
-      throw new Error(`File exceeds 1 MB limit (${stat.size} bytes)`);
+      throw new Error(`File exceeds 500 KB limit (${stat.size} bytes)`);
     }
     return fs.readFile(full, "utf-8");
   }
@@ -165,6 +165,24 @@ export class WorkspaceManager {
     const root = this.resolveRoot(workspace);
     const git = simpleGit(root);
     await git.checkoutLocalBranch(branchName);
+  }
+
+  /** List all local and remote-tracking branches. */
+  async listBranches(workspace: WorkspaceRow): Promise<{ current: string; branches: string[] }> {
+    const root = this.resolveRoot(workspace);
+    const git = simpleGit(root);
+    const summary = await git.branch(["-a"]);
+    return {
+      current: summary.current,
+      branches: Object.keys(summary.branches),
+    };
+  }
+
+  /** Switch to an existing branch (checkout). */
+  async switchBranch(workspace: WorkspaceRow, branchName: string): Promise<void> {
+    const root = this.resolveRoot(workspace);
+    const git = simpleGit(root);
+    await git.checkout(branchName);
   }
 
   async gitLog(workspace: WorkspaceRow, limit = 20): Promise<Array<{ hash: string; message: string; date: string; author: string }>> {

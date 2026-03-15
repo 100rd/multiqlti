@@ -62,29 +62,14 @@ export class CodeChatService {
     return results;
   }
 
+  /** Non-streaming chat. Used as JSON fallback when client does not accept SSE. */
   async chat(
     workspace: WorkspaceRow,
     message: string,
     modelSlug: string,
     context?: { filePaths?: string[]; selection?: { content: string } },
   ): Promise<string> {
-    const contextParts: string[] = [];
-
-    if (context?.filePaths?.length) {
-      const fileContents = await this.loadFiles(workspace, context.filePaths);
-      contextParts.push(fileContents);
-    }
-
-    if (context?.selection?.content) {
-      contextParts.push(`Selected code:\n\`\`\`\n${context.selection.content}\n\`\`\``);
-    }
-
-    const systemPrompt = [
-      "You are an expert software engineer helping with code in a workspace.",
-      contextParts.length > 0 ? `\n\nContext:\n${contextParts.join("\n\n")}` : "",
-    ]
-      .filter(Boolean)
-      .join("");
+    const systemPrompt = await this.buildChatSystemPrompt(workspace, context);
 
     const response = await this.gateway.complete({
       modelSlug,
@@ -98,11 +83,63 @@ export class CodeChatService {
     return response.content;
   }
 
+  /**
+   * Streaming chat using SSE. Calls onChunk for each token chunk.
+   * Returns the full accumulated reply when complete.
+   */
+  async chatStream(
+    workspace: WorkspaceRow,
+    message: string,
+    modelSlug: string,
+    context: { filePaths?: string[]; selection?: { content: string } } | undefined,
+    onChunk: (chunk: string) => void,
+  ): Promise<string> {
+    const systemPrompt = await this.buildChatSystemPrompt(workspace, context);
+
+    const chunks: string[] = [];
+    for await (const chunk of this.gateway.stream({
+      modelSlug,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: message },
+      ],
+      maxTokens: 4096,
+    })) {
+      chunks.push(chunk);
+      onChunk(chunk);
+    }
+
+    return chunks.join("");
+  }
+
   async applyChange(workspace: WorkspaceRow, filePath: string, change: CodeChange): Promise<void> {
     const content = await this.manager.readFile(workspace, filePath);
     const lines = content.split("\n");
     const updated = this.applyLineChange(lines, change);
     await this.manager.writeFile(workspace, filePath, updated.join("\n"));
+  }
+
+  private async buildChatSystemPrompt(
+    workspace: WorkspaceRow,
+    context?: { filePaths?: string[]; selection?: { content: string } },
+  ): Promise<string> {
+    const contextParts: string[] = [];
+
+    if (context?.filePaths?.length) {
+      const fileContents = await this.loadFiles(workspace, context.filePaths);
+      contextParts.push(fileContents);
+    }
+
+    if (context?.selection?.content) {
+      contextParts.push(`Selected code:\n\`\`\`\n${context.selection.content}\n\`\`\``);
+    }
+
+    return [
+      "You are an expert software engineer helping with code in a workspace.",
+      contextParts.length > 0 ? `\n\nContext:\n${contextParts.join("\n\n")}` : "",
+    ]
+      .filter(Boolean)
+      .join("");
   }
 
   private applyLineChange(lines: string[], change: CodeChange): string[] {
