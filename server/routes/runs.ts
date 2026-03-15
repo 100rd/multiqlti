@@ -64,7 +64,8 @@ export function registerRunRoutes(
 
     const { pipelineId, input, variables } = result.data;
     try {
-      const run = await controller.startRun(pipelineId, input, variables);
+      const triggeredBy = req.user?.id;
+      const run = await controller.startRun(pipelineId, input, variables, triggeredBy);
       res.status(201).json(run);
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });

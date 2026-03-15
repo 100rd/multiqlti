@@ -3,7 +3,7 @@ import jwt from "jsonwebtoken";
 import { db } from "../db";
 import { users, sessions } from "@shared/schema";
 import { eq, count } from "drizzle-orm";
-import type { User, AuthSession } from "@shared/types";
+import type { User, AuthSession, UserRole } from "@shared/types";
 import { configLoader } from "../config/loader";
 
 interface JwtPayload {
@@ -11,12 +11,22 @@ interface JwtPayload {
   sessionId: string;
 }
 
-function rowToUser(row: { id: string; email: string; name: string; isActive: boolean; createdAt: Date }): User {
+function rowToUser(row: {
+  id: string;
+  email: string;
+  name: string;
+  isActive: boolean;
+  role: UserRole;
+  lastLoginAt: Date | null;
+  createdAt: Date;
+}): User {
   return {
     id: row.id,
     email: row.email,
     name: row.name,
     isActive: row.isActive,
+    role: row.role,
+    lastLoginAt: row.lastLoginAt,
     createdAt: row.createdAt,
   };
 }
@@ -28,8 +38,11 @@ class AuthService {
   }
 
   async register(email: string, name: string, password: string): Promise<AuthSession> {
-    const alreadyHasUsers = await this.hasUsers();
-    if (alreadyHasUsers) {
+    // Check if any users exist — first user becomes admin, rest are blocked
+    const userCount = await db.select({ total: count() }).from(users);
+    const total = userCount[0]?.total ?? 0;
+
+    if (total > 0) {
       const err = new Error("Registration is closed — admin account already exists");
       (err as NodeJS.ErrnoException).code = "REGISTRATION_CLOSED";
       throw err;
@@ -37,7 +50,12 @@ class AuthService {
 
     const { bcryptRounds } = configLoader.get().auth;
     const passwordHash = await bcrypt.hash(password, bcryptRounds);
-    const [user] = await db.insert(users).values({ email, name, passwordHash }).returning();
+
+    // First user is always admin
+    const [user] = await db
+      .insert(users)
+      .values({ email, name, passwordHash, role: "admin" })
+      .returning();
 
     return this.createSession(user);
   }
@@ -57,7 +75,14 @@ class AuthService {
       throw new Error("Account is disabled");
     }
 
-    return this.createSession(user);
+    // Update last_login_at
+    await db
+      .update(users)
+      .set({ lastLoginAt: new Date(), updatedAt: new Date() })
+      .where(eq(users.id, user.id));
+
+    const updatedUser = { ...user, lastLoginAt: new Date() };
+    return this.createSession(updatedUser);
   }
 
   async logout(token: string): Promise<void> {
@@ -92,7 +117,69 @@ class AuthService {
     return rowToUser(user);
   }
 
-  private async createSession(user: { id: string; email: string; name: string; isActive: boolean; createdAt: Date }): Promise<AuthSession> {
+  async getUserById(id: string): Promise<User | null> {
+    const [user] = await db.select().from(users).where(eq(users.id, id));
+    if (!user) return null;
+    return rowToUser(user);
+  }
+
+  async getAllUsers(): Promise<User[]> {
+    const rows = await db.select().from(users);
+    return rows.map(rowToUser);
+  }
+
+  async updateUser(id: string, updates: { name?: string; email?: string; password?: string }): Promise<User> {
+    const setValues: Record<string, unknown> = { updatedAt: new Date() };
+    if (updates.name !== undefined) setValues.name = updates.name;
+    if (updates.email !== undefined) setValues.email = updates.email;
+    if (updates.password !== undefined) {
+      const { bcryptRounds } = configLoader.get().auth;
+      setValues.passwordHash = await bcrypt.hash(updates.password, bcryptRounds);
+    }
+
+    const [updated] = await db
+      .update(users)
+      .set(setValues)
+      .where(eq(users.id, id))
+      .returning();
+
+    if (!updated) throw new Error("User not found");
+    return rowToUser(updated);
+  }
+
+  async updateUserRole(id: string, role: UserRole): Promise<User> {
+    const [updated] = await db
+      .update(users)
+      .set({ role, updatedAt: new Date() })
+      .where(eq(users.id, id))
+      .returning();
+
+    if (!updated) throw new Error("User not found");
+    return rowToUser(updated);
+  }
+
+  async deactivateUser(id: string): Promise<User> {
+    const [updated] = await db
+      .update(users)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(users.id, id))
+      .returning();
+
+    if (!updated) throw new Error("User not found");
+    // Invalidate all sessions for the deactivated user
+    await db.delete(sessions).where(eq(sessions.userId, id));
+    return rowToUser(updated);
+  }
+
+  private async createSession(user: {
+    id: string;
+    email: string;
+    name: string;
+    isActive: boolean;
+    role: UserRole;
+    lastLoginAt: Date | null;
+    createdAt: Date;
+  }): Promise<AuthSession> {
     const { jwtSecret, sessionTtlDays } = configLoader.get().auth;
     if (!jwtSecret) throw new Error("[auth] JWT_SECRET is not configured");
     const sessionMs = sessionTtlDays * 24 * 60 * 60 * 1000;
