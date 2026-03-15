@@ -8,6 +8,11 @@ services:
       - PORT=5000
       - VLLM_ENDPOINT=http://vllm:8000
       - OLLAMA_ENDPOINT=http://ollama:11434
+      - SANDBOX_ENABLED=true
+      - SANDBOX_MAX_CONCURRENT=3
+      - SANDBOX_DEFAULT_TIMEOUT=120
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - internal
     depends_on:

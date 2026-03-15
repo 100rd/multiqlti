@@ -307,8 +307,8 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
               <div className="text-muted-foreground">Full task context and prior outputs passed to each team</div>
             </div>
             <div className="p-2 rounded border border-border bg-card">
-              <div className="font-medium mb-1">Multi-Model Strategies</div>
-              <div className="text-muted-foreground">Each stage can use MoA, Debate, or Voting for higher quality</div>
+              <div className="font-medium mb-1">Sandbox Execution</div>
+              <div className="text-muted-foreground">Each stage can optionally run generated code in an isolated Docker container</div>
             </div>
           </div>
         </div>

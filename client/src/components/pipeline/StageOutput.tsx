@@ -5,7 +5,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { ChevronDown, ChevronRight, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import StrategyViewer from "./StrategyViewer";
-import type { StrategyResult } from "@shared/types";
+import SandboxOutput from "./SandboxOutput";
+import type { StrategyResult, SandboxResult } from "@shared/types";
 
 interface StageOutputProps {
   teamId: string;
@@ -48,6 +49,7 @@ export default function StageOutput({
     }>) ?? [];
 
   const allFiles = [...files, ...testFiles];
+  const sandboxResult = output.sandboxResult as SandboxResult | undefined;
 
   return (
     <Card className={cn("border-border", isActive && "ring-1 ring-primary/30")}>
@@ -138,6 +140,14 @@ export default function StageOutput({
                   {JSON.stringify(output, null, 2)}
                 </pre>
               </ScrollArea>
+            </div>
+          )}
+
+          {/* Sandbox result */}
+          {sandboxResult && (
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-muted-foreground">Sandbox Execution</p>
+              <SandboxOutput result={sandboxResult} />
             </div>
           )}
 

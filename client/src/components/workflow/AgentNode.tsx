@@ -320,6 +320,13 @@ export default function AgentNode({
             onChange={(s) => onStrategyChange(id, s)}
           />
 
+          {/* Sandbox Config */}
+          <SandboxConfig
+            config={sandboxConfig}
+            enabled={enabled}
+            onChange={(cfg) => onSandboxChange(id, cfg)}
+          />
+
           {team && (
             <div className="p-2 rounded bg-muted/50 border border-border">
               <div className="text-[10px] font-mono text-muted-foreground/70">
