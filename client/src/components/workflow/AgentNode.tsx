@@ -43,6 +43,8 @@ interface AgentNodeProps {
   onSandboxChange: (id: string, config: SandboxConfigType | undefined) => void;
   toolConfig?: StageToolConfig;
   onToolConfigChange: (id: string, config: StageToolConfig) => void;
+  approvalRequired?: boolean;
+  onApprovalChange: (id: string, value: boolean) => void;
   isLast: boolean;
 }
 
@@ -109,6 +111,8 @@ export default function AgentNode({
   onSandboxChange,
   toolConfig,
   onToolConfigChange,
+  approvalRequired = false,
+  onApprovalChange,
   isLast,
 }: AgentNodeProps) {
   const team = SDLC_TEAMS[role as keyof typeof SDLC_TEAMS];
@@ -434,6 +438,27 @@ export default function AgentNode({
             enabled={enabled}
             onChange={(cfg) => onSandboxChange(id, cfg)}
           />
+
+          {/* Approval Gate */}
+          <div className="pt-1 border-t border-border">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <label className="text-xs font-medium text-muted-foreground">
+                  Require approval before next stage
+                </label>
+              </div>
+              <Switch
+                checked={approvalRequired}
+                onCheckedChange={(checked) => onApprovalChange(id, checked)}
+                disabled={!enabled}
+              />
+            </div>
+            {approvalRequired && (
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Pipeline will pause after this stage until a user approves the output.
+              </p>
+            )}
+          </div>
 
           {team && (
             <div className="p-2 rounded bg-muted/50 border border-border">

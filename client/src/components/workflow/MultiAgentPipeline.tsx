@@ -97,6 +97,13 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
     setDirty(true);
   };
 
+  const updateApprovalRequired = (teamId: string, value: boolean) => {
+    setLocalStages(prev => prev.map(s =>
+      s.teamId === teamId ? { ...s, approvalRequired: value } : s,
+    ));
+    setDirty(true);
+  };
+
   const applyPreset = (presetId: string) => {
     const preset = STRATEGY_PRESETS.find(p => p.id === presetId);
     if (!preset) return;
@@ -307,6 +314,8 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                 onSandboxChange={(_, cfg) => updateSandbox(stage.teamId, cfg)}
                 toolConfig={stage.tools}
                 onToolConfigChange={(_, cfg) => updateToolConfig(stage.teamId, cfg)}
+                approvalRequired={stage.approvalRequired ?? false}
+                onApprovalChange={(_, val) => updateApprovalRequired(stage.teamId, val)}
                 isLast={idx === localStages.length - 1}
               />
             );

@@ -283,6 +283,7 @@ export class PipelineController {
         const context = {
           runId: run.id,
           stageIndex: i,
+          stageExecutionId: stageExec.id,
           modelSlug: stage.modelSlug,
           temperature: stage.temperature,
           maxTokens: stage.maxTokens,
