@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { useParams } from "wouter";
-import { usePipelineRun, useCancelRun } from "@/hooks/use-pipeline";
+import { usePipelineRun, useCancelRun, useApproveStage, useRejectStage, useExportRun } from "@/hooks/use-pipeline";
 import { usePipelineEvents } from "@/hooks/use-websocket";
 import StageProgress from "@/components/pipeline/StageProgress";
 import QuestionPanel from "@/components/pipeline/QuestionPanel";
@@ -8,7 +9,13 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { StopCircle, ArrowLeft, Loader2 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { StopCircle, ArrowLeft, Loader2, CheckCircle2, XCircle, Download, ChevronDown } from "lucide-react";
 import { Link } from "wouter";
 import { SDLC_TEAMS } from "@shared/constants";
 import type { PipelineStageConfig } from "@shared/types";
@@ -21,6 +28,7 @@ const statusColors: Record<string, string> = {
   completed: "bg-emerald-500/20 text-emerald-700",
   failed: "bg-red-500/20 text-red-700",
   cancelled: "bg-muted text-muted-foreground",
+  rejected: "bg-red-500/20 text-red-700",
 };
 
 export default function PipelineRun() {
@@ -28,7 +36,12 @@ export default function PipelineRun() {
   const runId = params.runId ?? "";
   const { data: run, isLoading } = usePipelineRun(runId);
   const cancelMutation = useCancelRun();
+  const approveMutation = useApproveStage();
+  const rejectMutation = useRejectStage();
+  const exportMutation = useExportRun();
   const pipelineEvents = usePipelineEvents(runId);
+
+  const [rejectReasonMap, setRejectReasonMap] = useState<Record<number, string>>({});
 
   if (isLoading) {
     return (
@@ -55,6 +68,7 @@ export default function PipelineRun() {
     status: string;
     output: Record<string, unknown> | null;
     tokensUsed: number;
+    approvalStatus?: string | null;
   }>;
 
   // Merge WS live data with server data for stages
@@ -76,6 +90,18 @@ export default function PipelineRun() {
     ? pipelineEvents.questions
     : (run.questions ?? []);
 
+  const { pendingApprovals } = pipelineEvents;
+
+  // Derive approvals from server data if WS hasn't emitted events yet
+  const serverPendingApprovals = pipelineStages
+    .filter((s) => s.status === "awaiting_approval" && s.approvalStatus === "pending")
+    .map((s) => ({ stageIndex: s.stageIndex, stageExecutionId: s.id, teamId: s.teamId }));
+
+  const activeApprovals = pendingApprovals.length > 0 ? pendingApprovals : serverPendingApprovals;
+
+  const isActiveRun = status === "running" || status === "paused";
+  const isTerminal = status === "completed" || status === "failed" || status === "cancelled" || status === "rejected";
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
@@ -92,7 +118,7 @@ export default function PipelineRun() {
               {run.input?.length > 60 ? "..." : ""}
             </h2>
             <div className="flex items-center gap-2 mt-0.5">
-              <Badge className={cn("text-[10px] h-4 px-1.5", statusColors[status])}>
+              <Badge className={cn("text-[10px] h-4 px-1.5", statusColors[status] ?? "bg-muted text-muted-foreground")}>
                 {status}
               </Badge>
               <span className="text-[10px] text-muted-foreground">
@@ -101,18 +127,102 @@ export default function PipelineRun() {
             </div>
           </div>
         </div>
-        {(status === "running" || status === "paused") && (
-          <Button
-            variant="destructive"
-            size="sm"
-            className="h-8 text-xs"
-            onClick={() => cancelMutation.mutate(runId)}
-            disabled={cancelMutation.isPending}
-          >
-            <StopCircle className="h-3 w-3 mr-1" /> Cancel
-          </Button>
-        )}
+
+        <div className="flex items-center gap-2">
+          {/* Export button — always visible */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs gap-1"
+                disabled={exportMutation.isPending}
+              >
+                {exportMutation.isPending
+                  ? <Loader2 className="h-3 w-3 animate-spin" />
+                  : <Download className="h-3 w-3" />}
+                Export
+                <ChevronDown className="h-3 w-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => exportMutation.mutate({ runId, format: "markdown" })}
+              >
+                Markdown Report
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => exportMutation.mutate({ runId, format: "zip" })}
+              >
+                ZIP (report + code)
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Cancel button */}
+          {isActiveRun && (
+            <Button
+              variant="destructive"
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => cancelMutation.mutate(runId)}
+              disabled={cancelMutation.isPending}
+            >
+              <StopCircle className="h-3 w-3 mr-1" /> Cancel
+            </Button>
+          )}
+        </div>
       </div>
+
+      {/* Approval Gate Banner */}
+      {activeApprovals.length > 0 && (
+        <div className="border-b border-amber-200 bg-amber-50 px-6 py-3 shrink-0">
+          <p className="text-xs font-medium text-amber-800 mb-2">
+            Waiting for approval before continuing
+          </p>
+          <div className="flex flex-col gap-2">
+            {activeApprovals.map((approval) => (
+              <div key={approval.stageIndex} className="flex items-center gap-3">
+                <span className="text-xs text-amber-700">
+                  Stage {approval.stageIndex + 1} ({approval.teamId}) is awaiting approval
+                </span>
+                <Button
+                  size="sm"
+                  className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                  disabled={approveMutation.isPending}
+                  onClick={() => approveMutation.mutate({ runId, stageIndex: approval.stageIndex })}
+                >
+                  <CheckCircle2 className="h-3 w-3 mr-1" />
+                  Approve
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="h-7 text-xs"
+                  disabled={rejectMutation.isPending}
+                  onClick={() => rejectMutation.mutate({
+                    runId,
+                    stageIndex: approval.stageIndex,
+                    reason: rejectReasonMap[approval.stageIndex],
+                  })}
+                >
+                  <XCircle className="h-3 w-3 mr-1" />
+                  Reject
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Rejection notice */}
+      {status === "rejected" && (
+        <div className="border-b border-red-200 bg-red-50 px-6 py-3 shrink-0">
+          <p className="text-xs text-red-700">
+            This pipeline run was rejected at a governance gate and did not complete.
+          </p>
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 flex overflow-hidden">
@@ -180,6 +290,12 @@ export default function PipelineRun() {
                   {status === "failed" && (
                     <div className="p-4 rounded-lg border border-red-500/30 bg-red-500/5 text-sm text-red-700">
                       Pipeline failed. Check the stage outputs for details.
+                    </div>
+                  )}
+                  {status === "rejected" && (
+                    <div className="p-4 rounded-lg border border-red-500/30 bg-red-500/5 text-sm text-red-700">
+                      Pipeline rejected at a governance gate.{" "}
+                      {completedStages.length} stages completed before rejection.
                     </div>
                   )}
                 </div>

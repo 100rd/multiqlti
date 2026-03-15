@@ -27,6 +27,12 @@ export function useWebSocket(runId?: string) {
   return { lastEvent, isConnected };
 }
 
+export interface PendingApproval {
+  stageIndex: number;
+  stageExecutionId: string;
+  teamId: string;
+}
+
 export interface PipelineEventState {
   status: RunStatus;
   stages: Map<
@@ -53,6 +59,7 @@ export interface PipelineEventState {
     content: string;
     agentTeam?: string;
   }>;
+  pendingApprovals: PendingApproval[];
 }
 
 export function usePipelineEvents(runId: string): PipelineEventState {
@@ -62,6 +69,7 @@ export function usePipelineEvents(runId: string): PipelineEventState {
     currentStageIndex: 0,
     questions: [],
     messages: [],
+    pendingApprovals: [],
   });
 
   const stateRef = useRef(state);
@@ -125,6 +133,63 @@ export function usePipelineEvents(runId: string): PipelineEventState {
           status: "failed",
         });
         setState({ ...s, stages });
+        break;
+      }
+
+      case "stage:awaiting_approval": {
+        const stageIndex = event.payload.stageIndex as number;
+        const stages = new Map(s.stages);
+        const existing = stages.get(stageIndex);
+        stages.set(stageIndex, {
+          teamId: existing?.teamId ?? (event.payload.teamId as string),
+          modelSlug: existing?.modelSlug ?? "",
+          status: "awaiting_approval",
+          output: existing?.output,
+          tokensUsed: existing?.tokensUsed,
+        });
+        const approval: PendingApproval = {
+          stageIndex,
+          stageExecutionId: event.stageExecutionId ?? "",
+          teamId: event.payload.teamId as string,
+        };
+        setState({
+          ...s,
+          stages,
+          status: "paused",
+          pendingApprovals: [...s.pendingApprovals.filter((a) => a.stageIndex !== stageIndex), approval],
+        });
+        break;
+      }
+
+      case "stage:approved": {
+        const stageIndex = event.payload.stageIndex as number;
+        const stages = new Map(s.stages);
+        const existing = stages.get(stageIndex);
+        if (existing) {
+          stages.set(stageIndex, { ...existing, status: "completed" });
+        }
+        setState({
+          ...s,
+          stages,
+          status: "running",
+          pendingApprovals: s.pendingApprovals.filter((a) => a.stageIndex !== stageIndex),
+        });
+        break;
+      }
+
+      case "stage:rejected": {
+        const stageIndex = event.payload.stageIndex as number;
+        const stages = new Map(s.stages);
+        const existing = stages.get(stageIndex);
+        if (existing) {
+          stages.set(stageIndex, { ...existing, status: "failed" });
+        }
+        setState({
+          ...s,
+          stages,
+          status: "rejected" as RunStatus,
+          pendingApprovals: s.pendingApprovals.filter((a) => a.stageIndex !== stageIndex),
+        });
         break;
       }
 

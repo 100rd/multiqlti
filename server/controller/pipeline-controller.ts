@@ -8,8 +8,14 @@ import { ThoughtTreeCollector } from "../pipeline/thought-tree-collector";
 import { MemoryExtractor } from "../memory/extractor";
 import { MemoryProvider } from "../memory/provider";
 
+interface ApprovalHandle {
+  resolve: (approved: boolean) => void;
+  reason?: string;
+}
+
 export class PipelineController {
   private activeRuns: Map<string, AbortController> = new Map();
+  private pendingApprovals: Map<string, ApprovalHandle> = new Map();
   private sandboxExecutor: SandboxExecutor;
   private memoryExtractor: MemoryExtractor;
   private memoryProvider: MemoryProvider;
@@ -105,6 +111,80 @@ export class PipelineController {
     }
 
     return files;
+  }
+
+  /** Returns a promise that resolves to true (approved) or false (rejected). */
+  private waitForApproval(approvalKey: string): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      this.pendingApprovals.set(approvalKey, { resolve });
+    });
+  }
+
+  private makeApprovalKey(runId: string, stageIndex: number): string {
+    return `${runId}::${stageIndex}`;
+  }
+
+  async approveStage(runId: string, stageIndex: number, approvedBy?: string): Promise<void> {
+    const key = this.makeApprovalKey(runId, stageIndex);
+    const handle = this.pendingApprovals.get(key);
+    if (!handle) throw new Error(`No pending approval for run ${runId} stage ${stageIndex}`);
+
+    this.pendingApprovals.delete(key);
+
+    // Update DB
+    const executions = await this.storage.getStageExecutions(runId);
+    const stageExec = executions.find((e) => e.stageIndex === stageIndex);
+    if (stageExec) {
+      await this.storage.updateStageExecution(stageExec.id, {
+        approvalStatus: "approved",
+        approvedAt: new Date(),
+        approvedBy: approvedBy ?? null,
+      });
+    }
+
+    // Update run back to running
+    await this.storage.updatePipelineRun(runId, { status: "running" });
+
+    this.broadcast(runId, {
+      type: "stage:approved",
+      runId,
+      payload: { stageIndex, approvedBy: approvedBy ?? null },
+      timestamp: new Date().toISOString(),
+    });
+
+    handle.resolve(true);
+  }
+
+  async rejectStage(runId: string, stageIndex: number, reason?: string): Promise<void> {
+    const key = this.makeApprovalKey(runId, stageIndex);
+    const handle = this.pendingApprovals.get(key);
+    if (!handle) throw new Error(`No pending approval for run ${runId} stage ${stageIndex}`);
+
+    this.pendingApprovals.delete(key);
+
+    // Update DB
+    const executions = await this.storage.getStageExecutions(runId);
+    const stageExec = executions.find((e) => e.stageIndex === stageIndex);
+    if (stageExec) {
+      await this.storage.updateStageExecution(stageExec.id, {
+        approvalStatus: "rejected",
+        rejectionReason: reason ?? null,
+      });
+    }
+
+    await this.storage.updatePipelineRun(runId, {
+      status: "rejected",
+      completedAt: new Date(),
+    });
+
+    this.broadcast(runId, {
+      type: "stage:rejected",
+      runId,
+      payload: { stageIndex, reason: reason ?? null },
+      timestamp: new Date().toISOString(),
+    });
+
+    handle.resolve(false);
   }
 
   private async executeStages(
@@ -367,6 +447,40 @@ export class PipelineController {
           content: result.output.summary as string ?? `${stage.teamId} stage completed.`,
           metadata: { stageIndex: i, output: result.output },
         });
+
+        // ─── Approval Gate ────────────────────────────────────────────────────
+        if (stage.approvalRequired) {
+          const approvalKey = this.makeApprovalKey(run.id, i);
+
+          await this.storage.updateStageExecution(stageExec.id, {
+            status: "awaiting_approval",
+            approvalStatus: "pending",
+          });
+          await this.storage.updatePipelineRun(run.id, { status: "paused" });
+
+          this.broadcast(run.id, {
+            type: "stage:awaiting_approval",
+            runId: run.id,
+            stageExecutionId: stageExec.id,
+            payload: { stageIndex: i, teamId: stage.teamId },
+            timestamp: new Date().toISOString(),
+          });
+
+          if (signal.aborted) return;
+
+          const approved = await this.waitForApproval(approvalKey);
+
+          if (!approved) {
+            // run status already set to rejected in rejectStage()
+            this.activeRuns.delete(run.id);
+            return;
+          }
+
+          // Continue — restore stage status to completed
+          await this.storage.updateStageExecution(stageExec.id, {
+            status: "completed",
+          });
+        }
       } catch (error) {
         const errMsg =
           error instanceof Error ? error.message : "Unknown error";
@@ -459,6 +573,14 @@ export class PipelineController {
     if (abort) {
       abort.abort();
       this.activeRuns.delete(runId);
+    }
+
+    // Resolve any pending approval as rejected to unblock the promise
+    for (const [key, handle] of this.pendingApprovals) {
+      if (key.startsWith(`${runId}::`)) {
+        this.pendingApprovals.delete(key);
+        handle.resolve(false);
+      }
     }
 
     await this.storage.updatePipelineRun(runId, {

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import type { IStorage } from "../storage";
 import type { PipelineController } from "../controller/pipeline-controller";
+import { generateMarkdownReport, generateZipExport } from "../services/export-service";
 
 const CreateRunSchema = z.object({
   pipelineId: z.string().min(1, "pipelineId is required"),
@@ -11,6 +12,16 @@ const CreateRunSchema = z.object({
 const AnswerQuestionSchema = z.object({
   answer: z.string().min(1, "answer is required"),
 });
+
+const ApproveStageSchema = z.object({
+  approvedBy: z.string().max(200).optional(),
+});
+
+const RejectStageSchema = z.object({
+  reason: z.string().max(500).optional(),
+});
+
+const ExportFormatSchema = z.enum(["markdown", "zip"]);
 
 export function registerRunRoutes(
   router: Router,
@@ -87,5 +98,79 @@ export function registerRunRoutes(
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });
     }
+  });
+
+  // ─── Approval Gates ────────────────────────────────────────────────────────
+
+  router.post("/api/runs/:id/stages/:stageIndex/approve", async (req, res) => {
+    const stageIndex = parseInt(req.params.stageIndex, 10);
+    if (isNaN(stageIndex) || stageIndex < 0) {
+      return res.status(400).json({ error: "Invalid stageIndex" });
+    }
+
+    const parsed = ApproveStageSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.message });
+    }
+
+    try {
+      await controller.approveStage(req.params.id, stageIndex, parsed.data.approvedBy);
+      res.json({ message: "Stage approved" });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  router.post("/api/runs/:id/stages/:stageIndex/reject", async (req, res) => {
+    const stageIndex = parseInt(req.params.stageIndex, 10);
+    if (isNaN(stageIndex) || stageIndex < 0) {
+      return res.status(400).json({ error: "Invalid stageIndex" });
+    }
+
+    const parsed = RejectStageSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.message });
+    }
+
+    try {
+      await controller.rejectStage(req.params.id, stageIndex, parsed.data.reason);
+      res.json({ message: "Stage rejected" });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  // ─── Export ───────────────────────────────────────────────────────────────
+
+  router.get("/api/runs/:id/export", async (req, res) => {
+    const formatResult = ExportFormatSchema.safeParse(req.query.format);
+    if (!formatResult.success) {
+      return res.status(400).json({ error: "format must be 'markdown' or 'zip'" });
+    }
+    const format = formatResult.data;
+
+    const run = await storage.getPipelineRun(req.params.id);
+    if (!run) return res.status(404).json({ error: "Run not found" });
+
+    const pipeline = await storage.getPipeline(run.pipelineId);
+    if (!pipeline) return res.status(404).json({ error: "Pipeline not found" });
+
+    const stages = await storage.getStageExecutions(run.id);
+    const runSlug = run.id.slice(0, 8);
+
+    if (format === "markdown") {
+      const markdown = generateMarkdownReport(run, stages, pipeline);
+      res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="run-${runSlug}-report.md"`);
+      res.send(markdown);
+      return;
+    }
+
+    // ZIP
+    const zipBuffer = generateZipExport(run, stages, pipeline);
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="run-${runSlug}-export.zip"`);
+    res.setHeader("Content-Length", zipBuffer.length);
+    res.send(zipBuffer);
   });
 }
