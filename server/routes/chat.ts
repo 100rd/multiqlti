@@ -4,30 +4,34 @@ import { z } from "zod";
 import type { IStorage } from "../storage";
 import type { Gateway } from "../gateway/index";
 import type { WsManager } from "../ws/manager";
-import { validateBody } from "../middleware/validate";
+import { validateBody, validateQuery } from "../middleware/validate";
 
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
 
 const HistoryMessageSchema = z.object({
-  role: z.string().min(1),
-  content: z.string(),
+  role: z.enum(["user", "assistant", "system"]),
+  content: z.string().min(1).max(100000),
+});
+
+const GetChatMessagesQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(500).optional(),
 });
 
 const SendChatSchema = z.object({
-  content: z.string().min(1, "content is required"),
-  modelSlug: z.string().optional(),
+  content: z.string().min(1, "content is required").max(50000),
+  modelSlug: z.string().max(200).optional(),
 });
 
 const StandaloneChatSchema = z.object({
-  content: z.string().min(1, "content is required"),
-  modelSlug: z.string().optional(),
-  history: z.array(HistoryMessageSchema).optional(),
+  content: z.string().min(1, "content is required").max(50000),
+  modelSlug: z.string().max(200).optional(),
+  history: z.array(HistoryMessageSchema).max(100).optional(),
 });
 
 const StreamChatSchema = z.object({
-  content: z.string().min(1, "content is required"),
-  modelSlug: z.string().optional(),
-  history: z.array(HistoryMessageSchema).optional(),
+  content: z.string().min(1, "content is required").max(50000),
+  modelSlug: z.string().max(200).optional(),
+  history: z.array(HistoryMessageSchema).max(100).optional(),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -38,9 +42,9 @@ export function registerChatRoutes(
   gateway: Gateway,
   wsManager: WsManager,
 ) {
-  router.get("/api/chat/:runId/messages", async (req, res) => {
-    const limit = req.query.limit ? parseInt(req.query.limit as string) : undefined;
-    const messages = await storage.getChatMessages(req.params["runId"], limit);
+  router.get("/api/chat/:runId/messages", validateQuery(GetChatMessagesQuerySchema), async (req, res) => {
+    const { limit } = req.query as z.infer<typeof GetChatMessagesQuerySchema>;
+    const messages = await storage.getChatMessages(req.params["runId"] as string, limit);
     res.json(messages);
   });
 

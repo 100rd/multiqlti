@@ -7,44 +7,44 @@ import type { ExecutionStrategy, PipelineStageConfig, TeamId } from "@shared/typ
 // ─── Zod schemas for input validation ────────────────────────────────────────
 
 const ProposerConfigSchema = z.object({
-  modelSlug: z.string().min(1),
-  role: z.string().optional(),
+  modelSlug: z.string().min(1).max(200),
+  role: z.string().max(200).optional(),
   temperature: z.number().min(0).max(2).optional(),
 });
 
 const AggregatorConfigSchema = z.object({
-  modelSlug: z.string().min(1),
-  systemPrompt: z.string().optional(),
+  modelSlug: z.string().min(1).max(200),
+  systemPrompt: z.string().max(10000).optional(),
 });
 
 const MoaStrategySchema = z.object({
   type: z.literal("moa"),
   proposers: z.array(ProposerConfigSchema).min(1).max(5),
   aggregator: AggregatorConfigSchema,
-  proposerPromptOverride: z.string().optional(),
+  proposerPromptOverride: z.string().max(10000).optional(),
 });
 
 const DebateParticipantSchema = z.object({
-  modelSlug: z.string().min(1),
+  modelSlug: z.string().min(1).max(200),
   role: z.enum(["proposer", "critic", "devil_advocate"]),
-  persona: z.string().optional(),
+  persona: z.string().max(500).optional(),
 });
 
 const JudgeConfigSchema = z.object({
-  modelSlug: z.string().min(1),
-  criteria: z.array(z.string()).optional(),
+  modelSlug: z.string().min(1).max(200),
+  criteria: z.array(z.string().max(500)).max(20).optional(),
 });
 
 const DebateStrategySchema = z.object({
   type: z.literal("debate"),
-  participants: z.array(DebateParticipantSchema).min(2),
+  participants: z.array(DebateParticipantSchema).min(2).max(20),
   judge: JudgeConfigSchema,
   rounds: z.number().int().min(1).max(5),
   stopEarly: z.boolean().optional(),
 });
 
 const CandidateConfigSchema = z.object({
-  modelSlug: z.string().min(1),
+  modelSlug: z.string().min(1).max(200),
   temperature: z.number().min(0).max(2).optional(),
 });
 
@@ -78,14 +78,14 @@ export function registerStrategyRoutes(router: Router, storage: IStorage): void 
       const stageIndex = parseInt(req.params.stageIndex, 10);
 
       if (isNaN(stageIndex) || stageIndex < 0) {
-        return res.status(400).json({ message: "Invalid stageIndex" });
+        return res.status(400).json({ error: "Invalid stageIndex" });
       }
 
       const parseResult = ExecutionStrategySchema.safeParse(req.body);
       if (!parseResult.success) {
         return res.status(400).json({
-          message: "Invalid strategy",
-          errors: parseResult.error.flatten(),
+          error: "Validation failed",
+          issues: parseResult.error.issues.map((i) => ({ path: i.path, message: i.message })),
         });
       }
 
@@ -93,12 +93,12 @@ export function registerStrategyRoutes(router: Router, storage: IStorage): void 
 
       const pipeline = await storage.getPipeline(pipelineId);
       if (!pipeline) {
-        return res.status(404).json({ message: "Pipeline not found" });
+        return res.status(404).json({ error: "Pipeline not found" });
       }
 
       const stages = pipeline.stages as PipelineStageConfig[];
       if (stageIndex >= stages.length) {
-        return res.status(400).json({ message: "Stage index out of bounds" });
+        return res.status(400).json({ error: "Stage index out of bounds" });
       }
 
       const updatedStages = stages.map((s, idx) => {
@@ -120,17 +120,20 @@ export function registerStrategyRoutes(router: Router, storage: IStorage): void 
     const schema = z.object({ presetId: z.string().min(1) });
     const parseResult = schema.safeParse(req.body);
     if (!parseResult.success) {
-      return res.status(400).json({ message: "presetId is required" });
+      return res.status(400).json({
+        error: "Validation failed",
+        issues: parseResult.error.issues.map((i) => ({ path: i.path, message: i.message })),
+      });
     }
 
     const preset = EXECUTION_STRATEGY_PRESETS.find((p) => p.id === parseResult.data.presetId);
     if (!preset) {
-      return res.status(404).json({ message: "Execution strategy preset not found" });
+      return res.status(404).json({ error: "Execution strategy preset not found" });
     }
 
     const pipeline = await storage.getPipeline(req.params.id);
     if (!pipeline) {
-      return res.status(404).json({ message: "Pipeline not found" });
+      return res.status(404).json({ error: "Pipeline not found" });
     }
 
     const stages = pipeline.stages as PipelineStageConfig[];

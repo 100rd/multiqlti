@@ -12,9 +12,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import express from "express";
+import type { Router } from "express";
 import { createTestApp } from "../helpers/test-app.js";
 import { registerChatRoutes } from "../../server/routes/chat.js";
 import { registerStrategyRoutes } from "../../server/routes/strategies.js";
+import { registerGatewayRoutes } from "../../server/routes/gateway.js";
 import type { TestApp } from "../helpers/test-app.js";
 
 // ─── Minimal chat-app fixture ────────────────────────────────────────────────
@@ -43,6 +45,25 @@ function createChatApp() {
     stubWsManager as never,
   );
 
+  return app;
+}
+
+// ─── Minimal gateway-app fixture ─────────────────────────────────────────────
+
+function createGatewayApp() {
+  const app = express();
+  app.use(express.json());
+
+  const stubGateway = {
+    complete: async () => ({ content: "ok", tokensUsed: 1 }),
+    stream: async function* () { yield "chunk"; },
+    getStatus: () => ({ vllm: true }),
+    discoverModels: async () => [],
+    discoverFromEndpoint: async () => [],
+    reloadProvider: async () => {},
+  };
+
+  registerGatewayRoutes(app as unknown as Router, stubGateway as never);
   return app;
 }
 
@@ -379,5 +400,131 @@ describe("Zod validation — POST /api/chat/stream", () => {
     // SSE endpoint returns 200 with text/event-stream
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toContain("text/event-stream");
+  });
+});
+
+// ─── Gateway route tests ──────────────────────────────────────────────────────
+
+describe("Zod validation — POST /api/gateway/complete", () => {
+  it("returns 400 when modelSlug is missing", async () => {
+    const app = createGatewayApp();
+    const res = await request(app)
+      .post("/api/gateway/complete")
+      .send({ messages: [{ role: "user", content: "hi" }] });
+    expect(res.status).toBe(400);
+    expectValidationFailure(res.body);
+  });
+
+  it("returns 400 when messages is empty array", async () => {
+    const app = createGatewayApp();
+    const res = await request(app)
+      .post("/api/gateway/complete")
+      .send({ modelSlug: "llama3", messages: [] });
+    expect(res.status).toBe(400);
+    expectValidationFailure(res.body);
+  });
+
+  it("returns 400 when message role is invalid", async () => {
+    const app = createGatewayApp();
+    const res = await request(app)
+      .post("/api/gateway/complete")
+      .send({ modelSlug: "llama3", messages: [{ role: "robot", content: "hi" }] });
+    expect(res.status).toBe(400);
+    expectValidationFailure(res.body);
+  });
+
+  it("returns 400 when message content exceeds maxLength", async () => {
+    const app = createGatewayApp();
+    const res = await request(app)
+      .post("/api/gateway/complete")
+      .send({ modelSlug: "llama3", messages: [{ role: "user", content: "x".repeat(100001) }] });
+    expect(res.status).toBe(400);
+    expectValidationFailure(res.body);
+  });
+
+  it("passes through with valid body", async () => {
+    const app = createGatewayApp();
+    const res = await request(app)
+      .post("/api/gateway/complete")
+      .send({ modelSlug: "llama3", messages: [{ role: "user", content: "Hello" }] });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("Zod validation — POST /api/providers/probe", () => {
+  it("returns 400 when endpoint is missing", async () => {
+    const app = createGatewayApp();
+    const res = await request(app)
+      .post("/api/providers/probe")
+      .send({ providerType: "vllm" });
+    expect(res.status).toBe(400);
+    expectValidationFailure(res.body);
+  });
+
+  it("returns 400 when endpoint is not a valid URL", async () => {
+    const app = createGatewayApp();
+    const res = await request(app)
+      .post("/api/providers/probe")
+      .send({ endpoint: "not-a-url", providerType: "vllm" });
+    expect(res.status).toBe(400);
+    expectValidationFailure(res.body);
+  });
+
+  it("returns 400 when providerType is invalid", async () => {
+    const app = createGatewayApp();
+    const res = await request(app)
+      .post("/api/providers/probe")
+      .send({ endpoint: "http://localhost:8000", providerType: "unknown" });
+    expect(res.status).toBe(400);
+    expectValidationFailure(res.body);
+  });
+
+  it("passes through with valid body", async () => {
+    const app = createGatewayApp();
+    const res = await request(app)
+      .post("/api/providers/probe")
+      .send({ endpoint: "http://localhost:8000", providerType: "vllm" });
+    // Gateway stub returns [] so response is 200 { models: [] }
+    expect(res.status).toBe(200);
+  });
+});
+
+// ─── maxLength constraint tests ───────────────────────────────────────────────
+
+describe("Zod validation — maxLength constraints", () => {
+  let testApp: TestApp;
+
+  beforeAll(async () => {
+    testApp = await createTestApp();
+  });
+
+  afterAll(async () => {
+    await testApp.close();
+  });
+
+  it("returns 400 when POST /api/runs input exceeds 50000 chars", async () => {
+    const res = await request(testApp.app)
+      .post("/api/runs")
+      .send({ pipelineId: "pid-1", input: "x".repeat(50001) });
+    expect(res.status).toBe(400);
+    expectValidationFailure(res.body);
+  });
+
+  it("returns 400 when POST /api/chat/standalone content exceeds 50000 chars", async () => {
+    const app = createChatApp();
+    const res = await request(app)
+      .post("/api/chat/standalone")
+      .send({ content: "x".repeat(50001) });
+    expect(res.status).toBe(400);
+    expectValidationFailure(res.body);
+  });
+
+  it("returns 400 when POST /api/gateway/complete modelSlug exceeds 200 chars", async () => {
+    const app = createGatewayApp();
+    const res = await request(app)
+      .post("/api/gateway/complete")
+      .send({ modelSlug: "x".repeat(201), messages: [{ role: "user", content: "hi" }] });
+    expect(res.status).toBe(400);
+    expectValidationFailure(res.body);
   });
 });

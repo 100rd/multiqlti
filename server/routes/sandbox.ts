@@ -6,8 +6,8 @@ import { SANDBOX_IMAGE_PRESETS } from "@shared/constants";
 const executor = new SandboxExecutor();
 
 const testSchema = z.object({
-  image: z.string().min(1),
-  timeout: z.number().max(60).default(30),
+  image: z.string().min(1).max(500),
+  timeout: z.number().min(1).max(60).default(30),
 });
 
 export function registerSandboxRoutes(router: Router): void {
@@ -31,7 +31,10 @@ export function registerSandboxRoutes(router: Router): void {
   router.post("/api/sandbox/test", async (req, res) => {
     const parsed = testSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ message: parsed.error.message });
+      return res.status(400).json({
+        error: "Validation failed",
+        issues: parsed.error.issues.map((i) => ({ path: i.path, message: i.message })),
+      });
     }
 
     const { image, timeout } = parsed.data;
@@ -53,7 +56,7 @@ export function registerSandboxRoutes(router: Router): void {
 
       res.json(result);
     } catch (err) {
-      res.status(500).json({ message: (err as Error).message });
+      res.status(500).json({ error: (err as Error).message });
     }
   });
 }

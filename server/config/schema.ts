@@ -6,7 +6,10 @@ export const ConfigSchema = z.object({
     nodeEnv: z.enum(["development", "production", "test"]).default("development"),
   }).default({}),
   database: z.object({
-    url: z.string().url().optional(),
+    url: z.preprocess(
+      (v) => (v === "" ? undefined : v),
+      z.string().url().optional(),
+    ),
   }).default({}),
   auth: z.object({
     jwtSecret: z.string().min(32).optional(),

@@ -29,3 +29,31 @@ export function validateBody<T>(schema: ZodSchema<T>) {
     next();
   };
 }
+
+/**
+ * Express middleware factory that validates `req.query` against a Zod schema.
+ *
+ * On success the parsed data replaces `req.query` so downstream handlers
+ * always receive clean, typed query parameters.
+ *
+ * On failure it short-circuits with HTTP 400 and a structured error payload:
+ *   { error: "Validation failed", issues: ZodIssue[] }
+ */
+export function validateQuery<T>(schema: ZodSchema<T>) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const result = schema.safeParse(req.query);
+    if (!result.success) {
+      const zodError = result.error as ZodError;
+      res.status(400).json({
+        error: "Validation failed",
+        issues: zodError.issues.map((issue) => ({
+          path: issue.path,
+          message: issue.message,
+        })),
+      });
+      return;
+    }
+    req.query = result.data as Record<string, string>;
+    next();
+  };
+}
