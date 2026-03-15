@@ -1,10 +1,14 @@
 // ─── Auth Types ───────────────────────────────────────────────────────────────
 
+export type UserRole = "user" | "maintainer" | "admin";
+
 export interface User {
   id: string;
   email: string;
   name: string;
   isActive: boolean;
+  role: UserRole;
+  lastLoginAt: Date | null;
   createdAt: Date;
 }
 
@@ -580,4 +584,30 @@ export interface ReviewResult {
   model: string;
   issues: ReviewIssue[];
   summary: string;
+}
+
+// ─── Config Diff Types (0.5b.2) ───────────────────────────────────────────────
+
+export interface ConfigDiffEntry {
+  path: string;                   // e.g. "defaults.tokenBudget"
+  platformValue: unknown;
+  projectValue: unknown;
+  changeType: "override" | "new" | "removed";
+}
+
+export interface ProjectConfigResponse {
+  detected: boolean;              // true if multiqlti.yaml found in workspace
+  projectConfig: Record<string, unknown> | null;
+  diff: ConfigDiffEntry[];
+}
+
+// ─── Ephemeral Run Variable Types (0.5b.2) ────────────────────────────────────
+
+export interface RunVariableState {
+  runId: string;
+  variables: Record<string, string>;
+  status: "active" | "cleared" | "preserved";
+  preserveReason?: string;        // e.g. "run failed at stage: deployment"
+  createdAt: Date;
+  clearedAt: Date | null;
 }

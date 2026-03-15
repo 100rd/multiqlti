@@ -22,6 +22,8 @@ import Memory from "@/pages/Memory";
 import WorkspaceList from "@/pages/WorkspaceList";
 import Workspace from "@/pages/Workspace";
 import Login from "@/pages/Login";
+import UserManagement from "@/pages/UserManagement";
+import ProfileSettings from "@/pages/ProfileSettings";
 
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
@@ -69,6 +71,12 @@ function ProtectedRouter() {
         )} />
         <Route path="/settings" component={() => (
           <ErrorBoundary><Settings /></ErrorBoundary>
+        )} />
+        <Route path="/settings/profile" component={() => (
+          <ErrorBoundary><ProfileSettings /></ErrorBoundary>
+        )} />
+        <Route path="/settings/users" component={() => (
+          <ErrorBoundary><UserManagement /></ErrorBoundary>
         )} />
         <Route path="/privacy" component={() => (
           <ErrorBoundary><Privacy /></ErrorBoundary>

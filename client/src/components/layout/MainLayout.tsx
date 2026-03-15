@@ -12,14 +12,22 @@ import {
   Brain,
   FolderGit2,
   LogOut,
+  Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
 import { useAuth } from "@/hooks/use-auth";
+import type { UserRole } from "@shared/types";
 
 interface MainLayoutProps {
   children: ReactNode;
 }
+
+const ROLE_BADGE: Record<UserRole, { label: string; className: string }> = {
+  admin: { label: "Admin", className: "bg-red-500/15 text-red-600 border-red-500/30" },
+  maintainer: { label: "Maintainer", className: "bg-blue-500/15 text-blue-600 border-blue-500/30" },
+  user: { label: "User", className: "bg-muted text-muted-foreground border-border" },
+};
 
 export default function MainLayout({ children }: MainLayoutProps) {
   const [location, navigate] = useLocation();
@@ -41,12 +49,18 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: Brain, label: "Memory", href: "/memories" },
     { icon: ShieldCheck, label: "Privacy", href: "/privacy" },
     { icon: Settings, label: "Settings", href: "/settings" },
+    // Admin-only: User Management
+    ...(user?.role === "admin"
+      ? [{ icon: Users, label: "Users", href: "/settings/users" }]
+      : []),
   ];
 
   async function handleLogout() {
     await logout();
     navigate("/login");
   }
+
+  const roleBadge = user ? ROLE_BADGE[user.role] ?? ROLE_BADGE.user : null;
 
   return (
     <div className="flex h-screen w-full bg-background font-sans overflow-hidden">
@@ -105,10 +119,26 @@ export default function MainLayout({ children }: MainLayoutProps) {
 
         <div className="p-4 border-t border-border space-y-2">
           {user && (
-            <div className="px-3 py-1">
-              <p className="text-[11px] text-muted-foreground truncate">{user.email}</p>
+            <div className="px-3 py-1 flex items-center gap-2">
+              <div className="flex-1 min-w-0">
+                <p className="text-[11px] text-muted-foreground truncate">{user.email}</p>
+              </div>
+              {roleBadge && (
+                <span className={cn(
+                  "text-[10px] font-semibold px-1.5 py-0.5 rounded border",
+                  roleBadge.className,
+                )}>
+                  {roleBadge.label}
+                </span>
+              )}
             </div>
           )}
+          <Link href="/settings/profile">
+            <div className="flex w-full items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors cursor-pointer">
+              <Settings className="h-4 w-4" />
+              <span>Profile</span>
+            </div>
+          </Link>
           <button
             onClick={handleLogout}
             className="flex w-full items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors"
