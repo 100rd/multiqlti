@@ -1,6 +1,11 @@
 import { test, expect } from "@playwright/test";
+import { loginPage } from "./helpers/auth";
 
 test.describe("Pipeline CRUD", () => {
+  test.beforeEach(async ({ page }, testInfo) => {
+    await loginPage(page, testInfo.project.use.baseURL ?? "http://localhost:3099");
+  });
+
   test("pipeline list page renders without errors", async ({ page }) => {
     await page.goto("/pipelines");
     await page.waitForLoadState("networkidle");
@@ -11,11 +16,10 @@ test.describe("Pipeline CRUD", () => {
   });
 
   test("navigating to a pipeline detail page works", async ({ page }) => {
-    // First get a pipeline id from the API
     const response = await page.request.get("/api/pipelines");
     expect(response.status()).toBe(200);
 
-    const pipelines = await response.json() as Array<{ id: string; name: string }>;
+    const pipelines = (await response.json()) as Array<{ id: string; name: string }>;
 
     if (pipelines.length > 0) {
       const pipeline = pipelines[0];
@@ -32,23 +36,19 @@ test.describe("Pipeline CRUD", () => {
   });
 
   test("creating a pipeline via API and then navigating to it", async ({ page }) => {
-    // Create pipeline via API
     const createRes = await page.request.post("/api/pipelines", {
       data: {
         name: "E2E Test Pipeline",
         description: "Created by E2E test",
-        stages: [
-          { teamId: "planning", modelSlug: "mock", enabled: true },
-        ],
+        stages: [{ teamId: "planning", modelSlug: "mock", enabled: true }],
       },
     });
     expect(createRes.status()).toBe(201);
 
-    const pipeline = await createRes.json() as { id: string; name: string };
+    const pipeline = (await createRes.json()) as { id: string; name: string };
     expect(pipeline.id).toBeTruthy();
     expect(pipeline.name).toBe("E2E Test Pipeline");
 
-    // Navigate to the pipeline detail page
     await page.goto(`/pipelines/${pipeline.id}`);
     await page.waitForLoadState("networkidle");
 

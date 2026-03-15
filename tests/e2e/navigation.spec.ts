@@ -1,13 +1,16 @@
 import { test, expect } from "@playwright/test";
+import { loginPage } from "./helpers/auth";
 
 test.describe("Navigation", () => {
+  test.beforeEach(async ({ page }, testInfo) => {
+    await loginPage(page, testInfo.project.use.baseURL ?? "http://localhost:3099");
+  });
+
   test("root path renders the dashboard or redirects to a main page", async ({ page }) => {
     await page.goto("/");
-
-    // Wait for the app to load — should not be on login page
     await page.waitForLoadState("networkidle");
 
-    // Should not be redirected to /login
+    // Should not be redirected to /login (user is authenticated)
     expect(page.url()).not.toContain("/login");
   });
 
@@ -15,7 +18,6 @@ test.describe("Navigation", () => {
     await page.goto("/pipelines");
     await page.waitForLoadState("networkidle");
 
-    // Page should be accessible without login redirect
     expect(page.url()).toContain("/pipelines");
   });
 
@@ -23,12 +25,8 @@ test.describe("Navigation", () => {
     await page.goto("/pipelines");
     await page.waitForLoadState("networkidle");
 
-    // The seeded default pipeline template should appear
-    // Just check the page renders without errors
     const body = await page.locator("body").textContent();
     expect(body).toBeTruthy();
-
-    // Should not show an error boundary crash message
     expect(body).not.toContain("Something went wrong");
   });
 
