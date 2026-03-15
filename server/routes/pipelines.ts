@@ -12,8 +12,8 @@ const PipelineStageConfigSchema = z.object({
 });
 
 const CreatePipelineSchema = z.object({
-  name: z.string().min(1).max(100),
-  description: z.string().optional(),
+  name: z.string().min(1).max(100).transform((s) => s.replace(/<[^>]*>/g, "").trim()),
+  description: z.string().optional().transform((s) => s?.replace(/<[^>]*>/g, "").trim()),
   stages: z.array(PipelineStageConfigSchema).default([]),
   createdBy: z.string().optional(),
   isTemplate: z.boolean().optional(),
