@@ -60,7 +60,15 @@ export function registerWebhookRoutes(
           fireTrigger,
         },
       );
-      return res.json(result);
+
+      // VETO-3 fix: do NOT return internal trigger IDs or raw error strings to the
+      // unauthenticated caller. Log the full result server-side for audit purposes
+      // and return only aggregate counts so callers can confirm delivery.
+      const cid = correlationId();
+      if (result.errors && result.errors.length > 0) {
+        console.error({ cid, fired: result.fired?.length, errors: result.errors }, "github-events partial failure");
+      }
+      return res.json({ fired: result.fired?.length ?? 0 });
     } catch (e) {
       if (e instanceof ZodError) {
         return res.status(400).json({ error: "Validation failed", issues: e.issues });

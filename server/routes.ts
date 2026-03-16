@@ -116,7 +116,8 @@ export async function registerRoutes(
       log(`[triggers] Fired trigger ${trigger.id} for pipeline ${pipeline.id}`, "triggers");
     };
 
-    registerTriggerRoutes(app, triggerService);
+    // VETO-1 fix: pass storage as third argument so routes can look up pipeline ownership
+    registerTriggerRoutes(app, triggerService, storage);
     registerWebhookRoutes(app, storage, triggerService, fireTrigger);
 
     cronScheduler = new CronScheduler({

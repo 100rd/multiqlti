@@ -32,6 +32,12 @@ export async function handleGitHubEvent(
     return { fired: [], errors: ["Missing X-GitHub-Event header"] };
   }
 
+  // CONCERN-2 note: routing (repository/ref matching) uses pre-HMAC payload fields.
+  // This is a deliberate architectural trade-off: the per-trigger-secret design requires
+  // us to identify candidate triggers before we can look up their individual secrets.
+  // This is safe because fireTrigger is NEVER called before a successful HMAC check —
+  // an attacker can influence which triggers are *evaluated* but cannot fire any trigger
+  // without possessing the corresponding secret.
   const body = payload as Record<string, unknown>;
   const repository = (body.repository as Record<string, unknown> | undefined)?.full_name;
   const ref = String((body.ref as string | undefined) ?? "");

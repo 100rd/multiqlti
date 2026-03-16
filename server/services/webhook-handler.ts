@@ -88,6 +88,10 @@ export function verifyHmacSignature(
     ? signatureHeader.slice(7)
     : signatureHeader;
 
+  // CONCERN-1 fix: explicit length pre-check documents intent and avoids relying
+  // on exception-as-flow-control. A valid HMAC-SHA256 hex digest is always 64 chars.
+  if (hexSig.length !== 64) return false;
+
   const body = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody ?? ""), "utf8");
   const expected = createHmac("sha256", secret).update(body).digest("hex");
 

@@ -39,24 +39,31 @@ export class CronScheduler {
       return;
     }
 
-    const task = cron.schedule(
-      config.cron,
-      async () => {
-        try {
-          await this.deps.fireTrigger(trigger, {
-            scheduledAt: new Date().toISOString(),
-            input: config.input,
-          });
-        } catch (e) {
-          console.error(`[cron-scheduler] Error firing trigger ${trigger.id}:`, e);
-        }
-      },
-      {
-        timezone: config.timezone ?? "UTC",
-      },
-    );
-
-    this.tasks.set(trigger.id, task);
+    // VETO-2 fix: wrap cron.schedule() in try/catch so a single bad trigger
+    // (e.g. an invalid timezone that slipped through validation) cannot abort
+    // the entire bootstrap loop and prevent all other triggers from starting.
+    try {
+      const task = cron.schedule(
+        config.cron,
+        async () => {
+          try {
+            await this.deps.fireTrigger(trigger, {
+              scheduledAt: new Date().toISOString(),
+              input: config.input,
+            });
+          } catch (e) {
+            console.error(`[cron-scheduler] Error firing trigger ${trigger.id}:`, e);
+          }
+        },
+        {
+          timezone: config.timezone ?? "UTC",
+        },
+      );
+      this.tasks.set(trigger.id, task);
+    } catch (err) {
+      console.error(`[cron-scheduler] Failed to schedule trigger ${trigger.id}:`, err);
+      // Do NOT rethrow — prevents one bad trigger from aborting bootstrap
+    }
   }
 
   /** Remove a scheduled trigger task. */

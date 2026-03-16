@@ -6,6 +6,8 @@
  * - Fix 2: Path validation rejects symlinks / paths outside WATCH_BASE_PATH
  * - Fix 4: TriggerCrypto throws on missing/invalid key
  * - Fix 5: Route handlers return generic error (not raw message) on unexpected throws
+ * - VETO-1: Trigger routes enforce pipeline ownership (403 for non-owner)
+ * - VETO-2: ScheduleConfigSchema rejects invalid IANA timezone (400)
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { randomUUID } from "crypto";
@@ -236,6 +238,15 @@ describe("WebhookHandler — HMAC verification (Fix 5 related)", () => {
     const { verifyHmacSignature } = await import("../../server/services/webhook-handler.js");
     expect(verifyHmacSignature(Buffer.from("payload"), "secret", undefined)).toBe(false);
   });
+
+  it("verifyHmacSignature returns false for signature with wrong length (CONCERN-1 fix)", async () => {
+    const { verifyHmacSignature } = await import("../../server/services/webhook-handler.js");
+    const body = Buffer.from("payload");
+    // 63-char hex (odd length) — triggers explicit length pre-check
+    expect(verifyHmacSignature(body, "secret", "sha256=" + "a".repeat(63))).toBe(false);
+    // 32-char hex (too short)
+    expect(verifyHmacSignature(body, "secret", "sha256=" + "ab".repeat(16))).toBe(false);
+  });
 });
 
 // ─── Fix 5: Route handlers return generic error ───────────────────────────────
@@ -333,5 +344,213 @@ describe("MemStorage — trigger CRUD", () => {
 
     const fetched = await storage.getTrigger(row.id);
     expect(fetched).toBeUndefined();
+  });
+});
+
+// ─── VETO-1: Ownership gating on trigger routes ───────────────────────────────
+
+describe("Trigger routes — ownership gating (VETO-1)", () => {
+  /**
+   * Build a minimal Express app with a mocked TriggerService and real MemStorage.
+   * The given user is injected on every request (bypasses requireAuth).
+   */
+  async function buildTriggerApp(userOverride: {
+    id: string;
+    role: "admin" | "maintainer" | "user";
+  }) {
+    const express = (await import("express")).default;
+    const { MemStorage } = await import("../../server/storage.js");
+    const { registerTriggerRoutes } = await import("../../server/routes/triggers.js");
+
+    const storage = new MemStorage();
+    const app = express();
+    app.use(express.json());
+
+    // Inject a synthetic user — simulates post-requireAuth state
+    app.use((req: any, _res: any, next: any) => {
+      req.user = {
+        id: userOverride.id,
+        email: `${userOverride.id}@test.com`,
+        name: userOverride.id,
+        isActive: true,
+        role: userOverride.role,
+        lastLoginAt: null,
+        createdAt: new Date(),
+      };
+      next();
+    });
+
+    // Minimal mock TriggerService (no crypto needed for ownership tests)
+    const mockTriggerService: any = {
+      getTrigger: async (id: string) => storage.getTrigger(id).then((r) =>
+        r ? { ...r, hasSecret: false, webhookUrl: undefined } : null
+      ),
+      getTriggers: async (pipelineId: string) =>
+        storage.getTriggers(pipelineId).then((rows) =>
+          rows.map((r) => ({ ...r, hasSecret: false }))
+        ),
+      createTrigger: async (data: any) => {
+        const row = await storage.createTrigger({
+          pipelineId: data.pipelineId,
+          type: data.type,
+          config: data.config ?? {},
+          enabled: data.enabled ?? true,
+        });
+        return { ...row, hasSecret: false };
+      },
+      updateTrigger: async () => null,
+      deleteTrigger: async () => false,
+      enableTrigger: async () => null,
+      disableTrigger: async () => null,
+    };
+
+    registerTriggerRoutes(app, mockTriggerService, storage);
+
+    return { app, storage };
+  }
+
+  it("GET /api/triggers/:id returns 403 when user does not own the pipeline", async () => {
+    const request = (await import("supertest")).default;
+    const { MemStorage } = await import("../../server/storage.js");
+
+    // Build app as user B (non-owner maintainer)
+    const { app, storage } = await buildTriggerApp({ id: "user-b", role: "maintainer" });
+
+    // Create a pipeline owned by user A
+    const pipeline = await storage.createPipeline({
+      name: "User A Pipeline",
+      stages: [],
+      ownerId: "user-a",
+    });
+
+    // Create a trigger under that pipeline
+    const trigger = await storage.createTrigger({
+      pipelineId: pipeline.id,
+      type: "webhook",
+      config: {},
+      enabled: true,
+    });
+
+    // User B tries to GET the trigger — should be 403
+    const res = await request(app).get(`/api/triggers/${trigger.id}`);
+    expect(res.status).toBe(403);
+  });
+
+  it("POST /api/pipelines/:pipelineId/triggers returns 403 for non-owner maintainer", async () => {
+    const request = (await import("supertest")).default;
+
+    // Build app as user B (non-owner maintainer)
+    const { app, storage } = await buildTriggerApp({ id: "user-b", role: "maintainer" });
+
+    // Create a pipeline owned by user A
+    const pipeline = await storage.createPipeline({
+      name: "User A Pipeline",
+      stages: [],
+      ownerId: "user-a",
+    });
+
+    // User B tries to create a trigger on user A's pipeline — should be 403
+    const res = await request(app)
+      .post(`/api/pipelines/${pipeline.id}/triggers`)
+      .send({ type: "webhook", config: {} });
+    expect(res.status).toBe(403);
+  });
+});
+
+// ─── VETO-2: Timezone validation in ScheduleConfigSchema ─────────────────────
+
+describe("ScheduleConfigSchema — IANA timezone validation (VETO-2)", () => {
+  /**
+   * Build a minimal Express app as admin (to bypass role + ownership checks)
+   * for testing timezone validation on the POST create trigger endpoint.
+   */
+  async function buildAdminTriggerApp() {
+    const express = (await import("express")).default;
+    const { MemStorage } = await import("../../server/storage.js");
+    const { registerTriggerRoutes } = await import("../../server/routes/triggers.js");
+
+    const storage = new MemStorage();
+    const app = express();
+    app.use(express.json());
+
+    // Inject admin user (owner of all pipelines)
+    const adminId = "admin-user";
+    app.use((req: any, _res: any, next: any) => {
+      req.user = {
+        id: adminId,
+        email: "admin@test.com",
+        name: "Admin",
+        isActive: true,
+        role: "admin",
+        lastLoginAt: null,
+        createdAt: new Date(),
+      };
+      next();
+    });
+
+    // Create a pipeline owned by admin
+    const pipeline = await storage.createPipeline({
+      name: "Admin Pipeline",
+      stages: [],
+      ownerId: adminId,
+    });
+
+    // Minimal mock TriggerService
+    const mockTriggerService: any = {
+      getTrigger: async () => null,
+      getTriggers: async () => [],
+      createTrigger: async (data: any) => {
+        const row = await storage.createTrigger({
+          pipelineId: data.pipelineId,
+          type: data.type,
+          config: data.config ?? {},
+          enabled: data.enabled ?? true,
+        });
+        return { ...row, hasSecret: false };
+      },
+      updateTrigger: async () => null,
+      deleteTrigger: async () => false,
+      enableTrigger: async () => null,
+      disableTrigger: async () => null,
+    };
+
+    registerTriggerRoutes(app, mockTriggerService, storage);
+
+    return { app, pipelineId: pipeline.id };
+  }
+
+  it("returns 400 when timezone is an invalid IANA identifier", async () => {
+    const request = (await import("supertest")).default;
+    const { app, pipelineId } = await buildAdminTriggerApp();
+
+    const res = await request(app)
+      .post(`/api/pipelines/${pipelineId}/triggers`)
+      .send({
+        type: "schedule",
+        config: {
+          cron: "0 * * * *",
+          timezone: "Not/ATimezone",
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/Invalid IANA timezone/i);
+  });
+
+  it("returns 201 when timezone is a valid IANA identifier", async () => {
+    const request = (await import("supertest")).default;
+    const { app, pipelineId } = await buildAdminTriggerApp();
+
+    const res = await request(app)
+      .post(`/api/pipelines/${pipelineId}/triggers`)
+      .send({
+        type: "schedule",
+        config: {
+          cron: "0 * * * *",
+          timezone: "America/New_York",
+        },
+      });
+
+    expect(res.status).toBe(201);
   });
 });
