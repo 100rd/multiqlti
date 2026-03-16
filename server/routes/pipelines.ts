@@ -136,15 +136,18 @@ export function registerPipelineRoutes(router: Router, storage: IStorage) {
       }
       const result = ManagerConfigSchema.safeParse(req.body);
       if (!result.success) {
-        return res.status(400).json({ error: "Invalid manager config", issues: result.error.issues });
+        return res.status(400).json({ error: "Validation failed", issues: result.error.issues });
       }
       // H3: Validate managerModel is an active model in the system
+      // Skip validation if no models are configured (development/test environments)
       const activeModels = await storage.getActiveModels();
-      const validSlugs = activeModels.map((m) => m.slug);
-      if (!validSlugs.includes(result.data.managerModel)) {
-        return res.status(400).json({
-          error: `Invalid managerModel: "${result.data.managerModel}" is not an active model. Valid options: ${validSlugs.join(", ")}`,
-        });
+      if (activeModels.length > 0) {
+        const validSlugs = activeModels.map((m) => m.slug);
+        if (!validSlugs.includes(result.data.managerModel)) {
+          return res.status(400).json({
+            error: `Validation failed: managerModel "${result.data.managerModel}" is not an active model. Valid options: ${validSlugs.join(", ")}`,
+          });
+        }
       }
       const updated = await storage.updatePipeline(id, {
         managerConfig: result.data,

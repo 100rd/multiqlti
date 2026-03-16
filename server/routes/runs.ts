@@ -300,10 +300,16 @@ export function registerRunRoutes(
       return res.status(404).json({ error: "Run not found" });
     }
 
-    // C1: Ownership check — only pipeline owner or admin can read iterations
+    // 404 if pipeline doesn't exist or isn't in manager mode
     const pipeline = await storage.getPipeline(run.pipelineId);
-    if (pipeline) {
-      const isOwner = pipeline.ownerId != null && pipeline.ownerId === req.user?.id;
+    if (!pipeline || !pipeline.managerConfig) {
+      return res.status(404).json({ error: "Manager mode is not enabled for this pipeline" });
+    }
+
+    // C1: Ownership check — only pipeline owner or admin can read iterations
+    // If pipeline has no owner (ownerId is null), allow any authenticated user
+    if (pipeline.ownerId != null) {
+      const isOwner = pipeline.ownerId === req.user?.id;
       const isAdmin = req.user?.role === "admin";
       if (!isOwner && !isAdmin) {
         return res.status(403).json({ error: "Forbidden: you do not own this pipeline" });
@@ -321,6 +327,6 @@ export function registerRunRoutes(
       storage.countManagerIterations(runId),
     ]);
 
-    res.json({ iterations, total, offset, limit });
+    res.json({ runId, iterations, total, offset, limit });
   });
 }
