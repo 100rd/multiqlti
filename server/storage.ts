@@ -32,6 +32,7 @@ import { configLoader } from "./config/loader";
 
 export interface LlmRequestFilters {
   runId?: string;
+  stageExecutionId?: string;
   provider?: string;
   modelSlug?: string;
   status?: string;
@@ -82,6 +83,19 @@ export interface LlmTimelinePoint {
   requests: number;
   tokens: number;
   costUsd: number;
+}
+
+export interface PendingApprovalRow {
+  runId: string;
+  pipelineId: string;
+  pipelineName: string;
+  stageIndex: number;
+  stageExecutionId: string;
+  teamId: string;
+  modelSlug: string;
+  gateConfig: Record<string, unknown> | null;
+  awaitingSince: string;
+  output: Record<string, unknown> | null;
 }
 
 export interface IStorage {
@@ -179,6 +193,12 @@ export interface IStorage {
   updateTrigger(id: string, updates: Partial<TriggerRow>): Promise<TriggerRow>;
   deleteTrigger(id: string): Promise<void>;
 
+  // Pending Approvals (Phase 3.4)
+  getPendingApprovals(filters: {
+    pipelineId?: string;
+    limit: number;
+    offset: number;
+  }): Promise<{ rows: PendingApprovalRow[]; total: number }>;
 }
 
 export class MemStorage implements IStorage {
@@ -413,6 +433,8 @@ export class MemStorage implements IStorage {
       approvedBy: insert.approvedBy ?? null,
       rejectionReason: insert.rejectionReason ?? null,
       dagStageId: insert.dagStageId ?? null,
+      approvalGateConfig: insert.approvalGateConfig ?? null,
+      autoApprovalReason: insert.autoApprovalReason ?? null,
       createdAt: new Date(),
     };
     this.stages.set(id, stage);
@@ -553,6 +575,7 @@ export class MemStorage implements IStorage {
     let rows = Array.from(this.llmRequestsMap.values());
 
     if (filters.runId) rows = rows.filter((r) => r.runId === filters.runId);
+    if (filters.stageExecutionId) rows = rows.filter((r) => r.stageExecutionId === filters.stageExecutionId);
     if (filters.provider) rows = rows.filter((r) => r.provider === filters.provider);
     if (filters.modelSlug) rows = rows.filter((r) => r.modelSlug === filters.modelSlug);
     if (filters.status) rows = rows.filter((r) => r.status === filters.status);
@@ -987,6 +1010,46 @@ export class MemStorage implements IStorage {
 
   async deleteTrigger(id: string): Promise<void> {
     this.triggersMap.delete(id);
+  }
+
+  // ─── Pending Approvals (Phase 3.4) ──────────────────────────────────────
+
+  async getPendingApprovals(filters: {
+    pipelineId?: string;
+    limit: number;
+    offset: number;
+  }): Promise<{ rows: PendingApprovalRow[]; total: number }> {
+    const pendingStages = Array.from(this.stages.values()).filter(
+      (s) => s.status === "awaiting_approval" && s.approvalStatus === "pending",
+    );
+
+    const rows: PendingApprovalRow[] = [];
+    for (const stage of pendingStages) {
+      const run = this.runs.get(stage.runId);
+      if (!run) continue;
+      if (filters.pipelineId && run.pipelineId !== filters.pipelineId) continue;
+
+      const pipeline = this.pipelinesMap.get(run.pipelineId);
+      if (!pipeline) continue;
+
+      rows.push({
+        runId: run.id,
+        pipelineId: pipeline.id,
+        pipelineName: pipeline.name,
+        stageIndex: stage.stageIndex,
+        stageExecutionId: stage.id,
+        teamId: stage.teamId,
+        modelSlug: stage.modelSlug,
+        gateConfig: stage.approvalGateConfig as Record<string, unknown> | null,
+        awaitingSince: (stage.startedAt ?? stage.createdAt ?? new Date()).toISOString(),
+        output: stage.output as Record<string, unknown> | null,
+      });
+    }
+
+    rows.sort((a, b) => a.awaitingSince.localeCompare(b.awaitingSince));
+    const total = rows.length;
+    const sliced = rows.slice(filters.offset, filters.offset + filters.limit);
+    return { rows: sliced, total };
   }
 
 }

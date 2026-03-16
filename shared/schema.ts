@@ -159,6 +159,8 @@ export const stageExecutions = pgTable("stage_executions", {
   approvedBy: text("approved_by"),
   rejectionReason: text("rejection_reason"),
   dagStageId: text("dag_stage_id"),
+  approvalGateConfig: jsonb("approval_gate_config"),
+  autoApprovalReason: text("auto_approval_reason"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

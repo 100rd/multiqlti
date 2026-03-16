@@ -55,6 +55,26 @@ export type StageStatus =
 
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
+// ── Approval Gate Types (Phase 3.4) ────────────────────────────────────────
+
+export type ApprovalGateType = "manual" | "auto" | "timeout";
+
+export interface AutoApproveCondition {
+  field: "cost" | "tokens" | "duration" | "status";
+  operator: "lt" | "lte" | "gt" | "gte" | "eq";
+  value: number | string;
+}
+
+export interface ApprovalGateConfig {
+  type: ApprovalGateType;
+  /** For "auto" type: all conditions must pass for auto-approval */
+  conditions?: AutoApproveCondition[];
+  /** For "timeout" type: minutes before auto-proceed. Min 1, max 1440 (24h) */
+  timeoutMinutes?: number;
+  /** For "timeout" type: action when timeout fires */
+  timeoutAction?: "approve" | "reject";
+}
+
 export type QuestionStatus = "pending" | "answered" | "dismissed";
 
 export type ModelProvider = "vllm" | "ollama" | "mock" | "anthropic" | "google" | "xai";
@@ -248,7 +268,10 @@ export type WsEventType =
   | "dag:edge:evaluated"
   | "dag:completed"
   | "trigger:fired"
-  | "trigger:error";
+  | "trigger:error"
+  | "stage:auto_approved"
+  | "stage:timeout_approved"
+  | "stage:timeout_rejected";
 
 export interface WsEvent {
   type: WsEventType;
@@ -384,6 +407,7 @@ export interface PipelineStageConfig {
   maxTokens?: number;
   enabled: boolean;
   approvalRequired?: boolean;
+  approvalGate?: ApprovalGateConfig;
   executionStrategy?: ExecutionStrategy;
   privacySettings?: PrivacySettings;
   sandbox?: SandboxConfig;
@@ -739,23 +763,45 @@ export interface Recommendation {
   suggestedChange?: Partial<MaintenancePolicy>;
 }
 
+
 // ─── Parallel Split Execution Types (Phase 3.8) ───────────────────────────────
 
-export type MergeStrategy = "concatenate" | "review" | "auto";
+export type SplitStrategy = "auto" | "by_file" | "by_function" | "by_section" | "by_task" | "custom";
+
+export type MergeStrategy = "concatenate" | "review" | "vote" | "auto";
+
+export type CostTier = "low" | "medium" | "high";
+
+export type RateLimitFallback = "queue" | "single" | "abort";
+
+export interface ParallelGuardrails {
+  maxTotalCostPerSplit: number;
+  maxConcurrentPerModel: number;
+  cooldownBetweenRequests: number;
+  onLimitHit: RateLimitFallback;
+}
 
 export interface ParallelConfig {
   enabled: boolean;
   mode: "auto" | "manual";
   maxAgents: number;
+  splitStrategy: SplitStrategy;
+  customSplitPrompt?: string;
   splitterModelSlug?: string;
   mergerModelSlug?: string;
   mergeStrategy: MergeStrategy;
+  guardrails?: ParallelGuardrails;
 }
 
 export interface ModelParallelCapabilities {
   maxConcurrentAgents: number;
   supportedMergeStrategies: MergeStrategy[];
   recommendedForSplitting: boolean;
+  rateLimit: number;
+  costTier: CostTier;
+  strengths: string[];
+  agenticCapability: boolean;
+  contextWindow: number;
 }
 
 export interface SubTask {
@@ -787,55 +833,7 @@ export interface ParallelExecutionMeta {
   succeededCount: number;
   failedCount: number;
   totalTokens: number;
-}
-
-// ─── Parallel Split Execution Types (Phase 3.8) ───────────────────────────────
-
-
-export interface ParallelConfig {
-  enabled: boolean;
-  mode: "auto" | "manual";
-  maxAgents: number;
-  splitterModelSlug?: string;
-  mergerModelSlug?: string;
-  mergeStrategy: MergeStrategy;
-}
-
-export interface ModelParallelCapabilities {
-  maxConcurrentAgents: number;
-  supportedMergeStrategies: MergeStrategy[];
-  recommendedForSplitting: boolean;
-}
-
-export interface SubTask {
-  id: string;
-  title: string;
-  description: string;
-  context: string[];
-  suggestedModel?: string;
-  estimatedComplexity: "low" | "medium" | "high";
-}
-
-export interface SplitPlan {
-  shouldSplit: boolean;
-  reason: string;
-  subtasks: SubTask[];
-}
-
-export interface SubTaskResult {
-  subtask: SubTask;
-  output: string;
-  tokensUsed: number;
-  modelSlug: string;
-  durationMs: number;
-}
-
-export interface ParallelExecutionMeta {
-  parallelExecution: true;
-  subtaskCount: number;
-  succeededCount: number;
-  failedCount: number;
-  totalTokens: number;
+  estimatedCostUsd?: number;
 }
 
 // ─── Custom Stage Types (Phase 5) ────────────────────────────────────────────
@@ -972,6 +970,7 @@ export interface DAGStage {
   maxTokens?: number;
   enabled: boolean;
   approvalRequired?: boolean;
+  approvalGate?: ApprovalGateConfig;
   executionStrategy?: ExecutionStrategy;
   privacySettings?: PrivacySettings;
   sandbox?: SandboxConfig;

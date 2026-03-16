@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import type { IStorage } from "../storage";
 import type { PipelineController } from "../controller/pipeline-controller";
-import { generateMarkdownReport, generateZipExport } from "../services/export-service";
+import { generateMarkdownReport, generateZipExport, generatePdfReport } from "../services/export-service";
 import { ephemeralVarStore } from "../run-variables/store";
 import { validateBody } from "../middleware/validate.js";
 
@@ -36,15 +36,13 @@ const AnswerQuestionSchema = z.object({
   answer: z.string().min(1, "answer is required").max(10000),
 });
 
-const ApproveStageSchema = z.object({
-  approvedBy: z.string().max(200).optional(),
-});
+const ApproveStageSchema = z.object({});
 
 const RejectStageSchema = z.object({
   reason: z.string().max(500).optional(),
 });
 
-const ExportFormatSchema = z.enum(["markdown", "zip"]);
+const ExportFormatSchema = z.enum(["markdown", "zip", "pdf"]);
 
 export function registerRunRoutes(
   router: Router,
@@ -195,7 +193,22 @@ export function registerRunRoutes(
       return res.status(400).json({ error: "Invalid stageIndex" });
     }
 
-    const { approvedBy } = req.body as z.infer<typeof ApproveStageSchema>;
+    // VETO-1 fix: approvedBy must come from authenticated user, not client body
+    const approvedBy = req.user?.id;
+    if (!approvedBy) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // Ownership check: run must belong to the user or user must be admin/maintainer
+    const run = await storage.getPipelineRun(req.params.id as string);
+    if (!run) return res.status(404).json({ error: "Run not found" });
+
+    const isOwner = run.triggeredBy === approvedBy;
+    const hasRole = req.user?.role === "admin" || req.user?.role === "maintainer";
+    if (!isOwner && !hasRole) {
+      return res.status(403).json({ error: "Forbidden - must be run owner or admin/maintainer" });
+    }
+
     try {
       await controller.approveStage(req.params.id as string, stageIndex, approvedBy);
       res.json({ message: "Stage approved" });
@@ -208,6 +221,21 @@ export function registerRunRoutes(
     const stageIndex = parseInt(req.params.stageIndex as string, 10);
     if (isNaN(stageIndex) || stageIndex < 0) {
       return res.status(400).json({ error: "Invalid stageIndex" });
+    }
+
+    // VETO-1 fix: ownership check on reject
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const run = await storage.getPipelineRun(req.params.id as string);
+    if (!run) return res.status(404).json({ error: "Run not found" });
+
+    const isOwner = run.triggeredBy === userId;
+    const hasRole = req.user?.role === "admin" || req.user?.role === "maintainer";
+    if (!isOwner && !hasRole) {
+      return res.status(403).json({ error: "Forbidden - must be run owner or admin/maintainer" });
     }
 
     const { reason } = req.body as z.infer<typeof RejectStageSchema>;
@@ -224,12 +252,20 @@ export function registerRunRoutes(
   router.get("/api/runs/:id/export", async (req, res) => {
     const formatResult = ExportFormatSchema.safeParse(req.query.format);
     if (!formatResult.success) {
-      return res.status(400).json({ error: "format must be 'markdown' or 'zip'" });
+      return res.status(400).json({ error: "format must be 'markdown', 'zip', or 'pdf'" });
     }
     const format = formatResult.data;
 
     const run = await storage.getPipelineRun(req.params.id);
     if (!run) return res.status(404).json({ error: "Run not found" });
+
+    // Export authorization: require run owner or admin role
+    const userId = req.user?.id;
+    const isOwner = run.triggeredBy === userId;
+    const isAdmin = req.user?.role === "admin";
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({ error: "Forbidden - must be run owner or admin" });
+    }
 
     const pipeline = await storage.getPipeline(run.pipelineId);
     if (!pipeline) return res.status(404).json({ error: "Pipeline not found" });
@@ -237,16 +273,33 @@ export function registerRunRoutes(
     const stages = await storage.getStageExecutions(run.id);
     const runSlug = run.id.slice(0, 8);
 
+    // Fetch LLM requests for cost breakdown
+    const llmReqs = await storage.getLlmRequests({ runId: run.id, limit: 10000 });
+
     if (format === "markdown") {
-      const markdown = generateMarkdownReport(run, stages, pipeline);
+      const markdown = generateMarkdownReport(run, stages, pipeline, llmReqs.rows);
       res.setHeader("Content-Type", "text/markdown; charset=utf-8");
       res.setHeader("Content-Disposition", `attachment; filename="run-${runSlug}-report.md"`);
       res.send(markdown);
       return;
     }
 
+    if (format === "pdf") {
+      const markdown = generateMarkdownReport(run, stages, pipeline, llmReqs.rows);
+      try {
+        const pdfBuffer = await generatePdfReport(markdown);
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Content-Disposition", `attachment; filename="run-${runSlug}-report.pdf"`);
+        res.setHeader("Content-Length", pdfBuffer.length);
+        res.send(pdfBuffer);
+      } catch {
+        res.status(503).json({ error: "PDF generation unavailable" });
+      }
+      return;
+    }
+
     // ZIP
-    const zipBuffer = generateZipExport(run, stages, pipeline);
+    const zipBuffer = generateZipExport(run, stages, pipeline, llmReqs.rows);
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", `attachment; filename="run-${runSlug}-export.zip"`);
     res.setHeader("Content-Length", zipBuffer.length);
