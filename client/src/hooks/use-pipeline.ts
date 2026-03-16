@@ -405,3 +405,36 @@ export function useRunComparison(runId1: string, runId2: string) {
   });
 }
 
+
+// ─── Manager Config (Phase 6.6) ───────────────────────────────────────────────
+
+export interface ManagerConfig {
+  managerModel: string;
+  availableTeams: string[];
+  maxIterations: number;
+  goal: string;
+}
+
+export function useSetManagerConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ pipelineId, config }: { pipelineId: string; config: ManagerConfig }) =>
+      apiRequest("PATCH", `/api/pipelines/${pipelineId}/manager-config`, config),
+    onSuccess: (_data, { pipelineId }) => {
+      qc.invalidateQueries({ queryKey: ["/api/pipelines", pipelineId] });
+      qc.invalidateQueries({ queryKey: ["/api/pipelines"] });
+    },
+  });
+}
+
+export function useDeleteManagerConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (pipelineId: string) =>
+      apiRequest("DELETE", `/api/pipelines/${pipelineId}/manager-config`),
+    onSuccess: (_data, pipelineId) => {
+      qc.invalidateQueries({ queryKey: ["/api/pipelines", pipelineId] });
+      qc.invalidateQueries({ queryKey: ["/api/pipelines"] });
+    },
+  });
+}

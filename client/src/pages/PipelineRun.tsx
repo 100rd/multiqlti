@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useParams } from "wouter";
-import { usePipelineRun, useCancelRun, useApproveStage, useRejectStage, useExportRun } from "@/hooks/use-pipeline";
+import { usePipelineRun, useCancelRun, useApproveStage, useRejectStage, useExportRun, usePipeline } from "@/hooks/use-pipeline";
 import { usePipelineEvents } from "@/hooks/use-websocket";
 import StageProgress from "@/components/pipeline/StageProgress";
 import QuestionPanel from "@/components/pipeline/QuestionPanel";
 import StageOutput from "@/components/pipeline/StageOutput";
 import DelegationLog from "@/components/pipeline/DelegationLog";
+import { ManagerDecisionFeed } from "@/components/manager/ManagerDecisionFeed";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -41,6 +42,8 @@ export default function PipelineRun() {
   const rejectMutation = useRejectStage();
   const exportMutation = useExportRun();
   const pipelineEvents = usePipelineEvents(runId);
+  const { data: pipeline } = usePipeline(run?.pipelineId ?? "");
+  const isManagerMode = pipeline != null && (pipeline as Record<string, unknown>).managerConfig != null;
 
   const [rejectReasonMap, setRejectReasonMap] = useState<Record<number, string>>({});
 
@@ -243,7 +246,7 @@ export default function PipelineRun() {
         {/* Main area */}
         <div className="flex-1 overflow-hidden">
           <Tabs defaultValue="output" className="h-full flex flex-col">
-            <TabsList className="mx-6 mt-4 grid w-auto grid-cols-4 max-w-xl">
+            <TabsList className={`mx-6 mt-4 grid w-auto ${isManagerMode ? "grid-cols-5" : "grid-cols-4"} max-w-2xl`}>
               <TabsTrigger value="output" className="text-xs">
                 Output
               </TabsTrigger>
@@ -256,6 +259,11 @@ export default function PipelineRun() {
               <TabsTrigger value="delegations" className="text-xs">
                 Delegations
               </TabsTrigger>
+              {isManagerMode && (
+                <TabsTrigger value="manager" className="text-xs">
+                  Manager
+                </TabsTrigger>
+              )}
             </TabsList>
 
             <div className="flex-1 overflow-hidden p-6">
@@ -345,6 +353,23 @@ export default function PipelineRun() {
                   isActive={run.status === "running"}
                 />
               </TabsContent>
+
+              {isManagerMode && (
+                <TabsContent value="manager" className="h-full overflow-y-auto">
+                  <div className="space-y-3">
+                    <div>
+                      <h3 className="text-sm font-medium">Manager Decisions</h3>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Real-time feed of manager LLM decisions during this run.
+                      </p>
+                    </div>
+                    <ManagerDecisionFeed
+                      runId={runId}
+                      isRunActive={run.status === "running"}
+                    />
+                  </div>
+                </TabsContent>
+              )}
             </div>
           </Tabs>
         </div>
