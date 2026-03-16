@@ -267,6 +267,8 @@ export interface GatewayRequest {
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
+  /** Per-request timeout override in milliseconds */
+  timeoutMs?: number;
 }
 
 export interface GatewayResponse {

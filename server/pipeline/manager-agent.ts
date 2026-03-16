@@ -67,9 +67,18 @@ export class ManagerAgent {
     let totalTokensUsed = 0;
     const startTime = Date.now();
 
+    const RUN_TIMEOUT_MS = 30 * 60_000; // 30 minutes hard cap per run
+
     for (let i = 1; i <= maxIterations; i++) {
       if (signal.aborted) {
         throw new Error("Manager run cancelled");
+      }
+
+      // H2: Overall run timeout check
+      if (Date.now() - startTime > RUN_TIMEOUT_MS) {
+        const msg = `Manager run exceeded maximum duration of 30 minutes`;
+        this.broadcastComplete(runId, i - 1, msg, "failed", totalTokensUsed, Date.now() - startTime);
+        throw new ManagerMaxIterationsError(i - 1);
       }
 
       const decisionStart = Date.now();
@@ -265,6 +274,7 @@ Respond ONLY with the JSON object. No markdown, no explanation outside the JSON.
         ],
         temperature: 0.3,
         maxTokens: 1000,
+        timeoutMs: 60_000, // H1: 60-second manager LLM timeout
       },
       undefined,
       { teamId: "_manager_" },
@@ -347,14 +357,28 @@ Respond ONLY with the JSON object. No markdown, no explanation outside the JSON.
     await this.storage.createManagerIteration(data);
   }
 
+  // Maximum teamResult size to prevent storage DoS (C2 security fix)
+  private static readonly MAX_TEAM_RESULT_BYTES = 100_000;
+
   private async updateIterationResult(
     runId: string,
     iterationNumber: number,
     teamResult: string,
     teamDurationMs: number,
   ): Promise<void> {
+    let safeResult = teamResult;
+    if (teamResult.length > ManagerAgent.MAX_TEAM_RESULT_BYTES) {
+      safeResult =
+        teamResult.slice(0, ManagerAgent.MAX_TEAM_RESULT_BYTES) +
+        `
+
+... [TRUNCATED: original size ${teamResult.length} chars, max ${ManagerAgent.MAX_TEAM_RESULT_BYTES}]`;
+      console.warn(
+        `[ManagerAgent] teamResult for run ${runId} iteration ${iterationNumber} truncated (${teamResult.length} -> ${ManagerAgent.MAX_TEAM_RESULT_BYTES} chars)`,
+      );
+    }
     await this.storage.updateManagerIteration(runId, iterationNumber, {
-      teamResult,
+      teamResult: safeResult,
       teamDurationMs,
     });
   }
