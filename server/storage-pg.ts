@@ -11,6 +11,7 @@ import {
   specializationProfiles,
   skills,
   triggers,
+  traces,
   type UserRow, type InsertUser,
   type Model, type InsertModel,
   type Pipeline, type InsertPipeline,
@@ -24,7 +25,10 @@ import {
   type SpecializationProfileRow,
   type Skill, type InsertSkill,
   type TriggerRow,
+  type InsertTrace,
+  type TraceRow,
 } from "@shared/schema";
+import type { TraceSpan } from "@shared/types";
 
 export class PgStorage implements IStorage {
 
@@ -741,6 +745,36 @@ export class PgStorage implements IStorage {
 
   async deleteTrigger(id: string): Promise<void> {
     await db.delete(triggers).where(eq(triggers.id, id));
+  }
+
+  // ─── Traces (Phase 6.5) ────────────────────────────────────────────────────
+
+  async createTrace(data: InsertTrace): Promise<TraceRow> {
+    const [row] = await db.insert(traces).values(data).returning();
+    return row;
+  }
+
+  async getTraceByRunId(runId: string): Promise<TraceRow | null> {
+    const [row] = await db.select().from(traces).where(eq(traces.runId, runId)).limit(1);
+    return row ?? null;
+  }
+
+  async getTraceByTraceId(traceId: string): Promise<TraceRow | null> {
+    const [row] = await db.select().from(traces).where(eq(traces.traceId, traceId)).limit(1);
+    return row ?? null;
+  }
+
+  async getTraces(limit = 50, offset = 0): Promise<TraceRow[]> {
+    return db.select().from(traces)
+      .orderBy(desc(traces.createdAt))
+      .limit(limit)
+      .offset(offset);
+  }
+
+  async updateTraceSpans(traceId: string, spans: TraceSpan[]): Promise<void> {
+    await db.update(traces)
+      .set({ spans: spans as TraceRow["spans"], updatedAt: new Date() })
+      .where(eq(traces.traceId, traceId));
   }
 
 }

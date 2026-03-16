@@ -22,8 +22,10 @@ import {
   type Skill,
   type InsertSkill,
   type TriggerRow,
+  type InsertTrace,
+  type TraceRow,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan } from "@shared/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
 import { configLoader } from "./config/loader";
@@ -178,6 +180,13 @@ export interface IStorage {
   createTrigger(data: Omit<TriggerRow, 'id' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt'> & { secretEncrypted?: string | null }): Promise<TriggerRow>;
   updateTrigger(id: string, updates: Partial<TriggerRow>): Promise<TriggerRow>;
   deleteTrigger(id: string): Promise<void>;
+
+  // Traces (Phase 6.5)
+  createTrace(data: InsertTrace): Promise<TraceRow>;
+  getTraceByRunId(runId: string): Promise<TraceRow | null>;
+  getTraceByTraceId(traceId: string): Promise<TraceRow | null>;
+  getTraces(limit?: number, offset?: number): Promise<TraceRow[]>;
+  updateTraceSpans(traceId: string, spans: TraceSpan[]): Promise<void>;
 
 }
 
@@ -987,6 +996,50 @@ export class MemStorage implements IStorage {
 
   async deleteTrigger(id: string): Promise<void> {
     this.triggersMap.delete(id);
+  }
+
+  // ─── Traces (Phase 6.5) ───────────────────────────────────────────────────
+
+  private tracesById: Map<string, TraceRow> = new Map();   // keyed by traceId
+  private tracesByRunId: Map<string, TraceRow> = new Map(); // keyed by runId
+
+  async createTrace(data: InsertTrace): Promise<TraceRow> {
+    const id = randomUUID();
+    const now = new Date();
+    const row: TraceRow = {
+      id,
+      traceId: data.traceId,
+      runId: data.runId,
+      spans: data.spans as TraceSpan[],
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.tracesById.set(data.traceId, row);
+    this.tracesByRunId.set(data.runId, row);
+    return row;
+  }
+
+  async getTraceByRunId(runId: string): Promise<TraceRow | null> {
+    return this.tracesByRunId.get(runId) ?? null;
+  }
+
+  async getTraceByTraceId(traceId: string): Promise<TraceRow | null> {
+    return this.tracesById.get(traceId) ?? null;
+  }
+
+  async getTraces(limit = 50, offset = 0): Promise<TraceRow[]> {
+    const all = Array.from(this.tracesById.values()).sort(
+      (a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0),
+    );
+    return all.slice(offset, offset + limit);
+  }
+
+  async updateTraceSpans(traceId: string, spans: TraceSpan[]): Promise<void> {
+    const row = this.tracesById.get(traceId);
+    if (!row) return;
+    const updated: TraceRow = { ...row, spans: spans as TraceSpan[], updatedAt: new Date() };
+    this.tracesById.set(traceId, updated);
+    this.tracesByRunId.set(row.runId, updated);
   }
 
 }
