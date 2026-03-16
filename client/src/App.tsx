@@ -16,6 +16,7 @@ import PipelineList from "@/pages/PipelineList";
 import PipelineDetail from "@/pages/PipelineDetail";
 import PipelineRun from "@/pages/PipelineRun";
 import RunComparison from "@/pages/RunComparison";
+import TriggersPage from "@/pages/TriggersPage";
 import Settings from "@/pages/Settings";
 import Privacy from "@/pages/Privacy";
 import Statistics from "@/pages/Statistics";
@@ -69,6 +70,9 @@ function ProtectedRouter() {
         </Route>
         <Route path="/runs/:runId" component={() => (
           <ErrorBoundary><PipelineRun /></ErrorBoundary>
+        )} />
+        <Route path="/triggers" component={() => (
+          <ErrorBoundary><TriggersPage /></ErrorBoundary>
         )} />
         <Route path="/workspaces" component={() => (
           <ErrorBoundary><WorkspaceList /></ErrorBoundary>

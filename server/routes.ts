@@ -23,6 +23,8 @@ import { registerMaintenanceRoutes } from "./routes/maintenance";
 import { registerSpecializationRoutes } from "./routes/specialization";
 import { registerSkillRoutes } from "./routes/skills";
 import { registerGuardrailRoutes } from "./routes/guardrails";
+import { registerDelegationRoutes } from "./routes/delegations";
+import { DelegationService } from "./pipeline/delegation-service";
 import { registerDAGRoutes } from "./routes/dag";
 import { BUILTIN_SKILLS } from "./skills/builtin";
 import { requireAuth } from "./auth/middleware";
@@ -37,7 +39,8 @@ export async function registerRoutes(
   const wsManager = new WsManager(httpServer);
   const gateway = new Gateway(storage);
   const teamRegistry = new TeamRegistry(gateway, wsManager);
-  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway);
+  const delegationService = new DelegationService(storage, teamRegistry, wsManager, gateway);
+  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService);
 
   // Register auth routes first (public routes included)
   registerAuthRoutes(app);
@@ -84,6 +87,7 @@ export async function registerRoutes(
   registerSpecializationRoutes(app, storage);
   registerSkillRoutes(app, storage);
   registerGuardrailRoutes(app, storage, gateway);
+  registerDelegationRoutes(app, storage);
   registerDAGRoutes(app, storage);
 
   // Seed built-in skills (idempotent — checks each by ID)

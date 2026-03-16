@@ -2,7 +2,8 @@ import type { IStorage } from "../storage";
 import type { TeamRegistry } from "../teams/registry";
 import type { WsManager } from "../ws/manager";
 import type { Gateway } from "../gateway/index";
-import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput, PipelineDAG, DAGStage } from "@shared/types";
+import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput, DelegationRequest, DelegateFn, PipelineDAG, DAGStage } from "@shared/types";
+import { DelegationService } from "../pipeline/delegation-service";
 import { DAGExecutor } from "../pipeline/dag-executor";
 import type { StageExecuteFn } from "../pipeline/dag-executor";
 import { ParallelExecutor } from "../pipeline/parallel-executor";
@@ -12,6 +13,7 @@ import { ThoughtTreeCollector } from "../pipeline/thought-tree-collector";
 import { MemoryExtractor } from "../memory/extractor";
 import { MemoryProvider } from "../memory/provider";
 import { ephemeralVarStore } from "../run-variables/store";
+import { GuardrailValidator } from "../pipeline/guardrail-validator.js";
 
 interface ApprovalHandle {
   resolve: (approved: boolean) => void;
@@ -25,6 +27,8 @@ export class PipelineController {
   private parallelExecutor: ParallelExecutor;
   private memoryExtractor: MemoryExtractor;
   private memoryProvider: MemoryProvider;
+  private guardrailValidator: GuardrailValidator;
+  private delegationService?: DelegationService;
   private dagExecutor: DAGExecutor;
 
   constructor(
@@ -32,6 +36,7 @@ export class PipelineController {
     private teamRegistry: TeamRegistry,
     private wsManager: WsManager,
     gateway?: Gateway,
+    delegationService?: DelegationService,
   ) {
     this.sandboxExecutor = new SandboxExecutor();
     this.parallelExecutor = new ParallelExecutor(
@@ -41,6 +46,8 @@ export class PipelineController {
     );
     this.memoryExtractor = new MemoryExtractor();
     this.memoryProvider = new MemoryProvider(storage);
+    this.guardrailValidator = new GuardrailValidator(gateway ?? createNullGateway());
+    this.delegationService = delegationService;
     this.dagExecutor = new DAGExecutor(storage, wsManager);
   }
 
@@ -486,6 +493,7 @@ export class PipelineController {
           // Ephemeral run variables (in-memory only, never persisted)
           variables: ephemeralVarStore.get(run.id) ?? undefined,
           stageConfig: resolvedStage,
+          delegate: this.buildDelegateFn(run.id, stage.teamId, resolvedStage),
         };
 
         // Pass execution strategy (undefined = single, handled in BaseTeam)
@@ -848,6 +856,17 @@ export class PipelineController {
 
   private broadcast(runId: string, event: WsEvent): void {
     this.wsManager.broadcastToRun(runId, event);
+  }
+
+  private buildDelegateFn(
+    runId: string,
+    fromStage: string,
+    stage: PipelineStageConfig,
+  ): DelegateFn | undefined {
+    if (!this.delegationService) return undefined;
+    if (!stage.delegationEnabled) return undefined;
+    return (request: DelegationRequest) =>
+      this.delegationService!.delegate(runId, request, [fromStage]);
   }
 
   /**

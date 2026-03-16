@@ -7,6 +7,7 @@ import {
   stageExecutions, questions, chatMessages, llmRequests,
   memories,
   mcpServers,
+  delegationRequests,
   specializationProfiles,
   skills,
   triggers,
@@ -18,6 +19,7 @@ import {
   type Question, type InsertQuestion,
   type ChatMessage, type InsertChatMessage,
   type LlmRequest, type InsertLlmRequest,
+  type InsertDelegationRequest, type DelegationRequestRow,
   type InsertSpecializationProfile,
   type SpecializationProfileRow,
   type Skill, type InsertSkill,
@@ -607,6 +609,34 @@ export class PgStorage implements IStorage {
 
   async deleteMcpServer(id: number): Promise<void> {
     await db.delete(mcpServers).where(eq(mcpServers.id, id));
+  }
+
+  // ─── Delegation Requests (Phase 6.4) ────────────────────────────────────
+
+  async createDelegationRequest(data: InsertDelegationRequest): Promise<DelegationRequestRow> {
+    const [row] = await db.insert(delegationRequests).values(data).returning();
+    return row;
+  }
+
+  async getDelegationRequests(runId: string): Promise<DelegationRequestRow[]> {
+    return db
+      .select()
+      .from(delegationRequests)
+      .where(eq(delegationRequests.runId, runId))
+      .orderBy(asc(delegationRequests.createdAt));
+  }
+
+  async updateDelegationRequest(
+    id: string,
+    updates: Partial<DelegationRequestRow>,
+  ): Promise<DelegationRequestRow> {
+    const [row] = await db
+      .update(delegationRequests)
+      .set(updates)
+      .where(eq(delegationRequests.id, id))
+      .returning();
+    if (!row) throw new Error(`Delegation request not found: ${id}`);
+    return row;
   }
 
   // ─── Specialization Profiles (Phase 5) ──────────────────────────────────────
