@@ -22,7 +22,7 @@ import { SDLC_TEAMS, STRATEGY_PRESETS, EXECUTION_STRATEGY_PRESETS } from "@share
 import type {
   PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy,
   PrivacySettings, SandboxConfig, StageToolConfig, ParallelConfig, CustomStageConfig,
-  SpecializationProfile, PipelineDAG, DAGStage,
+  SpecializationProfile, PipelineDAG, DAGStage, ApprovalGateConfig,
 } from "@shared/types";
 
 // Lazy-load DAGCanvas to avoid adding ~200KB reactflow to the main bundle
@@ -86,6 +86,7 @@ function linearStagesToDAG(stages: PipelineStageConfig[]): PipelineDAG {
     maxTokens: s.maxTokens,
     enabled: s.enabled,
     approvalRequired: s.approvalRequired,
+    approvalGate: s.approvalGate,
     executionStrategy: s.executionStrategy,
     privacySettings: s.privacySettings,
     sandbox: s.sandbox,
@@ -235,6 +236,13 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
   const updateApprovalRequired = (teamId: string, value: boolean) => {
     setLocalStages(prev => prev.map(s =>
       s.teamId === teamId ? { ...s, approvalRequired: value } : s,
+    ));
+    setDirty(true);
+  };
+
+  const updateApprovalGate = (teamId: string, newApprovalRequired: boolean, newGateConfig: ApprovalGateConfig | undefined) => {
+    setLocalStages(prev => prev.map(s =>
+      s.teamId === teamId ? { ...s, approvalRequired: newApprovalRequired, approvalGate: newGateConfig } : s,
     ));
     setDirty(true);
   };
@@ -685,6 +693,8 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                                 onParallelChange={(_, cfg) => updateParallelConfig(stage.teamId, cfg)}
                                 approvalRequired={stage.approvalRequired ?? false}
                                 onApprovalChange={(_, val) => updateApprovalRequired(stage.teamId, val)}
+                                approvalGate={stage.approvalGate}
+                                onApprovalGateChange={(_, req, cfg) => updateApprovalGate(stage.teamId, req, cfg)}
                                 isLast={idx === localStages.length - 1}
                               />
                             </div>
