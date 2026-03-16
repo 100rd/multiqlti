@@ -90,6 +90,8 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { envKey: "MULTI_PROVIDERS_TAVILY_API_KEY",        configPath: ["providers", "tavily", "apiKey"],               kind: "string"  },
   { envKey: "MULTI_FEATURES_SANDBOX_ENABLED",        configPath: ["features", "sandbox", "enabled"],              kind: "boolean" },
   { envKey: "MULTI_ENCRYPTION_KEY",                  configPath: ["encryption", "key"],                           kind: "string"  },
+  { envKey: "TRIGGER_SECRET_KEY",                    configPath: ["triggers", "secretKey"],                     kind: "string"  },
+  { envKey: "MULTI_TRIGGER_SECRET_KEY",              configPath: ["triggers", "secretKey"],                     kind: "string"  },
 ];
 
 /**

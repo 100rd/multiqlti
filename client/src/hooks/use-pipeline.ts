@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { wsClient } from "@/lib/websocket";
 
 function getAuthToken(): string | null {
   return localStorage.getItem("auth_token");
@@ -169,10 +170,12 @@ export function useCancelRun() {
 // Keep polling for questions since they don't arrive via WS reliably on load
 
 export function usePendingQuestions() {
+  // Poll aggressively when WS is disconnected; slow-poll as a safety net when WS is connected.
+  const refetchInterval = wsClient.isConnected ? 30_000 : 5_000;
   return useQuery({
     queryKey: ["/api/questions/pending"],
     queryFn: () => apiRequest("GET", "/api/questions/pending"),
-    refetchInterval: 5000,
+    refetchInterval,
   });
 }
 
