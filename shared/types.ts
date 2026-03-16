@@ -248,7 +248,10 @@ export type WsEventType =
   | "dag:edge:evaluated"
   | "dag:completed"
   | "trigger:fired"
-  | "trigger:error";
+  | "trigger:error"
+  | "manager:decision"
+  | "manager:complete"
+  | "manager:error";
 
 export interface WsEvent {
   type: WsEventType;
@@ -264,6 +267,8 @@ export interface GatewayRequest {
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
+  /** Per-request timeout override in milliseconds */
+  timeoutMs?: number;
 }
 
 export interface GatewayResponse {
@@ -1070,4 +1075,95 @@ export interface TriggerErrorPayload {
   triggerType: TriggerType;
   pipelineId: string;
   error: string;
+}
+
+// ─── Manager Mode Types (Phase 6.6) ──────────────────────────────────────────
+
+/**
+ * Configuration for manager-mode pipelines.
+ * Stored in pipelines.managerConfig JSONB column.
+ */
+export interface ManagerConfig {
+  /** Model slug for the manager LLM (e.g., "claude-sonnet-4" or "gpt-4") */
+  managerModel: string;
+  /** Teams the manager is allowed to dispatch. Manager cannot call unlisted teams. */
+  availableTeams: TeamId[];
+  /** Maximum iterations before forced failure (hard cap: 20, enforced server-side) */
+  maxIterations: number;
+  /** High-level objective the manager is working toward */
+  goal: string;
+}
+
+/**
+ * A single decision made by the manager LLM during orchestration.
+ */
+export interface ManagerDecision {
+  /** Action to take: dispatch a team, declare success, or declare failure */
+  action: "dispatch" | "complete" | "fail";
+  /** Team to dispatch (required if action === "dispatch") */
+  teamId?: TeamId;
+  /** Task description for the dispatched team (required if action === "dispatch") */
+  task?: string;
+  /** Manager's reasoning (shown in UI for transparency) */
+  reasoning: string;
+  /** Which iteration this decision was made in (1-indexed) */
+  iterationNumber: number;
+  /** Summary of outcome (required if action === "complete" or "fail") */
+  outcome?: string;
+}
+
+/**
+ * Record of a single manager iteration, persisted to DB.
+ */
+export interface ManagerIteration {
+  id: string;
+  runId: string;
+  iterationNumber: number;
+  decision: ManagerDecision;
+  /** Output from the dispatched team (null if action was complete/fail) */
+  teamResult?: string;
+  /** Tokens used by manager LLM for this iteration's decision */
+  tokensUsed: number;
+  /** Duration of the manager LLM call in ms */
+  decisionDurationMs: number;
+  /** Duration of team execution in ms (null if no dispatch) */
+  teamDurationMs?: number;
+  createdAt: Date;
+}
+
+/**
+ * Structured output schema for the manager LLM's response.
+ * This is what the LLM returns (parsed from JSON).
+ */
+export interface ManagerLLMResponse {
+  action: "dispatch" | "complete" | "fail";
+  teamId?: string;
+  task?: string;
+  reasoning: string;
+  outcome?: string;
+}
+
+// ─── Manager WS Payload Types ────────────────────────────────────────────────
+
+export interface ManagerDecisionPayload {
+  iterationNumber: number;
+  action: "dispatch" | "complete" | "fail";
+  teamId?: string;
+  task?: string;
+  reasoning: string;
+  tokensUsed: number;
+}
+
+export interface ManagerCompletePayload {
+  totalIterations: number;
+  outcome: string;
+  status: "completed" | "failed";
+  totalTokensUsed: number;
+  totalDurationMs: number;
+}
+
+export interface ManagerErrorPayload {
+  iteration: number;
+  error: string;
+  recoverable: boolean;
 }
