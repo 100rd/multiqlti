@@ -11,6 +11,7 @@ import {
   specializationProfiles,
   skills,
   triggers,
+  managerIterations,
   type UserRow, type InsertUser,
   type Model, type InsertModel,
   type Pipeline, type InsertPipeline,
@@ -23,6 +24,7 @@ import {
   type InsertSpecializationProfile,
   type SpecializationProfileRow,
   type Skill, type InsertSkill,
+  type InsertManagerIteration, type ManagerIterationRow,
 } from "@shared/schema";
 
 export class PgStorage implements IStorage {
@@ -692,6 +694,51 @@ export class PgStorage implements IStorage {
 
   async deleteSkill(id: string): Promise<void> {
     await db.delete(skills).where(eq(skills.id, id));
+  }
+
+  // ─── Manager Iterations (Phase 6.6) ────────────────────────────────────────
+
+  async createManagerIteration(data: InsertManagerIteration): Promise<ManagerIterationRow> {
+    const [row] = await db.insert(managerIterations).values(data).returning();
+    return row;
+  }
+
+  async updateManagerIteration(
+    runId: string,
+    iterationNumber: number,
+    updates: Partial<Pick<ManagerIterationRow, "teamResult" | "teamDurationMs">>,
+  ): Promise<void> {
+    await db
+      .update(managerIterations)
+      .set(updates)
+      .where(
+        and(
+          eq(managerIterations.runId, runId),
+          eq(managerIterations.iterationNumber, iterationNumber),
+        ),
+      );
+  }
+
+  async getManagerIterations(
+    runId: string,
+    offset = 0,
+    limit = 50,
+  ): Promise<ManagerIterationRow[]> {
+    return db
+      .select()
+      .from(managerIterations)
+      .where(eq(managerIterations.runId, runId))
+      .orderBy(asc(managerIterations.iterationNumber))
+      .limit(limit)
+      .offset(offset);
+  }
+
+  async countManagerIterations(runId: string): Promise<number> {
+    const result = await db
+      .select({ count: drizzleSql<number>`count(*)::int` })
+      .from(managerIterations)
+      .where(eq(managerIterations.runId, runId));
+    return result[0]?.count ?? 0;
   }
 
 }

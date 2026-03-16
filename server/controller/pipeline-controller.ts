@@ -14,6 +14,8 @@ import { MemoryExtractor } from "../memory/extractor";
 import { MemoryProvider } from "../memory/provider";
 import { ephemeralVarStore } from "../run-variables/store";
 import { GuardrailValidator } from "../pipeline/guardrail-validator.js";
+import { ManagerAgent } from "../pipeline/manager-agent";
+import type { ManagerConfig } from "@shared/types";
 
 interface ApprovalHandle {
   resolve: (approved: boolean) => void;
@@ -30,6 +32,7 @@ export class PipelineController {
   private guardrailValidator: GuardrailValidator;
   private delegationService?: DelegationService;
   private dagExecutor: DAGExecutor;
+  private managerAgent?: ManagerAgent;
 
   constructor(
     private storage: IStorage,
@@ -37,6 +40,7 @@ export class PipelineController {
     private wsManager: WsManager,
     gateway?: Gateway,
     delegationService?: DelegationService,
+    managerAgent?: ManagerAgent,
   ) {
     this.sandboxExecutor = new SandboxExecutor();
     this.parallelExecutor = new ParallelExecutor(
@@ -48,6 +52,7 @@ export class PipelineController {
     this.memoryProvider = new MemoryProvider(storage);
     this.guardrailValidator = new GuardrailValidator(gateway ?? createNullGateway());
     this.delegationService = delegationService;
+    this.managerAgent = managerAgent;
     this.dagExecutor = new DAGExecutor(storage, wsManager);
   }
 
@@ -87,6 +92,31 @@ export class PipelineController {
 
     const abortController = new AbortController();
     this.activeRuns.set(run.id, abortController);
+
+    const managerConfig = pipeline.managerConfig as ManagerConfig | null | undefined;
+    if (managerConfig != null && this.managerAgent != null) {
+      // ── Manager mode ──
+      this.managerAgent
+        .run(run.id, input, managerConfig, abortController.signal)
+        .then(async ({ status }) => {
+          const finalStatus = status === "completed" ? "completed" : "failed";
+          await this.storage.updatePipelineRun(run.id, {
+            status: finalStatus,
+            completedAt: new Date(),
+          });
+          this.activeRuns.delete(run.id);
+        })
+        .catch(async (err) => {
+          console.error(`Manager run ${run.id} error:`, err);
+          await this.storage.updatePipelineRun(run.id, {
+            status: "failed",
+            output: String(err),
+            completedAt: new Date(),
+          });
+          this.activeRuns.delete(run.id);
+        });
+      return run;
+    }
 
     if (dag != null) {
       // ── DAG mode ──
