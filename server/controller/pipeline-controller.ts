@@ -739,7 +739,8 @@ export class PipelineController {
 
           // ── Timeout gate ────────────────────────────────────────────────────
           if (gateConfig.type === "timeout" && gateConfig.timeoutMinutes) {
-            const timeoutMs = gateConfig.timeoutMinutes * 60_000;
+            const clampedMinutes = Math.max(1, Math.min(1440, gateConfig.timeoutMinutes));
+            const timeoutMs = clampedMinutes * 60_000;
             const timeoutAction = gateConfig.timeoutAction ?? "approve";
 
             approved = await Promise.race([
@@ -760,15 +761,16 @@ export class PipelineController {
                       approvedAt: new Date(),
                       approvedBy: "system:timeout",
                       autoApprovalReason: `Timeout after ${gateConfig.timeoutMinutes}m — action: ${timeoutAction}`,
-                    });
+                    }).catch((err) => console.error("Failed to update stage execution on timeout:", err));
 
                     if (!shouldApprove) {
                       this.storage.updatePipelineRun(run.id, {
                         status: "rejected",
                         completedAt: new Date(),
-                      });
+                      }).catch((err) => console.error("Failed to update pipeline run on timeout:", err));
                     } else {
-                      this.storage.updatePipelineRun(run.id, { status: "running" });
+                      this.storage.updatePipelineRun(run.id, { status: "running" })
+                        .catch((err) => console.error("Failed to update pipeline run on timeout:", err));
                     }
 
                     this.broadcast(run.id, {

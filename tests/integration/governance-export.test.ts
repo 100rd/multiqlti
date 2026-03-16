@@ -232,8 +232,15 @@ describe("Governance — approval gates + run export", () => {
 
     it("returns 400 for invalid format", async () => {
       const res = await request(app)
-        .get(`/api/runs/${completedRunId}/export?format=pdf`);
+        .get(`/api/runs/${completedRunId}/export?format=csv`);
       expect(res.status).toBe(400);
+    });
+
+    it("returns 200 or 503 for pdf format", async () => {
+      const res = await request(app)
+        .get(`/api/runs/${completedRunId}/export?format=pdf`);
+      // 200 if chromium available, 503 if not
+      expect([200, 503]).toContain(res.status);
     });
 
     it("returns 404 for unknown run id", async () => {
