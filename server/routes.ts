@@ -26,6 +26,7 @@ import { registerGuardrailRoutes } from "./routes/guardrails";
 import { registerDelegationRoutes } from "./routes/delegations";
 import { DelegationService } from "./pipeline/delegation-service";
 import { registerDAGRoutes } from "./routes/dag";
+import { registerTraceRoutes } from "./routes/traces";
 import { registerTriggerRoutes } from "./routes/triggers";
 import { registerWebhookRoutes } from "./routes/webhooks";
 import { TriggerService } from "./services/trigger-service";
@@ -34,6 +35,7 @@ import { FileWatcherService } from "./services/file-watcher";
 import { stopRateLimitCleanup } from "./services/webhook-handler";
 import { BUILTIN_SKILLS } from "./skills/builtin";
 import { requireAuth } from "./auth/middleware";
+import { tracer } from "./tracing/tracer";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
 
@@ -46,7 +48,7 @@ export async function registerRoutes(
   const gateway = new Gateway(storage);
   const teamRegistry = new TeamRegistry(gateway, wsManager);
   const delegationService = new DelegationService(storage, teamRegistry, wsManager, gateway);
-  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService);
+  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService, tracer);
 
   // Register auth routes first (public routes included)
   registerAuthRoutes(app);
@@ -75,6 +77,7 @@ export async function registerRoutes(
   app.use("/api/skills", requireAuth);
   app.use("/api/guardrails", requireAuth);
   app.use("/api/triggers", requireAuth);
+  app.use("/api/traces", requireAuth);
 
   // Register route implementations
   registerModelRoutes(app, storage);
@@ -96,6 +99,7 @@ export async function registerRoutes(
   registerGuardrailRoutes(app, storage, gateway);
   registerDelegationRoutes(app, storage);
   registerDAGRoutes(app, storage);
+  registerTraceRoutes(app, storage);
 
   // Phase 6.3 — Trigger subsystem
   let triggerService: TriggerService | null = null;

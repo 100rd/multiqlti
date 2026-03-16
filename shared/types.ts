@@ -1071,3 +1071,39 @@ export interface TriggerErrorPayload {
   pipelineId: string;
   error: string;
 }
+
+// ─── Tracing Types (Phase 6.5) ────────────────────────────────────────────────
+
+export interface TraceSpan {
+  spanId: string;
+  parentSpanId?: string;
+  name: string;
+  startTime: number;       // Unix epoch milliseconds
+  endTime: number;         // Unix epoch milliseconds
+  attributes: Record<string, string | number>;
+  events: Array<{
+    name: string;
+    timestamp: number;     // Unix epoch milliseconds
+    attributes?: Record<string, string>;
+  }>;
+  status: "ok" | "error";
+}
+
+export interface PipelineTrace {
+  traceId: string;
+  runId: string;
+  spans: TraceSpan[];
+}
+
+/** Propagation context passed between instrumentation points */
+export interface SpanContext {
+  traceId: string;
+  spanId: string;
+}
+
+/** Shape used when persisting a trace to DB (mirrors InsertTrace in schema.ts) */
+export interface InsertTrace {
+  traceId: string;
+  runId: string;
+  spans: TraceSpan[];
+}
