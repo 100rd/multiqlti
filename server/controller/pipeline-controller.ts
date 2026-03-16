@@ -2,7 +2,8 @@ import type { IStorage } from "../storage";
 import type { TeamRegistry } from "../teams/registry";
 import type { WsManager } from "../ws/manager";
 import type { Gateway } from "../gateway/index";
-import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput, DelegationRequest, DelegateFn, PipelineDAG, DAGStage } from "@shared/types";
+import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput, DelegationRequest, DelegateFn, PipelineDAG, DAGStage, ApprovalGateConfig } from "@shared/types";
+import { evaluateAutoApproveConditions } from "../services/approval-gate-evaluator";
 import { DelegationService } from "../pipeline/delegation-service";
 import { DAGExecutor } from "../pipeline/dag-executor";
 import type { StageExecuteFn } from "../pipeline/dag-executor";
@@ -23,6 +24,7 @@ interface ApprovalHandle {
 export class PipelineController {
   private activeRuns: Map<string, AbortController> = new Map();
   private pendingApprovals: Map<string, ApprovalHandle> = new Map();
+  private pendingTimeouts: Map<string, NodeJS.Timeout> = new Map();
   private sandboxExecutor: SandboxExecutor;
   private parallelExecutor: ParallelExecutor;
   private memoryExtractor: MemoryExtractor;
@@ -672,8 +674,49 @@ export class PipelineController {
           metadata: { stageIndex: i, output: result.output },
         });
 
-        // ─── Approval Gate ────────────────────────────────────────────────────
-        if (stage.approvalRequired) {
+        // ─── Approval Gate (Phase 3.4: auto/timeout/manual) ─────────────────
+        if (stage.approvalRequired || stage.approvalGate) {
+          const gateConfig: ApprovalGateConfig = stage.approvalGate ?? { type: "manual" };
+
+          // Persist gate config snapshot
+          await this.storage.updateStageExecution(stageExec.id, {
+            approvalGateConfig: gateConfig as unknown as Record<string, unknown>,
+          });
+
+          // ── Auto-approve gate ──────────────────────────────────────────────
+          if (gateConfig.type === "auto") {
+            const llmReqs = await this.storage.getLlmRequests({
+              runId: run.id,
+              stageExecutionId: stageExec.id,
+              limit: 10000,
+            });
+            const evalResult = evaluateAutoApproveConditions({
+              gateConfig,
+              stageExecution: stageExec,
+              stageLlmRequests: llmReqs.rows,
+            });
+
+            if (evalResult.shouldAutoApprove) {
+              await this.storage.updateStageExecution(stageExec.id, {
+                approvalStatus: "approved",
+                approvedAt: new Date(),
+                approvedBy: "system:auto",
+                autoApprovalReason: evalResult.reason,
+              });
+              this.broadcast(run.id, {
+                type: "stage:auto_approved",
+                runId: run.id,
+                stageExecutionId: stageExec.id,
+                payload: { stageIndex: i, reason: evalResult.reason },
+                timestamp: new Date().toISOString(),
+              });
+              // Skip manual wait — continue to next stage
+              continue;
+            }
+            // Conditions not met — fall through to manual approval
+          }
+
+          // ── Set stage to awaiting_approval (shared by timeout and manual) ─
           const approvalKey = this.makeApprovalKey(run.id, i);
 
           await this.storage.updateStageExecution(stageExec.id, {
@@ -686,13 +729,75 @@ export class PipelineController {
             type: "stage:awaiting_approval",
             runId: run.id,
             stageExecutionId: stageExec.id,
-            payload: { stageIndex: i, teamId: stage.teamId },
+            payload: { stageIndex: i, teamId: stage.teamId, gateType: gateConfig.type },
             timestamp: new Date().toISOString(),
           });
 
           if (signal.aborted) return;
 
-          const approved = await this.waitForApproval(approvalKey);
+          let approved: boolean;
+
+          // ── Timeout gate ────────────────────────────────────────────────────
+          if (gateConfig.type === "timeout" && gateConfig.timeoutMinutes) {
+            const clampedMinutes = Math.max(1, Math.min(1440, gateConfig.timeoutMinutes));
+            const timeoutMs = clampedMinutes * 60_000;
+            const timeoutAction = gateConfig.timeoutAction ?? "approve";
+
+            approved = await Promise.race([
+              this.waitForApproval(approvalKey),
+              new Promise<boolean>((resolve) => {
+                const timer = setTimeout(() => {
+                  this.pendingTimeouts.delete(approvalKey);
+                  // Only resolve if approval is still pending
+                  const handle = this.pendingApprovals.get(approvalKey);
+                  if (handle) {
+                    this.pendingApprovals.delete(approvalKey);
+                    const shouldApprove = timeoutAction === "approve";
+                    const eventType = shouldApprove ? "stage:timeout_approved" : "stage:timeout_rejected";
+
+                    // Update DB for timeout decision
+                    this.storage.updateStageExecution(stageExec.id, {
+                      approvalStatus: shouldApprove ? "approved" : "rejected",
+                      approvedAt: new Date(),
+                      approvedBy: "system:timeout",
+                      autoApprovalReason: `Timeout after ${gateConfig.timeoutMinutes}m — action: ${timeoutAction}`,
+                    }).catch((err) => console.error("Failed to update stage execution on timeout:", err));
+
+                    if (!shouldApprove) {
+                      this.storage.updatePipelineRun(run.id, {
+                        status: "rejected",
+                        completedAt: new Date(),
+                      }).catch((err) => console.error("Failed to update pipeline run on timeout:", err));
+                    } else {
+                      this.storage.updatePipelineRun(run.id, { status: "running" })
+                        .catch((err) => console.error("Failed to update pipeline run on timeout:", err));
+                    }
+
+                    this.broadcast(run.id, {
+                      type: eventType as "stage:timeout_approved" | "stage:timeout_rejected",
+                      runId: run.id,
+                      stageExecutionId: stageExec.id,
+                      payload: { stageIndex: i, timeoutMinutes: gateConfig.timeoutMinutes, action: timeoutAction },
+                      timestamp: new Date().toISOString(),
+                    });
+
+                    resolve(shouldApprove);
+                  }
+                }, timeoutMs);
+                this.pendingTimeouts.set(approvalKey, timer);
+              }),
+            ]);
+
+            // Clear timeout if manual approval won the race
+            const pendingTimer = this.pendingTimeouts.get(approvalKey);
+            if (pendingTimer) {
+              clearTimeout(pendingTimer);
+              this.pendingTimeouts.delete(approvalKey);
+            }
+          } else {
+            // ── Manual gate (default) ──────────────────────────────────────────
+            approved = await this.waitForApproval(approvalKey);
+          }
 
           if (!approved) {
             // run status already set to rejected in rejectStage()
@@ -800,6 +905,14 @@ export class PipelineController {
     if (abort) {
       abort.abort();
       this.activeRuns.delete(runId);
+    }
+
+    // Clear any pending timeouts for this run
+    for (const [key, timer] of this.pendingTimeouts) {
+      if (key.startsWith(`${runId}::`)) {
+        clearTimeout(timer);
+        this.pendingTimeouts.delete(key);
+      }
     }
 
     // Resolve any pending approval as rejected to unblock the promise

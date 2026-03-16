@@ -1,4 +1,4 @@
-import type { PipelineRun, StageExecution, Pipeline } from "@shared/schema";
+import type { PipelineRun, StageExecution, Pipeline, LlmRequest } from "@shared/schema";
 
 // ─── Markdown Export ──────────────────────────────────────────────────────────
 
@@ -16,10 +16,130 @@ function formatTimestamp(date: Date | null | string): string {
   return new Date(date).toISOString().replace("T", " ").slice(0, 19) + " UTC";
 }
 
+function formatCostUsd(cost: number): string {
+  return `$${cost.toFixed(4)}`;
+}
+
+// ─── Cost Breakdown Section ─────────────────────────────────────────────────
+
+interface StageCostEntry {
+  stageIndex: number;
+  teamId: string;
+  modelSlug: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  latencyMs: number;
+}
+
+function aggregateCostByStage(
+  stages: StageExecution[],
+  llmRequests: LlmRequest[],
+): StageCostEntry[] {
+  const stageMap = new Map<string, StageCostEntry>();
+
+  for (const stage of stages) {
+    const stageReqs = llmRequests.filter((r) => r.stageExecutionId === stage.id);
+    if (stageReqs.length === 0 && stage.status !== "completed") continue;
+
+    stageMap.set(stage.id, {
+      stageIndex: stage.stageIndex,
+      teamId: stage.teamId,
+      modelSlug: stage.modelSlug,
+      requests: stageReqs.length,
+      inputTokens: stageReqs.reduce((s, r) => s + (r.inputTokens ?? 0), 0),
+      outputTokens: stageReqs.reduce((s, r) => s + (r.outputTokens ?? 0), 0),
+      costUsd: stageReqs.reduce((s, r) => s + (r.estimatedCostUsd ?? 0), 0),
+      latencyMs: stageReqs.reduce((s, r) => s + (r.latencyMs ?? 0), 0),
+    });
+  }
+
+  return Array.from(stageMap.values()).sort((a, b) => a.stageIndex - b.stageIndex);
+}
+
+function renderCostBreakdownSection(
+  stages: StageExecution[],
+  llmRequests: LlmRequest[],
+): string[] {
+  const entries = aggregateCostByStage(stages, llmRequests);
+  if (entries.length === 0) return [];
+
+  const lines: string[] = [
+    `## Cost Breakdown`,
+    ``,
+    `| Stage | Model | Requests | Input Tokens | Output Tokens | Est. Cost |`,
+    `|-------|-------|----------|-------------|--------------|-----------|`,
+  ];
+
+  let totalReqs = 0;
+  let totalInput = 0;
+  let totalOutput = 0;
+  let totalCost = 0;
+
+  for (const entry of entries) {
+    lines.push(
+      `| ${entry.stageIndex + 1}. ${entry.teamId} | ${entry.modelSlug} | ${entry.requests} | ${entry.inputTokens.toLocaleString()} | ${entry.outputTokens.toLocaleString()} | ${formatCostUsd(entry.costUsd)} |`,
+    );
+    totalReqs += entry.requests;
+    totalInput += entry.inputTokens;
+    totalOutput += entry.outputTokens;
+    totalCost += entry.costUsd;
+  }
+
+  lines.push(
+    `| **Total** | | **${totalReqs}** | **${totalInput.toLocaleString()}** | **${totalOutput.toLocaleString()}** | **${formatCostUsd(totalCost)}** |`,
+  );
+  lines.push(``);
+
+  return lines;
+}
+
+// ─── Approval Gate Log Section ──────────────────────────────────────────────
+
+function renderApprovalGateLog(stages: StageExecution[]): string[] {
+  const approvalStages = stages.filter((s) => s.approvalStatus != null);
+  if (approvalStages.length === 0) return [];
+
+  const lines: string[] = [
+    `## Approval Gates`,
+    ``,
+    `| Stage | Gate Type | Decision | Decided By | Reason | Wait Time |`,
+    `|-------|-----------|----------|-----------|--------|-----------|`,
+  ];
+
+  for (const stage of approvalStages) {
+    const gateConfig = stage.approvalGateConfig as Record<string, unknown> | null;
+    const gateType = (gateConfig?.type as string) ?? "manual";
+    const decision = stage.approvalStatus ?? "pending";
+
+    const decidedBy = stage.approvedBy ?? "-";
+    const reason = stage.autoApprovalReason
+      ?? stage.rejectionReason
+      ?? "-";
+
+    let waitTime = "-";
+    if (stage.startedAt && stage.approvedAt) {
+      const ms = new Date(stage.approvedAt).getTime() - new Date(stage.startedAt).getTime();
+      waitTime = formatDuration(Math.max(0, ms));
+    }
+
+    lines.push(
+      `| ${stage.stageIndex + 1}. ${stage.teamId} | ${gateType} | ${decision} | ${decidedBy} | ${reason} | ${waitTime} |`,
+    );
+  }
+
+  lines.push(``);
+  return lines;
+}
+
+// ─── Main Markdown Report ───────────────────────────────────────────────────
+
 export function generateMarkdownReport(
   run: PipelineRun,
   stages: StageExecution[],
   pipeline: Pipeline,
+  llmRequests?: LlmRequest[],
 ): string {
   const completedStages = stages.filter((s) => s.status === "completed");
   const totalTokens = stages.reduce((sum, s) => sum + (s.tokensUsed ?? 0), 0);
@@ -77,6 +197,14 @@ export function generateMarkdownReport(
   }
   lines.push(``);
 
+  // Cost breakdown (Phase 3.4)
+  if (llmRequests && llmRequests.length > 0) {
+    lines.push(...renderCostBreakdownSection(stages, llmRequests));
+  }
+
+  // Approval gate log (Phase 3.4)
+  lines.push(...renderApprovalGateLog(stages));
+
   // Per-stage outputs
   lines.push(`## Stage Outputs`, ``);
   for (const stage of completedStages) {
@@ -105,6 +233,33 @@ export function generateMarkdownReport(
   lines.push(`## Input`, ``, run.input, ``);
 
   return lines.join("\n");
+}
+
+// ─── Cost Breakdown JSON ────────────────────────────────────────────────────
+
+export interface RunCostBreakdown {
+  runId: string;
+  totalCostUsd: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalRequests: number;
+  stages: StageCostEntry[];
+}
+
+function buildCostBreakdownJson(
+  runId: string,
+  stages: StageExecution[],
+  llmRequests: LlmRequest[],
+): RunCostBreakdown {
+  const entries = aggregateCostByStage(stages, llmRequests);
+  return {
+    runId,
+    totalCostUsd: entries.reduce((s, e) => s + e.costUsd, 0),
+    totalInputTokens: entries.reduce((s, e) => s + e.inputTokens, 0),
+    totalOutputTokens: entries.reduce((s, e) => s + e.outputTokens, 0),
+    totalRequests: entries.reduce((s, e) => s + e.requests, 0),
+    stages: entries,
+  };
 }
 
 // ─── Code Block Extraction ───────────────────────────────────────────────────
@@ -298,11 +453,21 @@ export function generateZipExport(
   run: PipelineRun,
   stages: StageExecution[],
   pipeline: Pipeline,
+  llmRequests?: LlmRequest[],
 ): Buffer {
-  const markdown = generateMarkdownReport(run, stages, pipeline);
+  const markdown = generateMarkdownReport(run, stages, pipeline, llmRequests);
   const entries: ZipEntry[] = [
     { name: "report.md", data: Buffer.from(markdown, "utf8") },
   ];
+
+  // Cost breakdown JSON (Phase 3.4)
+  if (llmRequests && llmRequests.length > 0) {
+    const costBreakdown = buildCostBreakdownJson(run.id, stages, llmRequests);
+    entries.push({
+      name: "cost-breakdown.json",
+      data: Buffer.from(JSON.stringify(costBreakdown, null, 2), "utf8"),
+    });
+  }
 
   const codeBlocks = extractCodeBlocks(stages);
   for (const block of codeBlocks) {
@@ -312,4 +477,21 @@ export function generateZipExport(
   }
 
   return buildZip(entries);
+}
+
+// ─── PDF Export (Phase 3.4) ─────────────────────────────────────────────────
+
+/**
+ * Generates a PDF buffer from a markdown string.
+ * Uses md-to-pdf which wraps puppeteer/chromium.
+ * Throws if chromium is unavailable at runtime.
+ */
+export async function generatePdfReport(markdown: string): Promise<Buffer> {
+  // Dynamic import to avoid hard dependency if md-to-pdf is not installed
+  const { mdToPdf } = await import("md-to-pdf");
+  const result = await mdToPdf({ content: markdown }, { dest: undefined as unknown as string });
+  if (!result?.content) {
+    throw new Error("PDF generation produced no content");
+  }
+  return Buffer.from(result.content);
 }

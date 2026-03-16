@@ -1,6 +1,6 @@
 import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, sql as drizzleSql } from "drizzle-orm";
 import { db } from "./db";
-import type { IStorage, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint } from "./storage";
+import type { IStorage, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint, PendingApprovalRow } from "./storage";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
 import {
   users, models, pipelines, pipelineRuns,
@@ -275,6 +275,7 @@ export class PgStorage implements IStorage {
   async getLlmRequests(filters: LlmRequestFilters): Promise<{ rows: LlmRequest[]; total: number }> {
     const conditions = [];
     if (filters.runId) conditions.push(eq(llmRequests.runId, filters.runId));
+    if (filters.stageExecutionId) conditions.push(eq(llmRequests.stageExecutionId, filters.stageExecutionId));
     if (filters.provider) conditions.push(eq(llmRequests.provider, filters.provider));
     if (filters.modelSlug) conditions.push(eq(llmRequests.modelSlug, filters.modelSlug));
     if (filters.status) conditions.push(eq(llmRequests.status, filters.status));
@@ -741,6 +742,71 @@ export class PgStorage implements IStorage {
 
   async deleteTrigger(id: string): Promise<void> {
     await db.delete(triggers).where(eq(triggers.id, id));
+  }
+
+  // ─── Pending Approvals (Phase 3.4) ──────────────────────────────────────
+
+  async getPendingApprovals(filters: {
+    pipelineId?: string;
+    limit: number;
+    offset: number;
+  }): Promise<{ rows: PendingApprovalRow[]; total: number }> {
+    const conditions = [
+      eq(stageExecutions.status, "awaiting_approval"),
+      eq(stageExecutions.approvalStatus, "pending"),
+    ];
+
+    if (filters.pipelineId) {
+      conditions.push(eq(pipelineRuns.pipelineId, filters.pipelineId));
+    }
+
+    const whereClause = and(...conditions);
+
+    // Count total
+    const [countRow] = await db
+      .select({ count: drizzleSql<number>`count(*)::int` })
+      .from(stageExecutions)
+      .innerJoin(pipelineRuns, eq(stageExecutions.runId, pipelineRuns.id))
+      .where(whereClause);
+    const total = countRow?.count ?? 0;
+
+    // Fetch rows with pipeline name
+    const rows = await db
+      .select({
+        runId: stageExecutions.runId,
+        pipelineId: pipelineRuns.pipelineId,
+        pipelineName: pipelines.name,
+        stageIndex: stageExecutions.stageIndex,
+        stageExecutionId: stageExecutions.id,
+        teamId: stageExecutions.teamId,
+        modelSlug: stageExecutions.modelSlug,
+        gateConfig: stageExecutions.approvalGateConfig,
+        startedAt: stageExecutions.startedAt,
+        createdAt: stageExecutions.createdAt,
+        output: stageExecutions.output,
+      })
+      .from(stageExecutions)
+      .innerJoin(pipelineRuns, eq(stageExecutions.runId, pipelineRuns.id))
+      .innerJoin(pipelines, eq(pipelineRuns.pipelineId, pipelines.id))
+      .where(whereClause)
+      .orderBy(asc(stageExecutions.startedAt))
+      .limit(filters.limit)
+      .offset(filters.offset);
+
+    const mapped: PendingApprovalRow[] = rows.map((r) => ({
+      runId: r.runId,
+      pipelineId: r.pipelineId,
+      pipelineName: r.pipelineName,
+      stageIndex: r.stageIndex,
+      stageExecutionId: r.stageExecutionId,
+      teamId: r.teamId,
+      modelSlug: r.modelSlug,
+      gateConfig: r.gateConfig as Record<string, unknown> | null,
+      awaitingSince: (r.startedAt ?? r.createdAt ?? new Date()).toISOString(),
+      output: r.output as Record<string, unknown> | null,
+    }));
+
+    return { rows: mapped, total };
   }
 
 }

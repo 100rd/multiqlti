@@ -1,5 +1,6 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import {
   LayoutDashboard,
   MessageSquare,
@@ -15,6 +16,7 @@ import {
   Users,
   Wrench,
   Zap,
+  ClipboardCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -24,6 +26,30 @@ import type { UserRole } from "@shared/types";
 interface MainLayoutProps {
   children: ReactNode;
 }
+
+// ── Pending approvals count hook ─────────────────────────────────────────────
+
+function getAuthToken(): string | null {
+  return localStorage.getItem("auth_token");
+}
+
+function usePendingApprovalsCount(): number {
+  const { data } = useQuery<{ approvals: unknown[]; total: number }>({
+    queryKey: ["approvals-pending"],
+    queryFn: async () => {
+      const token = getAuthToken();
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const res = await fetch("/api/approvals/pending?limit=1", { headers });
+      if (!res.ok) return { approvals: [], total: 0 };
+      return res.json();
+    },
+    refetchInterval: 30_000,
+  });
+  return data?.total ?? 0;
+}
+
+// ── Role badges ──────────────────────────────────────────────────────────────
 
 const ROLE_BADGE: Record<UserRole, { label: string; className: string }> = {
   admin: { label: "Admin", className: "bg-red-500/15 text-red-600 border-red-500/30" },
@@ -35,6 +61,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
   const [location, navigate] = useLocation();
   const { data: pendingQuestions } = usePendingQuestions();
   const pendingCount = Array.isArray(pendingQuestions) ? pendingQuestions.length : 0;
+  const pendingApprovalsCount = usePendingApprovalsCount();
   const { user, logout } = useAuth();
 
   const navItems = [
@@ -47,6 +74,12 @@ export default function MainLayout({ children }: MainLayoutProps) {
       badge: pendingCount > 0 ? pendingCount : undefined,
     },
     { icon: Zap, label: "Triggers", href: "/triggers" },
+    {
+      icon: ClipboardCheck,
+      label: "Approvals",
+      href: "/approvals",
+      badge: pendingApprovalsCount > 0 ? pendingApprovalsCount : undefined,
+    },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
     { icon: BarChart3, label: "Statistics", href: "/stats" },
     { icon: Brain, label: "Memory", href: "/memories" },
@@ -78,7 +111,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
             </div>
           </div>
 
-          <nav className="p-4 space-y-1">
+          <nav className="p-4 space-y-1" aria-label="Main navigation">
             {navItems.map((item) => {
               const isActive =
                 location === item.href ||

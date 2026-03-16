@@ -27,6 +27,7 @@ import { registerDelegationRoutes } from "./routes/delegations";
 import { DelegationService } from "./pipeline/delegation-service";
 import { registerDAGRoutes } from "./routes/dag";
 import { registerTriggerRoutes } from "./routes/triggers";
+import { registerApprovalRoutes } from "./routes/approvals";
 import { registerWebhookRoutes } from "./routes/webhooks";
 import { TriggerService } from "./services/trigger-service";
 import { CronScheduler } from "./services/cron-scheduler";
@@ -75,6 +76,7 @@ export async function registerRoutes(
   app.use("/api/skills", requireAuth);
   app.use("/api/guardrails", requireAuth);
   app.use("/api/triggers", requireAuth);
+  app.use("/api/approvals", requireAuth);
 
   // Register route implementations
   registerModelRoutes(app, storage);
@@ -96,6 +98,7 @@ export async function registerRoutes(
   registerGuardrailRoutes(app, storage, gateway);
   registerDelegationRoutes(app, storage);
   registerDAGRoutes(app, storage);
+  registerApprovalRoutes(app, storage);
 
   // Phase 6.3 — Trigger subsystem
   let triggerService: TriggerService | null = null;

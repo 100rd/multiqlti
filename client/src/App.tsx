@@ -27,6 +27,7 @@ import Login from "@/pages/Login";
 import UserManagement from "@/pages/UserManagement";
 import ProfileSettings from "@/pages/ProfileSettings";
 import Maintenance from "@/pages/Maintenance";
+import Approvals from "@/pages/Approvals";
 
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
@@ -70,6 +71,9 @@ function ProtectedRouter() {
         </Route>
         <Route path="/runs/:runId" component={() => (
           <ErrorBoundary><PipelineRun /></ErrorBoundary>
+        )} />
+        <Route path="/approvals" component={() => (
+          <ErrorBoundary><Approvals /></ErrorBoundary>
         )} />
         <Route path="/triggers" component={() => (
           <ErrorBoundary><TriggersPage /></ErrorBoundary>

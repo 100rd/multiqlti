@@ -11,7 +11,8 @@ import { cn } from "@/lib/utils";
 import { SDLC_TEAMS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, MIN_TEMPERATURE, MAX_TEMPERATURE, TEMPERATURE_STEP } from "@shared/constants";
 import StrategyConfig from "./StrategyConfig";
 import SandboxConfig from "./SandboxConfig";
-import type { ExecutionStrategy, PrivacySettings, SandboxConfig as SandboxConfigType, StageToolConfig, ParallelConfig, MergeStrategy, StageGuardrail } from "@shared/types";
+import ApprovalGateEditor from "../approval/ApprovalGateEditor";
+import type { ExecutionStrategy, PrivacySettings, SandboxConfig as SandboxConfigType, StageToolConfig, ParallelConfig, MergeStrategy, StageGuardrail, ApprovalGateConfig } from "@shared/types";
 import GuardrailEditor from '../pipeline/GuardrailEditor';
 
 interface ModelOption {
@@ -48,6 +49,8 @@ interface AgentNodeProps {
   onParallelChange: (id: string, config: ParallelConfig | undefined) => void;
   approvalRequired?: boolean;
   onApprovalChange: (id: string, value: boolean) => void;
+  approvalGate?: ApprovalGateConfig;
+  onApprovalGateChange?: (id: string, approvalRequired: boolean, gateConfig: ApprovalGateConfig | undefined) => void;
   guardrails?: StageGuardrail[];
   onGuardrailsChange?: (id: string, guardrails: StageGuardrail[]) => void;
   isLast: boolean;
@@ -62,6 +65,17 @@ interface ParallelConfigPanelProps {
   onChange: (cfg: ParallelConfig | undefined) => void;
 }
 
+type SplitStrategy = "auto" | "by_file" | "by_function" | "by_section" | "by_task" | "custom";
+
+const SPLIT_STRATEGIES: Array<{ value: SplitStrategy; label: string; description: string }> = [
+  { value: "auto", label: "Auto (LLM decides)", description: "LLM analyzes the input and decides how to split" },
+  { value: "by_file", label: "By file boundaries", description: "Split on file path markers in the input" },
+  { value: "by_function", label: "By function declarations", description: "Split on function/method definitions" },
+  { value: "by_section", label: "By markdown sections", description: "Split on heading boundaries" },
+  { value: "by_task", label: "By numbered tasks", description: "Split on numbered list items" },
+  { value: "custom", label: "Custom prompt", description: "Provide a custom splitting instruction" },
+];
+
 function ParallelConfigPanel({
   config,
   models,
@@ -73,13 +87,21 @@ function ParallelConfigPanel({
     { value: "auto", label: "Auto (team default)" },
     { value: "concatenate", label: "Concatenate" },
     { value: "review", label: "LLM Review" },
+    { value: "vote" as MergeStrategy, label: "Vote (majority wins)" },
   ];
 
-  const current: ParallelConfig = config ?? {
+  const current: ParallelConfig & { splitStrategy?: SplitStrategy; customSplitPrompt?: string } = config ?? {
     enabled: false,
     mode: "auto",
     maxAgents: 3,
     mergeStrategy: "auto",
+  };
+
+  const splitStrategy = (current as Record<string, unknown>).splitStrategy as SplitStrategy | undefined ?? "auto";
+  const customSplitPrompt = (current as Record<string, unknown>).customSplitPrompt as string | undefined ?? "";
+
+  const handleChange = (patch: Record<string, unknown>) => {
+    onChange({ ...current, ...patch } as ParallelConfig);
   };
 
   return (
@@ -88,7 +110,7 @@ function ParallelConfigPanel({
         <label className="text-xs font-medium text-muted-foreground">Enable parallel execution</label>
         <Switch
           checked={current.enabled}
-          onCheckedChange={(checked) => onChange({ ...current, enabled: checked })}
+          onCheckedChange={(checked) => handleChange({ enabled: checked })}
           disabled={!enabled}
         />
       </div>
@@ -105,17 +127,59 @@ function ParallelConfigPanel({
               max={10}
               step={1}
               value={[current.maxAgents]}
-              onValueChange={([val]) => onChange({ ...current, maxAgents: val })}
+              onValueChange={([val]) => handleChange({ maxAgents: val })}
               disabled={!enabled}
               className="h-4"
             />
           </div>
 
           <div>
+            <label className="text-xs font-medium text-muted-foreground mb-1 block">Split strategy</label>
+            <Select
+              value={splitStrategy}
+              onValueChange={(v) => handleChange({ splitStrategy: v })}
+              disabled={!enabled}
+            >
+              <SelectTrigger className="h-7 text-xs bg-background border-border">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SPLIT_STRATEGIES.map((s) => (
+                  <SelectItem key={s.value} value={s.value}>
+                    {s.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[10px] text-muted-foreground mt-0.5">
+              {SPLIT_STRATEGIES.find((s) => s.value === splitStrategy)?.description}
+            </p>
+          </div>
+
+          {splitStrategy === "custom" && (
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">
+                Custom split prompt
+              </label>
+              <Textarea
+                className="text-xs font-mono min-h-[60px] resize-y bg-background border-border"
+                placeholder="Describe how to split the input into parallel subtasks..."
+                value={customSplitPrompt}
+                onChange={(e) => handleChange({ customSplitPrompt: e.target.value })}
+                disabled={!enabled}
+                maxLength={10000}
+              />
+              <p className="text-[10px] text-muted-foreground mt-0.5">
+                This prompt instructs the LLM how to decompose the stage input into subtasks.
+              </p>
+            </div>
+          )}
+
+          <div>
             <label className="text-xs font-medium text-muted-foreground mb-1 block">Merge strategy</label>
             <Select
               value={current.mergeStrategy}
-              onValueChange={(v) => onChange({ ...current, mergeStrategy: v as MergeStrategy })}
+              onValueChange={(v) => handleChange({ mergeStrategy: v })}
               disabled={!enabled}
             >
               <SelectTrigger className="h-7 text-xs bg-background border-border">
@@ -133,7 +197,7 @@ function ParallelConfigPanel({
             <label className="text-xs font-medium text-muted-foreground mb-1 block">Splitter model (optional)</label>
             <Select
               value={current.splitterModelSlug ?? ""}
-              onValueChange={(v) => onChange({ ...current, splitterModelSlug: v || undefined })}
+              onValueChange={(v) => handleChange({ splitterModelSlug: v || undefined })}
               disabled={!enabled}
             >
               <SelectTrigger className="h-7 text-xs bg-background border-border">
@@ -152,7 +216,7 @@ function ParallelConfigPanel({
             <label className="text-xs font-medium text-muted-foreground mb-1 block">Merger model (optional)</label>
             <Select
               value={current.mergerModelSlug ?? ""}
-              onValueChange={(v) => onChange({ ...current, mergerModelSlug: v || undefined })}
+              onValueChange={(v) => handleChange({ mergerModelSlug: v || undefined })}
               disabled={!enabled}
             >
               <SelectTrigger className="h-7 text-xs bg-background border-border">
@@ -237,6 +301,8 @@ export default function AgentNode({
   onToolConfigChange,
   approvalRequired = false,
   onApprovalChange,
+  approvalGate,
+  onApprovalGateChange,
   parallelConfig,
   onParallelChange,
   guardrails = [],
@@ -293,6 +359,15 @@ export default function AgentNode({
       ...effectivePrivacy,
       level: level as PrivacySettings["level"],
     });
+  };
+
+  const handleApprovalGateChange = (newApprovalRequired: boolean, newGateConfig: ApprovalGateConfig | undefined) => {
+    if (onApprovalGateChange) {
+      onApprovalGateChange(id, newApprovalRequired, newGateConfig);
+    } else {
+      // Fallback: use old boolean-only callback
+      onApprovalChange(id, newApprovalRequired);
+    }
   };
 
   return (
@@ -622,26 +697,12 @@ export default function AgentNode({
             )}
           </div>
 
-          {/* Approval Gate */}
-          <div className="pt-1 border-t border-border">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <label className="text-xs font-medium text-muted-foreground">
-                  Require approval before next stage
-                </label>
-              </div>
-              <Switch
-                checked={approvalRequired}
-                onCheckedChange={(checked) => onApprovalChange(id, checked)}
-                disabled={!enabled}
-              />
-            </div>
-            {approvalRequired && (
-              <p className="text-[10px] text-muted-foreground mt-1">
-                Pipeline will pause after this stage until a user approves the output.
-              </p>
-            )}
-          </div>
+          {/* Approval Gate (Phase 3.4 — rich gate editor) */}
+          <ApprovalGateEditor
+            approvalRequired={approvalRequired}
+            gateConfig={approvalGate}
+            onChange={handleApprovalGateChange}
+          />
 
           {team && (
             <div className="p-2 rounded bg-muted/50 border border-border">

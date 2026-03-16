@@ -1,25 +1,21 @@
 import { useState } from "react";
 import { useParams } from "wouter";
-import { usePipelineRun, useCancelRun, useApproveStage, useRejectStage, useExportRun } from "@/hooks/use-pipeline";
+import { usePipelineRun, useCancelRun, useApproveStage, useRejectStage } from "@/hooks/use-pipeline";
 import { usePipelineEvents } from "@/hooks/use-websocket";
 import StageProgress from "@/components/pipeline/StageProgress";
 import QuestionPanel from "@/components/pipeline/QuestionPanel";
 import StageOutput from "@/components/pipeline/StageOutput";
+import MergedResultViewer from "@/components/pipeline/MergedResultViewer";
 import DelegationLog from "@/components/pipeline/DelegationLog";
+import ExportButton from "@/components/export/ExportButton";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { StopCircle, ArrowLeft, Loader2, CheckCircle2, XCircle, Download, ChevronDown } from "lucide-react";
+import { StopCircle, ArrowLeft, Loader2, CheckCircle2, XCircle } from "lucide-react";
 import { Link } from "wouter";
 import { SDLC_TEAMS } from "@shared/constants";
-import type { PipelineStageConfig } from "@shared/types";
+import type { StageStatus } from "@shared/types";
 import { cn } from "@/lib/utils";
 
 const statusColors: Record<string, string> = {
@@ -39,10 +35,9 @@ export default function PipelineRun() {
   const cancelMutation = useCancelRun();
   const approveMutation = useApproveStage();
   const rejectMutation = useRejectStage();
-  const exportMutation = useExportRun();
   const pipelineEvents = usePipelineEvents(runId);
 
-  const [rejectReasonMap, setRejectReasonMap] = useState<Record<number, string>>({});
+  const [rejectReasonMap] = useState<Record<number, string>>({});
 
   if (isLoading) {
     return (
@@ -79,7 +74,7 @@ export default function PipelineRun() {
       stagesMap.set(s.stageIndex, {
         teamId: s.teamId,
         modelSlug: s.modelSlug,
-        status: s.status as any,
+        status: s.status as StageStatus,
         output: s.output ?? undefined,
         tokensUsed: s.tokensUsed,
       });
@@ -91,7 +86,7 @@ export default function PipelineRun() {
     ? pipelineEvents.questions
     : (run.questions ?? []);
 
-  const { pendingApprovals } = pipelineEvents;
+  const { pendingApprovals, parallelStages } = pipelineEvents;
 
   // Derive approvals from server data if WS hasn't emitted events yet
   const serverPendingApprovals = pipelineStages
@@ -101,7 +96,6 @@ export default function PipelineRun() {
   const activeApprovals = pendingApprovals.length > 0 ? pendingApprovals : serverPendingApprovals;
 
   const isActiveRun = status === "running" || status === "paused";
-  const isTerminal = status === "completed" || status === "failed" || status === "cancelled" || status === "rejected";
 
   return (
     <div className="flex flex-col h-full">
@@ -130,35 +124,8 @@ export default function PipelineRun() {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Export button — always visible */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-8 text-xs gap-1"
-                disabled={exportMutation.isPending}
-              >
-                {exportMutation.isPending
-                  ? <Loader2 className="h-3 w-3 animate-spin" />
-                  : <Download className="h-3 w-3" />}
-                Export
-                <ChevronDown className="h-3 w-3" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                onClick={() => exportMutation.mutate({ runId, format: "markdown" })}
-              >
-                Markdown Report
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => exportMutation.mutate({ runId, format: "zip" })}
-              >
-                ZIP (report + code)
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {/* Export button (Phase 3.4 -- supports markdown, PDF, ZIP) */}
+          <ExportButton runId={runId} />
 
           {/* Cancel button */}
           {isActiveRun && (
@@ -227,12 +194,13 @@ export default function PipelineRun() {
 
       {/* Content */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left sidebar — stages + questions */}
+        {/* Left sidebar -- stages + questions */}
         <div className="w-72 border-r border-border bg-card shrink-0 flex flex-col overflow-hidden">
           <ScrollArea className="flex-1 p-4">
             <StageProgress
               stages={stagesMap}
               currentStageIndex={pipelineEvents.currentStageIndex}
+              parallelStages={parallelStages}
             />
             <div className="mt-6">
               <QuestionPanel runId={runId} questions={questions} />
@@ -272,6 +240,37 @@ export default function PipelineRun() {
                       SDLC_TEAMS[
                         stage.teamId as keyof typeof SDLC_TEAMS
                       ];
+                    const ps = parallelStages.get(stage.stageIndex);
+
+                    if (ps && ps.subtasks.length > 0) {
+                      const subtaskOutputs = ps.subtasks
+                        .filter((st) => st.status === "completed" || st.status === "failed")
+                        .map((st) => ({
+                          subtaskId: st.subtaskId,
+                          title: st.title,
+                          modelSlug: st.modelSlug,
+                          output: st.output ?? "",
+                          tokensUsed: st.tokensUsed,
+                          durationMs: st.durationMs,
+                          status: st.status as "completed" | "failed",
+                          error: st.error,
+                        }));
+
+                      return (
+                        <MergedResultViewer
+                          key={stage.id}
+                          teamName={team?.name ?? stage.teamId}
+                          mergeStrategy={ps.mergeStrategy}
+                          subtaskOutputs={subtaskOutputs}
+                          mergedOutput={ps.mergedOutput ?? stage.output ?? undefined}
+                          isActive={
+                            stage.stageIndex ===
+                            pipelineEvents.currentStageIndex
+                          }
+                        />
+                      );
+                    }
+
                     return (
                       <StageOutput
                         key={stage.id}

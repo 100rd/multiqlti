@@ -33,6 +33,26 @@ export interface PendingApproval {
   teamId: string;
 }
 
+export interface ParallelSubtaskState {
+  subtaskId: string;
+  title: string;
+  modelSlug: string;
+  status: "pending" | "running" | "completed" | "failed";
+  tokensUsed?: number;
+  durationMs?: number;
+  output?: string;
+  error?: string;
+}
+
+export interface ParallelStageState {
+  stageIndex: number;
+  subtasks: ParallelSubtaskState[];
+  mergeStrategy: string;
+  isMerging: boolean;
+  mergedOutput?: Record<string, unknown>;
+  splitReason?: string;
+}
+
 export interface PipelineEventState {
   status: RunStatus;
   stages: Map<
@@ -60,6 +80,7 @@ export interface PipelineEventState {
     agentTeam?: string;
   }>;
   pendingApprovals: PendingApproval[];
+  parallelStages: Map<number, ParallelStageState>;
 }
 
 export function usePipelineEvents(runId: string): PipelineEventState {
@@ -70,6 +91,7 @@ export function usePipelineEvents(runId: string): PipelineEventState {
     questions: [],
     messages: [],
     pendingApprovals: [],
+    parallelStages: new Map(),
   });
 
   const stateRef = useRef(state);
@@ -190,6 +212,127 @@ export function usePipelineEvents(runId: string): PipelineEventState {
           status: "rejected" as RunStatus,
           pendingApprovals: s.pendingApprovals.filter((a) => a.stageIndex !== stageIndex),
         });
+        break;
+      }
+
+      // Phase 3.4: Auto-approve gate resolved
+      case "stage:auto_approved":
+      case "stage:timeout_approved": {
+        const stageIndex = event.payload.stageIndex as number;
+        const stages = new Map(s.stages);
+        const existing = stages.get(stageIndex);
+        if (existing) {
+          stages.set(stageIndex, { ...existing, status: "completed" });
+        }
+        setState({
+          ...s,
+          stages,
+          status: "running",
+          pendingApprovals: s.pendingApprovals.filter((a) => a.stageIndex !== stageIndex),
+        });
+        break;
+      }
+
+      // Phase 3.4: Timeout rejection
+      case "stage:timeout_rejected": {
+        const stageIndex = event.payload.stageIndex as number;
+        const stages = new Map(s.stages);
+        const existing = stages.get(stageIndex);
+        if (existing) {
+          stages.set(stageIndex, { ...existing, status: "failed" });
+        }
+        setState({
+          ...s,
+          stages,
+          status: "rejected" as RunStatus,
+          pendingApprovals: s.pendingApprovals.filter((a) => a.stageIndex !== stageIndex),
+        });
+        break;
+      }
+
+      case "parallel:split": {
+        const stageIndex = event.payload.stageIndex as number;
+        const subtasks = (event.payload.subtasks as Array<{
+          id: string;
+          title: string;
+          suggestedModel?: string;
+        }>) ?? [];
+        const parallelStages = new Map(s.parallelStages);
+        parallelStages.set(stageIndex, {
+          stageIndex,
+          subtasks: subtasks.map((st) => ({
+            subtaskId: st.id,
+            title: st.title,
+            modelSlug: st.suggestedModel ?? "",
+            status: "pending",
+          })),
+          mergeStrategy: (event.payload.mergeStrategy as string) ?? "auto",
+          isMerging: false,
+          splitReason: event.payload.reason as string | undefined,
+        });
+        setState({ ...s, parallelStages });
+        break;
+      }
+
+      case "parallel:subtask:started": {
+        const stageIndex = event.payload.stageIndex as number;
+        const subtaskId = event.payload.subtaskId as string;
+        const modelSlug = event.payload.modelSlug as string;
+        const parallelStages = new Map(s.parallelStages);
+        const ps = parallelStages.get(stageIndex);
+        if (ps) {
+          parallelStages.set(stageIndex, {
+            ...ps,
+            subtasks: ps.subtasks.map((st) =>
+              st.subtaskId === subtaskId
+                ? { ...st, status: "running", modelSlug: modelSlug || st.modelSlug }
+                : st,
+            ),
+          });
+          setState({ ...s, parallelStages });
+        }
+        break;
+      }
+
+      case "parallel:subtask:completed": {
+        const stageIndex = event.payload.stageIndex as number;
+        const subtaskId = event.payload.subtaskId as string;
+        const failed = (event.payload.error as string | undefined) !== undefined;
+        const parallelStages = new Map(s.parallelStages);
+        const ps = parallelStages.get(stageIndex);
+        if (ps) {
+          parallelStages.set(stageIndex, {
+            ...ps,
+            subtasks: ps.subtasks.map((st) =>
+              st.subtaskId === subtaskId
+                ? {
+                    ...st,
+                    status: failed ? "failed" : "completed",
+                    tokensUsed: event.payload.tokensUsed as number | undefined,
+                    durationMs: event.payload.durationMs as number | undefined,
+                    output: event.payload.output as string | undefined,
+                    error: event.payload.error as string | undefined,
+                  }
+                : st,
+            ),
+          });
+          setState({ ...s, parallelStages });
+        }
+        break;
+      }
+
+      case "parallel:merged": {
+        const stageIndex = event.payload.stageIndex as number;
+        const parallelStages = new Map(s.parallelStages);
+        const ps = parallelStages.get(stageIndex);
+        if (ps) {
+          parallelStages.set(stageIndex, {
+            ...ps,
+            isMerging: false,
+            mergedOutput: event.payload.output as Record<string, unknown> | undefined,
+          });
+          setState({ ...s, parallelStages });
+        }
         break;
       }
 
