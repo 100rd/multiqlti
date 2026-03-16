@@ -101,7 +101,7 @@ async function createAuthenticatedApp() {
     next();
   });
 
-  registerTriggerRoutes(app as never, triggerService);
+  registerTriggerRoutes(app as never, triggerService, storage);
 
   return { app, storage, triggerService };
 }
@@ -121,7 +121,7 @@ async function createUnauthenticatedApp() {
   app.use("/api/pipelines", requireAuth);
   app.use("/api/triggers", requireAuth);
 
-  registerTriggerRoutes(app as never, triggerService);
+  registerTriggerRoutes(app as never, triggerService, storage);
 
   return { app };
 }
