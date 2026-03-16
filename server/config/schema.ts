@@ -41,6 +41,9 @@ export const ConfigSchema = z.object({
   encryption: z.object({
     key: z.string().min(32).optional(),
   }).default({}),
+  triggers: z.object({
+    secretKey: z.string().optional(),
+  }).default({}),
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;

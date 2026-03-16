@@ -26,6 +26,12 @@ import { registerGuardrailRoutes } from "./routes/guardrails";
 import { registerDelegationRoutes } from "./routes/delegations";
 import { DelegationService } from "./pipeline/delegation-service";
 import { registerDAGRoutes } from "./routes/dag";
+import { registerTriggerRoutes } from "./routes/triggers";
+import { registerWebhookRoutes } from "./routes/webhooks";
+import { TriggerService } from "./services/trigger-service";
+import { CronScheduler } from "./services/cron-scheduler";
+import { FileWatcherService } from "./services/file-watcher";
+import { stopRateLimitCleanup } from "./services/webhook-handler";
 import { BUILTIN_SKILLS } from "./skills/builtin";
 import { requireAuth } from "./auth/middleware";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
@@ -68,6 +74,7 @@ export async function registerRoutes(
   app.use("/api/specialization-profiles", requireAuth);
   app.use("/api/skills", requireAuth);
   app.use("/api/guardrails", requireAuth);
+  app.use("/api/triggers", requireAuth);
 
   // Register route implementations
   registerModelRoutes(app, storage);
@@ -89,6 +96,53 @@ export async function registerRoutes(
   registerGuardrailRoutes(app, storage, gateway);
   registerDelegationRoutes(app, storage);
   registerDAGRoutes(app, storage);
+
+  // Phase 6.3 — Trigger subsystem
+  let triggerService: TriggerService | null = null;
+  let cronScheduler: CronScheduler | null = null;
+  let fileWatcherService: FileWatcherService | null = null;
+
+  try {
+    triggerService = new TriggerService(storage);
+
+    const fireTrigger = async (trigger: import("@shared/schema").TriggerRow, payload: unknown): Promise<void> => {
+      // Fire the trigger by starting a pipeline run
+      const pipeline = await storage.getPipeline(trigger.pipelineId);
+      if (!pipeline) {
+        log(`[triggers] Pipeline not found for trigger ${trigger.id}`, "triggers");
+        return;
+      }
+      await storage.updateTrigger(trigger.id, { lastTriggeredAt: new Date() });
+      log(`[triggers] Fired trigger ${trigger.id} for pipeline ${pipeline.id}`, "triggers");
+    };
+
+    registerTriggerRoutes(app, triggerService);
+    registerWebhookRoutes(app, storage, triggerService, fireTrigger);
+
+    cronScheduler = new CronScheduler({
+      getEnabledTriggersByType: (type) => storage.getEnabledTriggersByType(type),
+      fireTrigger,
+    });
+    await cronScheduler.bootstrap();
+
+    fileWatcherService = new FileWatcherService({
+      getEnabledTriggersByType: (type) => storage.getEnabledTriggersByType(type),
+      fireTrigger,
+    });
+    await fileWatcherService.bootstrap();
+
+    log("[triggers] Trigger subsystem started", "triggers");
+  } catch (e) {
+    // TriggerCrypto throws if TRIGGER_SECRET_KEY is absent — subsystem is disabled
+    log(`[triggers] Trigger subsystem disabled: ${(e as Error).message}`, "triggers");
+  }
+
+  // Graceful shutdown
+  httpServer.on("close", () => {
+    cronScheduler?.stopAll();
+    fileWatcherService?.stopAll();
+    stopRateLimitCleanup();
+  });
 
   // Seed built-in skills (idempotent — checks each by ID)
   for (const skill of BUILTIN_SKILLS) {
