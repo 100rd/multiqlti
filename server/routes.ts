@@ -25,6 +25,7 @@ import { registerSkillRoutes } from "./routes/skills";
 import { registerGuardrailRoutes } from "./routes/guardrails";
 import { registerDelegationRoutes } from "./routes/delegations";
 import { DelegationService } from "./pipeline/delegation-service";
+import { ManagerAgent } from "./pipeline/manager-agent";
 import { registerDAGRoutes } from "./routes/dag";
 import { BUILTIN_SKILLS } from "./skills/builtin";
 import { requireAuth } from "./auth/middleware";
@@ -40,7 +41,8 @@ export async function registerRoutes(
   const gateway = new Gateway(storage);
   const teamRegistry = new TeamRegistry(gateway, wsManager);
   const delegationService = new DelegationService(storage, teamRegistry, wsManager, gateway);
-  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService);
+  const managerAgent = new ManagerAgent(storage, teamRegistry, wsManager, gateway, delegationService);
+  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService, managerAgent);
 
   // Register auth routes first (public routes included)
   registerAuthRoutes(app);

@@ -114,4 +114,51 @@ export function registerPipelineRoutes(router: Router, storage: IStorage) {
       res.status(204).end();
     });
   });
+
+  // ─── Manager Config Endpoints (Phase 6.6) ───────────────────────────────────
+
+  const ManagerConfigSchema = z.object({
+    managerModel: z.string().min(1).max(200),
+    availableTeams: z.array(z.string().min(1).max(100)).min(1).max(50),
+    maxIterations: z.number().int().min(1).max(20),
+    goal: z.string().min(1).max(10000),
+  });
+
+  // PATCH /api/pipelines/:id/manager-config — set manager mode config (maintainer or admin)
+  router.patch(
+    "/api/pipelines/:id/manager-config",
+    requireRole("maintainer", "admin"),
+    async (req, res) => {
+      const id = String(req.params.id);
+      const pipeline = await storage.getPipeline(id);
+      if (!pipeline) {
+        return res.status(404).json({ error: "Pipeline not found" });
+      }
+      const result = ManagerConfigSchema.safeParse(req.body);
+      if (!result.success) {
+        return res.status(400).json({ error: "Invalid manager config", issues: result.error.issues });
+      }
+      const updated = await storage.updatePipeline(id, {
+        managerConfig: result.data,
+      } as Parameters<typeof storage.updatePipeline>[1]);
+      res.json(updated);
+    },
+  );
+
+  // DELETE /api/pipelines/:id/manager-config — disable manager mode (maintainer or admin)
+  router.delete(
+    "/api/pipelines/:id/manager-config",
+    requireRole("maintainer", "admin"),
+    async (req, res) => {
+      const id = String(req.params.id);
+      const pipeline = await storage.getPipeline(id);
+      if (!pipeline) {
+        return res.status(404).json({ error: "Pipeline not found" });
+      }
+      const updated = await storage.updatePipeline(id, {
+        managerConfig: null,
+      } as Parameters<typeof storage.updatePipeline>[1]);
+      res.json(updated);
+    },
+  );
 }

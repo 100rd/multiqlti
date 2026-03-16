@@ -21,6 +21,8 @@ import {
   type SpecializationProfileRow,
   type Skill,
   type InsertSkill,
+  type InsertManagerIteration,
+  type ManagerIterationRow,
 } from "@shared/schema";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
 import { randomUUID } from "crypto";
@@ -170,6 +172,16 @@ export interface IStorage {
   updateSkill(id: string, updates: Partial<InsertSkill>): Promise<Skill>;
   deleteSkill(id: string): Promise<void>;
 
+  // Manager Iterations (Phase 6.6)
+  createManagerIteration(data: InsertManagerIteration): Promise<ManagerIterationRow>;
+  updateManagerIteration(
+    runId: string,
+    iterationNumber: number,
+    updates: Partial<Pick<ManagerIterationRow, "teamResult" | "teamDurationMs">>,
+  ): Promise<void>;
+  getManagerIterations(runId: string, offset?: number, limit?: number): Promise<ManagerIterationRow[]>;
+  countManagerIterations(runId: string): Promise<number>;
+
 }
 
 export class MemStorage implements IStorage {
@@ -187,6 +199,7 @@ export class MemStorage implements IStorage {
   private mcpServersMap: Map<number, McpServerConfig>;
   private nextMcpServerId: number;
   private delegationsMap: Map<string, DelegationRequestRow>;
+  private managerIterationsMap: Map<string, ManagerIterationRow> = new Map();
   private specializationProfilesMap: Map<string, SpecializationProfileRow>;
 
   constructor() {
@@ -305,6 +318,7 @@ export class MemStorage implements IStorage {
       createdBy: insert.createdBy ?? null,
       ownerId: insert.ownerId ?? null,
       isTemplate: insert.isTemplate ?? false,
+      managerConfig: ((insert as { managerConfig?: unknown }).managerConfig ?? null) as import("@shared/types").ManagerConfig | null,
       createdAt: now,
       updatedAt: now,
     };
@@ -930,6 +944,61 @@ export class MemStorage implements IStorage {
 
   async deleteSkill(id: string): Promise<void> {
     this.skillsMap.delete(id);
+  }
+
+  // ─── Manager Iterations (Phase 6.6) ────────────────────────────────────────
+
+  async createManagerIteration(data: InsertManagerIteration): Promise<ManagerIterationRow> {
+    const id = crypto.randomUUID();
+    const now = new Date();
+    const row: ManagerIterationRow = {
+      id,
+      runId: data.runId,
+      iterationNumber: data.iterationNumber,
+      decision: data.decision as ManagerIterationRow["decision"],
+      teamResult: data.teamResult ?? null,
+      tokensUsed: data.tokensUsed ?? 0,
+      decisionDurationMs: data.decisionDurationMs ?? 0,
+      teamDurationMs: data.teamDurationMs ?? null,
+      createdAt: now,
+    };
+    if (!this.managerIterationsMap) {
+      this.managerIterationsMap = new Map();
+    }
+    this.managerIterationsMap.set(id, row);
+    return row;
+  }
+
+  async updateManagerIteration(
+    runId: string,
+    iterationNumber: number,
+    updates: Partial<Pick<ManagerIterationRow, "teamResult" | "teamDurationMs">>,
+  ): Promise<void> {
+    if (!this.managerIterationsMap) return;
+    for (const [id, row] of this.managerIterationsMap) {
+      if (row.runId === runId && row.iterationNumber === iterationNumber) {
+        this.managerIterationsMap.set(id, { ...row, ...updates });
+        return;
+      }
+    }
+  }
+
+  async getManagerIterations(
+    runId: string,
+    offset = 0,
+    limit = 50,
+  ): Promise<ManagerIterationRow[]> {
+    if (!this.managerIterationsMap) return [];
+    const rows = Array.from(this.managerIterationsMap.values())
+      .filter((r) => r.runId === runId)
+      .sort((a, b) => a.iterationNumber - b.iterationNumber);
+    return rows.slice(offset, offset + limit);
+  }
+
+  async countManagerIterations(runId: string): Promise<number> {
+    if (!this.managerIterationsMap) return 0;
+    return Array.from(this.managerIterationsMap.values()).filter((r) => r.runId === runId)
+      .length;
   }
 
 }

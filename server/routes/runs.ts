@@ -252,4 +252,32 @@ export function registerRunRoutes(
     res.setHeader("Content-Length", zipBuffer.length);
     res.send(zipBuffer);
   });
+
+  // ─── Manager Iterations (Phase 6.6) ─────────────────────────────────────────
+
+  const ManagerIterationsQuerySchema = z.object({
+    offset: z.coerce.number().int().min(0).default(0),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+  });
+
+  // GET /api/runs/:runId/manager-iterations — any authenticated user
+  router.get("/api/runs/:runId/manager-iterations", async (req, res) => {
+    const run = await storage.getPipelineRun(req.params.runId);
+    if (!run) {
+      return res.status(404).json({ error: "Run not found" });
+    }
+
+    const queryResult = ManagerIterationsQuerySchema.safeParse(req.query);
+    if (!queryResult.success) {
+      return res.status(400).json({ error: "Invalid query params", issues: queryResult.error.issues });
+    }
+    const { offset, limit } = queryResult.data;
+
+    const [iterations, total] = await Promise.all([
+      storage.getManagerIterations(req.params.runId, offset, limit),
+      storage.countManagerIterations(req.params.runId),
+    ]);
+
+    res.json({ iterations, total, offset, limit });
+  });
 }
