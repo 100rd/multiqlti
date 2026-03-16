@@ -23,6 +23,7 @@ import {
   type InsertSpecializationProfile,
   type SpecializationProfileRow,
   type Skill, type InsertSkill,
+  type TriggerRow,
 } from "@shared/schema";
 
 export class PgStorage implements IStorage {
@@ -692,6 +693,54 @@ export class PgStorage implements IStorage {
 
   async deleteSkill(id: string): Promise<void> {
     await db.delete(skills).where(eq(skills.id, id));
+  }
+
+  // ─── Triggers (Phase 6.3) ─────────────────────────────────────────────────
+
+  async getTriggers(pipelineId: string): Promise<TriggerRow[]> {
+    return db.select().from(triggers).where(eq(triggers.pipelineId, pipelineId)).orderBy(triggers.createdAt);
+  }
+
+  async getTrigger(id: string): Promise<TriggerRow | undefined> {
+    const [row] = await db.select().from(triggers).where(eq(triggers.id, id));
+    return row;
+  }
+
+  async getEnabledTriggersByType(type: string): Promise<TriggerRow[]> {
+    return db
+      .select()
+      .from(triggers)
+      .where(and(eq(triggers.enabled, true), eq(triggers.type, type as TriggerRow["type"])));
+  }
+
+  async createTrigger(
+    data: Omit<TriggerRow, "id" | "createdAt" | "updatedAt" | "lastTriggeredAt"> & { secretEncrypted?: string | null },
+  ): Promise<TriggerRow> {
+    const [row] = await db
+      .insert(triggers)
+      .values({
+        pipelineId: data.pipelineId,
+        type: data.type as TriggerRow["type"],
+        config: data.config,
+        secretEncrypted: data.secretEncrypted ?? null,
+        enabled: data.enabled ?? true,
+      })
+      .returning();
+    return row;
+  }
+
+  async updateTrigger(id: string, updates: Partial<TriggerRow>): Promise<TriggerRow> {
+    const [row] = await db
+      .update(triggers)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(triggers.id, id))
+      .returning();
+    if (!row) throw new Error(`Trigger not found: ${id}`);
+    return row;
+  }
+
+  async deleteTrigger(id: string): Promise<void> {
+    await db.delete(triggers).where(eq(triggers.id, id));
   }
 
 }
