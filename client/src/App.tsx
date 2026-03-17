@@ -28,6 +28,7 @@ import Login from "@/pages/Login";
 import UserManagement from "@/pages/UserManagement";
 import ProfileSettings from "@/pages/ProfileSettings";
 import Maintenance from "@/pages/Maintenance";
+import Skills from "@/pages/Skills";
 
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
@@ -83,6 +84,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/workspaces/:id" component={() => (
           <ErrorBoundary><Workspace /></ErrorBoundary>
+        )} />
+        <Route path="/skills" component={() => (
+          <ErrorBoundary><Skills /></ErrorBoundary>
         )} />
         <Route path="/settings" component={() => (
           <ErrorBoundary><Settings /></ErrorBoundary>

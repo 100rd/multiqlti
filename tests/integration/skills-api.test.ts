@@ -8,6 +8,10 @@
  * - PATCH /api/skills/:id updates a custom skill (blocks built-in)
  * - DELETE /api/skills/:id removes a custom skill (blocks built-in)
  * - Skill filtering by teamId and isBuiltin
+ *
+ * Phase 6.8 additions:
+ * - GET /api/skills/export
+ * - POST /api/skills/import
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
@@ -183,5 +187,248 @@ describe("Skills API", () => {
   it("GET /api/skills/:id after delete → 404", async () => {
     const res = await request(app).get(`/api/skills/${createdSkillId}`);
     expect(res.status).toBe(404);
+  });
+});
+
+// ─── Phase 6.8: Skills Export/Import API ──────────────────────────────────────
+
+describe("Skills Export/Import API", () => {
+  let app: express.Express;
+  let closeApp: () => Promise<void>;
+
+  beforeAll(async () => {
+    const testApp = await createSkillsTestApp();
+    app = testApp.app;
+    closeApp = testApp.close;
+  }, 15_000);
+
+  afterAll(async () => {
+    await closeApp();
+  });
+
+  // ─── GET /api/skills/export ───────────────────────────────────────────────
+
+  it("GET /api/skills/export → 200 with valid JSON shape when no custom skills", async () => {
+    const res = await request(app).get("/api/skills/export");
+    expect(res.status).toBe(200);
+    const body = res.body as { version: string; exportedAt: string; skills: unknown[] };
+    expect(body.version).toBe("1.0");
+    expect(typeof body.exportedAt).toBe("string");
+    expect(Array.isArray(body.skills)).toBe(true);
+    // No custom skills seeded — only built-ins are present, export returns user's custom skills
+    expect(body.skills.length).toBe(0);
+  });
+
+  it("GET /api/skills/export → 200 includes created custom skill", async () => {
+    // Create a custom skill first
+    await request(app).post("/api/skills").send({
+      name: "Export Target Skill",
+      description: "Will be exported.",
+      teamId: "development",
+      systemPromptOverride: "Export me.",
+      tools: [],
+      tags: ["export-test"],
+      isPublic: false,
+    });
+
+    const res = await request(app).get("/api/skills/export");
+    expect(res.status).toBe(200);
+    const body = res.body as { version: string; exportedAt: string; skills: Array<{ name: string }> };
+    expect(body.skills.length).toBeGreaterThanOrEqual(1);
+    expect(body.skills.some((s) => s.name === "Export Target Skill")).toBe(true);
+  });
+
+  it("GET /api/skills/export → Content-Disposition header set for download", async () => {
+    const res = await request(app).get("/api/skills/export");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-disposition"]).toContain("skills-export.json");
+  });
+
+  // ─── POST /api/skills/import ──────────────────────────────────────────────
+
+  it("POST /api/skills/import → 200 imports new skills", async () => {
+    const res = await request(app)
+      .post("/api/skills/import")
+      .send({
+        conflictStrategy: "skip",
+        skills: [
+          {
+            name: "Imported Skill One",
+            description: "First import.",
+            teamId: "testing",
+            systemPromptOverride: "Write tests.",
+            tools: ["knowledge_search"],
+            tags: ["imported"],
+            isPublic: true,
+          },
+          {
+            name: "Imported Skill Two",
+            description: "Second import.",
+            teamId: "architecture",
+            systemPromptOverride: "Design APIs.",
+            tools: ["web_search"],
+            tags: ["imported"],
+            isPublic: false,
+          },
+        ],
+      });
+    expect(res.status).toBe(200);
+    const result = res.body as { imported: number; skipped: number; errors: string[] };
+    expect(result.imported).toBe(2);
+    expect(result.skipped).toBe(0);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("POST /api/skills/import with conflictStrategy=skip → skips duplicates", async () => {
+    // Create the skill first
+    await request(app).post("/api/skills").send({
+      name: "Duplicate Skill",
+      description: "Already exists.",
+      teamId: "development",
+      systemPromptOverride: "Original prompt.",
+      tools: [],
+      tags: [],
+      isPublic: true,
+    });
+
+    // Attempt to import the same name again with skip strategy
+    const res = await request(app)
+      .post("/api/skills/import")
+      .send({
+        conflictStrategy: "skip",
+        skills: [
+          {
+            name: "Duplicate Skill",
+            description: "Attempted overwrite.",
+            teamId: "development",
+            systemPromptOverride: "Should not replace.",
+            tools: [],
+            tags: [],
+            isPublic: true,
+          },
+        ],
+      });
+    expect(res.status).toBe(200);
+    const result = res.body as { imported: number; skipped: number; errors: string[] };
+    expect(result.imported).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    // Verify original description is unchanged
+    const listRes = await request(app).get("/api/skills");
+    const skills = listRes.body as Array<{ name: string; description: string }>;
+    const found = skills.find((s) => s.name === "Duplicate Skill");
+    expect(found?.description).toBe("Already exists.");
+  });
+
+  it("POST /api/skills/import with conflictStrategy=overwrite → updates duplicates", async () => {
+    // Create the skill first
+    await request(app).post("/api/skills").send({
+      name: "Overwrite Target",
+      description: "Original description.",
+      teamId: "development",
+      systemPromptOverride: "Old prompt.",
+      tools: [],
+      tags: [],
+      isPublic: true,
+    });
+
+    // Import with overwrite
+    const res = await request(app)
+      .post("/api/skills/import")
+      .send({
+        conflictStrategy: "overwrite",
+        skills: [
+          {
+            name: "Overwrite Target",
+            description: "Updated description.",
+            teamId: "development",
+            systemPromptOverride: "New prompt.",
+            tools: ["knowledge_search"],
+            tags: ["overwritten"],
+            isPublic: false,
+          },
+        ],
+      });
+    expect(res.status).toBe(200);
+    const result = res.body as { imported: number; skipped: number; errors: string[] };
+    expect(result.imported).toBe(1);
+    expect(result.skipped).toBe(0);
+
+    // Verify the description was updated
+    const listRes = await request(app).get("/api/skills");
+    const skills = listRes.body as Array<{ name: string; description: string }>;
+    const found = skills.find((s) => s.name === "Overwrite Target");
+    expect(found?.description).toBe("Updated description.");
+  });
+
+  it("POST /api/skills/import → 400 on invalid request body shape", async () => {
+    const res = await request(app)
+      .post("/api/skills/import")
+      .send({ notSkills: "wrong shape" });
+    expect(res.status).toBe(400);
+  });
+
+  it("POST /api/skills/import → records errors for invalid skill entries but processes valid ones", async () => {
+    const res = await request(app)
+      .post("/api/skills/import")
+      .send({
+        conflictStrategy: "skip",
+        skills: [
+          // Valid skill
+          {
+            name: "Valid Import Skill",
+            description: "Good skill.",
+            teamId: "testing",
+            systemPromptOverride: "Test.",
+            tools: [],
+            tags: [],
+            isPublic: true,
+          },
+          // Invalid — missing name and teamId
+          {
+            description: "No name or teamId.",
+          },
+        ],
+      });
+    expect(res.status).toBe(200);
+    const result = res.body as { imported: number; skipped: number; errors: string[] };
+    expect(result.imported).toBe(1);
+    expect(result.errors.length).toBe(1);
+    expect(result.errors[0]).toContain("index 1");
+  });
+
+  it("POST /api/skills/import → strips id and isBuiltin from imported skills", async () => {
+    const res = await request(app)
+      .post("/api/skills/import")
+      .send({
+        conflictStrategy: "skip",
+        skills: [
+          {
+            id: "attacker-chosen-id",
+            name: "Injected ID Skill",
+            description: "Should not retain the provided id.",
+            teamId: "development",
+            systemPromptOverride: "Injection test.",
+            isBuiltin: true,
+            tools: [],
+            tags: [],
+            isPublic: true,
+          },
+        ],
+      });
+    expect(res.status).toBe(200);
+    const result = res.body as { imported: number; skipped: number; errors: string[] };
+    expect(result.imported).toBe(1);
+
+    // The injected id must not exist as a skill id
+    const byIdRes = await request(app).get("/api/skills/attacker-chosen-id");
+    expect(byIdRes.status).toBe(404);
+
+    // The skill should not be marked built-in
+    const listRes = await request(app).get("/api/skills?isBuiltin=false");
+    const skills = listRes.body as Array<{ name: string; isBuiltin: boolean }>;
+    const found = skills.find((s) => s.name === "Injected ID Skill");
+    expect(found).toBeDefined();
+    expect(found?.isBuiltin).toBe(false);
   });
 });
