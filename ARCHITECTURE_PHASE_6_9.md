@@ -1,7 +1,7 @@
 # Phase 6.9 — Semantic Workspace Indexing: Architecture
 
 **Date**: 2026-03-17
-**Status**: APPROVED FOR IMPLEMENTATION
+**Status**: SECURITY REVIEWED — APPROVED (H1 + H2 resolved in rev 2)
 **Branch**: worktree-phase-6.9-architect
 
 ---
@@ -56,13 +56,22 @@ Import statements are extracted from already-parsed SWC AST nodes (`ImportDeclar
 
 ### 1.5 Background Indexing: `setImmediate`-deferred Promise chain
 
-Indexing is triggered fire-and-forget from route handlers. The HTTP response returns immediately (201/200) and indexing runs in the background. Progress is broadcast via the existing `ws` WebSocket server. No separate worker threads needed for MVP — the async I/O model handles concurrency naturally. For large repos, a BullMQ queue can be added later.
+Indexing is triggered fire-and-forget from route handlers. The HTTP response returns immediately (201/200) and indexing runs in the background. Progress is broadcast via the existing `ws` WebSocket server. SWC parsing runs inside a `worker_threads` pool (N=4 workers) to prevent main-thread blocking and to enable per-file parse timeouts via `worker.terminate()`. See §9.6.
 
 ### 1.6 Workspace Ownership Gap & Resolution
 
-**Problem identified during architecture review**: The existing `workspaces` table has no `ownerId` column. Current routes do not verify that the authenticated user owns the workspace they're accessing. Phase 6.9 adds `owner_id` as part of the 0003 migration and enforces it on all new endpoints.
+**Problem identified during architecture review**: The existing `workspaces` table has no `ownerId` column. Current routes do not verify workspace ownership. Phase 6.9 adds `owner_id` as part of the 0003 migration.
 
-Existing endpoints (pre-6.9) are **not** retroactively changed in this phase — that scope belongs to a dedicated security hardening phase. New endpoints introduced in 6.9 **will** enforce ownership.
+**Resolution for null-ownerId IDOR (H2 from security review)**:
+The 5 new Phase 6.9 endpoints expose sensitive code data (symbol tables, dependency graphs, file paths). Allowing any authenticated user to call these endpoints on null-ownerId workspaces is an IDOR vulnerability.
+
+**Policy**:
+- The 5 new endpoints (dependency-graph, references, definition, symbol-search, index-trigger) **BLOCK** requests where `workspace.ownerId IS NULL` with `403 { "error": "Workspace ownership not established. Re-connect this workspace to claim it." }`.
+- A new endpoint `POST /api/workspaces/:id/claim` (requireAuth) sets `ownerId = req.user.id` if currently null. Returns 409 if already claimed by another user. This allows existing workspaces to be claimed before using Phase 6.9 features.
+- `POST /api/workspaces` (existing endpoint) is updated to set `ownerId: req.user.id` on creation.
+- Pre-6.9 read endpoints (list files, read file, git ops) retain existing behavior — not changed in this phase.
+
+This approach ships Phase 6.9 with no IDOR window on the new sensitive endpoints.
 
 ---
 
@@ -1084,11 +1093,15 @@ Setup: real Express app + test DB + seeded workspace + pre-indexed symbols.
 
 ### 9.6 SWC Parse Bomb
 
-**Risk**: Specially crafted source files could cause `@swc/core` to consume excessive CPU.
+**Risk**: Specially crafted source files could cause `@swc/core` to consume excessive CPU, blocking the Node.js event loop.
 
-**Mitigation**:
-- Per-file parse timeout: wrap `parseSync` in a `Promise.race` with a 5-second timeout (using `AbortController` or a manual timer). On timeout, skip file and log warning.
-- `MAX_FILE_SIZE_BYTES` check before parsing — reject files over 1MB.
+**IMPORTANT — Why `Promise.race` Does Not Work**: `@swc/core`'s `parseSync` is a synchronous blocking call on the Node.js main thread. `Promise.race` cannot interrupt a running synchronous stack frame — a crafted file that causes `parseSync` to block for 60 seconds will block the entire event loop for that duration regardless of any timeout promise.
+
+**Mitigation (REQUIRED)**:
+- **Use async `parse` in a `worker_threads` pool**: Each file is parsed inside a worker thread. After 5 seconds, the calling thread calls `worker.terminate()` which cleanly kills the worker and stops the parse. The main thread is never blocked.
+- Implementation: maintain a pool of N=4 SWC workers (using a queue). Each `indexFile` call acquires a worker from the pool, calls `worker.postMessage({ filePath, source })`, races `worker.on('message')` against a 5s `setTimeout`, and calls `worker.terminate()` on timeout.
+- `MAX_FILE_SIZE_BYTES = 1MB` check before sending to worker — reject oversized files before any parse attempt.
+- On worker termination (timeout): log warning at WARN level (file path only, not contents), increment `errorsCount`, continue indexing.
 
 ---
 
