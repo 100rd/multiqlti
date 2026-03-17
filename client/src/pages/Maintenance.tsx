@@ -1,10 +1,11 @@
 /**
- * Maintenance Autopilot Dashboard — Phase 4.5 PR 5
+ * Maintenance Autopilot Dashboard — Phase 6.11
  *
- * Three-tab interface:
+ * Four-tab interface (audit tab admin-only):
  *   - Overview: health score, open findings summary, last scan activity
- *   - Policies: CRUD for maintenance policies with inline editing
- *   - Scans: scan history with expandable finding details
+ *   - Policies: CRUD for maintenance policies with inline editing + admin auto-trigger config
+ *   - Scans: scan history with expandable finding details (CVE / log-analysis / container sub-sections)
+ *   - Audit: auto-trigger pipeline run audit log (admin only)
  */
 
 import { useState } from "react";
@@ -25,8 +26,11 @@ import {
   Plus,
   Trash2,
   Play,
+  Box,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Switch } from "@/components/ui/switch";
+import { useAuth } from "@/hooks/use-auth";
 
 // ─── API Types ────────────────────────────────────────────────────────────────
 
@@ -45,6 +49,10 @@ interface MaintenancePolicyRow {
   notifyChannels: string[];
   createdAt: string;
   updatedAt: string;
+  // Phase 6.11 additions
+  autoTriggerEnabled: boolean;
+  autoTriggerPipelineId: string | null;
+  logSourceConfig: { type: "file" | "http"; path?: string; url?: string } | null;
 }
 
 interface ScoutFinding {
@@ -58,6 +66,7 @@ interface ScoutFinding {
   recommendedValue: string;
   autoFixable: boolean;
   status: "open" | "actioned" | "dismissed";
+  references?: string[];
 }
 
 interface MaintenanceScanRow {
@@ -96,6 +105,16 @@ interface HealthData {
     scanFrequency: number;
   };
   trend: "improving" | "stable" | "declining";
+}
+
+// Phase 6.11: Audit record for auto-triggered pipeline runs
+interface AutoTriggerAuditRecord {
+  id: string;
+  scanId: string;
+  findingId: string;
+  pipelineRunId: string;
+  triggeredAt: string;
+  triggeredBy: string;
 }
 
 // ─── API Helpers ──────────────────────────────────────────────────────────────
@@ -362,36 +381,16 @@ function ScanStatusIcon({ status }: { status: MaintenanceScanRow["status"] }) {
 
 const DEFAULT_SCHEDULE = "0 9 * * 1";
 
-function PoliciesTab() {
+// Phase 6.11: Policy card with optional admin auto-trigger section
+function PolicyCard({ policy }: { policy: MaintenancePolicyRow }) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const qc = useQueryClient();
-  const [creating, setCreating] = useState(false);
-  const [newSchedule, setNewSchedule] = useState(DEFAULT_SCHEDULE);
-  const [newSeverity, setNewSeverity] = useState<string>("high");
 
-  const { data: policies, isLoading } = useQuery<MaintenancePolicyRow[]>({
-    queryKey: ["/api/maintenance/policies"],
-    queryFn: () => apiFetch("/api/maintenance/policies"),
-  });
-
-  const createMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<MaintenancePolicyRow>("/api/maintenance/policies", {
-        method: "POST",
-        body: JSON.stringify({
-          schedule: newSchedule,
-          enabled: true,
-          severityThreshold: newSeverity,
-          categories: [],
-          autoMerge: false,
-          notifyChannels: [],
-        }),
-      }),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["/api/maintenance/policies"] });
-      setCreating(false);
-      setNewSchedule(DEFAULT_SCHEDULE);
-    },
-  });
+  const [autoExpanded, setAutoExpanded] = useState(false);
+  const [draftEnabled, setDraftEnabled] = useState(policy.autoTriggerEnabled ?? false);
+  const [draftPipelineId, setDraftPipelineId] = useState(policy.autoTriggerPipelineId ?? "");
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) =>
@@ -420,6 +419,208 @@ function PoliciesTab() {
       }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["/api/maintenance/scans"] });
+    },
+  });
+
+  const autoTriggerMutation = useMutation({
+    mutationFn: ({
+      id,
+      autoTriggerEnabled,
+      autoTriggerPipelineId,
+    }: {
+      id: string;
+      autoTriggerEnabled: boolean;
+      autoTriggerPipelineId: string | null;
+    }) =>
+      apiFetch(`/api/maintenance/policies/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ autoTriggerEnabled, autoTriggerPipelineId }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["/api/maintenance/policies"] });
+      setAutoExpanded(false);
+    },
+  });
+
+  const handleAutoTriggerSave = () => {
+    setValidationError(null);
+    if (draftEnabled && !draftPipelineId.trim()) {
+      setValidationError("Pipeline ID is required when auto-trigger is enabled.");
+      return;
+    }
+    autoTriggerMutation.mutate({
+      id: policy.id,
+      autoTriggerEnabled: draftEnabled,
+      autoTriggerPipelineId: draftEnabled ? draftPipelineId.trim() : null,
+    });
+  };
+
+  const handleAutoTriggerCancel = () => {
+    setDraftEnabled(policy.autoTriggerEnabled ?? false);
+    setDraftPipelineId(policy.autoTriggerPipelineId ?? "");
+    setValidationError(null);
+    setAutoExpanded(false);
+  };
+
+  return (
+    <div className="rounded-lg border bg-card p-4 space-y-3">
+      {/* Policy header row */}
+      <div className="flex items-center gap-3">
+        {policy.enabled ? (
+          <ShieldCheck className="h-5 w-5 text-green-500 shrink-0" />
+        ) : (
+          <Shield className="h-5 w-5 text-muted-foreground shrink-0" />
+        )}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-mono text-xs text-muted-foreground">{policy.id.slice(0, 8)}…</span>
+            <span className="text-sm font-medium">{policy.schedule}</span>
+            <span className="text-xs border rounded px-1.5 py-0.5">{policy.severityThreshold}</span>
+            {!policy.enabled && (
+              <span className="text-xs text-muted-foreground border rounded px-1.5 py-0.5">disabled</span>
+            )}
+            {policy.autoTriggerEnabled && (
+              <span className="text-xs border border-purple-300 text-purple-600 rounded px-1.5 py-0.5 dark:border-purple-700 dark:text-purple-400">
+                auto-trigger on
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={() => triggerMutation.mutate(policy.id)}
+            disabled={triggerMutation.isPending || !policy.workspaceId}
+            title={policy.workspaceId ? "Trigger scan now" : "No workspace linked"}
+            className="p-1.5 rounded hover:bg-muted disabled:opacity-40"
+          >
+            <Play className="h-4 w-4" />
+          </button>
+          <button
+            onClick={() => toggleMutation.mutate({ id: policy.id, enabled: !policy.enabled })}
+            disabled={toggleMutation.isPending}
+            className="p-1.5 rounded hover:bg-muted"
+          >
+            <Settings2 className="h-4 w-4" />
+          </button>
+          <button
+            onClick={() => deleteMutation.mutate(policy.id)}
+            disabled={deleteMutation.isPending}
+            className="p-1.5 rounded hover:bg-destructive/10 text-destructive"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Admin: Auto-trigger settings toggle */}
+      {isAdmin && (
+        <div className="border-t pt-2">
+          <button
+            onClick={() => setAutoExpanded((v) => !v)}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {autoExpanded ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
+            )}
+            Auto-trigger settings
+          </button>
+
+          {autoExpanded && (
+            <div className="mt-3 space-y-3 pl-1">
+              {/* Enable switch */}
+              <div className="flex items-center gap-3">
+                <Switch
+                  id={`auto-trigger-${policy.id}`}
+                  checked={draftEnabled}
+                  onCheckedChange={setDraftEnabled}
+                />
+                <label
+                  htmlFor={`auto-trigger-${policy.id}`}
+                  className="text-sm cursor-pointer select-none"
+                >
+                  Enable auto-trigger pipeline on new findings
+                </label>
+              </div>
+
+              {/* Pipeline ID input (only shown when enabled) */}
+              {draftEnabled && (
+                <div>
+                  <label className="text-xs text-muted-foreground block mb-1">
+                    Pipeline ID <span className="text-destructive">*</span>
+                  </label>
+                  <input
+                    className="border rounded px-2 py-1 text-sm bg-background w-64"
+                    value={draftPipelineId}
+                    onChange={(e) => setDraftPipelineId(e.target.value)}
+                    placeholder="e.g. pipeline-abc123"
+                  />
+                </div>
+              )}
+
+              {/* Validation error */}
+              {validationError && (
+                <p className="text-destructive text-xs">{validationError}</p>
+              )}
+              {autoTriggerMutation.isError && (
+                <p className="text-destructive text-xs">
+                  {(autoTriggerMutation.error as Error).message}
+                </p>
+              )}
+
+              {/* Save / Cancel */}
+              <div className="flex gap-2">
+                <button
+                  onClick={handleAutoTriggerSave}
+                  disabled={autoTriggerMutation.isPending}
+                  className="rounded bg-primary text-primary-foreground px-3 py-1 text-xs hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {autoTriggerMutation.isPending ? "Saving…" : "Save"}
+                </button>
+                <button
+                  onClick={handleAutoTriggerCancel}
+                  className="rounded border px-3 py-1 text-xs hover:bg-muted"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PoliciesTab() {
+  const qc = useQueryClient();
+  const [creating, setCreating] = useState(false);
+  const [newSchedule, setNewSchedule] = useState(DEFAULT_SCHEDULE);
+  const [newSeverity, setNewSeverity] = useState<string>("high");
+
+  const { data: policies, isLoading } = useQuery<MaintenancePolicyRow[]>({
+    queryKey: ["/api/maintenance/policies"],
+    queryFn: () => apiFetch("/api/maintenance/policies"),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<MaintenancePolicyRow>("/api/maintenance/policies", {
+        method: "POST",
+        body: JSON.stringify({
+          schedule: newSchedule,
+          enabled: true,
+          severityThreshold: newSeverity,
+          categories: [],
+          autoMerge: false,
+          notifyChannels: [],
+        }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["/api/maintenance/policies"] });
+      setCreating(false);
+      setNewSchedule(DEFAULT_SCHEDULE);
     },
   });
 
@@ -493,49 +694,7 @@ function PoliciesTab() {
       ) : (
         <div className="space-y-2">
           {(policies ?? []).map((policy) => (
-            <div key={policy.id} className="rounded-lg border bg-card p-4">
-              <div className="flex items-center gap-3">
-                {policy.enabled ? (
-                  <ShieldCheck className="h-5 w-5 text-green-500 shrink-0" />
-                ) : (
-                  <Shield className="h-5 w-5 text-muted-foreground shrink-0" />
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-mono text-xs text-muted-foreground">{policy.id.slice(0, 8)}…</span>
-                    <span className="text-sm font-medium">{policy.schedule}</span>
-                    <span className="text-xs border rounded px-1.5 py-0.5">{policy.severityThreshold}</span>
-                    {!policy.enabled && (
-                      <span className="text-xs text-muted-foreground border rounded px-1.5 py-0.5">disabled</span>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    onClick={() => triggerMutation.mutate(policy.id)}
-                    disabled={triggerMutation.isPending || !policy.workspaceId}
-                    title={policy.workspaceId ? "Trigger scan now" : "No workspace linked"}
-                    className="p-1.5 rounded hover:bg-muted disabled:opacity-40"
-                  >
-                    <Play className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() => toggleMutation.mutate({ id: policy.id, enabled: !policy.enabled })}
-                    disabled={toggleMutation.isPending}
-                    className="p-1.5 rounded hover:bg-muted"
-                  >
-                    <Settings2 className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() => deleteMutation.mutate(policy.id)}
-                    disabled={deleteMutation.isPending}
-                    className="p-1.5 rounded hover:bg-destructive/10 text-destructive"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            </div>
+            <PolicyCard key={policy.id} policy={policy} />
           ))}
         </div>
       )}
@@ -543,7 +702,134 @@ function PoliciesTab() {
   );
 }
 
+// ─── Scans Tab — Categorised Finding Sub-Sections ────────────────────────────
+
+const SEVERITY_ORDER: Array<ScoutFinding["severity"]> = ["critical", "high", "medium", "low", "info"];
+
+function sortBySeverity(findings: ScoutFinding[]): ScoutFinding[] {
+  return [...findings].sort(
+    (a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity),
+  );
+}
+
+/** CVE Findings sub-section */
+function CveFindingsSection({ findings }: { findings: ScoutFinding[] }) {
+  const cveFindings = sortBySeverity(findings.filter((f) => f.category === "cve_scan"));
+  if (cveFindings.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <ShieldAlert className="h-4 w-4 text-red-500" />
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          CVE Findings ({cveFindings.length})
+        </h4>
+      </div>
+      {cveFindings.map((f) => (
+        <div key={f.id} className="rounded border p-3 text-sm space-y-1.5">
+          <div className="flex items-start gap-2">
+            <SeverityBadge severity={f.severity} />
+            <div className="flex-1 min-w-0">
+              <p className="font-medium">{f.title}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{f.description}</p>
+              {f.currentValue && (
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  CVSS score: <span className="font-medium text-foreground">{f.currentValue}</span>
+                </p>
+              )}
+            </div>
+          </div>
+          {f.references && f.references.length > 0 && (
+            <div className="flex flex-wrap gap-2 pl-0.5">
+              {f.references.map((ref) => (
+                <a
+                  key={ref}
+                  href={ref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[11px] text-blue-600 underline underline-offset-2 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 truncate max-w-xs"
+                >
+                  {ref}
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Log Analysis sub-section */
+function LogAnalysisSection({ findings }: { findings: ScoutFinding[] }) {
+  const logFindings = sortBySeverity(findings.filter((f) => f.category === "log_analysis"));
+  if (logFindings.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Activity className="h-4 w-4 text-purple-500" />
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Log Analysis ({logFindings.length})
+        </h4>
+      </div>
+      {logFindings.map((f) => (
+        <div key={f.id} className="rounded border p-3 text-sm">
+          <div className="flex items-start gap-2">
+            <SeverityBadge severity={f.severity} />
+            <div className="flex-1 min-w-0">
+              <p className="font-medium">{f.title}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{f.description}</p>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Container Scan sub-section */
+function ContainerScanSection({ findings }: { findings: ScoutFinding[] }) {
+  const containerFindings = sortBySeverity(findings.filter((f) => f.category === "container_scan"));
+  if (containerFindings.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Box className="h-4 w-4 text-teal-500" />
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Container Scan ({containerFindings.length})
+        </h4>
+      </div>
+      {containerFindings.map((f) => (
+        <div
+          key={f.id}
+          className={cn(
+            "rounded border p-3 text-sm",
+            f.severity === "info" && "border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/20",
+          )}
+        >
+          <div className="flex items-start gap-2">
+            <SeverityBadge severity={f.severity} />
+            <div className="flex-1 min-w-0">
+              <p className="font-medium">{f.title}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{f.description}</p>
+              {f.severity === "info" && (
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 italic">
+                  Tip: Install Trivy for full scanning
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── Scans Tab ────────────────────────────────────────────────────────────────
+
+const CATEGORISED_CATEGORIES = new Set(["cve_scan", "log_analysis", "container_scan"]);
 
 function ScansTab() {
   const [expandedScan, setExpandedScan] = useState<string | null>(null);
@@ -591,6 +877,10 @@ function ScansTab() {
         sortedScans.map((scan) => {
           const isExpanded = expandedScan === scan.id;
           const openFindings = scan.findings.filter((f) => f.status === "open");
+          // Findings NOT handled by a dedicated category section
+          const otherFindings = scan.findings.filter(
+            (f) => !CATEGORISED_CATEGORIES.has(f.category),
+          );
 
           return (
             <div key={scan.id} className="rounded-lg border bg-card overflow-hidden">
@@ -624,21 +914,39 @@ function ScansTab() {
               </button>
 
               {isExpanded && (
-                <div className="border-t bg-muted/20 p-4 space-y-3">
+                <div className="border-t bg-muted/20 p-4 space-y-4">
                   {scan.findings.length === 0 ? (
                     <div className="text-sm text-muted-foreground text-center py-4">
                       No findings in this scan.
                     </div>
                   ) : (
-                    scan.findings.map((finding) => (
-                      <FindingRow
-                        key={finding.id}
-                        finding={finding}
-                        scanId={scan.id}
-                        actionLoading={actionLoading}
-                        onAction={handleAction}
-                      />
-                    ))
+                    <>
+                      {/* Phase 6.11: Categorised sub-sections */}
+                      <CveFindingsSection findings={scan.findings} />
+                      <LogAnalysisSection findings={scan.findings} />
+                      <ContainerScanSection findings={scan.findings} />
+
+                      {/* Generic findings (non-categorised) */}
+                      {otherFindings.length > 0 && (
+                        <div className="space-y-2">
+                          {(CATEGORISED_CATEGORIES.size > 0 &&
+                            scan.findings.some((f) => CATEGORISED_CATEGORIES.has(f.category))) && (
+                            <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                              Other Findings ({otherFindings.length})
+                            </h4>
+                          )}
+                          {otherFindings.map((finding) => (
+                            <FindingRow
+                              key={finding.id}
+                              finding={finding}
+                              scanId={scan.id}
+                              actionLoading={actionLoading}
+                              onAction={handleAction}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               )}
@@ -709,17 +1017,103 @@ function FindingRow({
   );
 }
 
+// ─── Audit Tab (Admin Only) ───────────────────────────────────────────────────
+
+function AuditTab() {
+  const { data: records, isLoading } = useQuery<AutoTriggerAuditRecord[]>({
+    queryKey: ["/api/maintenance/auto-trigger-audit"],
+    queryFn: () => apiFetch("/api/maintenance/auto-trigger-audit"),
+  });
+
+  if (isLoading) {
+    return <div className="py-12 text-center text-muted-foreground text-sm">Loading audit log...</div>;
+  }
+
+  const rows = records ?? [];
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+          Auto-Trigger Pipeline Runs
+        </h2>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Records of pipelines automatically triggered by maintenance scan findings.
+        </p>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="rounded-lg border bg-card p-8 text-center text-muted-foreground text-sm">
+          No auto-triggered pipeline runs yet.
+        </div>
+      ) : (
+        <div className="rounded-lg border bg-card overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/40 border-b">
+              <tr>
+                <th className="text-left px-4 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Triggered At
+                </th>
+                <th className="text-left px-4 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Scan ID
+                </th>
+                <th className="text-left px-4 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Finding ID
+                </th>
+                <th className="text-left px-4 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Pipeline Run ID
+                </th>
+                <th className="text-left px-4 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Triggered By
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((record, idx) => (
+                <tr key={record.id} className={cn("border-b last:border-b-0", idx % 2 === 1 && "bg-muted/20")}>
+                  <td className="px-4 py-2 text-xs whitespace-nowrap">
+                    {new Date(record.triggeredAt).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-2 font-mono text-xs text-muted-foreground">
+                    {record.scanId.slice(0, 12)}…
+                  </td>
+                  <td className="px-4 py-2 font-mono text-xs text-muted-foreground">
+                    {record.findingId.slice(0, 12)}…
+                  </td>
+                  <td className="px-4 py-2 font-mono text-xs text-muted-foreground">
+                    {record.pipelineRunId.slice(0, 12)}…
+                  </td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">
+                    {record.triggeredBy.slice(0, 20)}{record.triggeredBy.length > 20 ? "…" : ""}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
-type Tab = "overview" | "policies" | "scans";
+type Tab = "overview" | "policies" | "scans" | "audit";
 
 export default function Maintenance() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+
   const [activeTab, setActiveTab] = useState<Tab>("overview");
 
   const tabs: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
     { id: "overview", label: "Overview", icon: <ShieldAlert className="h-4 w-4" /> },
     { id: "policies", label: "Policies", icon: <Settings2 className="h-4 w-4" /> },
     { id: "scans", label: "Scans", icon: <Activity className="h-4 w-4" /> },
+    // Audit tab: admin only
+    ...(isAdmin
+      ? [{ id: "audit" as const, label: "Audit", icon: <Clock className="h-4 w-4" /> }]
+      : []),
   ];
 
   return (
@@ -758,6 +1152,7 @@ export default function Maintenance() {
       {activeTab === "overview" && <OverviewTab />}
       {activeTab === "policies" && <PoliciesTab />}
       {activeTab === "scans" && <ScansTab />}
+      {activeTab === "audit" && isAdmin && <AuditTab />}
     </div>
   );
 }
