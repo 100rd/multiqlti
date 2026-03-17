@@ -6,6 +6,8 @@ import StageProgress from "@/components/pipeline/StageProgress";
 import QuestionPanel from "@/components/pipeline/QuestionPanel";
 import StageOutput from "@/components/pipeline/StageOutput";
 import DelegationLog from "@/components/pipeline/DelegationLog";
+import SwarmProgress from "@/components/pipeline/SwarmProgress";
+import SwarmResultView from "@/components/pipeline/SwarmResultView";
 import { ManagerDecisionFeed } from "@/components/manager/ManagerDecisionFeed";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -20,7 +22,7 @@ import {
 import { StopCircle, ArrowLeft, Loader2, CheckCircle2, XCircle, Download, ChevronDown } from "lucide-react";
 import { Link } from "wouter";
 import { SDLC_TEAMS } from "@shared/constants";
-import type { PipelineStageConfig } from "@shared/types";
+import type { PipelineStageConfig, SwarmResult } from "@shared/types";
 import { cn } from "@/lib/utils";
 
 const statusColors: Record<string, string> = {
@@ -94,7 +96,7 @@ export default function PipelineRun() {
     ? pipelineEvents.questions
     : (run.questions ?? []);
 
-  const { pendingApprovals } = pipelineEvents;
+  const { pendingApprovals, swarmStages } = pipelineEvents;
 
   // Derive approvals from server data if WS hasn't emitted events yet
   const serverPendingApprovals = pipelineStages
@@ -275,22 +277,52 @@ export default function PipelineRun() {
                       Pipeline is running...
                     </div>
                   )}
+                  {/* Active swarm stages — show live progress */}
+                  {Array.from(swarmStages.entries()).map(([stageId, swarmState]) => {
+                    const isActive = !swarmState.isCompleted;
+                    if (!isActive) return null;
+                    return (
+                      <div key={stageId} className="p-4 rounded-lg border border-border bg-card">
+                        <SwarmProgress
+                          cloneCount={swarmState.cloneCount}
+                          cloneResults={swarmState.cloneResults}
+                          isCompleted={swarmState.isCompleted}
+                          isMerging={swarmState.isMerging}
+                          mergerUsed={swarmState.mergerUsed}
+                        />
+                      </div>
+                    );
+                  })}
+
                   {completedStages.map((stage) => {
                     const team =
                       SDLC_TEAMS[
                         stage.teamId as keyof typeof SDLC_TEAMS
                       ];
+                    const swarmMeta = stage.output?.swarmMeta as SwarmResult | undefined;
+                    const hasSwarmData = swarmMeta != null && Array.isArray((swarmMeta as SwarmResult).cloneResults);
                     return (
-                      <StageOutput
-                        key={stage.id}
-                        teamId={stage.teamId}
-                        teamName={team?.name ?? stage.teamId}
-                        output={stage.output!}
-                        isActive={
-                          stage.stageIndex ===
-                          pipelineEvents.currentStageIndex
-                        }
-                      />
+                      <div key={stage.id}>
+                        <StageOutput
+                          key={stage.id}
+                          teamId={stage.teamId}
+                          teamName={team?.name ?? stage.teamId}
+                          output={stage.output!}
+                          isActive={
+                            stage.stageIndex ===
+                            pipelineEvents.currentStageIndex
+                          }
+                        />
+                        {hasSwarmData && (
+                          <div className="mt-2 p-4 rounded-lg border border-border bg-card">
+                            <SwarmResultView
+                              mergedOutput={(stage.output?.raw as string) ?? ""}
+                              cloneResults={(swarmMeta as SwarmResult).cloneResults}
+                              swarmMeta={swarmMeta as SwarmResult}
+                            />
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
                   {status === "completed" && (

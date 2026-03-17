@@ -22,7 +22,7 @@ import { SDLC_TEAMS, STRATEGY_PRESETS, EXECUTION_STRATEGY_PRESETS } from "@share
 import type {
   PipelineStageConfig, ExecutionStrategy, MoaStrategy, DebateStrategy, VotingStrategy,
   PrivacySettings, SandboxConfig, StageToolConfig, ParallelConfig, CustomStageConfig,
-  SpecializationProfile, PipelineDAG, DAGStage,
+  SpecializationProfile, PipelineDAG, DAGStage, SwarmConfig,
 } from "@shared/types";
 
 // Lazy-load DAGCanvas to avoid adding ~200KB reactflow to the main bundle
@@ -221,6 +221,13 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
   const updateParallelConfig = (teamId: string, config: ParallelConfig | undefined) => {
     setLocalStages(prev => prev.map(s =>
       s.teamId === teamId ? { ...s, parallel: config } : s,
+    ));
+    setDirty(true);
+  };
+
+  const updateSwarmConfig = (teamId: string, config: SwarmConfig | undefined) => {
+    setLocalStages(prev => prev.map(s =>
+      s.teamId === teamId ? { ...s, swarm: config } : s,
     ));
     setDirty(true);
   };
@@ -683,6 +690,8 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                                 onToolConfigChange={(_, cfg) => updateToolConfig(stage.teamId, cfg)}
                                 parallelConfig={stage.parallel as ParallelConfig | undefined}
                                 onParallelChange={(_, cfg) => updateParallelConfig(stage.teamId, cfg)}
+                                swarmConfig={stage.swarm as SwarmConfig | undefined}
+                                onSwarmChange={(_, cfg) => updateSwarmConfig(stage.teamId, cfg)}
                                 approvalRequired={stage.approvalRequired ?? false}
                                 onApprovalChange={(_, val) => updateApprovalRequired(stage.teamId, val)}
                                 isLast={idx === localStages.length - 1}
