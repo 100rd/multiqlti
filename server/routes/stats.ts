@@ -218,13 +218,37 @@ export function registerStatsRoutes(app: Express, storage: IStorage): void {
   });
 
   // GET /api/runs/:runId/stages/:stageIndex/thought-tree
+  // Requires authentication + run ownership (or admin role).
   app.get("/api/runs/:runId/stages/:stageIndex/thought-tree", async (req, res) => {
     try {
+      // C1: Authentication check
+      if (!req.user?.id) {
+        res.status(401).json({ error: "Authentication required" });
+        return;
+      }
+
       const { runId, stageIndex } = req.params;
       const idx = parseInt(stageIndex, 10);
       if (isNaN(idx)) {
         res.status(400).json({ error: "Invalid stage index" });
         return;
+      }
+
+      // C2: Ownership check — look up run → pipeline → ownerId
+      const run = await storage.getPipelineRun(runId);
+      if (!run) {
+        res.status(404).json({ error: "Run not found" });
+        return;
+      }
+
+      const pipeline = await storage.getPipeline(run.pipelineId);
+      if (pipeline && pipeline.ownerId != null) {
+        const isOwner = pipeline.ownerId === req.user.id;
+        const isAdmin = req.user?.role === "admin";
+        if (!isOwner && !isAdmin) {
+          res.status(403).json({ error: "Forbidden: you do not own this pipeline" });
+          return;
+        }
       }
 
       const executions = await storage.getStageExecutions(runId);
