@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams } from "wouter";
 import { usePipelineRun, useCancelRun, useApproveStage, useRejectStage, useExportRun, usePipeline } from "@/hooks/use-pipeline";
-import { usePipelineEvents } from "@/hooks/use-websocket";
+import { usePipelineEvents, useWebSocket } from "@/hooks/use-websocket";
 import StageProgress from "@/components/pipeline/StageProgress";
 import QuestionPanel from "@/components/pipeline/QuestionPanel";
 import StageOutput from "@/components/pipeline/StageOutput";
@@ -22,6 +22,31 @@ import { Link } from "wouter";
 import { SDLC_TEAMS } from "@shared/constants";
 import type { PipelineStageConfig } from "@shared/types";
 import { cn } from "@/lib/utils";
+import SwarmProgress from "@/components/pipeline/SwarmProgress";
+import type { SwarmCloneState } from "@/components/pipeline/SwarmProgress";
+import SwarmResultView from "@/components/pipeline/SwarmResultView";
+import { useSwarmResults } from "@/hooks/use-pipeline";
+import type { SwarmMerger } from "@/components/pipeline/SwarmConfigPanel";
+
+// ─── SwarmResultLoader: fetches results and renders SwarmResultView ────────────
+
+interface SwarmResultLoaderProps {
+  runId: string;
+  stageIndex: number;
+}
+
+function SwarmResultLoader({ runId, stageIndex }: SwarmResultLoaderProps) {
+  const { data, isLoading } = useSwarmResults(runId, stageIndex);
+  if (isLoading) return null;
+  if (!data?.swarmMeta || !data?.cloneResults) return null;
+  return (
+    <SwarmResultView
+      mergedOutput={""}
+      cloneResults={data.cloneResults}
+      meta={data.swarmMeta}
+    />
+  );
+}
 
 const statusColors: Record<string, string> = {
   pending: "bg-muted text-muted-foreground",
@@ -46,6 +71,129 @@ export default function PipelineRun() {
   const isManagerMode = pipeline != null && (pipeline as Record<string, unknown>).managerConfig != null;
 
   const [rejectReasonMap, setRejectReasonMap] = useState<Record<number, string>>({});
+
+  // ─── Swarm state (keyed by stageExecutionId) ────────────────────────────────
+  interface SwarmStageState {
+    cloneCount: number;
+    cloneResults: SwarmCloneState[];
+    isMerging: boolean;
+    isCompleted: boolean;
+    mergerUsed?: SwarmMerger;
+    stageIndex: number;
+  }
+  const [swarmStates, setSwarmStates] = useState<Map<string, SwarmStageState>>(new Map());
+
+  // ─── Swarm WS event handler ─────────────────────────────────────────────────
+  const { lastEvent } = useWebSocket(runId);
+
+  const handleSwarmEvent = useCallback(() => {
+    if (!lastEvent || lastEvent.runId !== runId) return;
+    const seId = lastEvent.stageExecutionId;
+    if (!seId) return;
+    const p = lastEvent.payload;
+
+    // Cast to string for swarm event types (added in shared/types.ts by Phase 6.7 backend branch)
+    const eventType = lastEvent.type as string;
+    switch (eventType) {
+      case "swarm:started": {
+        const cloneCount = p.cloneCount as number;
+        const merger = p.merger as SwarmMerger;
+        const stageIndex = p.stageIndex as number ?? 0;
+        setSwarmStates(prev => {
+          const next = new Map(prev);
+          next.set(seId, {
+            cloneCount,
+            cloneResults: [],
+            isMerging: false,
+            isCompleted: false,
+            mergerUsed: merger,
+            stageIndex,
+          });
+          return next;
+        });
+        break;
+      }
+      case "swarm:clone:started": {
+        const cloneIndex = p.cloneIndex as number;
+        const systemPromptPreview = p.systemPromptPreview as string | undefined;
+        setSwarmStates(prev => {
+          const next = new Map(prev);
+          const existing = next.get(seId);
+          if (!existing) return prev;
+          const filtered = existing.cloneResults.filter(r => r.cloneIndex !== cloneIndex);
+          next.set(seId, {
+            ...existing,
+            cloneResults: [...filtered, { cloneIndex, status: "running", systemPromptPreview }],
+          });
+          return next;
+        });
+        break;
+      }
+      case "swarm:clone:completed": {
+        const cloneIndex = p.cloneIndex as number;
+        const tokensUsed = p.tokensUsed as number | undefined;
+        const outputPreview = p.outputPreview as string | undefined;
+        const durationMs = p.durationMs as number | undefined;
+        setSwarmStates(prev => {
+          const next = new Map(prev);
+          const existing = next.get(seId);
+          if (!existing) return prev;
+          const filtered = existing.cloneResults.filter(r => r.cloneIndex !== cloneIndex);
+          next.set(seId, {
+            ...existing,
+            cloneResults: [
+              ...filtered,
+              { cloneIndex, status: "succeeded", tokensUsed, outputPreview, durationMs },
+            ],
+          });
+          return next;
+        });
+        break;
+      }
+      case "swarm:clone:failed": {
+        const cloneIndex = p.cloneIndex as number;
+        const error = p.error as string | undefined;
+        setSwarmStates(prev => {
+          const next = new Map(prev);
+          const existing = next.get(seId);
+          if (!existing) return prev;
+          const filtered = existing.cloneResults.filter(r => r.cloneIndex !== cloneIndex);
+          next.set(seId, {
+            ...existing,
+            cloneResults: [...filtered, { cloneIndex, status: "failed", error }],
+          });
+          return next;
+        });
+        break;
+      }
+      case "swarm:merging": {
+        setSwarmStates(prev => {
+          const next = new Map(prev);
+          const existing = next.get(seId);
+          if (!existing) return prev;
+          next.set(seId, { ...existing, isMerging: true });
+          return next;
+        });
+        break;
+      }
+      case "swarm:completed": {
+        setSwarmStates(prev => {
+          const next = new Map(prev);
+          const existing = next.get(seId);
+          if (!existing) return prev;
+          next.set(seId, { ...existing, isMerging: false, isCompleted: true });
+          return next;
+        });
+        break;
+      }
+      default:
+        break;
+    }
+  }, [lastEvent, runId]);
+
+  useEffect(() => {
+    handleSwarmEvent();
+  }, [handleSwarmEvent]);
 
   if (isLoading) {
     return (
@@ -275,22 +423,69 @@ export default function PipelineRun() {
                       Pipeline is running...
                     </div>
                   )}
+                  {/* Active swarm stages — running but not yet in completedStages */}
+                  {Array.from(swarmStates.entries()).map(([seId, swarmState]) => {
+                    // Only show live progress for stages not yet in completedStages
+                    const alreadyCompleted = completedStages.some(s => s.id === seId);
+                    if (alreadyCompleted || swarmState.isCompleted) return null;
+                    return (
+                      <div
+                        key={seId}
+                        className="p-4 rounded-lg border border-border bg-card"
+                        aria-label={`Stage ${swarmState.stageIndex + 1} swarm progress`}
+                      >
+                        <p className="text-xs font-medium text-muted-foreground mb-3">
+                          Stage {swarmState.stageIndex + 1} — Swarm
+                        </p>
+                        <SwarmProgress
+                          cloneCount={swarmState.cloneCount}
+                          cloneResults={swarmState.cloneResults}
+                          isMerging={swarmState.isMerging}
+                          isCompleted={swarmState.isCompleted}
+                          mergerUsed={swarmState.mergerUsed}
+                        />
+                      </div>
+                    );
+                  })}
+
                   {completedStages.map((stage) => {
                     const team =
                       SDLC_TEAMS[
                         stage.teamId as keyof typeof SDLC_TEAMS
                       ];
+                    // Check if this stage has swarm data
+                    const swarmState = swarmStates.get(stage.id);
                     return (
-                      <StageOutput
-                        key={stage.id}
-                        teamId={stage.teamId}
-                        teamName={team?.name ?? stage.teamId}
-                        output={stage.output!}
-                        isActive={
-                          stage.stageIndex ===
-                          pipelineEvents.currentStageIndex
-                        }
-                      />
+                      <div key={stage.id} className="space-y-3">
+                        <StageOutput
+                          teamId={stage.teamId}
+                          teamName={team?.name ?? stage.teamId}
+                          output={stage.output!}
+                          isActive={
+                            stage.stageIndex ===
+                            pipelineEvents.currentStageIndex
+                          }
+                        />
+                        {/* Swarm progress/results for this stage */}
+                        {swarmState && swarmState.cloneCount > 0 && (
+                          <div className="p-4 rounded-lg border border-border bg-card/50">
+                            {swarmState.isCompleted ? (
+                              <SwarmResultLoader
+                                runId={runId}
+                                stageIndex={stage.stageIndex}
+                              />
+                            ) : (
+                              <SwarmProgress
+                                cloneCount={swarmState.cloneCount}
+                                cloneResults={swarmState.cloneResults}
+                                isMerging={swarmState.isMerging}
+                                isCompleted={swarmState.isCompleted}
+                                mergerUsed={swarmState.mergerUsed}
+                              />
+                            )}
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
                   {status === "completed" && (
