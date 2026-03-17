@@ -179,12 +179,12 @@ export function registerPipelineRoutes(router: Router, storage: IStorage, gatewa
 
   const SwarmRouteParamsSchema = z.object({
     id: z.string().min(1).max(100),
-    stageIndex: z.coerce.number().int().min(0),
+    stageIndex: z.coerce.number().int().min(0).max(99),
   });
 
   const SwarmRunParamsSchema = z.object({
     runId: z.string().min(1).max(100),
-    stageIndex: z.coerce.number().int().min(0),
+    stageIndex: z.coerce.number().int().min(0).max(99),
   });
 
   const GeneratePerspectivesBodySchema = z.object({

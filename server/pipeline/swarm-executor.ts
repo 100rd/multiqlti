@@ -26,6 +26,7 @@ export class SwarmAllFailedError extends Error {
 interface CloneInput {
   input: string;
   systemPromptOverride: string;
+  userPromptPortion: string;
 }
 
 // ─── SwarmExecutor ────────────────────────────────────────────────────────────
@@ -62,24 +63,8 @@ export class SwarmExecutor {
     const cloneInputs = await this.buildCloneInputs(swarm, stageInput, stage);
     const start = Date.now();
 
-    const clonePromises = cloneInputs.map((cloneInput, i) =>
-      this.runClone(stage, cloneInput, context, stageId, i),
-    );
-
-    const settledResults = await Promise.allSettled(clonePromises);
-
-    const cloneResults: SwarmCloneResult[] = settledResults.map((settled, i) => {
-      if (settled.status === "fulfilled") return settled.value;
-      // runClone should never reject (it catches internally), but defensive guard:
-      return {
-        cloneIndex: i,
-        status: "failed" as const,
-        error: settled.reason instanceof Error ? settled.reason.message : String(settled.reason),
-        tokensUsed: 0,
-        durationMs: 0,
-        systemPromptPreview: "",
-      };
-    });
+    const MAX_CONCURRENCY = parseInt(process.env.SWARM_MAX_CONCURRENCY ?? "5", 10);
+    const cloneResults = await this.runClonesWithConcurrency(cloneInputs, stage, context, stageId, MAX_CONCURRENCY);
 
     const succeeded = cloneResults.filter((r): r is SwarmCloneResult & { status: "succeeded" } =>
       r.status === "succeeded",
@@ -174,12 +159,14 @@ export class SwarmExecutor {
       return charChunks.map((chunk) => ({
         input: chunk,
         systemPromptOverride: basePrompt,
+        userPromptPortion: "",
       }));
     }
 
     return chunks.map((chunk) => ({
       input: chunk,
       systemPromptOverride: basePrompt,
+      userPromptPortion: "",
     }));
   }
 
@@ -215,6 +202,7 @@ export class SwarmExecutor {
       systemPromptOverride: basePrompt
         ? `${basePrompt}\n\nYour perspective: ${perspective.systemPromptSuffix}`
         : `Your perspective: ${perspective.systemPromptSuffix}`,
+      userPromptPortion: perspective.systemPromptSuffix,
     }));
   }
 
@@ -275,6 +263,7 @@ export class SwarmExecutor {
     return prompts.map((prompt) => ({
       input,
       systemPromptOverride: prompt,
+      userPromptPortion: prompt,
     }));
   }
 
@@ -287,7 +276,7 @@ export class SwarmExecutor {
     stageId: string,
     cloneIndex: number,
   ): Promise<SwarmCloneResult> {
-    const systemPromptPreview = cloneInput.systemPromptOverride.slice(0, 120);
+    const systemPromptPreview = cloneInput.userPromptPortion.slice(0, 120);
     const runId = context.runId;
 
     this.broadcast(runId, stageId, "swarm:clone:started", {
@@ -352,6 +341,34 @@ export class SwarmExecutor {
         systemPromptPreview,
       };
     }
+  }
+
+  // ─── runClonesWithConcurrency ──────────────────────────────────────────────
+
+  private async runClonesWithConcurrency(
+    cloneInputs: CloneInput[],
+    stage: PipelineStageConfig,
+    context: StageContext,
+    stageId: string,
+    maxConcurrent: number,
+  ): Promise<SwarmCloneResult[]> {
+    const results: SwarmCloneResult[] = new Array(cloneInputs.length);
+    const queue = cloneInputs.map((input, i) => ({ input, i }));
+
+    const runWorker = async (): Promise<void> => {
+      while (queue.length > 0) {
+        const item = queue.shift();
+        if (!item) break;
+        results[item.i] = await this.runClone(stage, item.input, context, stageId, item.i);
+      }
+    };
+
+    const workers = Array.from(
+      { length: Math.min(maxConcurrent, cloneInputs.length) },
+      () => runWorker(),
+    );
+    await Promise.all(workers);
+    return results;
   }
 
   // ─── mergeOutputs ─────────────────────────────────────────────────────────
