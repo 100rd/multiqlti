@@ -362,6 +362,21 @@ export type McpServerRow = typeof mcpServers.$inferSelect;
 
 // ─── Workspaces ──────────────────────────────────────────────────────────────
 
+// ─── Workspace Index Status ────────────────────────────────────────────────
+export const WORKSPACE_INDEX_STATUS = ["idle", "indexing", "ready", "error"] as const;
+export type WorkspaceIndexStatus = typeof WORKSPACE_INDEX_STATUS[number];
+
+export const SYMBOL_KINDS = [
+  "function",
+  "class",
+  "interface",
+  "type",
+  "variable",
+  "export",
+  "import",
+] as const;
+export type SymbolKind = typeof SYMBOL_KINDS[number];
+
 export const workspaces = pgTable("workspaces", {
   id: varchar("id")
     .primaryKey()
@@ -373,6 +388,8 @@ export const workspaces = pgTable("workspaces", {
   status: text("status").notNull().default("active").$type<"active" | "syncing" | "error">(),
   lastSyncAt: timestamp("last_sync_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  ownerId: text("owner_id").references(() => users.id, { onDelete: "set null" }),
+  indexStatus: text("index_status").notNull().default("idle").$type<WorkspaceIndexStatus>(),
 });
 
 export const insertWorkspaceSchema = createInsertSchema(workspaces).omit({
@@ -604,3 +621,47 @@ export const insertTraceSchema = createInsertSchema(traces).omit({
 
 export type InsertTrace = z.infer<typeof insertTraceSchema>;
 export type TraceRow = typeof traces.$inferSelect;
+
+// ─── workspace_symbols (Phase 6.9) ────────────────────────────────────────────
+
+export const workspaceSymbols = pgTable(
+  "workspace_symbols",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    workspaceId: varchar("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    filePath: text("file_path").notNull(),
+    name: text("name").notNull(),
+    kind: text("kind").notNull().$type<SymbolKind>(),
+    line: integer("line").notNull(),
+    col: integer("col").notNull().default(0),
+    signature: text("signature"),
+    fileHash: text("file_hash").notNull(),
+    exportedFrom: text("exported_from"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    nameIdx: index("workspace_symbols_name_idx").on(table.workspaceId, table.name),
+    fileIdx: index("workspace_symbols_file_idx").on(table.workspaceId, table.filePath),
+    kindIdx: index("workspace_symbols_kind_idx").on(table.workspaceId, table.kind),
+    uniqueSymbol: unique("workspace_symbols_unique").on(
+      table.workspaceId,
+      table.filePath,
+      table.name,
+      table.kind,
+    ),
+  }),
+);
+
+export const insertWorkspaceSymbolSchema = createInsertSchema(workspaceSymbols).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertWorkspaceSymbol = z.infer<typeof insertWorkspaceSymbolSchema>;
+export type WorkspaceSymbolRow = typeof workspaceSymbols.$inferSelect;
