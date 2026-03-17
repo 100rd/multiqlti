@@ -208,6 +208,11 @@ export function registerPipelineRoutes(router: Router, storage: IStorage, gatewa
         return res.status(404).json({ error: "Pipeline not found" });
       }
 
+      const isAdmin = req.user?.role === "admin";
+      if (!isAdmin && pipeline.ownerId !== req.user?.id) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
       const stages = pipeline.stages as import("@shared/types").PipelineStageConfig[];
       if (stageIndex < 0 || stageIndex >= stages.length) {
         return res.status(400).json({ error: `stageIndex ${stageIndex} is out of range (pipeline has ${stages.length} stages)` });
@@ -245,6 +250,11 @@ export function registerPipelineRoutes(router: Router, storage: IStorage, gatewa
       const pipeline = await storage.getPipeline(id);
       if (!pipeline) {
         return res.status(404).json({ error: "Pipeline not found" });
+      }
+
+      const isAdmin = req.user?.role === "admin";
+      if (!isAdmin && pipeline.ownerId !== req.user?.id) {
+        return res.status(403).json({ error: "Forbidden" });
       }
 
       const stages = pipeline.stages as import("@shared/types").PipelineStageConfig[];
@@ -312,6 +322,11 @@ export function registerPipelineRoutes(router: Router, storage: IStorage, gatewa
       const pipeline = await storage.getPipeline(id);
       if (!pipeline) {
         return res.status(404).json({ error: "Pipeline not found" });
+      }
+
+      const isAdmin = req.user?.role === "admin";
+      if (!isAdmin && pipeline.ownerId !== req.user?.id) {
+        return res.status(403).json({ error: "Forbidden" });
       }
 
       const stages = pipeline.stages as import("@shared/types").PipelineStageConfig[];
