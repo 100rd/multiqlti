@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { wsClient } from "@/lib/websocket";
-import type { WsEvent, StageStatus, RunStatus } from "@shared/types";
+import type { WsEvent, StageStatus, RunStatus, SwarmCloneResult, SwarmMerger } from "@shared/types";
 
 export function useWebSocket(runId?: string) {
   const [isConnected, setIsConnected] = useState(wsClient.isConnected);
@@ -33,6 +33,14 @@ export interface PendingApproval {
   teamId: string;
 }
 
+export interface SwarmStageState {
+  cloneCount: number;
+  cloneResults: Partial<SwarmCloneResult>[];
+  isMerging: boolean;
+  isCompleted: boolean;
+  mergerUsed?: SwarmMerger;
+}
+
 export interface PipelineEventState {
   status: RunStatus;
   stages: Map<
@@ -60,6 +68,7 @@ export interface PipelineEventState {
     agentTeam?: string;
   }>;
   pendingApprovals: PendingApproval[];
+  swarmStages: Map<string, SwarmStageState>;
 }
 
 export function usePipelineEvents(runId: string): PipelineEventState {
@@ -70,6 +79,7 @@ export function usePipelineEvents(runId: string): PipelineEventState {
     questions: [],
     messages: [],
     pendingApprovals: [],
+    swarmStages: new Map(),
   });
 
   const stateRef = useRef(state);
@@ -234,6 +244,91 @@ export function usePipelineEvents(runId: string): PipelineEventState {
           ],
         });
         break;
+
+      case "swarm:started": {
+        const stageId = event.payload.stageId as string;
+        const swarmStages = new Map(s.swarmStages);
+        swarmStages.set(stageId, {
+          cloneCount: event.payload.cloneCount as number,
+          cloneResults: [],
+          isMerging: false,
+          isCompleted: false,
+        });
+        setState({ ...s, swarmStages });
+        break;
+      }
+
+      case "swarm:clone:started": {
+        const stageId = event.payload.stageId as string;
+        const swarmStages = new Map(s.swarmStages);
+        const existing = swarmStages.get(stageId);
+        if (existing) {
+          const cloneIndex = event.payload.cloneIndex as number;
+          const updated = existing.cloneResults.filter((r) => r.cloneIndex !== cloneIndex);
+          swarmStages.set(stageId, {
+            ...existing,
+            cloneResults: [...updated, { cloneIndex, systemPromptPreview: event.payload.systemPromptPreview as string }],
+          });
+          setState({ ...s, swarmStages });
+        }
+        break;
+      }
+
+      case "swarm:clone:completed": {
+        const stageId = event.payload.stageId as string;
+        const swarmStages = new Map(s.swarmStages);
+        const existing = swarmStages.get(stageId);
+        if (existing) {
+          const cloneIndex = event.payload.cloneIndex as number;
+          const updated = existing.cloneResults.map((r) =>
+            r.cloneIndex === cloneIndex
+              ? { ...r, status: "succeeded" as const, tokensUsed: event.payload.tokensUsed as number }
+              : r,
+          );
+          swarmStages.set(stageId, { ...existing, cloneResults: updated });
+          setState({ ...s, swarmStages });
+        }
+        break;
+      }
+
+      case "swarm:clone:failed": {
+        const stageId = event.payload.stageId as string;
+        const swarmStages = new Map(s.swarmStages);
+        const existing = swarmStages.get(stageId);
+        if (existing) {
+          const cloneIndex = event.payload.cloneIndex as number;
+          const updated = existing.cloneResults.map((r) =>
+            r.cloneIndex === cloneIndex
+              ? { ...r, status: "failed" as const, error: event.payload.error as string }
+              : r,
+          );
+          swarmStages.set(stageId, { ...existing, cloneResults: updated });
+          setState({ ...s, swarmStages });
+        }
+        break;
+      }
+
+      case "swarm:merging": {
+        const stageId = event.payload.stageId as string;
+        const swarmStages = new Map(s.swarmStages);
+        const existing = swarmStages.get(stageId);
+        if (existing) {
+          swarmStages.set(stageId, { ...existing, isMerging: true, mergerUsed: event.payload.strategy as SwarmMerger });
+          setState({ ...s, swarmStages });
+        }
+        break;
+      }
+
+      case "swarm:completed": {
+        const stageId = event.payload.stageId as string;
+        const swarmStages = new Map(s.swarmStages);
+        const existing = swarmStages.get(stageId);
+        if (existing) {
+          swarmStages.set(stageId, { ...existing, isMerging: false, isCompleted: true });
+          setState({ ...s, swarmStages });
+        }
+        break;
+      }
     }
   }, [runId]);
 

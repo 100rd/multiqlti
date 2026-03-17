@@ -12,7 +12,8 @@ import { cn } from "@/lib/utils";
 import { SDLC_TEAMS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, MIN_TEMPERATURE, MAX_TEMPERATURE, TEMPERATURE_STEP } from "@shared/constants";
 import StrategyConfig from "./StrategyConfig";
 import SandboxConfig from "./SandboxConfig";
-import type { ExecutionStrategy, PrivacySettings, SandboxConfig as SandboxConfigType, StageToolConfig, ParallelConfig, MergeStrategy, StageGuardrail } from "@shared/types";
+import type { ExecutionStrategy, PrivacySettings, SandboxConfig as SandboxConfigType, StageToolConfig, ParallelConfig, MergeStrategy, StageGuardrail, SwarmConfig } from "@shared/types";
+import SwarmConfigPanel from '../pipeline/SwarmConfigPanel';
 import GuardrailEditor from '../pipeline/GuardrailEditor';
 import { useSkills } from "@/hooks/use-skills";
 import type { Skill } from "@shared/schema";
@@ -58,6 +59,8 @@ interface AgentNodeProps {
   appliedSkillName?: string;
   /** Optional: callback when a skill is applied (skillId) or cleared (null). */
   onApplySkill?: (id: string, skillId: string | null) => void;
+  swarmConfig?: SwarmConfig;
+  onSwarmChange: (id: string, config: SwarmConfig | undefined) => void;
 }
 
 
@@ -340,6 +343,8 @@ export default function AgentNode({
   onApprovalChange,
   parallelConfig,
   onParallelChange,
+  swarmConfig,
+  onSwarmChange,
   guardrails = [],
   onGuardrailsChange,
   isLast,
@@ -353,6 +358,7 @@ export default function AgentNode({
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
   const [toolsExpanded, setToolsExpanded] = useState(false);
   const [parallelExpanded, setParallelExpanded] = useState(false);
+  const [swarmExpanded, setSwarmExpanded] = useState(false);
   const [guardrailsExpanded, setGuardrailsExpanded] = useState(false);
   const [localPrompt, setLocalPrompt] = useState(systemPromptOverride ?? "");
   const [localMaxTokens, setLocalMaxTokens] = useState(
@@ -722,6 +728,35 @@ export default function AgentNode({
                   defaultModelSlug={model}
                   enabled={enabled}
                   onChange={(cfg) => onParallelChange(id, cfg)}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Swarm Execution */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setSwarmExpanded((prev) => !prev)}
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              disabled={!enabled}
+            >
+              <span>Swarm execution</span>
+              {swarmExpanded
+                ? <ChevronUp className="h-3 w-3 ml-1" />
+                : <ChevronDown className="h-3 w-3 ml-1" />}
+            </button>
+
+            {swarmExpanded && (
+              <div className="mt-3 p-3 rounded border border-border bg-muted/30">
+                <SwarmConfigPanel
+                  stageIndex={0}
+                  config={swarmConfig}
+                  models={models}
+                  defaultModelSlug={model}
+                  onChange={(cfg) => onSwarmChange(id, cfg)}
+                  disabled={!enabled}
+                  parallelEnabled={parallelConfig?.enabled ?? false}
                 />
               </div>
             )}
