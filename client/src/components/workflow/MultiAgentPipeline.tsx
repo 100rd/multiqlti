@@ -24,6 +24,8 @@ import type {
   PrivacySettings, SandboxConfig, StageToolConfig, ParallelConfig, CustomStageConfig,
   SpecializationProfile, PipelineDAG, DAGStage, SwarmConfig,
 } from "@shared/types";
+import { useSetSwarmConfig, useDeleteSwarmConfig } from "@/hooks/use-pipeline";
+import type { SwarmConfig } from "@/components/pipeline/SwarmConfigPanel";
 
 // Lazy-load DAGCanvas to avoid adding ~200KB reactflow to the main bundle
 const DAGCanvas = lazy(() =>
