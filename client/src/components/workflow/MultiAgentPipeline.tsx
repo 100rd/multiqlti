@@ -24,6 +24,8 @@ import type {
   PrivacySettings, SandboxConfig, StageToolConfig, ParallelConfig, CustomStageConfig,
   SpecializationProfile, PipelineDAG, DAGStage,
 } from "@shared/types";
+import { useSetSwarmConfig, useDeleteSwarmConfig } from "@/hooks/use-pipeline";
+import type { SwarmConfig } from "@/components/pipeline/SwarmConfigPanel";
 
 // Lazy-load DAGCanvas to avoid adding ~200KB reactflow to the main bundle
 const DAGCanvas = lazy(() =>
@@ -223,6 +225,25 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
       s.teamId === teamId ? { ...s, parallel: config } : s,
     ));
     setDirty(true);
+  };
+
+  const setSwarmConfig = useSetSwarmConfig();
+  const deleteSwarmConfig = useDeleteSwarmConfig();
+
+  const updateSwarmConfig = (teamId: string, config: SwarmConfig | undefined) => {
+    const stageIdx = localStages.findIndex(s => s.teamId === teamId);
+    setLocalStages(prev => prev.map((s, i) =>
+      i === stageIdx ? { ...s, swarm: config } : s,
+    ));
+    setDirty(true);
+    // Persist immediately via REST
+    if (stageIdx >= 0) {
+      if (config) {
+        if (pipelineId) void setSwarmConfig.mutateAsync({ pipelineId, stageIndex: stageIdx, config });
+      } else {
+        if (pipelineId) void deleteSwarmConfig.mutateAsync({ pipelineId, stageIndex: stageIdx });
+      }
+    }
   };
 
   const updateToolConfig = (teamId: string, config: StageToolConfig) => {
@@ -683,6 +704,10 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                                 onToolConfigChange={(_, cfg) => updateToolConfig(stage.teamId, cfg)}
                                 parallelConfig={stage.parallel as ParallelConfig | undefined}
                                 onParallelChange={(_, cfg) => updateParallelConfig(stage.teamId, cfg)}
+                                swarmConfig={(stage as PipelineStageConfig & { swarm?: SwarmConfig }).swarm}
+                                onSwarmChange={(_, cfg) => updateSwarmConfig(stage.teamId, cfg)}
+                                pipelineId={pipelineId ?? ""}
+                                stageIndex={idx}
                                 approvalRequired={stage.approvalRequired ?? false}
                                 onApprovalChange={(_, val) => updateApprovalRequired(stage.teamId, val)}
                                 isLast={idx === localStages.length - 1}

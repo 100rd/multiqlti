@@ -438,3 +438,63 @@ export function useDeleteManagerConfig() {
     },
   });
 }
+
+// ─── Swarm Config ────────────────────────────────────────────────────────────
+
+import type { SwarmConfig } from "@/components/pipeline/SwarmConfigPanel";
+import type { SwarmCloneResult, SwarmMeta } from "@/components/pipeline/SwarmResultView";
+
+export function useSetSwarmConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      pipelineId,
+      stageIndex,
+      config,
+    }: {
+      pipelineId: string;
+      stageIndex: number;
+      config: SwarmConfig;
+    }) =>
+      apiRequest(
+        "PATCH",
+        `/api/pipelines/${pipelineId}/stages/${stageIndex}/swarm`,
+        config,
+      ),
+    onSuccess: (_data, { pipelineId }) => {
+      qc.invalidateQueries({ queryKey: ["/api/pipelines", pipelineId] });
+      qc.invalidateQueries({ queryKey: ["/api/pipelines"] });
+    },
+  });
+}
+
+export function useDeleteSwarmConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      pipelineId,
+      stageIndex,
+    }: {
+      pipelineId: string;
+      stageIndex: number;
+    }) =>
+      apiRequest(
+        "DELETE",
+        `/api/pipelines/${pipelineId}/stages/${stageIndex}/swarm`,
+      ),
+    onSuccess: (_data, { pipelineId }) => {
+      qc.invalidateQueries({ queryKey: ["/api/pipelines", pipelineId] });
+      qc.invalidateQueries({ queryKey: ["/api/pipelines"] });
+    },
+  });
+}
+
+export function useSwarmResults(runId: string, stageIndex: number) {
+  return useQuery<{ swarmMeta: SwarmMeta; cloneResults: SwarmCloneResult[] }>({
+    queryKey: ["/api/runs", runId, "stages", stageIndex, "swarm-results"],
+    queryFn: () =>
+      apiRequest("GET", `/api/runs/${runId}/stages/${stageIndex}/swarm-results`),
+    enabled: Boolean(runId),
+    retry: false,
+  });
+}
