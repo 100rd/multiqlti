@@ -111,12 +111,19 @@ export interface JudgeConfig {
   criteria?: string[];
 }
 
+
+export interface ArbitratorConfig {
+  modelSlug: string;
+  criteria?: Array<'correctness' | 'completeness' | 'security' | 'performance'>;
+}
+
 export interface DebateStrategy {
   type: "debate";
   participants: DebateParticipant[];
   judge: JudgeConfig;
   rounds: number;
   stopEarly?: boolean;
+  arbitrator?: ArbitratorConfig;
 }
 
 export interface CandidateConfig {
@@ -139,15 +146,42 @@ export type ExecutionStrategy =
 
 // ─── Strategy Result Detail Types ────────────────────────────────────────────
 
+// ─── Arbitrator Verdict Types ─────────────────────────────────────────────────
+
+export type ArbitratorCriterion = 'correctness' | 'completeness' | 'security' | 'performance';
+
+export interface ArbitratorCriterionScore {
+  criterion: ArbitratorCriterion;
+  scores: Record<string, number>; // participant modelSlug → 1–10
+  reasoning: string;
+}
+
+export interface ArbitratorVerdict {
+  arbitratorModelSlug: string;
+  criterionScores: ArbitratorCriterionScore[];
+  winner: string;        // modelSlug of winning participant
+  confidence: number;    // 0–1
+  reasoning: string;
+  participantSlugs: string[];
+}
+
 export interface MoaDetails {
   proposerResponses: Array<{ modelSlug: string; content: string; role?: string }>;
   aggregatorModelSlug: string;
 }
 
 export interface DebateDetails {
-  rounds: Array<{ round: number; participant: string; role: string; content: string }>;
+  rounds: Array<{
+    round: number;
+    participant: string;
+    role: string;
+    content: string;
+    provider?: string;
+  }>;
   judgeModelSlug: string;
   verdict: string;
+  providerDiversityScore?: number;
+  arbitratorVerdict?: ArbitratorVerdict;
 }
 
 export interface VotingDetails {
@@ -227,6 +261,7 @@ export type WsEventType =
   | "strategy:proposer"
   | "strategy:debate:round"
   | "strategy:debate:judge"
+  | "strategy:debate:arbitrator"
   | "strategy:voting:candidate"
   | "strategy:completed"
   | "sandbox:starting"
@@ -529,17 +564,19 @@ export interface FactCheckOutput {
 export interface ThoughtNode {
   id: string;
   parentId: string | null;
-  type: 'reasoning' | 'tool_call' | 'tool_result' | 'decision' | 'guardrail' | 'memory_recall';
+  type: 'reasoning' | 'tool_call' | 'tool_result' | 'decision' | 'guardrail' | 'memory_recall' | 'branch' | 'conclusion';
   label: string;
   content: string;
   timestamp: number;
   durationMs?: number;
   metadata?: {
     model?: string;
+    provider?: string;
     tokensUsed?: number;
     toolName?: string;
     decision?: string;
     confidence?: number;
+    isConsensus?: boolean;
   };
 }
 
