@@ -170,7 +170,7 @@ export const stageExecutions = pgTable("stage_executions", {
     splitterUsed: SwarmSplitter;
     totalTokensUsed: number;
     durationMs: number;
-  }>()
+  }>(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

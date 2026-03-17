@@ -1008,21 +1008,6 @@ export class PipelineController {
     this.wsManager.broadcastToRun(runId, event);
   }
 
-  private async persistSwarmResults(stageExecutionId: string, result: SwarmResult): Promise<void> {
-    await this.storage.updateStageExecution(stageExecutionId, {
-      swarmCloneResults: result.cloneResults as unknown as null,
-      swarmMeta: {
-        cloneCount: result.cloneResults.length,
-        succeededCount: result.succeededCount,
-        failedCount: result.failedCount,
-        mergerUsed: result.mergerUsed,
-        splitterUsed: result.splitterUsed,
-        totalTokensUsed: result.totalTokensUsed,
-        durationMs: result.durationMs,
-      } as unknown as null,
-    });
-  }
-
     private buildDelegateFn(
     runId: string,
     fromStage: string,
