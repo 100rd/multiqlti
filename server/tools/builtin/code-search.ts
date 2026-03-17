@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import type { ToolHandler } from "../registry";
+import type { SymbolKind } from "@shared/schema";
 
 const MAX_RESULTS = 20;
 const MAX_FILE_SIZE_BYTES = 1_048_576; // 1 MB
@@ -168,7 +169,11 @@ export const codeSearchHandler: ToolHandler = {
         },
         workspacePath: {
           type: "string",
-          description: "Root path to search in",
+          description: "Root path to search in (used for text/filename modes)",
+        },
+        workspaceId: {
+          type: "string",
+          description: "Workspace ID for symbol mode — queries the indexed symbol table",
         },
       },
       required: ["query"],
@@ -179,6 +184,43 @@ export const codeSearchHandler: ToolHandler = {
     const query = String(args.query ?? "").trim();
     if (!query) return "Query cannot be empty.";
 
+    const searchType = String(args.type ?? "text");
+
+    // ── Symbol mode: query workspace_symbols table via workspaceId ──────────
+    if (searchType === "symbol") {
+      const workspaceId = args.workspaceId ? String(args.workspaceId).trim() : null;
+      if (!workspaceId) {
+        return "Symbol search requires a workspaceId argument.";
+      }
+
+      // Lazy import to avoid db initialization at module load time
+      const { db } = await import("../../db.js");
+      const { workspaceSymbols } = await import("@shared/schema");
+      const { eq } = await import("drizzle-orm");
+
+      const rows = await db
+        .select()
+        .from(workspaceSymbols)
+        .where(eq(workspaceSymbols.workspaceId, workspaceId));
+
+      const lowerQuery = query.toLowerCase();
+      const matched = rows
+        .filter((r) => r.name.toLowerCase().includes(lowerQuery))
+        .slice(0, MAX_RESULTS);
+
+      if (matched.length === 0) {
+        return `No symbols found matching "${query}" in workspace ${workspaceId}.`;
+      }
+
+      return matched
+        .map(
+          (s) =>
+            `${s.filePath}:${s.line}: [${s.kind as SymbolKind}] ${s.name}${s.signature ? ` — ${s.signature}` : ""}`,
+        )
+        .join("\n");
+    }
+
+    // ── Text / filename modes: existing filesystem-based search ─────────────
     const rawWorkspace = String(args.workspacePath ?? "").trim();
     if (!rawWorkspace) {
       return "No workspace path specified.";
@@ -191,9 +233,7 @@ export const codeSearchHandler: ToolHandler = {
       return `Invalid workspace path: ${(err as Error).message}`;
     }
 
-    const searchType = String(args.type ?? "text");
     const filePattern = args.filePattern ? String(args.filePattern) : undefined;
-
     const files = collectFiles(safeRoot, filePattern);
 
     let matches: SearchMatch[];
@@ -201,7 +241,7 @@ export const codeSearchHandler: ToolHandler = {
     if (searchType === "filename") {
       matches = searchFilenames(files, query);
     } else {
-      // "text" and "symbol" both use text search (symbol is alias for text in this implementation)
+      // "text" mode
       const allMatches: SearchMatch[] = [];
       for (const file of files) {
         if (allMatches.length >= MAX_RESULTS) break;

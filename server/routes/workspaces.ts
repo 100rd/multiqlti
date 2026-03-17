@@ -1,14 +1,17 @@
 import { type Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { db } from "../db";
-import { workspaces } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { db } from "../db.js";
+import { workspaces, workspaceSymbols, SYMBOL_KINDS } from "@shared/schema";
+import { eq, and } from "drizzle-orm";
 import type { WorkspaceRow } from "@shared/schema";
-import { WorkspaceManager } from "../workspace/manager";
-import { CodeChatService } from "../workspace/code-chat";
-import type { Gateway } from "../gateway/index";
-import { configLoader } from "../config/loader";
+import { WorkspaceManager } from "../workspace/manager.js";
+import { CodeChatService } from "../workspace/code-chat.js";
+import { WorkspaceIndexer } from "../workspace/indexer.js";
+import { DependencyGraph } from "../workspace/dependency-graph.js";
+import type { Gateway } from "../gateway/index.js";
+import { configLoader } from "../config/loader.js";
 import type { ProjectConfigResponse } from "@shared/types";
+import type { WsManager } from "../ws/manager.js";
 
 // ─── Validation schemas ───────────────────────────────────────────────────────
 
@@ -60,6 +63,24 @@ const ChatSchema = z.object({
     .optional(),
 });
 
+// ─── Phase 6.9 Validation Schemas ────────────────────────────────────────────
+
+const WorkspaceIdParamsSchema = z.object({
+  id: z.string().min(1),
+});
+
+const SymbolNameParamsSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1).max(256),
+});
+
+const SymbolSearchQuerySchema = z.object({
+  q: z.string().min(1).max(256),
+  kind: z.enum(SYMBOL_KINDS).optional(),
+  scope: z.string().min(1).max(512).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
 // ─── Per-workspace sync rate limiter (A4) ────────────────────────────────────
 // Allows at most one sync per workspace per SYNC_COOLDOWN_MS milliseconds.
 
@@ -76,11 +97,44 @@ function recordSync(workspaceId: string): void {
   lastSyncTime.set(workspaceId, Date.now());
 }
 
+// ─── Per-workspace index rate limiter (Phase 6.9) ─────────────────────────────
+// Max 1 manual trigger per workspace per 5 minutes.
+
+const INDEX_COOLDOWN_MS = 5 * 60_000;
+const lastIndexTime = new Map<string, number>();
+
+function isIndexThrottled(workspaceId: string): boolean {
+  const last = lastIndexTime.get(workspaceId);
+  if (last === undefined) return false;
+  return Date.now() - last < INDEX_COOLDOWN_MS;
+}
+
+function recordIndex(workspaceId: string): void {
+  lastIndexTime.set(workspaceId, Date.now());
+}
+
 // ─── Route registration ───────────────────────────────────────────────────────
 
-export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void {
+export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsManager?: WsManager): void {
   const manager = new WorkspaceManager();
   const codeChatService = new CodeChatService(gateway);
+  const dependencyGraph = new DependencyGraph();
+
+  // Create broadcast helper using WsManager
+  function broadcastWsEvent(
+    workspaceId: string,
+    event: string,
+    payload: Record<string, unknown>,
+  ): void {
+    if (!wsManager) return;
+    wsManager.broadcastGlobal({
+      type: event as import("@shared/types").WsEventType,
+      payload: { workspaceId, ...payload },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  const indexer = new WorkspaceIndexer(broadcastWsEvent);
 
   // ── Workspace CRUD ──────────────────────────────────────────────────────────
 
@@ -123,6 +177,8 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
       return res.status(400).json({ error: parsed.error.message });
     }
 
+    const userId = req.user?.id;
+
     try {
       if (parsed.data.type === "local") {
         const { id, name, path: localPath } = await manager.connectLocal(
@@ -131,8 +187,22 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
         );
         const [row] = await db
           .insert(workspaces)
-          .values({ id, name, type: "local", path: localPath, branch: "main", status: "active" })
+          .values({
+            id,
+            name,
+            type: "local",
+            path: localPath,
+            branch: "main",
+            status: "active",
+            ownerId: userId ?? null,
+          })
           .returning();
+
+        // Trigger auto-indexing in background
+        if (row) {
+          triggerAutoIndex(row, indexer, dependencyGraph, broadcastWsEvent);
+        }
+
         return res.status(201).json(row);
       }
 
@@ -143,15 +213,27 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
 
       const [row] = await db
         .insert(workspaces)
-        .values({ id, name, type: "remote", path: parsed.data.url, branch, status: "syncing" })
+        .values({
+          id,
+          name,
+          type: "remote",
+          path: parsed.data.url,
+          branch,
+          status: "syncing",
+          ownerId: userId ?? null,
+        })
         .returning();
 
-      // Clone in background, update status when done
+      // Clone in background, then auto-index
       manager
         .cloneRemote(parsed.data.url, id, branch)
-        .then(() =>
-          db.update(workspaces).set({ status: "active" }).where(eq(workspaces.id, id)),
-        )
+        .then(async () => {
+          await db.update(workspaces).set({ status: "active" }).where(eq(workspaces.id, id));
+          const [updatedRow] = await db.select().from(workspaces).where(eq(workspaces.id, id));
+          if (updatedRow) {
+            triggerAutoIndex(updatedRow, indexer, dependencyGraph, broadcastWsEvent);
+          }
+        })
         .catch(() =>
           db.update(workspaces).set({ status: "error" }).where(eq(workspaces.id, id)),
         );
@@ -194,6 +276,13 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
         .update(workspaces)
         .set({ status: "active", lastSyncAt: new Date() })
         .where(eq(workspaces.id, row.id));
+
+      // Trigger re-index after sync
+      const [updatedRow] = await db.select().from(workspaces).where(eq(workspaces.id, row.id));
+      if (updatedRow) {
+        triggerAutoIndex(updatedRow, indexer, dependencyGraph, broadcastWsEvent);
+      }
+
       res.json({ message: "Workspace synced" });
     } catch (err) {
       await db.update(workspaces).set({ status: "error" }).where(eq(workspaces.id, row.id));
@@ -343,10 +432,6 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
 
   // ── Branch Management (A1) ──────────────────────────────────────────────────
 
-  /**
-   * GET /api/workspaces/:id/branches — list all branches (local + remote-tracking).
-   * Returns { current: string, branches: string[] }
-   */
   router.get("/api/workspaces/:id/branches", async (req, res) => {
     const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
@@ -359,11 +444,6 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     }
   });
 
-  /**
-   * POST /api/workspaces/:id/branches — switch to an existing branch.
-   * Body: { branch: string }
-   * Distinct from POST /git/branch which creates a new branch.
-   */
   router.post("/api/workspaces/:id/branches", async (req, res) => {
     const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
@@ -373,7 +453,6 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
 
     try {
       await manager.switchBranch(row, parsed.data.branch);
-      // Update stored branch name in DB
       await db
         .update(workspaces)
         .set({ branch: parsed.data.branch })
@@ -406,13 +485,6 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
     }
   });
 
-  /**
-   * POST /api/workspaces/:id/chat — AI chat about workspace code (A2).
-   *
-   * Two modes based on Accept header:
-   *   text/event-stream  → SSE streaming (data: {"chunk":"..."} per token, data: [DONE] at end)
-   *   application/json   → Non-streaming fallback ({ reply: string })
-   */
   router.post("/api/workspaces/:id/chat", async (req: Request, res: Response) => {
     const row = await getWorkspaceById(req.params.id as string, res);
     if (!row) return;
@@ -424,7 +496,6 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
 
     try {
       if (acceptsSSE) {
-        // ── SSE streaming path ──
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         res.setHeader("Connection", "keep-alive");
@@ -443,7 +514,6 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
         res.write(`data: [DONE]\n\n`);
         res.end();
       } else {
-        // ── Non-streaming fallback (backward compatible) ──
         const reply = await codeChatService.chat(
           row,
           parsed.data.message,
@@ -461,6 +531,236 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway): void 
       }
     }
   });
+
+  // ── Phase 6.9: Workspace Claim ──────────────────────────────────────────────
+
+  /**
+   * POST /api/workspaces/:id/claim
+   * Sets ownerId to the authenticated user if currently null.
+   * Returns 409 if already claimed by another user.
+   */
+  router.post("/api/workspaces/:id/claim", async (req, res) => {
+    const params = WorkspaceIdParamsSchema.safeParse(req.params);
+    if (!params.success) return res.status(400).json({ error: params.error.message });
+
+    const userId = req.user!.id;
+    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, params.data.id));
+    if (!row) return res.status(404).json({ error: "Workspace not found" });
+
+    if (row.ownerId !== null && row.ownerId !== userId) {
+      return res.status(409).json({ error: "Workspace already claimed by another user" });
+    }
+
+    if (row.ownerId === userId) {
+      return res.json({ message: "Workspace already owned by you", workspaceId: row.id });
+    }
+
+    await db
+      .update(workspaces)
+      .set({ ownerId: userId })
+      .where(eq(workspaces.id, row.id));
+
+    res.json({ message: "Workspace claimed", workspaceId: row.id });
+  });
+
+  // ── Phase 6.9: Index Trigger ────────────────────────────────────────────────
+
+  /**
+   * POST /api/workspaces/:id/index
+   * Manually trigger (re-)indexing. Returns immediately, progress via WS.
+   */
+  router.post("/api/workspaces/:id/index", async (req, res) => {
+    const params = WorkspaceIdParamsSchema.safeParse(req.params);
+    if (!params.success) return res.status(400).json({ error: params.error.message });
+
+    const userId = req.user!.id;
+    const row = await getOwnedWorkspace(params.data.id, userId, res);
+    if (!row) return;
+
+    if (row.indexStatus === "indexing") {
+      return res.status(409).json({ error: "Index already in progress" });
+    }
+
+    if (isIndexThrottled(row.id)) {
+      return res.status(429).json({ error: "Index throttled: please wait 5 minutes between manual triggers" });
+    }
+
+    await db
+      .update(workspaces)
+      .set({ indexStatus: "indexing" })
+      .where(eq(workspaces.id, row.id));
+
+    recordIndex(row.id);
+
+    // Fire and forget
+    indexer
+      .indexWorkspace({ ...row, indexStatus: "indexing" })
+      .then(async (result) => {
+        await db
+          .update(workspaces)
+          .set({ indexStatus: "ready" })
+          .where(eq(workspaces.id, row.id));
+        broadcastWsEvent(row.id, "workspace:index_complete", {
+          symbolCount: result.symbolCount,
+          indexedFiles: result.indexedFiles,
+          skippedFiles: result.skippedFiles,
+          deletedFiles: result.deletedFiles,
+          errorsCount: result.errors.length,
+          durationMs: result.durationMs,
+        });
+        dependencyGraph.invalidateCache(row.id);
+      })
+      .catch(async (err) => {
+        await db
+          .update(workspaces)
+          .set({ indexStatus: "error" })
+          .where(eq(workspaces.id, row.id));
+        broadcastWsEvent(row.id, "workspace:index_error", {
+          message: (err as Error).message,
+        });
+      });
+
+    res.status(202).json({
+      message: "Indexing started",
+      workspaceId: row.id,
+      indexStatus: "indexing",
+    });
+  });
+
+  // ── Phase 6.9: Dependency Graph ─────────────────────────────────────────────
+
+  /**
+   * GET /api/workspaces/:id/dependency-graph
+   * Returns full file dependency graph for reactflow rendering.
+   */
+  router.get("/api/workspaces/:id/dependency-graph", async (req, res) => {
+    const params = WorkspaceIdParamsSchema.safeParse(req.params);
+    if (!params.success) return res.status(400).json({ error: params.error.message });
+
+    const userId = req.user!.id;
+    const row = await getOwnedWorkspace(params.data.id, userId, res);
+    if (!row) return;
+
+    if (row.indexStatus !== "ready") {
+      return res.status(409).json({
+        error: "Workspace not yet indexed",
+        indexStatus: row.indexStatus,
+      });
+    }
+
+    try {
+      const graph = await dependencyGraph.buildGraph(row.id);
+      res.json(graph);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Phase 6.9: Symbol References ───────────────────────────────────────────
+
+  /**
+   * GET /api/workspaces/:id/symbols/:name/references
+   * Find all files that reference a named symbol.
+   */
+  router.get("/api/workspaces/:id/symbols/:name/references", async (req, res) => {
+    const params = SymbolNameParamsSchema.safeParse(req.params);
+    if (!params.success) return res.status(400).json({ error: params.error.message });
+
+    const userId = req.user!.id;
+    const row = await getOwnedWorkspace(params.data.id, userId, res);
+    if (!row) return;
+
+    try {
+      const files = await dependencyGraph.findReferences(row.id, params.data.name);
+      res.json({
+        symbolName: params.data.name,
+        files,
+        total: files.length,
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Phase 6.9: Symbol Definition ───────────────────────────────────────────
+
+  /**
+   * GET /api/workspaces/:id/symbols/:name/definition
+   * Find the definition location of a named symbol.
+   */
+  router.get("/api/workspaces/:id/symbols/:name/definition", async (req, res) => {
+    const params = SymbolNameParamsSchema.safeParse(req.params);
+    if (!params.success) return res.status(400).json({ error: params.error.message });
+
+    const userId = req.user!.id;
+    const row = await getOwnedWorkspace(params.data.id, userId, res);
+    if (!row) return;
+
+    try {
+      const definition = await dependencyGraph.findDefinition(row.id, params.data.name);
+      res.json({
+        symbolName: params.data.name,
+        definition,
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Phase 6.9: Symbol Search ────────────────────────────────────────────────
+
+  /**
+   * GET /api/workspaces/:id/symbols
+   * Upgraded symbol search — queries workspace_symbols table.
+   */
+  router.get("/api/workspaces/:id/symbols", async (req, res) => {
+    const params = WorkspaceIdParamsSchema.safeParse(req.params);
+    if (!params.success) return res.status(400).json({ error: params.error.message });
+
+    const queryParsed = SymbolSearchQuerySchema.safeParse(req.query);
+    if (!queryParsed.success) return res.status(400).json({ error: queryParsed.error.message });
+
+    const userId = req.user!.id;
+    const row = await getOwnedWorkspace(params.data.id, userId, res);
+    if (!row) return;
+
+    if (row.indexStatus !== "ready") {
+      return res.status(409).json({
+        error: "Workspace not yet indexed",
+        indexStatus: row.indexStatus,
+      });
+    }
+
+    try {
+      const { q, kind, scope, limit } = queryParsed.data;
+      let results = await indexer.getSymbols(row.id, q, kind, limit);
+
+      // Apply scope filter (file path prefix)
+      if (scope) {
+        results = results.filter((s) => s.filePath.startsWith(scope));
+      }
+
+      // Compute usageCount: count of imports pointing to each symbol's file
+      const usageMap = await buildUsageCountMap(row.id);
+
+      res.json({
+        query: q,
+        results: results.map((s) => ({
+          id: s.id,
+          name: s.name,
+          kind: s.kind,
+          file: s.filePath,
+          line: s.line,
+          col: s.col,
+          signature: s.signature,
+          usageCount: usageMap.get(s.filePath) ?? 0,
+        })),
+        total: results.length,
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -472,6 +772,105 @@ async function getWorkspaceById(id: string, res: Response): Promise<WorkspaceRow
     return null;
   }
   return row;
+}
+
+/**
+ * Load workspace by ID and verify ownership.
+ * BLOCKS requests where ownerId IS NULL (IDOR prevention for Phase 6.9 endpoints).
+ */
+async function getOwnedWorkspace(
+  id: string,
+  userId: string,
+  res: Response,
+): Promise<WorkspaceRow | null> {
+  const [row] = await db.select().from(workspaces).where(eq(workspaces.id, id));
+  if (!row) {
+    res.status(404).json({ error: "Workspace not found" });
+    return null;
+  }
+
+  // Null ownerId = ownership not established — block access to sensitive endpoints
+  if (row.ownerId === null) {
+    res.status(403).json({
+      error: "Workspace ownership not established. Re-connect this workspace to claim it.",
+    });
+    return null;
+  }
+
+  if (row.ownerId !== userId) {
+    res.status(403).json({ error: "Forbidden" });
+    return null;
+  }
+
+  return row;
+}
+
+/**
+ * Trigger auto-indexing in the background after workspace connect/sync.
+ * Fire-and-forget — never throws.
+ */
+function triggerAutoIndex(
+  row: WorkspaceRow,
+  indexer: WorkspaceIndexer,
+  depGraph: DependencyGraph,
+  broadcastWsEvent: (id: string, event: string, payload: Record<string, unknown>) => void,
+): void {
+  setImmediate(async () => {
+    try {
+      await db
+        .update(workspaces)
+        .set({ indexStatus: "indexing" })
+        .where(eq(workspaces.id, row.id));
+
+      const result = await indexer.indexWorkspace({ ...row, indexStatus: "indexing" });
+
+      await db
+        .update(workspaces)
+        .set({ indexStatus: "ready" })
+        .where(eq(workspaces.id, row.id));
+
+      broadcastWsEvent(row.id, "workspace:index_complete", {
+        symbolCount: result.symbolCount,
+        indexedFiles: result.indexedFiles,
+        skippedFiles: result.skippedFiles,
+        deletedFiles: result.deletedFiles,
+        errorsCount: result.errors.length,
+        durationMs: result.durationMs,
+      });
+
+      depGraph.invalidateCache(row.id);
+    } catch {
+      await db
+        .update(workspaces)
+        .set({ indexStatus: "error" })
+        .where(eq(workspaces.id, row.id))
+        .catch(() => undefined);
+    }
+  });
+}
+
+/**
+ * Build a map of filePath → importedByCount from workspace_symbols.
+ * Used to compute usageCount in symbol search results.
+ */
+async function buildUsageCountMap(workspaceId: string): Promise<Map<string, number>> {
+  const importRows = await db
+    .select({ name: workspaceSymbols.name, filePath: workspaceSymbols.filePath })
+    .from(workspaceSymbols)
+    .where(
+      and(
+        eq(workspaceSymbols.workspaceId, workspaceId),
+        eq(workspaceSymbols.kind, "import"),
+      ),
+    );
+
+  const map = new Map<string, number>();
+  for (const row of importRows) {
+    if (row.name.startsWith(".")) {
+      map.set(row.name, (map.get(row.name) ?? 0) + 1);
+    }
+  }
+  return map;
 }
 
 /**

@@ -92,7 +92,7 @@ export async function registerRoutes(
   registerStatsRoutes(app, storage);
   registerMemoryRoutes(app, storage);
   registerToolRoutes(app, storage);
-  registerWorkspaceRoutes(app, gateway);
+  registerWorkspaceRoutes(app, gateway, wsManager);
   registerSandboxRoutes(app as unknown as Router);
   registerSettingsRoutes(app as unknown as Router, gateway);
   registerMaintenanceRoutes(app as unknown as Router);
