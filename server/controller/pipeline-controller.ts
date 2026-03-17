@@ -2,11 +2,12 @@ import type { IStorage } from "../storage";
 import type { TeamRegistry } from "../teams/registry";
 import type { WsManager } from "../ws/manager";
 import type { Gateway } from "../gateway/index";
-import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput, DelegationRequest, DelegateFn, PipelineDAG, DAGStage } from "@shared/types";
+import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput, DelegationRequest, DelegateFn, PipelineDAG, DAGStage, SwarmResult } from "@shared/types";
 import { DelegationService } from "../pipeline/delegation-service";
 import { DAGExecutor } from "../pipeline/dag-executor";
 import type { StageExecuteFn } from "../pipeline/dag-executor";
 import { ParallelExecutor } from "../pipeline/parallel-executor";
+import { SwarmExecutor } from "../pipeline/swarm-executor";
 import type { PipelineRun } from "@shared/schema";
 import { SandboxExecutor } from "../sandbox/executor";
 import { ThoughtTreeCollector } from "../pipeline/thought-tree-collector";
@@ -29,6 +30,7 @@ export class PipelineController {
   private pendingApprovals: Map<string, ApprovalHandle> = new Map();
   private sandboxExecutor: SandboxExecutor;
   private parallelExecutor: ParallelExecutor;
+  private swarmExecutor: SwarmExecutor;
   private memoryExtractor: MemoryExtractor;
   private memoryProvider: MemoryProvider;
   private guardrailValidator: GuardrailValidator;
@@ -48,6 +50,11 @@ export class PipelineController {
   ) {
     this.sandboxExecutor = new SandboxExecutor();
     this.parallelExecutor = new ParallelExecutor(
+      gateway ?? createNullGateway(),
+      teamRegistry,
+      wsManager,
+    );
+    this.swarmExecutor = new SwarmExecutor(
       gateway ?? createNullGateway(),
       teamRegistry,
       wsManager,
@@ -570,24 +577,54 @@ export class PipelineController {
         };
 
         // Pass execution strategy (undefined = single, handled in BaseTeam)
-        // Attempt parallel execution first; falls back to single-agent if not enabled or shouldSplit=false
-        const parallelResult = await this.parallelExecutor.executeParallel(
-          resolvedStage,
-          stageInput,
-          context,
-          stageExec.id,
-        );
+        // Swarm takes priority over parallel; falls back to single-agent if neither enabled
+        let result;
 
-        const result = parallelResult !== null
-          ? {
-              output: parallelResult.output,
-              tokensUsed: parallelResult.tokensUsed,
-              raw: parallelResult.raw,
+        const stageInputStr = typeof stageInput === 'string'
+          ? stageInput
+          : (stageInput as Record<string, unknown>).taskDescription as string ?? JSON.stringify(stageInput);
+
+        if (resolvedStage.swarm?.enabled) {
+          if (resolvedStage.parallel?.enabled) {
+            console.warn();
+          }
+          const swarmResult = await this.swarmExecutor.execute(
+            resolvedStage,
+            stageInputStr,
+            context,
+            stageExec.id,
+          );
+          if (swarmResult !== null) {
+            await this.persistSwarmResults(stageExec.id, swarmResult);
+            result = {
+              output: { raw: swarmResult.mergedOutput, swarmMeta: swarmResult },
+              tokensUsed: swarmResult.totalTokensUsed,
+              raw: swarmResult.mergedOutput,
               questions: undefined,
               strategyResult: undefined,
               toolCallLog: undefined,
-            }
-          : await team.execute(stageInput, context, resolvedStage.executionStrategy);
+            };
+          } else {
+            result = await team.execute(stageInput, context, resolvedStage.executionStrategy);
+          }
+        } else {
+          const parallelResult = await this.parallelExecutor.executeParallel(
+            resolvedStage,
+            stageInput,
+            context,
+            stageExec.id,
+          );
+          result = parallelResult !== null
+            ? {
+                output: parallelResult.output,
+                tokensUsed: parallelResult.tokensUsed,
+                raw: parallelResult.raw,
+                questions: undefined,
+                strategyResult: undefined,
+                toolCallLog: undefined,
+              }
+            : await team.execute(stageInput, context, resolvedStage.executionStrategy);
+        }
 
         // Collect thought tree from stage output
         const collector = new ThoughtTreeCollector();
@@ -1023,6 +1060,27 @@ ${stage.systemPromptOverride}`
   private hashRunId(id: string): number {
     const hex = id.replace(/-/g, "").slice(0, 8);
     return parseInt(hex, 16) || 0;
+  }
+
+  /**
+   * Persist swarm clone results and metadata to the stageExecution DB row.
+   */
+  private async persistSwarmResults(
+    stageExecutionId: string,
+    result: SwarmResult,
+  ): Promise<void> {
+    await this.storage.updateStageExecution(stageExecutionId, {
+      swarmCloneResults: result.cloneResults,
+      swarmMeta: {
+        cloneCount: result.cloneResults.length,
+        succeededCount: result.succeededCount,
+        failedCount: result.failedCount,
+        mergerUsed: result.mergerUsed,
+        splitterUsed: result.splitterUsed,
+        totalTokensUsed: result.totalTokensUsed,
+        durationMs: result.durationMs,
+      },
+    } as Parameters<typeof this.storage.updateStageExecution>[1]);
   }
 }
 
