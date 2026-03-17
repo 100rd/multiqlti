@@ -17,6 +17,7 @@ import PipelineDetail from "@/pages/PipelineDetail";
 import PipelineRun from "@/pages/PipelineRun";
 import RunComparison from "@/pages/RunComparison";
 import TriggersPage from "@/pages/TriggersPage";
+import { TracePage } from "@/pages/Trace";
 import Settings from "@/pages/Settings";
 import Privacy from "@/pages/Privacy";
 import Statistics from "@/pages/Statistics";
@@ -68,6 +69,9 @@ function ProtectedRouter() {
             <ErrorBoundary><PipelineDetail params={params as { id: string }} /></ErrorBoundary>
           )}
         </Route>
+        <Route path="/runs/:runId/trace" component={() => (
+          <ErrorBoundary><TracePage /></ErrorBoundary>
+        )} />
         <Route path="/runs/:runId" component={() => (
           <ErrorBoundary><PipelineRun /></ErrorBoundary>
         )} />

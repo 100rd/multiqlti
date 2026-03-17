@@ -14,7 +14,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision } from "./types.js";
+import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -563,3 +563,34 @@ export const insertManagerIterationSchema = createInsertSchema(managerIterations
 
 export type InsertManagerIteration = z.infer<typeof insertManagerIterationSchema>;
 export type ManagerIterationRow = typeof managerIterations.$inferSelect;
+
+// ─── Traces (Phase 6.5) ──────────────────────────────────────────────────────
+
+export const traces = pgTable(
+  "traces",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    traceId: text("trace_id").notNull().unique(),
+    runId: varchar("run_id")
+      .notNull()
+      .references(() => pipelineRuns.id, { onDelete: "cascade" }),
+    spans: jsonb("spans").notNull().default(sql`'[]'::jsonb`).$type<TraceSpan[]>(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    traceIdIdx: index("traces_trace_id_idx").on(table.traceId),
+    runIdIdx: index("traces_run_id_idx").on(table.runId),
+  }),
+);
+
+export const insertTraceSchema = createInsertSchema(traces).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertTrace = z.infer<typeof insertTraceSchema>;
+export type TraceRow = typeof traces.$inferSelect;
