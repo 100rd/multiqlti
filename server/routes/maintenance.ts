@@ -573,6 +573,9 @@ export function registerMaintenanceRoutes(router: Router): void {
             severityThreshold: policies[0].severityThreshold as MaintenancePolicy["severityThreshold"],
             autoMerge: policies[0].autoMerge,
             notifyChannels: (policies[0].notifyChannels as string[]) ?? [],
+            autoTriggerPipelineId: policies[0].autoTriggerPipelineId ?? null,
+            autoTriggerEnabled: policies[0].autoTriggerEnabled ?? false,
+            logSourceConfig: (policies[0].logSourceConfig as MaintenancePolicy["logSourceConfig"]) ?? null,
             createdAt: policies[0].createdAt ?? new Date(),
             updatedAt: policies[0].updatedAt ?? new Date(),
           }
@@ -585,6 +588,9 @@ export function registerMaintenanceRoutes(router: Router): void {
             severityThreshold: "high",
             autoMerge: false,
             notifyChannels: [],
+            autoTriggerPipelineId: null,
+            autoTriggerEnabled: false,
+            logSourceConfig: null,
             createdAt: new Date(),
             updatedAt: new Date(),
           };
