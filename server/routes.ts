@@ -30,6 +30,7 @@ import { registerDAGRoutes } from "./routes/dag";
 import { registerTraceRoutes } from "./routes/traces";
 import { registerTriggerRoutes } from "./routes/triggers";
 import { registerWebhookRoutes } from "./routes/webhooks";
+import { registerHealthRoutes } from "./routes/health";
 import { TriggerService } from "./services/trigger-service";
 import { CronScheduler } from "./services/cron-scheduler";
 import { FileWatcherService } from "./services/file-watcher";
@@ -52,7 +53,10 @@ export async function registerRoutes(
   const managerAgent = new ManagerAgent(storage, teamRegistry, wsManager, gateway, delegationService);
   const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService, managerAgent, tracer);
 
-  // Register auth routes first (public routes included)
+  // Register public routes (no auth required) — must come before requireAuth middleware
+  registerHealthRoutes(app);
+
+  // Register auth routes (public routes included)
   registerAuthRoutes(app);
 
   // Register protected route groups — all require authentication

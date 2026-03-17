@@ -18,8 +18,12 @@ A multi-provider AI pipeline orchestration platform supporting parallel model ex
 
 ```bash
 cp .env.example .env
-# Edit .env — at minimum set your AI provider API keys
 ```
+
+Open `.env` and set **at minimum**:
+- `POSTGRES_PASSWORD` — generate with `openssl rand -hex 16`
+- `JWT_SECRET` — generate with `openssl rand -hex 32`
+- `CADDY_DOMAIN` — your domain (or `localhost` for local dev)
 
 ### 2. Start the stack
 
@@ -38,12 +42,24 @@ docker compose --profile cloud-only up -d
 docker compose --profile full up -d
 ```
 
-The application is available at `http://localhost:5050` once the `multiqlti` service is healthy.
+The application is served through Caddy:
+- Local dev: `http://localhost`
+- Production: `https://yourdomain.com` (TLS auto-provisioned via Let's Encrypt)
 
-Database migrations run automatically on every startup before the server starts. To run them manually:
+Database migrations run automatically on every startup. To run them manually:
 ```bash
 docker compose exec multiqlti npm run db:push
 ```
+
+---
+
+## Health Check
+
+```bash
+curl http://localhost/api/health
+```
+
+Returns DB status, provider status, and overall health. Used by Docker and load balancers.
 
 ---
 
@@ -51,25 +67,32 @@ docker compose exec multiqlti npm run db:push
 
 | Profile | Services | Use case |
 |---------|----------|----------|
-| `dev` | app + postgres + ollama | Local development, no GPU |
-| `cloud-only` | app + postgres | Cloud AI providers only |
-| `full` | app + postgres + vllm + ollama | On-premise GPU inference |
+| `dev` | app + postgres + ollama + caddy | Local development, no GPU |
+| `cloud-only` | app + postgres + caddy | Cloud AI providers only |
+| `full` | app + postgres + vllm + ollama + caddy | On-premise GPU inference |
+| `monitoring` | + prometheus + loki + grafana | Observability (add to any profile) |
+
+```bash
+# Full stack with monitoring
+docker compose --profile full --profile monitoring up -d
+```
 
 ---
 
 ## Environment Variables
 
-Copy `.env.example` to `.env`. Key variables:
+Copy `.env.example` to `.env`. Required variables:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `POSTGRES_USER` | `multiqlti` | DB username |
-| `POSTGRES_PASSWORD` | `multiqlti_dev` | DB password — **change in production** |
-| `POSTGRES_DB` | `multiqlti` | DB name |
-| `DATABASE_URL` | auto-constructed | Override to use external DB |
-| `APP_PORT` | `5050` | Host port for the web UI |
-| `SANDBOX_ENABLED` | `true` | Enable/disable code sandbox |
-| `VLLM_MODEL` | `meta-llama/Meta-Llama-3-70B-Instruct` | Model to load in vLLM |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `POSTGRES_PASSWORD` | Yes | DB password — generate with `openssl rand -hex 16` |
+| `JWT_SECRET` | Yes | JWT signing key — generate with `openssl rand -hex 32` |
+| `CADDY_DOMAIN` | No | Domain for HTTPS (default: `localhost`) |
+| `POSTGRES_USER` | No | DB username (default: `multiqlti`) |
+| `POSTGRES_DB` | No | DB name (default: `multiqlti`) |
+| `DATABASE_URL` | No | Override to use external/managed DB |
+| `SANDBOX_ENABLED` | No | Enable code sandbox (default: `true`) |
+| `VLLM_MODEL` | No | vLLM model (default: Llama-3-70B) |
 
 ---
 
@@ -79,24 +102,26 @@ To override defaults without editing `docker-compose.yml`:
 
 ```bash
 cp docker-compose.override.yml.example docker-compose.override.yml
-# Edit docker-compose.override.yml with your customisations
+# Edit docker-compose.override.yml
 ```
 
-The override file is automatically merged by Docker Compose. Never commit it to git.
+Never commit `docker-compose.override.yml` to git — it is listed in `.gitignore`.
 
 ---
 
 ## Data Persistence
 
-All persistent data is stored in named Docker volumes:
+All persistent data lives in named Docker volumes:
 
 | Volume | Contents |
 |--------|----------|
 | `pgdata` | PostgreSQL database files |
+| `pgbackups` | Automated daily `pg_dump` backups (last 7) |
 | `ollama_data` | Downloaded Ollama models |
 | `vllm_cache` | Hugging Face model cache |
+| `caddy_data` | TLS certificates |
 
-To back up the database:
+Manual backup:
 ```bash
 docker compose exec postgres pg_dump -U multiqlti multiqlti > backup.sql
 ```
@@ -115,29 +140,34 @@ docker compose --profile dev down -v
 
 ---
 
-## Upgrading
+## Production Deployment
 
-```bash
-git pull
-docker compose --profile dev pull
-docker compose --profile dev up -d --build
-```
-
-Migrations run automatically on startup.
+See [docs/DEPLOYMENT_DOCKER.md](docs/DEPLOYMENT_DOCKER.md) for:
+- Cold start guide
+- Upgrade procedure
+- Backup and restore
+- Monitoring setup
+- Security checklist
+- Troubleshooting
 
 ---
 
 ## Troubleshooting
 
+**App fails to start — "JWT_SECRET must be set"**
+- Set `JWT_SECRET` in your `.env`: `openssl rand -hex 32`
+
 **App fails to connect to database**
-- Ensure the `postgres` service is healthy: `docker compose ps`
+- Check service health: `docker compose ps`
 - Check logs: `docker compose logs postgres`
-- Verify `DATABASE_URL` in your `.env` matches Postgres credentials
+- Verify `POSTGRES_PASSWORD` is identical in both postgres and multiqlti services
 
 **vLLM fails to start**
-- Confirm NVIDIA drivers and `nvidia-container-toolkit` are installed
-- Check GPU visibility: `docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi`
+- Confirm NVIDIA drivers: `nvidia-smi`
+- Install `nvidia-container-toolkit`
 - Use `--profile dev` or `--profile cloud-only` if no GPU is available
 
-**Port 5050 already in use**
-- Set `APP_PORT=8080` (or another free port) in your `.env`
+**Caddy fails to get TLS certificate**
+- Ensure ports 80 and 443 are open in your firewall
+- Ensure `CADDY_DOMAIN` resolves to this server's IP
+- Check: `docker compose logs caddy`
