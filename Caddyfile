@@ -1,0 +1,34 @@
+# Caddyfile — multiqlti reverse proxy
+#
+# Caddy automatically provisions and renews TLS certificates via Let's Encrypt
+# when CADDY_DOMAIN is set to a real domain name.
+#
+# For local development, Caddy serves on http://localhost (no TLS).
+# For production, set CADDY_DOMAIN=yourdomain.com in .env.
+#
+# Caddy reads this file as-is; environment variable substitution is handled
+# by the entrypoint via envsubst or caddy's native {env.VAR} syntax.
+
+{env.CADDY_DOMAIN} {
+    # Reverse proxy all traffic to the app container
+    reverse_proxy multiqlti:5000
+
+    # Security headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+        -Server
+    }
+
+    # Logging to stdout (picked up by Docker's json-file driver)
+    log {
+        output stdout
+        format json
+    }
+
+    # Compression
+    encode gzip zstd
+}
