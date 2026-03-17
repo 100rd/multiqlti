@@ -161,6 +161,9 @@ export const stageExecutions = pgTable("stage_executions", {
   approvedBy: text("approved_by"),
   rejectionReason: text("rejection_reason"),
   dagStageId: text("dag_stage_id"),
+  // ─── Swarm Result Fields (Phase 6.7) ────────────────────────────
+  swarmCloneResults: jsonb("swarm_clone_results"),
+  swarmMeta: jsonb("swarm_meta"),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

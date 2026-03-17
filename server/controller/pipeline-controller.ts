@@ -7,6 +7,8 @@ import { DelegationService } from "../pipeline/delegation-service";
 import { DAGExecutor } from "../pipeline/dag-executor";
 import type { StageExecuteFn } from "../pipeline/dag-executor";
 import { ParallelExecutor } from "../pipeline/parallel-executor";
+import { SwarmExecutor } from "../pipeline/swarm-executor";
+import type { SwarmResult } from "@shared/types";
 import type { PipelineRun } from "@shared/schema";
 import { SandboxExecutor } from "../sandbox/executor";
 import { ThoughtTreeCollector } from "../pipeline/thought-tree-collector";
@@ -29,6 +31,7 @@ export class PipelineController {
   private pendingApprovals: Map<string, ApprovalHandle> = new Map();
   private sandboxExecutor: SandboxExecutor;
   private parallelExecutor: ParallelExecutor;
+  private swarmExecutor: SwarmExecutor;
   private memoryExtractor: MemoryExtractor;
   private memoryProvider: MemoryProvider;
   private guardrailValidator: GuardrailValidator;
@@ -48,6 +51,11 @@ export class PipelineController {
   ) {
     this.sandboxExecutor = new SandboxExecutor();
     this.parallelExecutor = new ParallelExecutor(
+      gateway ?? createNullGateway(),
+      teamRegistry,
+      wsManager,
+    );
+    this.swarmExecutor = new SwarmExecutor(
       gateway ?? createNullGateway(),
       teamRegistry,
       wsManager,
@@ -570,24 +578,47 @@ export class PipelineController {
         };
 
         // Pass execution strategy (undefined = single, handled in BaseTeam)
-        // Attempt parallel execution first; falls back to single-agent if not enabled or shouldSplit=false
-        const parallelResult = await this.parallelExecutor.executeParallel(
-          resolvedStage,
-          stageInput,
-          context,
-          stageExec.id,
-        );
-
-        const result = parallelResult !== null
-          ? {
-              output: parallelResult.output,
-              tokensUsed: parallelResult.tokensUsed,
-              raw: parallelResult.raw,
+        // Swarm takes priority over parallel; falls back to single-agent if neither enabled
+        let result;
+        if (this.swarmExecutor.shouldSwarm(resolvedStage)) {
+          if (resolvedStage.parallel?.enabled) {
+            console.warn(`[PipelineController] Stage ${stageExec.id} has both swarm and parallel enabled; swarm takes priority`);
+          }
+          const inputStr = typeof stageInput.taskDescription === "string"
+            ? stageInput.taskDescription
+            : JSON.stringify(stageInput);
+          const swarmResult = await this.swarmExecutor.execute(resolvedStage, inputStr, context, stageExec.id);
+          if (swarmResult !== null) {
+            await this.persistSwarmResults(stageExec.id, swarmResult);
+            result = {
+              output: { raw: swarmResult.mergedOutput, swarmMeta: swarmResult },
+              tokensUsed: swarmResult.totalTokensUsed,
+              raw: swarmResult.mergedOutput,
               questions: undefined,
               strategyResult: undefined,
               toolCallLog: undefined,
-            }
-          : await team.execute(stageInput, context, resolvedStage.executionStrategy);
+            };
+          } else {
+            result = await team.execute(stageInput, context, resolvedStage.executionStrategy);
+          }
+        } else {
+          const parallelResult = await this.parallelExecutor.executeParallel(
+            resolvedStage,
+            stageInput,
+            context,
+            stageExec.id,
+          );
+          result = parallelResult !== null
+            ? {
+                output: parallelResult.output,
+                tokensUsed: parallelResult.tokensUsed,
+                raw: parallelResult.raw,
+                questions: undefined,
+                strategyResult: undefined,
+                toolCallLog: undefined,
+              }
+            : await team.execute(stageInput, context, resolvedStage.executionStrategy);
+        }
 
         // Collect thought tree from stage output
         const collector = new ThoughtTreeCollector();
@@ -970,7 +1001,22 @@ export class PipelineController {
     this.wsManager.broadcastToRun(runId, event);
   }
 
-  private buildDelegateFn(
+  private async persistSwarmResults(stageExecutionId: string, result: SwarmResult): Promise<void> {
+    await this.storage.updateStageExecution(stageExecutionId, {
+      swarmCloneResults: result.cloneResults as unknown as null,
+      swarmMeta: {
+        cloneCount: result.cloneResults.length,
+        succeededCount: result.succeededCount,
+        failedCount: result.failedCount,
+        mergerUsed: result.mergerUsed,
+        splitterUsed: result.splitterUsed,
+        totalTokensUsed: result.totalTokensUsed,
+        durationMs: result.durationMs,
+      } as unknown as null,
+    });
+  }
+
+    private buildDelegateFn(
     runId: string,
     fromStage: string,
     stage: PipelineStageConfig,

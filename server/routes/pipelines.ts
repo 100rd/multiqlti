@@ -172,4 +172,119 @@ export function registerPipelineRoutes(router: Router, storage: IStorage) {
       res.json(updated);
     },
   );
+
+  // ─── Swarm Config Endpoints (Phase 6.7) ─────────────────────────────────────
+
+  const SwarmPerspectiveSchema = z.object({
+    label: z.string().min(1).max(100),
+    systemPromptSuffix: z.string().min(1).max(4000),
+  });
+
+  const SwarmConfigSchema = z.object({
+    enabled: z.boolean(),
+    cloneCount: z.number().int().min(2).max(20),
+    splitter: z.enum(["chunks", "perspectives", "custom"]),
+    merger: z.enum(["concatenate", "llm_merge", "vote"]),
+    mergerModelSlug: z.string().min(1).max(200).optional(),
+    perspectives: z.array(SwarmPerspectiveSchema).max(20).optional(),
+    customClonePrompts: z.array(z.string().min(1).max(8000)).max(20).optional(),
+  }).refine(
+    (val) => {
+      if (val.splitter === "custom") {
+        return Array.isArray(val.customClonePrompts) &&
+               val.customClonePrompts.length === val.cloneCount;
+      }
+      return true;
+    },
+    { message: "customClonePrompts length must equal cloneCount when splitter is 'custom'" },
+  );
+
+  const SwarmRouteParamsSchema = z.object({
+    id: z.string().min(1).max(100),
+    stageIndex: z.coerce.number().int().min(0),
+  });
+
+  const SwarmRunParamsSchema = z.object({
+    runId: z.string().min(1).max(100),
+    stageIndex: z.coerce.number().int().min(0),
+  });
+
+  // PATCH /api/pipelines/:id/stages/:stageIndex/swarm — set swarm config
+  router.patch(
+    "/api/pipelines/:id/stages/:stageIndex/swarm",
+    requireRole("maintainer", "admin"),
+    async (req, res) => {
+      const paramsResult = SwarmRouteParamsSchema.safeParse(req.params);
+      if (!paramsResult.success) {
+        return res.status(400).json({ error: "Invalid params", issues: paramsResult.error.issues });
+      }
+      const { id, stageIndex } = paramsResult.data;
+      const pipeline = await storage.getPipeline(id);
+      if (!pipeline) return res.status(404).json({ error: "Pipeline not found" });
+
+      const stages = (pipeline.stages as Array<Record<string, unknown>>) ?? [];
+      if (stageIndex >= stages.length) {
+        return res.status(400).json({ error: `stageIndex ${stageIndex} out of range` });
+      }
+
+      const bodyResult = SwarmConfigSchema.safeParse(req.body);
+      if (!bodyResult.success) {
+        return res.status(400).json({ error: "Validation failed", issues: bodyResult.error.issues });
+      }
+
+      const stage = stages[stageIndex] as Record<string, unknown>;
+      if (stage.parallel && (stage.parallel as Record<string, unknown>).enabled) {
+        return res.status(409).json({ error: "Stage has parallel enabled; disable parallel before enabling swarm" });
+      }
+
+      stages[stageIndex] = { ...stage, swarm: bodyResult.data };
+      const updated = await storage.updatePipeline(id, { stages } as Parameters<typeof storage.updatePipeline>[1]);
+      const updatedStages = (updated.stages as unknown[]) ?? [];
+      res.json({ stage: updatedStages[stageIndex] });
+    },
+  );
+
+  // DELETE /api/pipelines/:id/stages/:stageIndex/swarm — remove swarm config
+  router.delete(
+    "/api/pipelines/:id/stages/:stageIndex/swarm",
+    requireRole("maintainer", "admin"),
+    async (req, res) => {
+      const paramsResult = SwarmRouteParamsSchema.safeParse(req.params);
+      if (!paramsResult.success) {
+        return res.status(400).json({ error: "Invalid params", issues: paramsResult.error.issues });
+      }
+      const { id, stageIndex } = paramsResult.data;
+      const pipeline = await storage.getPipeline(id);
+      if (!pipeline) return res.status(404).json({ error: "Pipeline not found" });
+
+      const stages = (pipeline.stages as Array<Record<string, unknown>>) ?? [];
+      if (stageIndex >= stages.length) {
+        return res.status(400).json({ error: `stageIndex ${stageIndex} out of range` });
+      }
+
+      const { swarm: _removed, ...rest } = stages[stageIndex] as Record<string, unknown>;
+      stages[stageIndex] = rest;
+      const updated = await storage.updatePipeline(id, { stages } as Parameters<typeof storage.updatePipeline>[1]);
+      const updatedStages = (updated.stages as unknown[]) ?? [];
+      res.json({ stage: updatedStages[stageIndex] });
+    },
+  );
+
+  // GET /api/runs/:runId/stages/:stageIndex/swarm-results — get clone results
+  router.get(
+    "/api/runs/:runId/stages/:stageIndex/swarm-results",
+    async (req, res) => {
+      const paramsResult = SwarmRunParamsSchema.safeParse(req.params);
+      if (!paramsResult.success) {
+        return res.status(400).json({ error: "Invalid params", issues: paramsResult.error.issues });
+      }
+      const { runId, stageIndex } = paramsResult.data;
+      const executions = await storage.getStageExecutions(runId);
+      const stageExec = executions.find((e) => e.stageIndex === stageIndex);
+      if (!stageExec || !stageExec.swarmMeta) {
+        return res.status(404).json({ error: "No swarm data found for this stage" });
+      }
+      res.json({ swarmMeta: stageExec.swarmMeta, cloneResults: stageExec.swarmCloneResults });
+    },
+  );
 }

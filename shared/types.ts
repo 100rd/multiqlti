@@ -251,7 +251,13 @@ export type WsEventType =
   | "trigger:error"
   | "manager:decision"
   | "manager:complete"
-  | "manager:error";
+  | "manager:error"
+  | "swarm:started"
+  | "swarm:clone:started"
+  | "swarm:clone:completed"
+  | "swarm:clone:failed"
+  | "swarm:merging"
+  | "swarm:completed";
 
 export interface WsEvent {
   type: WsEventType;
@@ -400,6 +406,7 @@ export interface PipelineStageConfig {
   };
   skillId?: string;
   delegationEnabled?: boolean; // default false; stage must opt-in to receive delegate fn
+  swarm?: SwarmConfig;
 }
 
 export interface StageOutput {
@@ -1202,4 +1209,45 @@ export interface InsertTrace {
   traceId: string;
   runId: string;
   spans: TraceSpan[];
+}
+
+// ─── Swarm Types (Phase 6.7) ──────────────────────────────────────────────────
+
+export type SwarmSplitter = "chunks" | "perspectives" | "custom";
+export type SwarmMerger = "concatenate" | "llm_merge" | "vote";
+
+export interface SwarmPerspective {
+  label: string;               // e.g. "Security Review"
+  systemPromptSuffix: string;  // appended to the stage's base system prompt
+}
+
+export interface SwarmConfig {
+  enabled: boolean;
+  cloneCount: number;          // 2–20, enforced in Zod and at runtime
+  splitter: SwarmSplitter;
+  merger: SwarmMerger;
+  mergerModelSlug?: string;    // for llm_merge; defaults to stage modelSlug
+  perspectives?: SwarmPerspective[];
+  customClonePrompts?: string[];
+}
+
+export interface SwarmCloneResult {
+  cloneIndex: number;
+  status: "succeeded" | "failed";
+  output?: string;
+  error?: string;
+  tokensUsed: number;
+  durationMs: number;
+  systemPromptPreview: string;  // first 120 chars of the prompt used
+}
+
+export interface SwarmResult {
+  mergedOutput: string;
+  cloneResults: SwarmCloneResult[];
+  succeededCount: number;
+  failedCount: number;
+  totalTokensUsed: number;
+  mergerUsed: SwarmMerger;
+  splitterUsed: SwarmSplitter;
+  durationMs: number;
 }
