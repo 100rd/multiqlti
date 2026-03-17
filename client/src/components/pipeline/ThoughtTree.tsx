@@ -16,6 +16,8 @@ const NODE_ICONS: Record<ThoughtNode["type"], string> = {
   decision: "CheckSquare",
   guardrail: "AlertTriangle",
   memory_recall: "MessageCircle",
+  branch: "GitBranch",
+  conclusion: "CheckCircle",
 };
 
 const NODE_EMOJI: Record<ThoughtNode["type"], string> = {
@@ -25,6 +27,8 @@ const NODE_EMOJI: Record<ThoughtNode["type"], string> = {
   decision: "✅",
   guardrail: "⚠️",
   memory_recall: "💭",
+  branch: "🌿",
+  conclusion: "🏁",
 };
 
 const NODE_COLORS: Record<ThoughtNode["type"], string> = {
@@ -34,6 +38,8 @@ const NODE_COLORS: Record<ThoughtNode["type"], string> = {
   decision: "border-green-500/30 bg-green-500/5",
   guardrail: "border-amber-500/30 bg-amber-500/5",
   memory_recall: "border-cyan-500/30 bg-cyan-500/5",
+  branch: "border-violet-500/30 bg-violet-500/5",
+  conclusion: "border-emerald-500/30 bg-emerald-500/5",
 };
 
 function ThoughtNodeRow({ node, depth }: { node: ThoughtNode; depth: number }) {
