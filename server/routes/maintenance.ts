@@ -1,15 +1,19 @@
 import type { Router } from "express";
 import { z } from "zod";
 import { db } from "../db";
-import { maintenancePolicies, maintenanceScans } from "@shared/schema";
+import { maintenancePolicies, maintenanceScans, pipelineRuns, autoTriggerAudit } from "@shared/schema";
 import { eq, desc, and } from "drizzle-orm";
 import type {
   MaintenanceCategoryConfig,
   ScoutFinding,
   HealthScore,
   MaintenancePolicy,
+  LogSourceConfig,
+  AutoTriggerAuditRow,
 } from "@shared/types";
 import { computeAnalyticsReport } from "../maintenance/analytics";
+import { runScout } from "../maintenance/scout";
+import { workspaces } from "@shared/schema";
 
 // ─── Validation Schemas ───────────────────────────────────────────────────────
 
@@ -28,6 +32,9 @@ const MAINTENANCE_CATEGORIES = [
   "infra_drift",
   "vendor_status",
   "system_hardening",
+  "cve_scan",
+  "log_analysis",
+  "container_scan",
 ] as const;
 
 const SEVERITY_VALUES = ["critical", "high", "medium", "low", "info"] as const;
@@ -228,7 +235,29 @@ export function registerMaintenanceRoutes(router: Router): void {
         return res.status(400).json({ error: "Policy has no workspace associated" });
       }
 
-      // Create a stub scan record — the scheduler will fill it in
+      // Resolve workspace path
+      const [workspace] = await db
+        .select()
+        .from(workspaces)
+        .where(eq(workspaces.id, policy.workspaceId));
+
+      if (!workspace) {
+        return res.status(400).json({ error: "Workspace not found" });
+      }
+
+      const workspacePath: string = workspace.path ?? "";
+      if (!workspacePath) {
+        return res.status(400).json({ error: "Workspace has no path configured" });
+      }
+
+      // Authorization: only workspace owner or admin can trigger scans
+      const isOwner = workspace.ownerId === req.user?.id;
+      const isAdmin = req.user?.role === "admin";
+      if (!isOwner && !isAdmin) {
+        return res.status(403).json({ error: "Forbidden: you do not own this workspace's policy" });
+      }
+
+      // Create scan record in running state
       const [scan] = await db
         .insert(maintenanceScans)
         .values({
@@ -240,7 +269,79 @@ export function registerMaintenanceRoutes(router: Router): void {
         })
         .returning();
 
-      return res.status(202).json(scan);
+      // Run scout synchronously
+      const enabledCategories = (policy.categories as MaintenanceCategoryConfig[])
+        .filter((c) => c.enabled)
+        .map((c) => c.category);
+
+      let scoutResult: { findings: ScoutFinding[]; importantCount: number; errors: string[] };
+      try {
+        scoutResult = await runScout({
+          workspacePath,
+          scanId: scan.id,
+          enabledCategories,
+          logSourceConfig: (policy.logSourceConfig as LogSourceConfig | null) ?? null,
+        });
+      } catch (scoutErr) {
+        await db
+          .update(maintenanceScans)
+          .set({ status: "failed", completedAt: new Date() })
+          .where(eq(maintenanceScans.id, scan.id));
+        return res.status(500).json({ error: (scoutErr as Error).message });
+      }
+
+      // Mark scan completed
+      const [completedScan] = await db
+        .update(maintenanceScans)
+        .set({
+          status: "completed",
+          findings: scoutResult.findings,
+          importantCount: scoutResult.importantCount,
+          completedAt: new Date(),
+        })
+        .where(eq(maintenanceScans.id, scan.id))
+        .returning();
+
+      // ── Auto-trigger pipeline on critical findings ─────────────────────────
+      const criticalFindings = scoutResult.findings.filter((f) => f.severity === "critical");
+      if (
+        criticalFindings.length > 0 &&
+        policy.autoTriggerEnabled &&
+        policy.autoTriggerPipelineId &&
+        req.user?.role === "admin"
+      ) {
+        try {
+          const [run] = await db
+            .insert(pipelineRuns)
+            .values({
+              pipelineId: policy.autoTriggerPipelineId,
+              status: "pending",
+              input: JSON.stringify({
+                source: "maintenance_auto_trigger",
+                scanId: scan.id,
+                criticalFindings,
+              }),
+              triggeredBy: req.user.id,
+              dagMode: false,
+            })
+            .returning();
+
+          const auditRows = criticalFindings.map((f) => ({
+            scanId: scan.id,
+            findingId: f.id,
+            pipelineRunId: run.id,
+            triggeredBy: req.user!.id,
+          }));
+
+          if (auditRows.length > 0) {
+            await db.insert(autoTriggerAudit).values(auditRows);
+          }
+        } catch {
+          // Auto-trigger failure is non-fatal — scan result is still returned
+        }
+      }
+
+      return res.status(200).json(completedScan);
     } catch (err) {
       return res.status(500).json({ error: (err as Error).message });
     }
@@ -415,6 +516,26 @@ export function registerMaintenanceRoutes(router: Router): void {
       res.json(health);
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // ── Auto-Trigger Audit ────────────────────────────────────────────────────────
+
+  router.get("/api/maintenance/auto-trigger-audit", async (req, res) => {
+    // requireAuth is applied globally; enforce admin role here
+    if (req.user?.role !== "admin") {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    try {
+      const rows = await db
+        .select()
+        .from(autoTriggerAudit)
+        .orderBy(desc(autoTriggerAudit.triggeredAt));
+
+      return res.json(rows as AutoTriggerAuditRow[]);
+    } catch (err) {
+      return res.status(500).json({ error: (err as Error).message });
     }
   });
 

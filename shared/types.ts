@@ -681,7 +681,30 @@ export type MaintenanceCategory =
   | "cert_expiry"
   | "infra_drift"
   | "vendor_status"
-  | "system_hardening";
+  | "system_hardening"
+  | "cve_scan"
+  | "log_analysis"
+  | "container_scan";
+
+// ─── Log Source Config (Phase 6.11) ──────────────────────────────────────────
+
+export interface LogSourceConfig {
+  type: "file" | "http";
+  path?: string;
+  url?: string;
+  headers?: Record<string, string>;
+}
+
+// ─── Auto-Trigger Audit (Phase 6.11) ─────────────────────────────────────────
+
+export interface AutoTriggerAuditRow {
+  id: string;
+  scanId: string;
+  findingId: string;
+  pipelineRunId: string;
+  triggeredAt: Date;
+  triggeredBy: string | null;
+}
 
 export type MaintenanceSeverity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -701,6 +724,9 @@ export interface MaintenancePolicy {
   severityThreshold: MaintenanceSeverity;
   autoMerge: boolean;
   notifyChannels: string[];
+  autoTriggerPipelineId: string | null;
+  autoTriggerEnabled: boolean;
+  logSourceConfig: LogSourceConfig | null;
   createdAt: Date;
   updatedAt: Date;
 }
