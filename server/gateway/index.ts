@@ -105,6 +105,16 @@ export class Gateway {
     return this.registry.get(providerKey) ?? null;
   }
 
+  /**
+   * Resolve the provider key (e.g. "anthropic", "google", "xai") for a
+   * given model slug.  Useful for computing provider diversity without making
+   * a full LLM call.  Returns "mock" if the model is unknown.
+   */
+  async resolveProvider(modelSlug: string): Promise<string> {
+    const model = await this.storage.getModelBySlug(modelSlug);
+    return model?.provider ?? "mock";
+  }
+
   private shouldAnonymize(privacy?: PrivacySettings): boolean {
     return !!(privacy?.enabled && privacy.level !== "off");
   }

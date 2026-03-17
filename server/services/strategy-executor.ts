@@ -9,8 +9,15 @@ import type {
   MoaDetails,
   DebateDetails,
   VotingDetails,
+  ArbitratorVerdict,
+  ArbitratorCriterion,
   ProviderMessage,
 } from "@shared/types";
+import {
+  computeProviderDiversityScore,
+  preferCrossProviderOrder,
+  type ParticipantWithProvider,
+} from "./provider-diversity";
 
 export interface StrategyContext {
   runId: string;
@@ -173,12 +180,29 @@ export class StrategyExecutor {
   ): Promise<StrategyResult> {
     validateDebateStrategy(strategy);
 
+    // ── 6.13.1: Resolve providers and reorder for cross-provider diversity ───
+    const participantsWithProvider: ParticipantWithProvider[] = await Promise.all(
+      strategy.participants.map(async (p) => ({
+        participant: p,
+        provider: await this.gateway.resolveProvider(p.modelSlug),
+      })),
+    );
+
+    const orderedParticipants = preferCrossProviderOrder(participantsWithProvider);
+    const providerDiversityScore = computeProviderDiversityScore(participantsWithProvider);
+
+    // Build a lookup map: modelSlug → provider
+    const providerMap = new Map<string, string>(
+      participantsWithProvider.map((p) => [p.participant.modelSlug, p.provider]),
+    );
+
+    // ── Run debate rounds ────────────────────────────────────────────────────
     const debateRounds: DebateDetails["rounds"] = [];
     let totalTokens = 0;
     const conversationHistory: ProviderMessage[] = [...basePrompt];
 
     for (let round = 1; round <= strategy.rounds; round++) {
-      for (const participant of strategy.participants) {
+      for (const { participant } of orderedParticipants) {
         const rolePrompt = buildDebateRolePrompt(participant.role, participant.persona, round, strategy.rounds);
         const messages: ProviderMessage[] = [
           ...conversationHistory,
@@ -193,11 +217,12 @@ export class StrategyExecutor {
 
         totalTokens += response.tokensUsed;
 
-        const entry = {
+        const entry: DebateDetails["rounds"][number] = {
           round,
           participant: participant.modelSlug,
           role: participant.role,
           content: response.content,
+          provider: providerMap.get(participant.modelSlug),
         };
         debateRounds.push(entry);
 
@@ -218,7 +243,7 @@ export class StrategyExecutor {
       }
     }
 
-    // Judge delivers verdict
+    // ── Judge delivers verdict ───────────────────────────────────────────────
     const judgePrompt = buildJudgePrompt(debateRounds, strategy.judge.criteria);
     const judgeMessages: ProviderMessage[] = [
       ...basePrompt,
@@ -240,10 +265,54 @@ export class StrategyExecutor {
       timestamp: new Date().toISOString(),
     });
 
+    // ── 6.13.2: Arbitrator (optional) ───────────────────────────────────────
+    let arbitratorVerdict: ArbitratorVerdict | undefined;
+
+    if (strategy.arbitrator) {
+      validateArbitratorConfig(
+        strategy.arbitrator.modelSlug,
+        strategy.judge.modelSlug,
+        strategy.participants.map((p) => p.modelSlug),
+      );
+
+      const participantSlugs = strategy.participants.map((p) => p.modelSlug);
+      const criteria = strategy.arbitrator.criteria ?? ["correctness", "completeness", "security", "performance"];
+      const arbitratorPrompt = buildArbitratorPrompt(debateRounds, participantSlugs, criteria);
+
+      const arbitratorMessages: ProviderMessage[] = [
+        ...basePrompt,
+        { role: "user", content: arbitratorPrompt },
+      ];
+
+      const arbitratorResponse = await this.gateway.complete({
+        modelSlug: strategy.arbitrator.modelSlug,
+        messages: arbitratorMessages,
+        maxTokens: context.maxTokens,
+      });
+
+      totalTokens += arbitratorResponse.tokensUsed;
+
+      arbitratorVerdict = parseArbitratorVerdict(
+        arbitratorResponse.content,
+        strategy.arbitrator.modelSlug,
+        participantSlugs,
+      );
+
+      this.wsManager.broadcastToRun(context.runId, {
+        type: "strategy:debate:arbitrator",
+        runId: context.runId,
+        payload: { stageId: context.stageId, verdict: arbitratorVerdict },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // ── Assemble result ──────────────────────────────────────────────────────
     const details: DebateDetails = {
       rounds: debateRounds,
       judgeModelSlug: strategy.judge.modelSlug,
       verdict: judgeResponse.content,
+      providerDiversityScore,
+      ...(arbitratorVerdict !== undefined && { arbitratorVerdict }),
     };
 
     return {
@@ -346,6 +415,29 @@ function validateVotingStrategy(s: VotingStrategy): void {
   if (s.threshold < 0.5 || s.threshold > 1.0) throw new Error("Threshold must be between 0.5 and 1.0");
 }
 
+/**
+ * Enforce the arbitrator model exclusion rule at runtime.
+ * Throws if the arbitrator model equals the judge or any participant.
+ */
+export function validateArbitratorConfig(
+  arbitratorSlug: string,
+  judgeSlug: string,
+  participantSlugs: string[],
+): void {
+  if (arbitratorSlug === judgeSlug) {
+    throw new Error(
+      `Arbitrator model "${arbitratorSlug}" must differ from the judge model "${judgeSlug}"`,
+    );
+  }
+  for (const slug of participantSlugs) {
+    if (arbitratorSlug === slug) {
+      throw new Error(
+        `Arbitrator model "${arbitratorSlug}" must differ from all debate participants (found duplicate: "${slug}")`,
+      );
+    }
+  }
+}
+
 function replaceSystemPrompt(messages: ProviderMessage[], newSystem: string): ProviderMessage[] {
   const hasSystem = messages[0]?.role === "system";
   if (hasSystem) {
@@ -412,6 +504,129 @@ function buildJudgePrompt(
     .join("\n\n---\n\n");
 
   return `You are the judge. ${criteriaNote}\n\nDebate transcript:\n\n${transcript}\n\nDeliver the final verdict and best solution:`;
+}
+
+/**
+ * Build the structured arbitration prompt asking for JSON output.
+ */
+export function buildArbitratorPrompt(
+  rounds: DebateDetails["rounds"],
+  participantSlugs: string[],
+  criteria: ArbitratorCriterion[],
+): string {
+  const participantList = participantSlugs.map((s, i) => `  ${i + 1}. ${s}`).join("\n");
+  const criteriaList = criteria.map((c) => `- ${c} (1–10): ${CRITERION_DESCRIPTIONS[c]}`).join("\n");
+
+  const transcript = rounds
+    .map((r) => `[Round ${r.round}] [${r.role}] (${r.participant}):\n${r.content}`)
+    .join("\n\n---\n\n");
+
+  const exampleScores = Object.fromEntries(participantSlugs.map((s) => [s, 7]));
+
+  return `You are an impartial arbitrator. Your task is to evaluate each debate participant against structured criteria and determine the overall winner.
+
+Participants:
+${participantList}
+
+Scoring criteria (each scored 1–10 per participant):
+${criteriaList}
+
+Debate transcript:
+${transcript}
+
+Respond ONLY with valid JSON matching this schema (no markdown, no explanation outside JSON):
+{
+  "criterionScores": [
+    {
+      "criterion": "<criterion name>",
+      "scores": ${JSON.stringify(exampleScores)},
+      "reasoning": "<one sentence explaining the scores for this criterion>"
+    }
+  ],
+  "winner": "<modelSlug of the best overall participant>",
+  "confidence": 0.85,
+  "reasoning": "<overall reasoning for your decision>"
+}`;
+}
+
+const CRITERION_DESCRIPTIONS: Record<ArbitratorCriterion, string> = {
+  correctness: "factual accuracy and logical soundness",
+  completeness: "coverage of all required aspects",
+  security: "identification and handling of security concerns",
+  performance: "consideration of performance implications",
+};
+
+/**
+ * Parse the arbitrator's JSON response into an ArbitratorVerdict.
+ * Validates structure; on parse failure returns a fallback with confidence=0.
+ */
+export function parseArbitratorVerdict(
+  rawContent: string,
+  arbitratorModelSlug: string,
+  participantSlugs: string[],
+): ArbitratorVerdict {
+  // Strip markdown code fences if present
+  const jsonStr = rawContent
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```\s*$/, "")
+    .trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch {
+    return buildFallbackVerdict(arbitratorModelSlug, participantSlugs, "Failed to parse JSON response");
+  }
+
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !Array.isArray((parsed as Record<string, unknown>).criterionScores) ||
+    typeof (parsed as Record<string, unknown>).winner !== "string" ||
+    typeof (parsed as Record<string, unknown>).confidence !== "number" ||
+    typeof (parsed as Record<string, unknown>).reasoning !== "string"
+  ) {
+    return buildFallbackVerdict(arbitratorModelSlug, participantSlugs, "Invalid JSON structure");
+  }
+
+  const p = parsed as {
+    criterionScores: Array<{
+      criterion: string;
+      scores: Record<string, number>;
+      reasoning: string;
+    }>;
+    winner: string;
+    confidence: number;
+    reasoning: string;
+  };
+
+  return {
+    arbitratorModelSlug,
+    criterionScores: p.criterionScores.map((cs) => ({
+      criterion: cs.criterion as ArbitratorCriterion,
+      scores: cs.scores,
+      reasoning: cs.reasoning,
+    })),
+    winner: p.winner,
+    confidence: Math.max(0, Math.min(1, p.confidence)),
+    reasoning: p.reasoning,
+    participantSlugs,
+  };
+}
+
+function buildFallbackVerdict(
+  arbitratorModelSlug: string,
+  participantSlugs: string[],
+  reason: string,
+): ArbitratorVerdict {
+  return {
+    arbitratorModelSlug,
+    criterionScores: [],
+    winner: participantSlugs[0] ?? "unknown",
+    confidence: 0,
+    reasoning: `Arbitration failed: ${reason}`,
+    participantSlugs,
+  };
 }
 
 function checkConsensus(rounds: DebateDetails["rounds"], currentRound: number): boolean {
