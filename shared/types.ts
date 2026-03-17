@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 // ─── Complexity Types ─────────────────────────────────────────────────────────
 
 export type TaskComplexity = "trivial" | "standard" | "complex";
@@ -249,6 +251,12 @@ export type WsEventType =
   | "dag:completed"
   | "trigger:fired"
   | "trigger:error"
+  | "swarm:started"
+  | "swarm:clone:started"
+  | "swarm:clone:completed"
+  | "swarm:clone:failed"
+  | "swarm:merging"
+  | "swarm:completed"
   | "manager:decision"
   | "manager:complete"
   | "manager:error";
@@ -394,6 +402,7 @@ export interface PipelineStageConfig {
   sandbox?: SandboxConfig;
   tools?: StageToolConfig;
   parallel?: ParallelConfig;
+  swarm?: SwarmConfig;
   guardrails?: StageGuardrail[];
   autoModelRouting?: {
     enabled: boolean;
@@ -982,6 +991,7 @@ export interface DAGStage {
   sandbox?: SandboxConfig;
   tools?: StageToolConfig;
   parallel?: ParallelConfig;
+  swarm?: SwarmConfig;
   guardrails?: StageGuardrail[];
   autoModelRouting?: { enabled: boolean };
   skillId?: string;
@@ -1167,3 +1177,70 @@ export interface ManagerErrorPayload {
   error: string;
   recoverable: boolean;
 }
+
+// ─── Agent Swarm Types (Phase 6.7) ────────────────────────────────────────────
+
+export type SwarmSplitter = "chunks" | "perspectives" | "custom";
+export type SwarmMerger = "concatenate" | "llm_merge" | "vote";
+
+export interface SwarmPerspective {
+  label: string;               // e.g. "Security Review"
+  systemPromptSuffix: string;  // appended to the stage's base system prompt
+}
+
+export interface SwarmConfig {
+  enabled: boolean;
+  cloneCount: number;          // 2–20, enforced in Zod
+  splitter: SwarmSplitter;
+  merger: SwarmMerger;
+  mergerModelSlug?: string;    // for llm_merge strategy; defaults to stage modelSlug
+  perspectives?: SwarmPerspective[];
+  customClonePrompts?: string[];
+}
+
+export interface SwarmCloneResult {
+  cloneIndex: number;
+  status: "succeeded" | "failed";
+  output?: string;
+  error?: string;
+  tokensUsed: number;
+  durationMs: number;
+  systemPromptPreview: string;  // first 120 chars of the prompt used
+}
+
+export interface SwarmResult {
+  mergedOutput: string;
+  cloneResults: SwarmCloneResult[];
+  succeededCount: number;
+  failedCount: number;
+  totalTokensUsed: number;
+  mergerUsed: SwarmMerger;
+  splitterUsed: SwarmSplitter;
+  durationMs: number;
+}
+
+// ─── Swarm Zod Schemas ────────────────────────────────────────────────────────
+
+export const SwarmPerspectiveSchema = z.object({
+  label: z.string().min(1).max(100),
+  systemPromptSuffix: z.string().min(1).max(4000),
+});
+
+export const SwarmConfigSchema = z.object({
+  enabled: z.boolean(),
+  cloneCount: z.number().int().min(2).max(20),
+  splitter: z.enum(["chunks", "perspectives", "custom"]),
+  merger: z.enum(["concatenate", "llm_merge", "vote"]),
+  mergerModelSlug: z.string().min(1).max(200).optional(),
+  perspectives: z.array(SwarmPerspectiveSchema).max(20).optional(),
+  customClonePrompts: z.array(z.string().min(1).max(8000)).max(20).optional(),
+}).refine(
+  (val) => {
+    if (val.splitter === "custom") {
+      return Array.isArray(val.customClonePrompts) &&
+             val.customClonePrompts.length === val.cloneCount;
+    }
+    return true;
+  },
+  { message: "customClonePrompts length must equal cloneCount when splitter is 'custom'" }
+);

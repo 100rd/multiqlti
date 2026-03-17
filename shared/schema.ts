@@ -14,7 +14,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision } from "./types.js";
+import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, SwarmCloneResult, SwarmMerger, SwarmSplitter } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -161,6 +161,16 @@ export const stageExecutions = pgTable("stage_executions", {
   approvedBy: text("approved_by"),
   rejectionReason: text("rejection_reason"),
   dagStageId: text("dag_stage_id"),
+  swarmCloneResults: jsonb("swarm_clone_results").$type<SwarmCloneResult[]>(),
+  swarmMeta: jsonb("swarm_meta").$type<{
+    cloneCount: number;
+    succeededCount: number;
+    failedCount: number;
+    mergerUsed: SwarmMerger;
+    splitterUsed: SwarmSplitter;
+    totalTokensUsed: number;
+    durationMs: number;
+  }>(),
   createdAt: timestamp("created_at").defaultNow(),
 });
 

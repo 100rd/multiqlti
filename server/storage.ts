@@ -418,6 +418,8 @@ export class MemStorage implements IStorage {
       approvedBy: insert.approvedBy ?? null,
       rejectionReason: insert.rejectionReason ?? null,
       dagStageId: insert.dagStageId ?? null,
+      swarmCloneResults: insert.swarmCloneResults ?? null,
+      swarmMeta: insert.swarmMeta ?? null,
       createdAt: new Date(),
     };
     this.stages.set(id, stage);

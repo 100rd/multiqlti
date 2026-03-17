@@ -1,7 +1,9 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { IStorage } from "../storage";
+import type { Gateway } from "../gateway/index";
 import { requireRole, requireOwnerOrRole } from "../auth/middleware";
+import { SwarmConfigSchema } from "@shared/types";
 
 const ParallelConfigSchema = z.object({
   enabled: z.boolean(),
@@ -33,7 +35,7 @@ const CreatePipelineSchema = z.object({
 
 const UpdatePipelineSchema = CreatePipelineSchema.partial();
 
-export function registerPipelineRoutes(router: Router, storage: IStorage) {
+export function registerPipelineRoutes(router: Router, storage: IStorage, gateway?: Gateway) {
   // GET /api/pipelines — any authenticated user (requireAuth already applied globally)
   router.get("/api/pipelines", async (_req, res) => {
     const pipelines = await storage.getPipelines();
@@ -170,6 +172,210 @@ export function registerPipelineRoutes(router: Router, storage: IStorage) {
         managerConfig: null,
       } as Parameters<typeof storage.updatePipeline>[1]);
       res.json(updated);
+    },
+  );
+
+  // ─── Swarm Config Endpoints (Phase 6.7) ─────────────────────────────────────
+
+  const SwarmRouteParamsSchema = z.object({
+    id: z.string().min(1).max(100),
+    stageIndex: z.coerce.number().int().min(0),
+  });
+
+  const SwarmRunParamsSchema = z.object({
+    runId: z.string().min(1).max(100),
+    stageIndex: z.coerce.number().int().min(0),
+  });
+
+  const GeneratePerspectivesBodySchema = z.object({
+    stageDescription: z.string().min(1).max(500),
+    cloneCount: z.number().int().min(2).max(20).optional().default(3),
+  });
+
+  // PATCH /api/pipelines/:id/stages/:stageIndex/swarm — set/update swarm config
+  router.patch(
+    "/api/pipelines/:id/stages/:stageIndex/swarm",
+    requireRole("maintainer", "admin"),
+    async (req, res) => {
+      const paramsResult = SwarmRouteParamsSchema.safeParse(req.params);
+      if (!paramsResult.success) {
+        return res.status(400).json({ error: "Invalid params", issues: paramsResult.error.issues });
+      }
+      const { id, stageIndex } = paramsResult.data;
+
+      const pipeline = await storage.getPipeline(id);
+      if (!pipeline) {
+        return res.status(404).json({ error: "Pipeline not found" });
+      }
+
+      const stages = pipeline.stages as import("@shared/types").PipelineStageConfig[];
+      if (stageIndex < 0 || stageIndex >= stages.length) {
+        return res.status(400).json({ error: `stageIndex ${stageIndex} is out of range (pipeline has ${stages.length} stages)` });
+      }
+
+      const stage = stages[stageIndex];
+      if (stage.parallel?.enabled) {
+        return res.status(409).json({ error: "Stage has parallel execution enabled. Disable parallel before enabling swarm." });
+      }
+
+      const bodyResult = SwarmConfigSchema.safeParse(req.body);
+      if (!bodyResult.success) {
+        return res.status(400).json({ error: "Validation failed", issues: bodyResult.error.issues });
+      }
+
+      const updatedStages = [...stages];
+      updatedStages[stageIndex] = { ...stage, swarm: bodyResult.data };
+
+      const updated = await storage.updatePipeline(id, { stages: updatedStages } as Parameters<typeof storage.updatePipeline>[1]);
+      res.json({ stage: (updated.stages as import("@shared/types").PipelineStageConfig[])[stageIndex] });
+    },
+  );
+
+  // DELETE /api/pipelines/:id/stages/:stageIndex/swarm — remove swarm config
+  router.delete(
+    "/api/pipelines/:id/stages/:stageIndex/swarm",
+    requireRole("maintainer", "admin"),
+    async (req, res) => {
+      const paramsResult = SwarmRouteParamsSchema.safeParse(req.params);
+      if (!paramsResult.success) {
+        return res.status(400).json({ error: "Invalid params", issues: paramsResult.error.issues });
+      }
+      const { id, stageIndex } = paramsResult.data;
+
+      const pipeline = await storage.getPipeline(id);
+      if (!pipeline) {
+        return res.status(404).json({ error: "Pipeline not found" });
+      }
+
+      const stages = pipeline.stages as import("@shared/types").PipelineStageConfig[];
+      if (stageIndex < 0 || stageIndex >= stages.length) {
+        return res.status(400).json({ error: `stageIndex ${stageIndex} is out of range` });
+      }
+
+      const stage = stages[stageIndex];
+      const updatedStage = { ...stage };
+      delete updatedStage.swarm;
+
+      const updatedStages = [...stages];
+      updatedStages[stageIndex] = updatedStage;
+
+      const updated = await storage.updatePipeline(id, { stages: updatedStages } as Parameters<typeof storage.updatePipeline>[1]);
+      res.json({ stage: (updated.stages as import("@shared/types").PipelineStageConfig[])[stageIndex] });
+    },
+  );
+
+  // GET /api/runs/:runId/stages/:stageIndex/swarm-results — get per-clone results
+  router.get(
+    "/api/runs/:runId/stages/:stageIndex/swarm-results",
+    async (req, res) => {
+      const paramsResult = SwarmRunParamsSchema.safeParse(req.params);
+      if (!paramsResult.success) {
+        return res.status(400).json({ error: "Invalid params", issues: paramsResult.error.issues });
+      }
+      const { runId, stageIndex } = paramsResult.data;
+
+      // Ownership check
+      const run = await storage.getPipelineRun(runId);
+      if (!run) {
+        return res.status(404).json({ error: "Run not found" });
+      }
+      const userId = req.user?.id;
+      const isAdmin = req.user?.role === "admin";
+      if (!isAdmin && run.triggeredBy && run.triggeredBy !== userId) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      const executions = await storage.getStageExecutions(runId);
+      const stageExec = executions.find((e) => e.stageIndex === stageIndex);
+      if (!stageExec || !stageExec.swarmMeta) {
+        return res.status(404).json({ error: "No swarm data for this stage" });
+      }
+
+      res.json({
+        swarmMeta: stageExec.swarmMeta,
+        cloneResults: stageExec.swarmCloneResults ?? [],
+      });
+    },
+  );
+
+  // POST /api/pipelines/:id/stages/:stageIndex/swarm/generate-perspectives
+  router.post(
+    "/api/pipelines/:id/stages/:stageIndex/swarm/generate-perspectives",
+    requireRole("maintainer", "admin"),
+    async (req, res) => {
+      const paramsResult = SwarmRouteParamsSchema.safeParse(req.params);
+      if (!paramsResult.success) {
+        return res.status(400).json({ error: "Invalid params", issues: paramsResult.error.issues });
+      }
+      const { id, stageIndex } = paramsResult.data;
+
+      const pipeline = await storage.getPipeline(id);
+      if (!pipeline) {
+        return res.status(404).json({ error: "Pipeline not found" });
+      }
+
+      const stages = pipeline.stages as import("@shared/types").PipelineStageConfig[];
+      if (stageIndex < 0 || stageIndex >= stages.length) {
+        return res.status(400).json({ error: `stageIndex ${stageIndex} is out of range` });
+      }
+
+      const bodyResult = GeneratePerspectivesBodySchema.safeParse(req.body);
+      if (!bodyResult.success) {
+        return res.status(400).json({ error: "Validation failed", issues: bodyResult.error.issues });
+      }
+      const { stageDescription, cloneCount } = bodyResult.data;
+
+      if (!gateway) {
+        return res.status(503).json({ error: "Gateway not available" });
+      }
+
+      const stage = stages[stageIndex];
+      const modelSlug = (stage.swarm?.mergerModelSlug) ?? stage.modelSlug;
+      const n = cloneCount ?? 3;
+
+      const prompt = `Generate ${n} distinct expert review perspectives for a stage described as: ${stageDescription}. Output JSON: [{"label": "...", "systemPromptSuffix": "..."}]`;
+
+      try {
+        const response = await gateway.complete({
+          modelSlug,
+          messages: [{ role: "user", content: prompt }],
+          maxTokens: 1000,
+        });
+
+        let perspectives: import("@shared/types").SwarmPerspective[] = [];
+        const match = response.content.match(/\[[\s\S]*\]/);
+        if (match) {
+          try {
+            const parsed = JSON.parse(match[0]) as unknown;
+            if (Array.isArray(parsed)) {
+              perspectives = parsed
+                .filter(
+                  (p): p is import("@shared/types").SwarmPerspective =>
+                    typeof p === "object" &&
+                    p !== null &&
+                    typeof (p as Record<string, unknown>).label === "string" &&
+                    typeof (p as Record<string, unknown>).systemPromptSuffix === "string",
+                )
+                .slice(0, n);
+            }
+          } catch {
+            // Parse failed — return generic
+          }
+        }
+
+        if (perspectives.length < n) {
+          for (let i = perspectives.length; i < n; i++) {
+            perspectives.push({
+              label: `Perspective ${i + 1}`,
+              systemPromptSuffix: `Analyze this from perspective ${i + 1} of ${n}, focusing on a unique angle.`,
+            });
+          }
+        }
+
+        res.json({ perspectives });
+      } catch (e) {
+        res.status(500).json({ error: (e as Error).message });
+      }
     },
   );
 }
