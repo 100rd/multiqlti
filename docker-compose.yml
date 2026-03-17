@@ -1,27 +1,77 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# multiqlti docker-compose
+#
+# Profiles:
+#   full        — multiqlti + postgres + vllm (GPU) + ollama  (default if no profile given)
+#   cloud-only  — multiqlti + postgres only (use Anthropic/OpenAI cloud providers)
+#   dev         — multiqlti + postgres + ollama (CPU-friendly, no GPU required)
+#   monitoring  — adds Loki + Grafana + Prometheus (layer on top of any profile)
+#
+# Quick start (dev mode, no GPU):
+#   docker compose --profile dev up -d
+#
+# Full stack (GPU required):
+#   docker compose --profile full up -d
+#
+# Cloud-only (no local AI, no GPU):
+#   docker compose --profile cloud-only up -d
+#
+# Copy .env.example → .env and fill in secrets before running in production.
+# ─────────────────────────────────────────────────────────────────────────────
+
 services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    profiles: [full, cloud-only, dev]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-multiqlti}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-multiqlti_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-multiqlti}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-multiqlti}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── Application ─────────────────────────────────────────────────────────────
   multiqlti:
     build: .
+    profiles: [full, cloud-only, dev]
     ports:
-      - "5050:5000"
+      - "${APP_PORT:-5050}:5000"
     environment:
-      - NODE_ENV=production
-      - PORT=5000
-      - VLLM_ENDPOINT=http://vllm:8000
-      - OLLAMA_ENDPOINT=http://ollama:11434
-      - SANDBOX_ENABLED=true
-      - SANDBOX_MAX_CONCURRENT=3
-      - SANDBOX_DEFAULT_TIMEOUT=120
+      NODE_ENV: production
+      PORT: 5000
+      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-multiqlti}:${POSTGRES_PASSWORD:-multiqlti_dev}@postgres:5432/${POSTGRES_DB:-multiqlti}}
+      VLLM_ENDPOINT: http://vllm:8000
+      OLLAMA_ENDPOINT: http://ollama:11434
+      SANDBOX_ENABLED: ${SANDBOX_ENABLED:-true}
+      SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-3}
+      SANDBOX_DEFAULT_TIMEOUT: ${SANDBOX_DEFAULT_TIMEOUT:-120}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - internal
     depends_on:
-      - vllm
-      - ollama
+      postgres:
+        condition: service_healthy
+    # Run DB migrations then start the server
+    command: sh -c "npm run db:push && node dist/index.cjs"
     restart: unless-stopped
+    mem_limit: 1g
 
+  # ── vLLM (GPU required) ─────────────────────────────────────────────────────
   vllm:
     image: vllm/vllm-openai:latest
+    profiles: [full]
     # No host ports — only reachable via internal network
     volumes:
       - vllm_cache:/root/.cache/huggingface
@@ -34,20 +84,34 @@ services:
               capabilities: [gpu]
     command:
       - "--model"
-      - "meta-llama/Meta-Llama-3-70B-Instruct"
+      - "${VLLM_MODEL:-meta-llama/Meta-Llama-3-70B-Instruct}"
       - "--tensor-parallel-size"
       - "1"
     networks:
       - internal
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
+  # ── Ollama (CPU-friendly local AI) ─────────────────────────────────────────
   ollama:
     image: ollama/ollama:latest
+    profiles: [full, dev]
     # No host ports — only reachable via internal network
     volumes:
       - ollama_data:/root/.ollama
     networks:
       - internal
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
 networks:
@@ -55,5 +119,6 @@ networks:
     driver: bridge
 
 volumes:
+  pgdata:
   vllm_cache:
   ollama_data:

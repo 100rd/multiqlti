@@ -1,0 +1,54 @@
+# docker-compose.override.yml.example
+#
+# Copy this file to docker-compose.override.yml and customise as needed.
+# The override file is loaded automatically by docker compose alongside
+# docker-compose.yml — values here take precedence.
+#
+# NEVER commit docker-compose.override.yml to git.
+# It is listed in .gitignore.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Example: Custom DB password ──────────────────────────────────────────
+  # Override the default dev credentials with stronger ones.
+  #
+  # postgres:
+  #   environment:
+  #     POSTGRES_PASSWORD: "my-strong-password-here"
+  #
+  # multiqlti:
+  #   environment:
+  #     DATABASE_URL: "postgres://multiqlti:my-strong-password-here@postgres:5432/multiqlti"
+
+  # ── Example: Use an external / managed PostgreSQL database ───────────────
+  # Set DATABASE_URL to your managed DB and disable the bundled postgres service.
+  #
+  # multiqlti:
+  #   environment:
+  #     DATABASE_URL: "postgres://user:pass@your-rds-host.amazonaws.com:5432/multiqlti?sslmode=require"
+  #
+  # postgres:
+  #   profiles: []     # Remove from all profiles so it never starts
+
+  # ── Example: Expose postgres port for local tooling (DBeaver, psql) ──────
+  #
+  # postgres:
+  #   ports:
+  #     - "5432:5432"
+
+  # ── Example: Change the exposed app port ─────────────────────────────────
+  #
+  # multiqlti:
+  #   ports:
+  #     - "8080:5000"
+
+  # ── Example: Mount a custom vLLM model ───────────────────────────────────
+  #
+  # vllm:
+  #   command:
+  #     - "--model"
+  #     - "mistralai/Mistral-7B-Instruct-v0.2"
+  #     - "--tensor-parallel-size"
+  #     - "1"

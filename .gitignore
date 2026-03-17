@@ -6,6 +6,14 @@ vite.config.ts.*
 *.tar.gz
 .local/
 
+# Environment secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# Docker compose local overrides — never commit
+docker-compose.override.yml
+
 # Progress tracking / internal docs
 PROJECT_STATUS.md
 TECHNICAL_DESIGN_PHASE0_PHASE1.md
