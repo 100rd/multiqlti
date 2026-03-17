@@ -7,6 +7,26 @@ import { ephemeralVarStore } from "../run-variables/store";
 import { validateBody } from "../middleware/validate.js";
 
 /** Mask the password portion of a connection string like postgres://user:pass@host/db */
+
+// C3: Simple in-memory rate limiter for manager-mode runs (5 per minute per user)
+const MANAGER_RUN_RATE_LIMIT = 5;
+const MANAGER_RUN_WINDOW_MS = 60_000;
+const managerRunCounts = new Map<string, { count: number; windowStart: number }>();
+
+function checkManagerRunRateLimit(userId: string): { allowed: boolean; retryAfterMs?: number } {
+  const now = Date.now();
+  const entry = managerRunCounts.get(userId);
+  if (!entry || now - entry.windowStart > MANAGER_RUN_WINDOW_MS) {
+    managerRunCounts.set(userId, { count: 1, windowStart: now });
+    return { allowed: true };
+  }
+  if (entry.count >= MANAGER_RUN_RATE_LIMIT) {
+    const retryAfterMs = MANAGER_RUN_WINDOW_MS - (now - entry.windowStart);
+    return { allowed: false, retryAfterMs };
+  }
+  entry.count++;
+  return { allowed: true };
+}
 function maskUrl(value: string): string {
   try {
     const url = new URL(value);
@@ -120,6 +140,18 @@ export function registerRunRoutes(
   router.post("/api/runs", validateBody(CreateRunSchema), async (req, res) => {
     const { pipelineId, input, variables } = req.body as z.infer<typeof CreateRunSchema>;
     try {
+      // C3: Apply rate limiting for manager-mode runs
+      const pipeline = await storage.getPipeline(pipelineId);
+      if (pipeline?.managerConfig != null) {
+        const userId = req.user?.id ?? "anonymous";
+        const { allowed, retryAfterMs } = checkManagerRunRateLimit(userId);
+        if (!allowed) {
+          res.setHeader("Retry-After", Math.ceil((retryAfterMs ?? 60_000) / 1000).toString());
+          return res.status(429).json({
+            error: `Too many manager runs. Maximum ${MANAGER_RUN_RATE_LIMIT} per minute. Please wait before starting another.`,
+          });
+        }
+      }
       const triggeredBy = req.user?.id;
       const run = await controller.startRun(pipelineId, input, variables, triggeredBy);
       res.status(201).json(run);
@@ -251,5 +283,50 @@ export function registerRunRoutes(
     res.setHeader("Content-Disposition", `attachment; filename="run-${runSlug}-export.zip"`);
     res.setHeader("Content-Length", zipBuffer.length);
     res.send(zipBuffer);
+  });
+
+  // ─── Manager Iterations (Phase 6.6) ─────────────────────────────────────────
+
+  const ManagerIterationsQuerySchema = z.object({
+    offset: z.coerce.number().int().min(0).default(0),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+  });
+
+  // GET /api/runs/:runId/manager-iterations — authenticated, owner or admin only (C1 security fix)
+  router.get("/api/runs/:runId/manager-iterations", async (req, res) => {
+    const runId = String(req.params.runId);
+    const run = await storage.getPipelineRun(runId);
+    if (!run) {
+      return res.status(404).json({ error: "Run not found" });
+    }
+
+    // 404 if pipeline doesn't exist or isn't in manager mode
+    const pipeline = await storage.getPipeline(run.pipelineId);
+    if (!pipeline || !pipeline.managerConfig) {
+      return res.status(404).json({ error: "Manager mode is not enabled for this pipeline" });
+    }
+
+    // C1: Ownership check — only pipeline owner or admin can read iterations
+    // If pipeline has no owner (ownerId is null), allow any authenticated user
+    if (pipeline.ownerId != null) {
+      const isOwner = pipeline.ownerId === req.user?.id;
+      const isAdmin = req.user?.role === "admin";
+      if (!isOwner && !isAdmin) {
+        return res.status(403).json({ error: "Forbidden: you do not own this pipeline" });
+      }
+    }
+
+    const queryResult = ManagerIterationsQuerySchema.safeParse(req.query);
+    if (!queryResult.success) {
+      return res.status(400).json({ error: "Invalid query params", issues: queryResult.error.issues });
+    }
+    const { offset, limit } = queryResult.data;
+
+    const [iterations, total] = await Promise.all([
+      storage.getManagerIterations(runId, offset, limit),
+      storage.countManagerIterations(runId),
+    ]);
+
+    res.json({ runId, iterations, total, offset, limit });
   });
 }

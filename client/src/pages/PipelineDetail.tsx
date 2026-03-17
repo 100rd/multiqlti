@@ -14,6 +14,10 @@ import DAGEditor from "@/components/dag/DAGEditor";
 import { usePipeline, useStartRun, useRuns } from "@/hooks/use-pipeline";
 import { usePipelineDAG } from "@/hooks/use-dag";
 import { RunVariablesDialog } from "@/components/pipeline/RunVariablesDialog";
+import { ManagerModeToggle } from "@/components/manager/ManagerModeToggle";
+import { ManagerConfigPanel } from "@/components/manager/ManagerConfigPanel";
+import { useSetManagerConfig, useDeleteManagerConfig } from "@/hooks/use-pipeline";
+import type { ManagerConfig } from "@/hooks/use-pipeline";
 import type { DAGStageNode, DAGEdgeData } from "@/components/dag/DAGCanvas";
 import type { DAGCondition } from "@/components/dag/ConditionDialog";
 
@@ -41,6 +45,28 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
 
   const { data: pipeline, isLoading } = usePipeline(id);
+  const [showManagerConfig, setShowManagerConfig] = useState(false);
+  const setManagerConfig = useSetManagerConfig();
+  const deleteManagerConfig = useDeleteManagerConfig();
+
+  const managerConfig = (pipeline as { managerConfig?: ManagerConfig | null } | undefined)?.managerConfig ?? null;
+  const isManagerMode = managerConfig != null;
+
+  const handleManagerToggle = async (enabled: boolean) => {
+    if (!pipeline) return;
+    if (enabled) {
+      setShowManagerConfig(true);
+    } else {
+      await deleteManagerConfig.mutateAsync(pipeline.id);
+      setShowManagerConfig(false);
+    }
+  };
+
+  const handleManagerSave = async (config: ManagerConfig) => {
+    if (!pipeline) return;
+    await setManagerConfig.mutateAsync({ pipelineId: pipeline.id, config });
+    setShowManagerConfig(false);
+  };
   const { data: runs } = useRuns(id);
   const { data: dagData, isLoading: dagLoading } = usePipelineDAG(id);
   const startRun = useStartRun();
@@ -168,6 +194,21 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
 
           <div className="flex-1 overflow-hidden p-6">
             <TabsContent value="design" className="h-full overflow-y-auto">
+              <div className="mb-4 p-4 rounded-lg border bg-card space-y-3">
+                <ManagerModeToggle
+                  enabled={isManagerMode}
+                  onChange={handleManagerToggle}
+                  disabled={setManagerConfig.isPending || deleteManagerConfig.isPending}
+                />
+                {(isManagerMode || showManagerConfig) && (
+                  <ManagerConfigPanel
+                    initialConfig={managerConfig}
+                    onSave={handleManagerSave}
+                    onCancel={() => setShowManagerConfig(false)}
+                    isSaving={setManagerConfig.isPending}
+                  />
+                )}
+              </div>
               <MultiAgentPipeline pipelineId={id} />
             </TabsContent>
 

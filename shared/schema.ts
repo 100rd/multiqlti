@@ -14,7 +14,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType } from "./types.js";
+import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -96,6 +96,8 @@ export const pipelines = pgTable("pipelines", {
   createdBy: varchar("created_by"),
   ownerId: text("owner_id").references(() => users.id, { onDelete: "set null" }),
   isTemplate: boolean("is_template").notNull().default(false),
+  /** Manager mode configuration. If non-null, pipeline runs in manager mode. */
+  managerConfig: jsonb("manager_config").$type<ManagerConfig>(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -525,3 +527,39 @@ export const insertTriggerSchema = createInsertSchema(triggers).omit({
 
 export type TriggerRow = typeof triggers.$inferSelect;
 export type InsertTriggerRow = z.infer<typeof insertTriggerSchema>;
+
+// ─── Manager Iterations (Phase 6.6) ─────────────────────────────────────────
+
+export const managerIterations = pgTable(
+  "manager_iterations",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    runId: varchar("run_id")
+      .notNull()
+      .references(() => pipelineRuns.id, { onDelete: "cascade" }),
+    iterationNumber: integer("iteration_number").notNull(),
+    decision: jsonb("decision").notNull().$type<ManagerDecision>(),
+    teamResult: text("team_result"),
+    tokensUsed: integer("tokens_used").notNull().default(0),
+    decisionDurationMs: integer("decision_duration_ms").notNull().default(0),
+    teamDurationMs: integer("team_duration_ms"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    runIdIdx: index("manager_iterations_run_id_idx").on(table.runId),
+    runIterationUnique: unique("manager_iterations_run_iteration_unique").on(
+      table.runId,
+      table.iterationNumber,
+    ),
+  }),
+);
+
+export const insertManagerIterationSchema = createInsertSchema(managerIterations).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertManagerIteration = z.infer<typeof insertManagerIterationSchema>;
+export type ManagerIterationRow = typeof managerIterations.$inferSelect;
