@@ -4,6 +4,12 @@ import { Link } from "wouter";
 import { FolderGit2, Plus, Trash2, RefreshCw, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { WorkspaceRow } from "@shared/schema";
+import { IndexStatusBadge } from "@/components/workspace/IndexStatusBadge";
+import { useIndexTrigger } from "@/hooks/useIndexTrigger";
+import type { WorkspaceIndexStatus } from "@/hooks/useWorkspaceSocket";
+
+// WorkspaceRow extended with Phase 6.9 indexStatus field (backend adds this column)
+type WorkspaceRowWithIndex = WorkspaceRow & { indexStatus?: WorkspaceIndexStatus };
 
 // ─── API helpers ─────────────────────────────────────────────────────────────
 
@@ -175,8 +181,9 @@ function StatusBadge({ status }: { status: WorkspaceRow["status"] }) {
 
 // ─── Workspace card ───────────────────────────────────────────────────────────
 
-function WorkspaceCard({ workspace }: { workspace: WorkspaceRow }) {
+function WorkspaceCard({ workspace }: { workspace: WorkspaceRowWithIndex }) {
   const qc = useQueryClient();
+  const indexTrigger = useIndexTrigger(workspace.id);
 
   const deleteMutation = useMutation({
     mutationFn: () =>
@@ -200,6 +207,14 @@ function WorkspaceCard({ workspace }: { workspace: WorkspaceRow }) {
           </div>
         </div>
         <StatusBadge status={workspace.status} />
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <IndexStatusBadge
+          status={workspace.indexStatus ?? "idle"}
+          onTrigger={() => indexTrigger.mutate()}
+          disabled={indexTrigger.isPending || workspace.indexStatus === "indexing"}
+        />
       </div>
 
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -253,7 +268,7 @@ function WorkspaceCard({ workspace }: { workspace: WorkspaceRow }) {
 export default function WorkspaceList() {
   const [showForm, setShowForm] = useState(false);
 
-  const { data: workspaceList, isLoading } = useQuery<WorkspaceRow[]>({
+  const { data: workspaceList, isLoading } = useQuery<WorkspaceRowWithIndex[]>({
     queryKey: ["workspaces"],
     queryFn: () => fetchJson("/api/workspaces"),
   });
