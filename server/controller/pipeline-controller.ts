@@ -2,13 +2,13 @@ import type { IStorage } from "../storage";
 import type { TeamRegistry } from "../teams/registry";
 import type { WsManager } from "../ws/manager";
 import type { Gateway } from "../gateway/index";
-import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput, DelegationRequest, DelegateFn, PipelineDAG, DAGStage } from "@shared/types";
+import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput, DelegationRequest, DelegateFn, PipelineDAG, DAGStage, SwarmResult } from "@shared/types";
 import { DelegationService } from "../pipeline/delegation-service";
 import { DAGExecutor } from "../pipeline/dag-executor";
 import type { StageExecuteFn } from "../pipeline/dag-executor";
 import { ParallelExecutor } from "../pipeline/parallel-executor";
 import { SwarmExecutor } from "../pipeline/swarm-executor";
-import type { SwarmResult } from "@shared/types";
+
 import type { PipelineRun } from "@shared/schema";
 import { SandboxExecutor } from "../sandbox/executor";
 import { ThoughtTreeCollector } from "../pipeline/thought-tree-collector";
@@ -580,14 +580,21 @@ export class PipelineController {
         // Pass execution strategy (undefined = single, handled in BaseTeam)
         // Swarm takes priority over parallel; falls back to single-agent if neither enabled
         let result;
-        if (this.swarmExecutor.shouldSwarm(resolvedStage)) {
+
+        const stageInputStr = typeof stageInput === 'string'
+          ? stageInput
+          : (stageInput as Record<string, unknown>).taskDescription as string ?? JSON.stringify(stageInput);
+
+        if (resolvedStage.swarm?.enabled) {
           if (resolvedStage.parallel?.enabled) {
-            console.warn(`[PipelineController] Stage ${stageExec.id} has both swarm and parallel enabled; swarm takes priority`);
+            console.warn();
           }
-          const inputStr = typeof stageInput.taskDescription === "string"
-            ? stageInput.taskDescription
-            : JSON.stringify(stageInput);
-          const swarmResult = await this.swarmExecutor.execute(resolvedStage, inputStr, context, stageExec.id);
+          const swarmResult = await this.swarmExecutor.execute(
+            resolvedStage,
+            stageInputStr,
+            context,
+            stageExec.id,
+          );
           if (swarmResult !== null) {
             await this.persistSwarmResults(stageExec.id, swarmResult);
             result = {
@@ -1069,6 +1076,27 @@ ${stage.systemPromptOverride}`
   private hashRunId(id: string): number {
     const hex = id.replace(/-/g, "").slice(0, 8);
     return parseInt(hex, 16) || 0;
+  }
+
+  /**
+   * Persist swarm clone results and metadata to the stageExecution DB row.
+   */
+  private async persistSwarmResults(
+    stageExecutionId: string,
+    result: SwarmResult,
+  ): Promise<void> {
+    await this.storage.updateStageExecution(stageExecutionId, {
+      swarmCloneResults: result.cloneResults,
+      swarmMeta: {
+        cloneCount: result.cloneResults.length,
+        succeededCount: result.succeededCount,
+        failedCount: result.failedCount,
+        mergerUsed: result.mergerUsed,
+        splitterUsed: result.splitterUsed,
+        totalTokensUsed: result.totalTokensUsed,
+        durationMs: result.durationMs,
+      },
+    } as Parameters<typeof this.storage.updateStageExecution>[1]);
   }
 }
 
