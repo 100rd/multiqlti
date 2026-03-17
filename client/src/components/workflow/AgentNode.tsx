@@ -6,13 +6,16 @@ import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ChevronDown, ChevronUp, Pencil, ShieldCheck } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { ChevronDown, ChevronUp, Pencil, ShieldCheck, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SDLC_TEAMS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, MIN_TEMPERATURE, MAX_TEMPERATURE, TEMPERATURE_STEP } from "@shared/constants";
 import StrategyConfig from "./StrategyConfig";
 import SandboxConfig from "./SandboxConfig";
 import type { ExecutionStrategy, PrivacySettings, SandboxConfig as SandboxConfigType, StageToolConfig, ParallelConfig, MergeStrategy, StageGuardrail } from "@shared/types";
 import GuardrailEditor from '../pipeline/GuardrailEditor';
+import { useSkills } from "@/hooks/use-skills";
+import type { Skill } from "@shared/schema";
 
 interface ModelOption {
   label: string;
@@ -51,6 +54,10 @@ interface AgentNodeProps {
   guardrails?: StageGuardrail[];
   onGuardrailsChange?: (id: string, guardrails: StageGuardrail[]) => void;
   isLast: boolean;
+  /** Optional: name of the currently applied skill (for display). */
+  appliedSkillName?: string;
+  /** Optional: callback when a skill is applied (skillId) or cleared (null). */
+  onApplySkill?: (id: string, skillId: string | null) => void;
 }
 
 
@@ -211,6 +218,100 @@ const DEFAULT_PRIVACY: PrivacySettings = {
   auditLog: true,
 };
 
+// ─── Apply Skill Panel ────────────────────────────────────────────────────────
+
+interface ApplySkillPanelProps {
+  teamId: string;
+  enabled: boolean;
+  appliedSkillName: string | undefined;
+  onApply: (skill: Skill) => void;
+  onClear: () => void;
+}
+
+function ApplySkillPanel({
+  teamId,
+  enabled,
+  appliedSkillName,
+  onApply,
+  onClear,
+}: ApplySkillPanelProps) {
+  const { data: skills = [], isLoading } = useSkills({ teamId });
+  const [open, setOpen] = useState(false);
+
+  if (appliedSkillName) {
+    return (
+      <div className="flex items-center gap-2 justify-between">
+        <Badge
+          variant="outline"
+          className="text-[11px] px-2 py-0.5 bg-primary/10 text-primary border-primary/30 flex items-center gap-1"
+        >
+          <Sparkles className="h-2.5 w-2.5" />
+          Skill: {appliedSkillName}
+        </Badge>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          className="h-5 w-5"
+          onClick={onClear}
+          title="Clear applied skill"
+          disabled={!enabled}
+        >
+          <X className="h-3 w-3" />
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        disabled={!enabled}
+      >
+        <Sparkles className="h-3 w-3" />
+        <span>Apply skill</span>
+        {open ? <ChevronUp className="h-3 w-3 ml-1" /> : <ChevronDown className="h-3 w-3 ml-1" />}
+      </button>
+
+      {open && (
+        <div className="mt-2 p-2 rounded border border-border bg-muted/30 space-y-1">
+          {isLoading ? (
+            <p className="text-xs text-muted-foreground">Loading skills...</p>
+          ) : skills.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No skills for this team. Create one in the Skills Library.
+            </p>
+          ) : (
+            skills.map((skill) => (
+              <button
+                key={skill.id}
+                type="button"
+                onClick={() => {
+                  onApply(skill);
+                  setOpen(false);
+                }}
+                className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-muted transition-colors"
+              >
+                <span className="font-medium">{skill.name}</span>
+                {skill.description && (
+                  <span className="text-muted-foreground ml-1.5 truncate">
+                    — {skill.description}
+                  </span>
+                )}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── AgentNode ────────────────────────────────────────────────────────────────
+
 export default function AgentNode({
   id,
   role,
@@ -242,6 +343,8 @@ export default function AgentNode({
   guardrails = [],
   onGuardrailsChange,
   isLast,
+  appliedSkillName: appliedSkillNameProp,
+  onApplySkill,
 }: AgentNodeProps) {
   const team = SDLC_TEAMS[role as keyof typeof SDLC_TEAMS];
   const teamName = team?.name ?? role;
@@ -255,11 +358,16 @@ export default function AgentNode({
   const [localMaxTokens, setLocalMaxTokens] = useState(
     String(maxTokens ?? DEFAULT_MAX_TOKENS),
   );
+  // Local applied skill name — used when caller doesn't control it via prop
+  const [localAppliedSkillName, setLocalAppliedSkillName] = useState<string | undefined>(
+    appliedSkillNameProp,
+  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const effectiveTemperature = temperature ?? DEFAULT_TEMPERATURE;
   const effectiveMaxTokens = maxTokens ?? DEFAULT_MAX_TOKENS;
   const effectivePrivacy = privacySettings ?? DEFAULT_PRIVACY;
+  const effectiveAppliedSkillName = appliedSkillNameProp ?? localAppliedSkillName;
 
   const handlePromptBlur = () => {
     onSystemPromptChange(id, localPrompt);
@@ -293,6 +401,20 @@ export default function AgentNode({
       ...effectivePrivacy,
       level: level as PrivacySettings["level"],
     });
+  };
+
+  const handleApplySkill = (skill: Skill) => {
+    // Apply the skill's system prompt override to the stage
+    const prompt = skill.systemPromptOverride ?? "";
+    setLocalPrompt(prompt);
+    onSystemPromptChange(id, prompt);
+    setLocalAppliedSkillName(skill.name);
+    onApplySkill?.(id, skill.id);
+  };
+
+  const handleClearSkill = () => {
+    setLocalAppliedSkillName(undefined);
+    onApplySkill?.(id, null);
   };
 
   return (
@@ -332,6 +454,15 @@ export default function AgentNode({
               </SelectContent>
             </Select>
           </div>
+
+          {/* Apply Skill */}
+          <ApplySkillPanel
+            teamId={role}
+            enabled={enabled}
+            appliedSkillName={effectiveAppliedSkillName}
+            onApply={handleApplySkill}
+            onClear={handleClearSkill}
+          />
 
           {/* System Prompt Override */}
           <div>

@@ -15,6 +15,7 @@ import {
   Users,
   Wrench,
   Zap,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -48,6 +49,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
     },
     { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
+    { icon: Sparkles, label: "Skills", href: "/skills" },
     { icon: BarChart3, label: "Statistics", href: "/stats" },
     { icon: Brain, label: "Memory", href: "/memories" },
     { icon: ShieldCheck, label: "Privacy", href: "/privacy" },
