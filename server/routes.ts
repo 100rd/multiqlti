@@ -27,8 +27,16 @@ import { registerDelegationRoutes } from "./routes/delegations";
 import { DelegationService } from "./pipeline/delegation-service";
 import { ManagerAgent } from "./pipeline/manager-agent";
 import { registerDAGRoutes } from "./routes/dag";
+import { registerTraceRoutes } from "./routes/traces";
+import { registerTriggerRoutes } from "./routes/triggers";
+import { registerWebhookRoutes } from "./routes/webhooks";
+import { TriggerService } from "./services/trigger-service";
+import { CronScheduler } from "./services/cron-scheduler";
+import { FileWatcherService } from "./services/file-watcher";
+import { stopRateLimitCleanup } from "./services/webhook-handler";
 import { BUILTIN_SKILLS } from "./skills/builtin";
 import { requireAuth } from "./auth/middleware";
+import { tracer } from "./tracing/tracer";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
 
@@ -42,7 +50,7 @@ export async function registerRoutes(
   const teamRegistry = new TeamRegistry(gateway, wsManager);
   const delegationService = new DelegationService(storage, teamRegistry, wsManager, gateway);
   const managerAgent = new ManagerAgent(storage, teamRegistry, wsManager, gateway, delegationService);
-  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService, managerAgent);
+  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService, managerAgent, tracer);
 
   // Register auth routes first (public routes included)
   registerAuthRoutes(app);
@@ -70,6 +78,8 @@ export async function registerRoutes(
   app.use("/api/specialization-profiles", requireAuth);
   app.use("/api/skills", requireAuth);
   app.use("/api/guardrails", requireAuth);
+  app.use("/api/triggers", requireAuth);
+  app.use("/api/traces", requireAuth);
 
   // Register route implementations
   registerModelRoutes(app, storage);
@@ -91,6 +101,55 @@ export async function registerRoutes(
   registerGuardrailRoutes(app, storage, gateway);
   registerDelegationRoutes(app, storage);
   registerDAGRoutes(app, storage);
+  registerTraceRoutes(app, storage);
+
+  // Phase 6.3 — Trigger subsystem
+  let triggerService: TriggerService | null = null;
+  let cronScheduler: CronScheduler | null = null;
+  let fileWatcherService: FileWatcherService | null = null;
+
+  try {
+    triggerService = new TriggerService(storage);
+
+    const fireTrigger = async (trigger: import("@shared/schema").TriggerRow, payload: unknown): Promise<void> => {
+      // Fire the trigger by starting a pipeline run
+      const pipeline = await storage.getPipeline(trigger.pipelineId);
+      if (!pipeline) {
+        log(`[triggers] Pipeline not found for trigger ${trigger.id}`, "triggers");
+        return;
+      }
+      await storage.updateTrigger(trigger.id, { lastTriggeredAt: new Date() });
+      log(`[triggers] Fired trigger ${trigger.id} for pipeline ${pipeline.id}`, "triggers");
+    };
+
+    // VETO-1 fix: pass storage as third argument so routes can look up pipeline ownership
+    registerTriggerRoutes(app, triggerService, storage);
+    registerWebhookRoutes(app, storage, triggerService, fireTrigger);
+
+    cronScheduler = new CronScheduler({
+      getEnabledTriggersByType: (type) => storage.getEnabledTriggersByType(type),
+      fireTrigger,
+    });
+    await cronScheduler.bootstrap();
+
+    fileWatcherService = new FileWatcherService({
+      getEnabledTriggersByType: (type) => storage.getEnabledTriggersByType(type),
+      fireTrigger,
+    });
+    await fileWatcherService.bootstrap();
+
+    log("[triggers] Trigger subsystem started", "triggers");
+  } catch (e) {
+    // TriggerCrypto throws if TRIGGER_SECRET_KEY is absent — subsystem is disabled
+    log(`[triggers] Trigger subsystem disabled: ${(e as Error).message}`, "triggers");
+  }
+
+  // Graceful shutdown
+  httpServer.on("close", () => {
+    cronScheduler?.stopAll();
+    fileWatcherService?.stopAll();
+    stopRateLimitCleanup();
+  });
 
   // Seed built-in skills (idempotent — checks each by ID)
   for (const skill of BUILTIN_SKILLS) {

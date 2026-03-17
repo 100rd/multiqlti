@@ -12,6 +12,7 @@ import {
   skills,
   triggers,
   managerIterations,
+  traces,
   type UserRow, type InsertUser,
   type Model, type InsertModel,
   type Pipeline, type InsertPipeline,
@@ -25,7 +26,11 @@ import {
   type SpecializationProfileRow,
   type Skill, type InsertSkill,
   type InsertManagerIteration, type ManagerIterationRow,
+  type TriggerRow,
+  type InsertTrace,
+  type TraceRow,
 } from "@shared/schema";
+import type { TraceSpan } from "@shared/types";
 
 export class PgStorage implements IStorage {
 
@@ -739,6 +744,84 @@ export class PgStorage implements IStorage {
       .from(managerIterations)
       .where(eq(managerIterations.runId, runId));
     return result[0]?.count ?? 0;
+  }
+
+  // ─── Triggers (Phase 6.3) ─────────────────────────────────────────────────
+
+  async getTriggers(pipelineId: string): Promise<TriggerRow[]> {
+    return db.select().from(triggers).where(eq(triggers.pipelineId, pipelineId)).orderBy(triggers.createdAt);
+  }
+
+  async getTrigger(id: string): Promise<TriggerRow | undefined> {
+    const [row] = await db.select().from(triggers).where(eq(triggers.id, id));
+    return row;
+  }
+
+  async getEnabledTriggersByType(type: string): Promise<TriggerRow[]> {
+    return db
+      .select()
+      .from(triggers)
+      .where(and(eq(triggers.enabled, true), eq(triggers.type, type as TriggerRow["type"])));
+  }
+
+  async createTrigger(
+    data: Omit<TriggerRow, "id" | "createdAt" | "updatedAt" | "lastTriggeredAt"> & { secretEncrypted?: string | null },
+  ): Promise<TriggerRow> {
+    const [row] = await db
+      .insert(triggers)
+      .values({
+        pipelineId: data.pipelineId,
+        type: data.type as TriggerRow["type"],
+        config: data.config,
+        secretEncrypted: data.secretEncrypted ?? null,
+        enabled: data.enabled ?? true,
+      })
+      .returning();
+    return row;
+  }
+
+  async updateTrigger(id: string, updates: Partial<TriggerRow>): Promise<TriggerRow> {
+    const [row] = await db
+      .update(triggers)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(triggers.id, id))
+      .returning();
+    if (!row) throw new Error(`Trigger not found: ${id}`);
+    return row;
+  }
+
+  async deleteTrigger(id: string): Promise<void> {
+    await db.delete(triggers).where(eq(triggers.id, id));
+  }
+
+  // ─── Traces (Phase 6.5) ────────────────────────────────────────────────────
+
+  async createTrace(data: InsertTrace): Promise<TraceRow> {
+    const [row] = await db.insert(traces).values(data).returning();
+    return row;
+  }
+
+  async getTraceByRunId(runId: string): Promise<TraceRow | null> {
+    const [row] = await db.select().from(traces).where(eq(traces.runId, runId)).limit(1);
+    return row ?? null;
+  }
+
+  async getTraceByTraceId(traceId: string): Promise<TraceRow | null> {
+    const [row] = await db.select().from(traces).where(eq(traces.traceId, traceId)).limit(1);
+    return row ?? null;
+  }
+
+  async getTraces(limit = 50, offset = 0): Promise<TraceRow[]> {
+    return db.select().from(traces)
+      .orderBy(desc(traces.createdAt))
+      .limit(limit)
+      .offset(offset);
+  }
+
+  async updateTraceSpans(traceId: string, spans: TraceSpan[]): Promise<void> {
+    await db.update(traces)
+      .set({ spans: spans as TraceRow["spans"], updatedAt: new Date() })
+      .where(eq(traces.traceId, traceId));
   }
 
 }

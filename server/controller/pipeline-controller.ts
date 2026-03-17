@@ -16,6 +16,8 @@ import { ephemeralVarStore } from "../run-variables/store";
 import { GuardrailValidator } from "../pipeline/guardrail-validator.js";
 import { ManagerAgent } from "../pipeline/manager-agent";
 import type { ManagerConfig } from "@shared/types";
+import type { Tracer } from "../tracing/tracer";
+import { exportTrace } from "../tracing/otlp-exporter";
 
 interface ApprovalHandle {
   resolve: (approved: boolean) => void;
@@ -33,6 +35,7 @@ export class PipelineController {
   private delegationService?: DelegationService;
   private dagExecutor: DAGExecutor;
   private managerAgent?: ManagerAgent;
+  private tracer?: Tracer;
 
   constructor(
     private storage: IStorage,
@@ -41,6 +44,7 @@ export class PipelineController {
     gateway?: Gateway,
     delegationService?: DelegationService,
     managerAgent?: ManagerAgent,
+    tracer?: Tracer,
   ) {
     this.sandboxExecutor = new SandboxExecutor();
     this.parallelExecutor = new ParallelExecutor(
@@ -53,6 +57,7 @@ export class PipelineController {
     this.guardrailValidator = new GuardrailValidator(gateway ?? createNullGateway());
     this.delegationService = delegationService;
     this.managerAgent = managerAgent;
+    this.tracer = tracer;
     this.dagExecutor = new DAGExecutor(storage, wsManager);
   }
 
@@ -72,6 +77,9 @@ export class PipelineController {
       triggeredBy: triggeredBy ?? null,
       dagMode: dag != null,
     });
+
+    // Start trace after run is created (so we have runId)
+    this.tracer?.startTrace(run.id);
 
     this.broadcast(run.id, {
       type: "pipeline:started",
@@ -186,6 +194,12 @@ export class PipelineController {
         timestamp: new Date().toISOString(),
       });
 
+      // Tracing: start stage span
+      const traceId = this.tracer?.getActiveTraceId(run.id);
+      const stageSpanId = traceId
+        ? this.tracer?.startSpan(traceId, `${dagStage.id ?? dagStage.teamId}.execute`)
+        : undefined;
+
       try {
         const team = this.teamRegistry.getTeam(dagStage.teamId);
         const numericRunId = this.hashRunId(run.id);
@@ -247,6 +261,14 @@ export class PipelineController {
           timestamp: new Date().toISOString(),
         });
 
+        // Tracing: end stage span on success
+        if (stageSpanId) {
+          this.tracer?.endSpan(stageSpanId, "ok", {
+            teamId: dagStage.teamId,
+            tokensUsed: result.tokensUsed,
+          });
+        }
+
         return { output: result.output, failed: false };
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : "Unknown error";
@@ -263,6 +285,13 @@ export class PipelineController {
           payload: { error: errMsg, stageIndex, dagStageId },
           timestamp: new Date().toISOString(),
         });
+
+        // Tracing: end stage span on error (security: truncate error to 256 chars)
+        if (stageSpanId) {
+          this.tracer?.endSpan(stageSpanId, "error", {
+            errorMessage: errMsg.slice(0, 256),
+          });
+        }
 
         return { output: {}, failed: true };
       }
@@ -301,6 +330,14 @@ export class PipelineController {
         payload: {},
         timestamp: new Date().toISOString(),
       });
+    }
+
+    // Tracing: export then flush trace on DAG run completion
+    const traceId = this.tracer?.getActiveTraceId(runId);
+    if (traceId) {
+      const fullTrace = this.tracer?.getTrace(traceId);
+      if (fullTrace) await exportTrace(fullTrace);
+      await this.tracer?.flushTrace(traceId, this.storage);
     }
 
     ephemeralVarStore.clearOnSuccess(runId);
@@ -476,6 +513,12 @@ export class PipelineController {
         },
         timestamp: new Date().toISOString(),
       });
+
+      // Tracing: start stage span
+      const linearTraceId = this.tracer?.getActiveTraceId(run.id);
+      const linearStageSpanId = linearTraceId
+        ? this.tracer?.startSpan(linearTraceId, `${stage.teamId}.execute`)
+        : undefined;
 
       try {
         const team = this.teamRegistry.getTeam(stage.teamId);
@@ -666,6 +709,14 @@ export class PipelineController {
         previousOutputs.push(result.output);
         fullContext.push({ teamId: stage.teamId, output: result.output, stageIndex: i });
 
+        // Tracing: end stage span on success
+        if (linearStageSpanId) {
+          this.tracer?.endSpan(linearStageSpanId, "ok", {
+            teamId: stage.teamId,
+            tokensUsed: result.tokensUsed,
+          });
+        }
+
         this.broadcast(run.id, {
           type: "stage:completed",
           runId: run.id,
@@ -762,6 +813,21 @@ export class PipelineController {
           timestamp: new Date().toISOString(),
         });
 
+        // Tracing: end stage span on error (security: truncate to 256 chars)
+        if (linearStageSpanId) {
+          this.tracer?.endSpan(linearStageSpanId, "error", {
+            errorMessage: errMsg.slice(0, 256),
+          });
+        }
+
+        // Tracing: flush trace on run failure
+        const failTraceId = this.tracer?.getActiveTraceId(run.id);
+        if (failTraceId) {
+          const failTrace = this.tracer?.getTrace(failTraceId);
+          if (failTrace) await exportTrace(failTrace);
+          await this.tracer?.flushTrace(failTraceId, this.storage);
+        }
+
         ephemeralVarStore.preserveOnFailure(run.id, `run failed at stage: ${stage.teamId}`);
         this.activeRuns.delete(run.id);
         return;
@@ -784,6 +850,14 @@ export class PipelineController {
       payload: { output: allOutputs },
       timestamp: new Date().toISOString(),
     });
+
+    // Tracing: export then flush trace on linear run completion
+    const linearCompleteTraceId = this.tracer?.getActiveTraceId(run.id);
+    if (linearCompleteTraceId) {
+      const completedTrace = this.tracer?.getTrace(linearCompleteTraceId);
+      if (completedTrace) await exportTrace(completedTrace);
+      await this.tracer?.flushTrace(linearCompleteTraceId, this.storage);
+    }
 
     // Clear ephemeral variables on success — no trace left in memory
     ephemeralVarStore.clearOnSuccess(run.id);
@@ -844,6 +918,14 @@ export class PipelineController {
       status: "cancelled",
       completedAt: new Date(),
     });
+
+    // Tracing: flush trace on cancel
+    const cancelTraceId = this.tracer?.getActiveTraceId(runId);
+    if (cancelTraceId) {
+      const cancelTrace = this.tracer?.getTrace(cancelTraceId);
+      if (cancelTrace) await exportTrace(cancelTrace);
+      await this.tracer?.flushTrace(cancelTraceId, this.storage);
+    }
 
     this.broadcast(runId, {
       type: "pipeline:cancelled",
