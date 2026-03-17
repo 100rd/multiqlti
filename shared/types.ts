@@ -259,7 +259,11 @@ export type WsEventType =
   | "swarm:completed"
   | "manager:decision"
   | "manager:complete"
-  | "manager:error";
+  | "manager:error"
+  | "workspace:index_start"
+  | "workspace:index_progress"
+  | "workspace:index_complete"
+  | "workspace:index_error";
 
 export interface WsEvent {
   type: WsEventType;

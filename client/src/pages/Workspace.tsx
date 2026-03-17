@@ -1,16 +1,25 @@
 import { useState } from "react";
 import { useRoute } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, GitBranch, Eye, MessageSquare, Code2, Settings2 } from "lucide-react";
+import { RefreshCw, GitBranch, Eye, MessageSquare, Code2, Settings2, Network, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { FileTree } from "@/components/workspace/FileTree";
 import { CodeViewer } from "@/components/workspace/CodeViewer";
 import { ReviewPanel } from "@/components/workspace/ReviewPanel";
 import { ChatPanel } from "@/components/workspace/ChatPanel";
 import { ConfigDiffView } from "@/components/workspace/ConfigDiffView";
+import { DependencyGraph } from "@/components/workspace/DependencyGraph";
+import { SymbolSearch } from "@/components/workspace/SymbolSearch";
+import { IndexStatusBadge } from "@/components/workspace/IndexStatusBadge";
+import { useIndexTrigger } from "@/hooks/useIndexTrigger";
+import { useWorkspaceSocket } from "@/hooks/useWorkspaceSocket";
 import type { WorkspaceRow } from "@shared/schema";
 import type { FileEntry, GitStatus, ReviewResult } from "@shared/types";
 import type { Model } from "@shared/schema";
+import type { WorkspaceIndexStatus } from "@/hooks/useWorkspaceSocket";
+import type { SymbolSearchResult } from "@/hooks/useSymbolSearch";
+
+type WorkspaceRowWithIndex = WorkspaceRow & { indexStatus?: WorkspaceIndexStatus };
 
 // ─── API helpers ─────────────────────────────────────────────────────────────
 
@@ -35,7 +44,7 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
 
 // ─── Panel tab ────────────────────────────────────────────────────────────────
 
-type RightPanel = "chat" | "review";
+type RightPanel = "chat" | "review" | "symbols";
 
 // ─── Status indicator ─────────────────────────────────────────────────────────
 
@@ -98,6 +107,10 @@ function ModelSelector({ models, selected, onChange, single }: ModelSelectorProp
   );
 }
 
+// ─── Main view tabs ───────────────────────────────────────────────────────────
+
+type MainView = "files" | "graph";
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function Workspace() {
@@ -112,9 +125,13 @@ export default function Workspace() {
   const [reviewResults, setReviewResults] = useState<Record<string, ReviewResult>>({});
   const [isReviewing, setIsReviewing] = useState(false);
   const [showConfigDiff, setShowConfigDiff] = useState(false);
+  const [mainView, setMainView] = useState<MainView>("files");
   const qc = useQueryClient();
 
-  const { data: workspace } = useQuery<WorkspaceRow>({
+  const indexTrigger = useIndexTrigger(workspaceId);
+  const { indexStatus } = useWorkspaceSocket(workspaceId);
+
+  const { data: workspace } = useQuery<WorkspaceRowWithIndex>({
     queryKey: ["workspace", workspaceId],
     queryFn: () => fetchJson(`/api/workspaces/${workspaceId}`),
     enabled: !!workspaceId,
@@ -198,6 +215,40 @@ export default function Workspace() {
 
         {gitStatus && <GitStatusBadge status={gitStatus} />}
 
+        {/* Main view tabs */}
+        <div className="flex items-center gap-1 border border-border rounded-md p-0.5">
+          <button
+            onClick={() => setMainView("files")}
+            className={cn(
+              "flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors",
+              mainView === "files"
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <Code2 className="h-3 w-3" />
+            Files
+          </button>
+          <button
+            onClick={() => setMainView("graph")}
+            className={cn(
+              "flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors",
+              mainView === "graph"
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <Network className="h-3 w-3" />
+            Dep. Graph
+          </button>
+        </div>
+
+        <IndexStatusBadge
+          status={indexStatus !== "idle" ? indexStatus : (workspace.indexStatus ?? "idle")}
+          onTrigger={() => indexTrigger.mutate()}
+          disabled={indexTrigger.isPending || indexStatus === "indexing"}
+        />
+
         <div className="ml-auto flex items-center gap-2">
           <button
             onClick={() => setShowConfigDiff((v) => !v)}
@@ -235,109 +286,156 @@ export default function Workspace() {
         </div>
       )}
 
-      {/* Main layout: file tree | code viewer | right panel */}
+      {/* Main layout */}
       <div className="flex-1 flex overflow-hidden">
-        {/* File tree */}
-        <div className="w-56 border-r border-border flex flex-col shrink-0 overflow-hidden">
-          <div className="px-3 py-2 border-b border-border">
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">Files</p>
-          </div>
-          <div className="flex-1 overflow-y-auto py-1">
-            <FileTree
-              entries={files ?? []}
-              workspaceId={workspaceId}
-              selectedPath={selectedFile}
-              onSelect={handleFileSelect}
-              onLoadDir={loadDirContents}
-            />
-          </div>
-        </div>
-
-        {/* Code viewer */}
-        <div className="flex-1 flex flex-col overflow-hidden border-r border-border">
-          {selectedFile && fileContent ? (
-            <CodeViewer content={fileContent} filePath={selectedFile} className="flex-1" />
-          ) : (
-            <div className="flex-1 flex items-center justify-center">
-              <p className="text-xs text-muted-foreground">Select a file to view</p>
-            </div>
-          )}
-        </div>
-
-        {/* Right panel */}
-        <div className="w-96 flex flex-col overflow-hidden shrink-0">
-          {/* Panel tabs */}
-          <div className="border-b border-border flex items-center gap-1 px-3 py-1.5">
-            <button
-              onClick={() => setRightPanel("chat")}
-              className={cn(
-                "flex items-center gap-1.5 text-xs px-2.5 py-1 rounded transition-colors",
-                rightPanel === "chat"
-                  ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <MessageSquare className="h-3 w-3" />
-              Chat
-            </button>
-            <button
-              onClick={() => setRightPanel("review")}
-              className={cn(
-                "flex items-center gap-1.5 text-xs px-2.5 py-1 rounded transition-colors",
-                rightPanel === "review"
-                  ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <Eye className="h-3 w-3" />
-              Review
-            </button>
-          </div>
-
-          {/* Model pickers + review trigger */}
-          <div className="border-b border-border px-3 py-2 space-y-2">
-            {rightPanel === "review" ? (
-              <>
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Review models</p>
-                <ModelSelector
-                  models={activeModels}
-                  selected={reviewModels}
-                  onChange={setReviewModels}
-                />
-                <button
-                  onClick={handleReview}
-                  disabled={!selectedFile || reviewModels.length === 0 || isReviewing}
-                  className="w-full text-xs py-1.5 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
-                >
-                  {isReviewing ? "Reviewing..." : "Run Review"}
-                </button>
-              </>
-            ) : (
-              <>
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Chat model</p>
-                <ModelSelector
-                  models={activeModels}
-                  selected={chatModel}
-                  onChange={setChatModel}
-                  single
-                />
-              </>
-            )}
-          </div>
-
-          {/* Panel content */}
-          <div className="flex-1 overflow-hidden">
-            {rightPanel === "review" ? (
-              <ReviewPanel results={reviewResults} isLoading={isReviewing} />
-            ) : (
-              <ChatPanel
+        {mainView === "graph" ? (
+          /* ── Dependency Graph view ── */
+          <>
+            <div className="flex-1 flex overflow-hidden">
+              <DependencyGraph
                 workspaceId={workspaceId}
-                modelSlug={chatModelSlug}
-                contextFilePaths={selectedFile ? [selectedFile] : []}
+                onNodeClick={handleFileSelect}
               />
-            )}
-          </div>
-        </div>
+            </div>
+            {/* Right panel: symbol search */}
+            <div className="w-80 border-l border-border flex flex-col overflow-hidden shrink-0">
+              <div className="border-b border-border flex items-center gap-1 px-3 py-1.5">
+                <Search className="h-3 w-3 text-muted-foreground" />
+                <span className="text-xs text-muted-foreground font-medium">Symbol Search</span>
+              </div>
+              <div className="flex-1 overflow-hidden">
+                <SymbolSearch
+                  workspaceId={workspaceId}
+                  onSymbolSelect={(sym: SymbolSearchResult) => handleFileSelect(sym.file)}
+                />
+              </div>
+            </div>
+          </>
+        ) : (
+          /* ── Files view ── */
+          <>
+            {/* File tree */}
+            <div className="w-56 border-r border-border flex flex-col shrink-0 overflow-hidden">
+              <div className="px-3 py-2 border-b border-border">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">Files</p>
+              </div>
+              <div className="flex-1 overflow-y-auto py-1">
+                <FileTree
+                  entries={files ?? []}
+                  workspaceId={workspaceId}
+                  selectedPath={selectedFile}
+                  onSelect={handleFileSelect}
+                  onLoadDir={loadDirContents}
+                />
+              </div>
+            </div>
+
+            {/* Code viewer */}
+            <div className="flex-1 flex flex-col overflow-hidden border-r border-border">
+              {selectedFile && fileContent ? (
+                <CodeViewer content={fileContent} filePath={selectedFile} className="flex-1" />
+              ) : (
+                <div className="flex-1 flex items-center justify-center">
+                  <p className="text-xs text-muted-foreground">Select a file to view</p>
+                </div>
+              )}
+            </div>
+
+            {/* Right panel */}
+            <div className="w-96 flex flex-col overflow-hidden shrink-0">
+              {/* Panel tabs */}
+              <div className="border-b border-border flex items-center gap-1 px-3 py-1.5">
+                <button
+                  onClick={() => setRightPanel("chat")}
+                  className={cn(
+                    "flex items-center gap-1.5 text-xs px-2.5 py-1 rounded transition-colors",
+                    rightPanel === "chat"
+                      ? "bg-primary/10 text-primary"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <MessageSquare className="h-3 w-3" />
+                  Chat
+                </button>
+                <button
+                  onClick={() => setRightPanel("review")}
+                  className={cn(
+                    "flex items-center gap-1.5 text-xs px-2.5 py-1 rounded transition-colors",
+                    rightPanel === "review"
+                      ? "bg-primary/10 text-primary"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <Eye className="h-3 w-3" />
+                  Review
+                </button>
+                <button
+                  onClick={() => setRightPanel("symbols")}
+                  className={cn(
+                    "flex items-center gap-1.5 text-xs px-2.5 py-1 rounded transition-colors",
+                    rightPanel === "symbols"
+                      ? "bg-primary/10 text-primary"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <Search className="h-3 w-3" />
+                  Symbols
+                </button>
+              </div>
+
+              {/* Model pickers + review trigger (only for chat/review panels) */}
+              {rightPanel !== "symbols" && (
+                <div className="border-b border-border px-3 py-2 space-y-2">
+                  {rightPanel === "review" ? (
+                    <>
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Review models</p>
+                      <ModelSelector
+                        models={activeModels}
+                        selected={reviewModels}
+                        onChange={setReviewModels}
+                      />
+                      <button
+                        onClick={handleReview}
+                        disabled={!selectedFile || reviewModels.length === 0 || isReviewing}
+                        className="w-full text-xs py-1.5 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                      >
+                        {isReviewing ? "Reviewing..." : "Run Review"}
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Chat model</p>
+                      <ModelSelector
+                        models={activeModels}
+                        selected={chatModel}
+                        onChange={setChatModel}
+                        single
+                      />
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* Panel content */}
+              <div className="flex-1 overflow-hidden">
+                {rightPanel === "review" ? (
+                  <ReviewPanel results={reviewResults} isLoading={isReviewing} />
+                ) : rightPanel === "symbols" ? (
+                  <SymbolSearch
+                    workspaceId={workspaceId}
+                    onSymbolSelect={(sym: SymbolSearchResult) => handleFileSelect(sym.file)}
+                  />
+                ) : (
+                  <ChatPanel
+                    workspaceId={workspaceId}
+                    modelSlug={chatModelSlug}
+                    contextFilePaths={selectedFile ? [selectedFile] : []}
+                  />
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
