@@ -1,19 +1,18 @@
-import type { Gateway } from "../gateway/index";
-import type { TeamRegistry } from "../teams/registry";
-import type { WsManager } from "../ws/manager";
+import type { Gateway } from "../gateway/index.js";
+import type { TeamRegistry } from "../teams/registry.js";
+import type { WsManager } from "../ws/manager.js";
 import type {
   PipelineStageConfig,
   StageContext,
   SwarmConfig,
   SwarmCloneResult,
   SwarmMerger,
+  SwarmPerspective,
   SwarmResult,
   SwarmSplitter,
 } from "@shared/types";
 
-const MAX_CLONE_COUNT = 20;
-const SYSTEM_PROMPT_PREVIEW_LEN = 120;
-const OUTPUT_PREVIEW_LEN = 200;
+// ─── Error class ──────────────────────────────────────────────────────────────
 
 export class SwarmAllFailedError extends Error {
   constructor(public readonly cloneResults: SwarmCloneResult[]) {
@@ -22,124 +21,12 @@ export class SwarmAllFailedError extends Error {
   }
 }
 
-// ─── Built-in perspective labels per team ─────────────────────────────────────
-
-const BUILT_IN_PERSPECTIVES: Record<string, string[]> = {
-  code_review: ["Security vulnerabilities", "Performance and scalability", "Code maintainability"],
-  testing: ["Unit tests", "Integration tests", "Edge cases and error handling"],
-  architecture: ["Scalability", "Cost optimization"],
-  planning: ["User stories", "Technical tasks", "Risk analysis"],
-};
-
-function getDefaultPerspectives(teamId: string, count: number): string[] {
-  const labels = BUILT_IN_PERSPECTIVES[teamId];
-  if (labels && labels.length >= count) return labels.slice(0, count);
-  return Array.from({ length: count }, (_, i) => `Perspective ${i + 1}`);
-}
-
-// ─── Chunk splitter helpers ────────────────────────────────────────────────────
-
-function splitIntoChunks(text: string, count: number): string[] {
-  if (count <= 1) return [text];
-  const lines = text.split("\n");
-  const chunkSize = Math.ceil(lines.length / count);
-  const chunks: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const slice = lines.slice(i * chunkSize, (i + 1) * chunkSize);
-    chunks.push(slice.join("\n"));
-  }
-  return chunks.filter((c) => c.trim().length > 0);
-}
-
-// ─── Clone input builders ──────────────────────────────────────────────────────
+// ─── Clone input descriptor ───────────────────────────────────────────────────
 
 interface CloneInput {
   input: string;
   systemPromptOverride: string;
-}
-
-function buildChunkInputs(
-  swarm: SwarmConfig,
-  input: string,
-  basePrompt: string,
-): CloneInput[] {
-  const chunks = splitIntoChunks(input, swarm.cloneCount);
-  return chunks.map((chunk) => ({ input: chunk, systemPromptOverride: basePrompt }));
-}
-
-function buildPerspectiveInputs(
-  swarm: SwarmConfig,
-  input: string,
-  basePrompt: string,
-  teamId: string,
-): CloneInput[] {
-  const perspectiveLabels: string[] =
-    swarm.perspectives && swarm.perspectives.length === swarm.cloneCount
-      ? swarm.perspectives.map((p) => p.systemPromptSuffix)
-      : getDefaultPerspectives(teamId, swarm.cloneCount).map(
-          (label) => `Focus specifically on: ${label}`,
-        );
-
-  return perspectiveLabels.map((suffix) => ({
-    input,
-    systemPromptOverride: basePrompt ? `${basePrompt}\n\n${suffix}` : suffix,
-  }));
-}
-
-function buildCustomInputs(swarm: SwarmConfig, input: string): CloneInput[] {
-  const prompts = swarm.customClonePrompts ?? [];
-  return prompts.map((override) => ({ input, systemPromptOverride: override }));
-}
-
-// ─── Merge helpers ────────────────────────────────────────────────────────────
-
-function mergeConcatenate(succeeded: SwarmCloneResult[]): string {
-  return succeeded
-    .map((r) => `## Clone ${r.cloneIndex + 1}\n\n${r.output ?? ""}`)
-    .join("\n\n---\n\n");
-}
-
-function tryParseVoteValue(output: string): string | null {
-  const trimmed = output.trim();
-  if (trimmed === "true" || trimmed === "false") return trimmed;
-  if (/^\d+(\.\d+)?$/.test(trimmed)) return trimmed;
-  if (/^\w+$/.test(trimmed)) return trimmed;
-  return null;
-}
-
-function mergeVote(succeeded: SwarmCloneResult[]): string {
-  const parsed = succeeded.map((r) => tryParseVoteValue(r.output ?? ""));
-  const allParseable = parsed.every((v) => v !== null);
-  if (!allParseable) {
-    console.warn("[SwarmExecutor] vote merger: unstructured outputs — falling back to concatenate");
-    return mergeConcatenate(succeeded);
-  }
-  const tally = new Map<string, number>();
-  for (const v of parsed as string[]) {
-    tally.set(v, (tally.get(v) ?? 0) + 1);
-  }
-  let winner = parsed[0] as string;
-  let max = 0;
-  for (const [val, count] of tally) {
-    if (count > max) { max = count; winner = val; }
-  }
-  return winner;
-}
-
-async function mergeLlm(
-  succeeded: SwarmCloneResult[],
-  modelSlug: string,
-  gateway: Gateway,
-): Promise<string> {
-  const formatted = succeeded
-    .map((r, i) => `### Output ${i + 1} (Clone ${r.cloneIndex + 1})\n\n${r.output ?? ""}`)
-    .join("\n\n---\n\n");
-  const prompt = `You are merging ${succeeded.length} parallel analyses into one coherent result.\n\nOutputs:\n\n${formatted}\n\nProduce a unified synthesis.`;
-  const response = await gateway.complete({
-    modelSlug,
-    messages: [{ role: "user", content: prompt }],
-  });
-  return response.content;
+  userPromptPortion: string;
 }
 
 // ─── SwarmExecutor ────────────────────────────────────────────────────────────
@@ -151,10 +38,6 @@ export class SwarmExecutor {
     private readonly wsManager: WsManager,
   ) {}
 
-  shouldSwarm(stage: PipelineStageConfig): boolean {
-    return stage.swarm?.enabled === true && (stage.swarm?.cloneCount ?? 0) > 1;
-  }
-
   async execute(
     stage: PipelineStageConfig,
     stageInput: string,
@@ -162,31 +45,26 @@ export class SwarmExecutor {
     stageId: string,
   ): Promise<SwarmResult | null> {
     const swarm = stage.swarm;
-    if (!swarm?.enabled) return null;
-    if (swarm.cloneCount > MAX_CLONE_COUNT) {
-      throw new Error(`cloneCount ${swarm.cloneCount} exceeds maximum of ${MAX_CLONE_COUNT}`);
+    if (!swarm || !swarm.enabled) return null;
+
+    // Defense-in-depth: enforce cloneCount cap even if Zod was bypassed
+    if (swarm.cloneCount > 20) {
+      throw new Error(`swarm.cloneCount ${swarm.cloneCount} exceeds hard cap of 20`);
     }
 
+    const runId = context.runId;
+
+    this.broadcast(runId, stageId, "swarm:started", {
+      cloneCount: swarm.cloneCount,
+      splitter: swarm.splitter,
+      merger: swarm.merger,
+    });
+
+    const cloneInputs = await this.buildCloneInputs(swarm, stageInput, stage);
     const start = Date.now();
-    this.broadcastSwarmStarted(context.runId, stageId, swarm);
 
-    const cloneInputs = this.buildCloneInputs(swarm, stageInput, stage);
-    const settled = await Promise.allSettled(
-      cloneInputs.map((ci, i) => this.runClone(stage, ci, context, stageId, i)),
-    );
-
-    const cloneResults: SwarmCloneResult[] = settled.map((r, i) =>
-      r.status === "fulfilled"
-        ? r.value
-        : {
-            cloneIndex: i,
-            status: "failed" as const,
-            error: r.reason instanceof Error ? r.reason.message : String(r.reason),
-            tokensUsed: 0,
-            durationMs: 0,
-            systemPromptPreview: cloneInputs[i]?.systemPromptOverride.slice(0, SYSTEM_PROMPT_PREVIEW_LEN) ?? "",
-          },
-    );
+    const MAX_CONCURRENCY = parseInt(process.env.SWARM_MAX_CONCURRENCY ?? "5", 10);
+    const cloneResults = await this.runClonesWithConcurrency(cloneInputs, stage, context, stageId, MAX_CONCURRENCY);
 
     const succeeded = cloneResults.filter((r): r is SwarmCloneResult & { status: "succeeded" } =>
       r.status === "succeeded",
@@ -196,14 +74,17 @@ export class SwarmExecutor {
       throw new SwarmAllFailedError(cloneResults);
     }
 
-    this.broadcastSwarmMerging(context.runId, stageId, swarm.merger, succeeded.length);
+    this.broadcast(runId, stageId, "swarm:merging", {
+      strategy: swarm.merger,
+      succeededClones: succeeded.length,
+    });
 
-    const mergerModelSlug = swarm.mergerModelSlug ?? stage.modelSlug;
-    const mergedOutput = await this.mergeOutputs(swarm, succeeded, mergerModelSlug);
+    const mergedOutput = await this.mergeOutputs(swarm, succeeded, stage);
+
     const totalTokensUsed = cloneResults.reduce((sum, r) => sum + r.tokensUsed, 0);
     const durationMs = Date.now() - start;
 
-    this.broadcastSwarmCompleted(context.runId, stageId, {
+    this.broadcast(runId, stageId, "swarm:completed", {
       succeededCount: succeeded.length,
       failedCount: cloneResults.length - succeeded.length,
       totalTokensUsed,
@@ -222,17 +103,171 @@ export class SwarmExecutor {
     };
   }
 
-  private buildCloneInputs(
+  // ─── buildCloneInputs ──────────────────────────────────────────────────────
+
+  private async buildCloneInputs(
+    swarm: SwarmConfig,
+    input: string,
+    stage: PipelineStageConfig,
+  ): Promise<CloneInput[]> {
+    switch (swarm.splitter) {
+      case "chunks":
+        return this.buildChunkInputs(swarm, input, stage);
+      case "perspectives":
+        return this.buildPerspectiveInputs(swarm, input, stage);
+      case "custom":
+        return this.buildCustomInputs(swarm, input);
+    }
+  }
+
+  /**
+   * chunks: split input text into N approximately equal parts using newline boundaries.
+   * Each clone gets its chunk and the unmodified base system prompt.
+   */
+  private buildChunkInputs(
     swarm: SwarmConfig,
     input: string,
     stage: PipelineStageConfig,
   ): CloneInput[] {
     const basePrompt = stage.systemPromptOverride ?? "";
-    const splitter: SwarmSplitter = swarm.splitter;
-    if (splitter === "chunks") return buildChunkInputs(swarm, input, basePrompt);
-    if (splitter === "custom") return buildCustomInputs(swarm, input);
-    return buildPerspectiveInputs(swarm, input, basePrompt, stage.teamId);
+    const n = swarm.cloneCount;
+
+    if (n <= 0) return [];
+
+    // Split by newlines into segments, then group segments into N chunks
+    const lines = input.split("\n");
+    const totalLines = lines.length;
+    const chunkSize = Math.ceil(totalLines / n);
+
+    const chunks: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const start = i * chunkSize;
+      const end = Math.min(start + chunkSize, totalLines);
+      const chunk = lines.slice(start, end).join("\n");
+      // Even if a chunk is empty (when input has fewer lines than n), still include it
+      chunks.push(chunk);
+    }
+
+    // If we have fewer lines than n, some chunks may be empty — distribute remaining content
+    // by character count as a fallback for very short inputs
+    if (lines.length < n && input.length > 0) {
+      const charChunkSize = Math.ceil(input.length / n);
+      const charChunks: string[] = [];
+      for (let i = 0; i < n; i++) {
+        charChunks.push(input.slice(i * charChunkSize, (i + 1) * charChunkSize));
+      }
+      return charChunks.map((chunk) => ({
+        input: chunk,
+        systemPromptOverride: basePrompt,
+        userPromptPortion: "",
+      }));
+    }
+
+    return chunks.map((chunk) => ({
+      input: chunk,
+      systemPromptOverride: basePrompt,
+      userPromptPortion: "",
+    }));
   }
+
+  /**
+   * perspectives: all clones get full input; each gets a unique systemPrompt suffix.
+   * Perspectives are taken from swarm.perspectives if provided and correct length,
+   * otherwise auto-generated via a single LLM call.
+   */
+  private async buildPerspectiveInputs(
+    swarm: SwarmConfig,
+    input: string,
+    stage: PipelineStageConfig,
+  ): Promise<CloneInput[]> {
+    const basePrompt = stage.systemPromptOverride ?? "";
+    const n = swarm.cloneCount;
+
+    let perspectives: SwarmPerspective[];
+
+    if (swarm.perspectives && swarm.perspectives.length === n) {
+      perspectives = swarm.perspectives;
+    } else {
+      perspectives = await this.autoGeneratePerspectives(swarm, stage, n);
+    }
+
+    if (perspectives.length !== n) {
+      throw new Error(
+        `perspectives auto-generation returned ${perspectives.length} perspectives but cloneCount is ${n}`,
+      );
+    }
+
+    return perspectives.map((perspective) => ({
+      input,
+      systemPromptOverride: basePrompt
+        ? `${basePrompt}\n\nYour perspective: ${perspective.systemPromptSuffix}`
+        : `Your perspective: ${perspective.systemPromptSuffix}`,
+      userPromptPortion: perspective.systemPromptSuffix,
+    }));
+  }
+
+  private async autoGeneratePerspectives(
+    swarm: SwarmConfig,
+    stage: PipelineStageConfig,
+    n: number,
+  ): Promise<SwarmPerspective[]> {
+    const stageDescription = stage.systemPromptOverride ?? stage.teamId;
+    const modelSlug = swarm.mergerModelSlug ?? stage.modelSlug;
+
+    const prompt = `Generate ${n} distinct expert review perspectives for a stage described as: ${stageDescription}. Output JSON: [{"label": "...", "systemPromptSuffix": "..."}]`;
+
+    try {
+      const response = await this.gateway.complete({
+        modelSlug,
+        messages: [{ role: "user", content: prompt }],
+        maxTokens: 1000,
+      });
+
+      // Try to parse JSON from the response
+      const match = response.content.match(/\[[\s\S]*\]/);
+      if (match) {
+        const parsed = JSON.parse(match[0]) as unknown;
+        if (
+          Array.isArray(parsed) &&
+          parsed.length === n &&
+          parsed.every(
+            (p): p is SwarmPerspective =>
+              typeof p === "object" &&
+              p !== null &&
+              typeof (p as Record<string, unknown>).label === "string" &&
+              typeof (p as Record<string, unknown>).systemPromptSuffix === "string",
+          )
+        ) {
+          return parsed;
+        }
+      }
+    } catch (err) {
+      console.warn(`[swarm] Failed to auto-generate perspectives: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Fallback: generic labels
+    return Array.from({ length: n }, (_, i) => ({
+      label: `Perspective ${i + 1}`,
+      systemPromptSuffix: `Analyze this from perspective ${i + 1} of ${n}, focusing on a unique angle.`,
+    }));
+  }
+
+  /**
+   * custom: all clones get full input; each gets its own explicit system prompt.
+   */
+  private buildCustomInputs(
+    swarm: SwarmConfig,
+    input: string,
+  ): CloneInput[] {
+    const prompts = swarm.customClonePrompts ?? [];
+    return prompts.map((prompt) => ({
+      input,
+      systemPromptOverride: prompt,
+      userPromptPortion: prompt,
+    }));
+  }
+
+  // ─── runClone ─────────────────────────────────────────────────────────────
 
   private async runClone(
     stage: PipelineStageConfig,
@@ -241,96 +276,238 @@ export class SwarmExecutor {
     stageId: string,
     cloneIndex: number,
   ): Promise<SwarmCloneResult> {
-    const systemPromptPreview = cloneInput.systemPromptOverride.slice(0, SYSTEM_PROMPT_PREVIEW_LEN);
-    this.broadcastCloneStarted(context.runId, stageId, cloneIndex, systemPromptPreview);
+    const systemPromptPreview = cloneInput.userPromptPortion.slice(0, 120);
+    const runId = context.runId;
+
+    this.broadcast(runId, stageId, "swarm:clone:started", {
+      cloneIndex,
+      systemPromptPreview,
+    });
 
     const start = Date.now();
+
     try {
       const team = this.teamRegistry.getTeam(stage.teamId);
-      const cloneContext: StageContext = { ...context, stageConfig: { ...stage, systemPromptOverride: cloneInput.systemPromptOverride } };
-      const result = await team.execute({ taskDescription: cloneInput.input }, cloneContext);
-      const output = typeof result.output.raw === "string"
-        ? result.output.raw
-        : JSON.stringify(result.output);
+      const cloneContext: StageContext = {
+        ...context,
+        stageConfig: {
+          ...stage,
+          systemPromptOverride: cloneInput.systemPromptOverride,
+        },
+      };
+
+      const result = await team.execute(
+        { taskDescription: cloneInput.input },
+        cloneContext,
+        stage.executionStrategy,
+      );
 
       const durationMs = Date.now() - start;
-      this.broadcastCloneCompleted(context.runId, stageId, cloneIndex, result.tokensUsed, output);
+      const outputStr =
+        typeof result.output.raw === "string"
+          ? result.output.raw
+          : JSON.stringify(result.output);
 
-      return { cloneIndex, status: "succeeded", output, tokensUsed: result.tokensUsed, durationMs, systemPromptPreview };
+      this.broadcast(runId, stageId, "swarm:clone:completed", {
+        cloneIndex,
+        tokensUsed: result.tokensUsed,
+        outputPreview: outputStr.slice(0, 200),
+      });
+
+      return {
+        cloneIndex,
+        status: "succeeded",
+        output: outputStr,
+        tokensUsed: result.tokensUsed,
+        durationMs,
+        systemPromptPreview,
+      };
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      this.broadcastCloneFailed(context.runId, stageId, cloneIndex, error);
-      return { cloneIndex, status: "failed", error, tokensUsed: 0, durationMs: Date.now() - start, systemPromptPreview };
+      const durationMs = Date.now() - start;
+      const errorMsg = err instanceof Error ? err.message : String(err);
+
+      this.broadcast(runId, stageId, "swarm:clone:failed", {
+        cloneIndex,
+        error: errorMsg,
+      });
+
+      // Return failed result — do NOT throw — partial failure is allowed
+      return {
+        cloneIndex,
+        status: "failed",
+        error: errorMsg,
+        tokensUsed: 0,
+        durationMs,
+        systemPromptPreview,
+      };
     }
   }
 
+  // ─── runClonesWithConcurrency ──────────────────────────────────────────────
+
+  private async runClonesWithConcurrency(
+    cloneInputs: CloneInput[],
+    stage: PipelineStageConfig,
+    context: StageContext,
+    stageId: string,
+    maxConcurrent: number,
+  ): Promise<SwarmCloneResult[]> {
+    const results: SwarmCloneResult[] = new Array(cloneInputs.length);
+    const queue = cloneInputs.map((input, i) => ({ input, i }));
+
+    const runWorker = async (): Promise<void> => {
+      while (queue.length > 0) {
+        const item = queue.shift();
+        if (!item) break;
+        results[item.i] = await this.runClone(stage, item.input, context, stageId, item.i);
+      }
+    };
+
+    const workers = Array.from(
+      { length: Math.min(maxConcurrent, cloneInputs.length) },
+      () => runWorker(),
+    );
+    await Promise.all(workers);
+    return results;
+  }
+
+  // ─── mergeOutputs ─────────────────────────────────────────────────────────
+
   private async mergeOutputs(
     swarm: SwarmConfig,
-    succeeded: SwarmCloneResult[],
-    mergerModelSlug: string,
+    succeeded: Array<SwarmCloneResult & { status: "succeeded" }>,
+    stage: PipelineStageConfig,
   ): Promise<string> {
-    const merger: SwarmMerger = swarm.merger;
-    if (merger === "concatenate") return mergeConcatenate(succeeded);
-    if (merger === "vote") return mergeVote(succeeded);
-    return mergeLlm(succeeded, mergerModelSlug, this.gateway);
+    switch (swarm.merger) {
+      case "concatenate":
+        return this.mergeConcatenate(succeeded);
+      case "llm_merge":
+        return this.mergeLlm(swarm, succeeded, stage);
+      case "vote":
+        return this.mergeVote(swarm, succeeded, stage);
+    }
   }
 
-  // ─── WS broadcast helpers ─────────────────────────────────────────────────
+  /**
+   * concatenate: join outputs with section headers.
+   */
+  private mergeConcatenate(
+    succeeded: Array<SwarmCloneResult & { status: "succeeded" }>,
+  ): string {
+    return succeeded
+      .map((r) => `## Clone ${r.cloneIndex + 1}\n\n${r.output ?? ""}`)
+      .join("\n\n---\n\n");
+  }
 
-  private broadcastSwarmStarted(runId: string, stageId: string, swarm: SwarmConfig): void {
-    this.wsManager.broadcastToRun(runId, {
-      type: "swarm:started",
-      runId,
-      payload: { stageId, cloneCount: swarm.cloneCount, splitter: swarm.splitter, merger: swarm.merger },
-      timestamp: new Date().toISOString(),
+  /**
+   * llm_merge: synthesize all outputs into one coherent result via LLM.
+   */
+  private async mergeLlm(
+    swarm: SwarmConfig,
+    succeeded: Array<SwarmCloneResult & { status: "succeeded" }>,
+    stage: PipelineStageConfig,
+  ): Promise<string> {
+    const modelSlug = swarm.mergerModelSlug ?? stage.modelSlug;
+    const outputsFormatted = succeeded
+      .map((r, i) => `Output ${i + 1} (Clone ${r.cloneIndex + 1}):\n${r.output ?? ""}`)
+      .join("\n\n");
+
+    const prompt = `You are merging ${succeeded.length} parallel analyses into one coherent result. Outputs:\n\n${outputsFormatted}\n\nProduce a unified synthesis.`;
+
+    const response = await this.gateway.complete({
+      modelSlug,
+      messages: [{ role: "user", content: prompt }],
     });
+
+    return response.content;
   }
 
-  private broadcastCloneStarted(runId: string, stageId: string, cloneIndex: number, systemPromptPreview: string): void {
-    this.wsManager.broadcastToRun(runId, {
-      type: "swarm:clone:started",
-      runId,
-      payload: { stageId, cloneIndex, systemPromptPreview },
-      timestamp: new Date().toISOString(),
-    });
+  /**
+   * vote: attempt to parse each output as structured JSON with a `result` field.
+   * If parseable: majority wins; ties fall back to llm_merge.
+   * If not parseable: fall back to concatenate with a warning.
+   */
+  private async mergeVote(
+    swarm: SwarmConfig,
+    succeeded: Array<SwarmCloneResult & { status: "succeeded" }>,
+    stage: PipelineStageConfig,
+  ): Promise<string> {
+    type ParsedValue = boolean | number | string;
+
+    const parseResult = (output: string | undefined): ParsedValue | null => {
+      if (!output) return null;
+      try {
+        const parsed = JSON.parse(output) as unknown;
+        if (
+          typeof parsed === "object" &&
+          parsed !== null &&
+          "result" in parsed
+        ) {
+          const val = (parsed as Record<string, unknown>).result;
+          if (typeof val === "boolean" || typeof val === "number" || typeof val === "string") {
+            return val;
+          }
+        }
+      } catch {
+        // Not JSON — try parsing the entire output as a single token
+        const trimmed = output.trim();
+        if (trimmed === "true") return true;
+        if (trimmed === "false") return false;
+        const num = Number(trimmed);
+        if (!isNaN(num) && trimmed.length > 0) return num;
+        // Single-word category
+        if (/^\w+$/.test(trimmed)) return trimmed;
+      }
+      return null;
+    };
+
+    const parsedValues = succeeded.map((r) => parseResult(r.output));
+    const allParseable = parsedValues.every((v) => v !== null);
+
+    if (!allParseable) {
+      console.warn(`[swarm] vote merger: outputs are not structured — falling back to concatenate`);
+      return this.mergeConcatenate(succeeded);
+    }
+
+    // Count votes
+    const voteCounts = new Map<string, number>();
+    for (const val of parsedValues) {
+      const key = String(val);
+      voteCounts.set(key, (voteCounts.get(key) ?? 0) + 1);
+    }
+
+    const maxVotes = Math.max(...voteCounts.values());
+    const winners = [...voteCounts.entries()]
+      .filter(([, count]) => count === maxVotes)
+      .map(([key]) => key);
+
+    // Tie: fall back to llm_merge
+    if (winners.length > 1) {
+      return this.mergeLlm(swarm, succeeded, stage);
+    }
+
+    const winner = winners[0];
+    return JSON.stringify({ result: winner });
   }
 
-  private broadcastCloneCompleted(runId: string, stageId: string, cloneIndex: number, tokensUsed: number, output: string): void {
-    this.wsManager.broadcastToRun(runId, {
-      type: "swarm:clone:completed",
-      runId,
-      payload: { stageId, cloneIndex, tokensUsed, outputPreview: output.slice(0, OUTPUT_PREVIEW_LEN) },
-      timestamp: new Date().toISOString(),
-    });
-  }
+  // ─── WS broadcast helper ──────────────────────────────────────────────────
 
-  private broadcastCloneFailed(runId: string, stageId: string, cloneIndex: number, error: string): void {
-    this.wsManager.broadcastToRun(runId, {
-      type: "swarm:clone:failed",
-      runId,
-      payload: { stageId, cloneIndex, error },
-      timestamp: new Date().toISOString(),
-    });
-  }
-
-  private broadcastSwarmMerging(runId: string, stageId: string, strategy: SwarmMerger, succeededClones: number): void {
-    this.wsManager.broadcastToRun(runId, {
-      type: "swarm:merging",
-      runId,
-      payload: { stageId, strategy, succeededClones },
-      timestamp: new Date().toISOString(),
-    });
-  }
-
-  private broadcastSwarmCompleted(
+  private broadcast(
     runId: string,
     stageId: string,
-    info: { succeededCount: number; failedCount: number; totalTokensUsed: number; durationMs: number },
+    type:
+      | "swarm:started"
+      | "swarm:clone:started"
+      | "swarm:clone:completed"
+      | "swarm:clone:failed"
+      | "swarm:merging"
+      | "swarm:completed",
+    payload: Record<string, unknown>,
   ): void {
     this.wsManager.broadcastToRun(runId, {
-      type: "swarm:completed",
+      type,
       runId,
-      payload: { stageId, ...info },
+      payload: { stageId, ...payload },
       timestamp: new Date().toISOString(),
     });
   }

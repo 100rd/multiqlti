@@ -83,7 +83,7 @@ export async function registerRoutes(
 
   // Register route implementations
   registerModelRoutes(app, storage);
-  registerPipelineRoutes(app, storage);
+  registerPipelineRoutes(app, storage, gateway);
   registerRunRoutes(app, storage, controller);
   registerChatRoutes(app, storage, gateway, wsManager);
   registerGatewayRoutes(app, gateway);
