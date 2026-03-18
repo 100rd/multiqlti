@@ -29,6 +29,7 @@ import UserManagement from "@/pages/UserManagement";
 import ProfileSettings from "@/pages/ProfileSettings";
 import Maintenance from "@/pages/Maintenance";
 import Skills from "@/pages/Skills";
+import SkillMarketplace from "@/pages/SkillMarketplace";
 
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
@@ -84,6 +85,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/workspaces/:id" component={() => (
           <ErrorBoundary><Workspace /></ErrorBoundary>
+        )} />
+        <Route path="/skills/marketplace" component={() => (
+          <ErrorBoundary><SkillMarketplace /></ErrorBoundary>
         )} />
         <Route path="/skills" component={() => (
           <ErrorBoundary><Skills /></ErrorBoundary>
