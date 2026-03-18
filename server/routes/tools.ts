@@ -63,7 +63,9 @@ export function registerToolRoutes(app: Express, storage: IStorage): void {
     const parse = testToolSchema.safeParse(req.body);
 
     if (!parse.success) {
-      return res.status(400).json({ error: parse.error.flatten() });
+      return res.status(400).json({
+        error: parse.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).filter(Boolean).join("; ") || "Validation failed",
+      });
     }
 
     const toolDef = toolRegistry.getToolByName(name);
@@ -104,7 +106,9 @@ export function registerToolRoutes(app: Express, storage: IStorage): void {
   app.post("/api/mcp/servers", async (req, res) => {
     const parse = createMcpServerSchema.safeParse(req.body);
     if (!parse.success) {
-      return res.status(400).json({ error: parse.error.flatten() });
+      return res.status(400).json({
+        error: parse.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).filter(Boolean).join("; ") || "Validation failed",
+      });
     }
 
     const data = parse.data;
@@ -143,7 +147,9 @@ export function registerToolRoutes(app: Express, storage: IStorage): void {
 
     const parse = updateMcpServerSchema.safeParse(req.body);
     if (!parse.success) {
-      return res.status(400).json({ error: parse.error.flatten() });
+      return res.status(400).json({
+        error: parse.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).filter(Boolean).join("; ") || "Validation failed",
+      });
     }
 
     const existing = await storage.getMcpServer(id);
