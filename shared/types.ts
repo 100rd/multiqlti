@@ -1430,3 +1430,23 @@ export interface InsertSkillVersion {
   changelog: string;
   createdBy: string;
 }
+
+// ─── Platform Version Types ────────────────────────────────────────────────────
+
+export interface VersionsResponse {
+  platform: {
+    frontend: string;
+    backend: string;
+    node: string;
+    buildDate: string;
+    gitCommit: string;
+  };
+  runtimes: {
+    docker: string | null;
+    vllm: string | null;
+    ollama: string | null;
+  };
+  database: {
+    postgres: string | null;
+  };
+}

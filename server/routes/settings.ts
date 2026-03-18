@@ -1,11 +1,15 @@
 import { Router } from "express";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
+import { spawnSync } from "child_process";
+import { readFileSync } from "fs";
+import { resolve } from "path";
 import { db } from "../db";
 import { providerKeys } from "@shared/schema";
 import { encrypt, decrypt } from "../crypto";
 import type { Gateway } from "../gateway/index";
 import { configLoader } from "../config/loader";
+import type { VersionsResponse } from "@shared/types";
 
 const CLOUD_PROVIDERS = ["anthropic", "google", "xai"] as const;
 type CloudProvider = (typeof CLOUD_PROVIDERS)[number];
@@ -24,6 +28,94 @@ function getKeySource(provider: CloudProvider): "env" | "db" | "none" {
   };
   if (configKeys[provider]) return "env";
   return "none"; // updated to "db" by caller if DB row exists
+}
+
+// ─── Version probe helpers ────────────────────────────────────────────────────
+
+/** Read the version field from the root package.json. Cached at module load. */
+let _pkgVersion: string | undefined;
+function getPackageVersion(): string {
+  if (_pkgVersion !== undefined) return _pkgVersion;
+  try {
+    const pkgPath = resolve(process.cwd(), "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: string };
+    _pkgVersion = pkg.version ?? "unknown";
+  } catch {
+    _pkgVersion = "unknown";
+  }
+  return _pkgVersion;
+}
+
+/** Probe docker version via spawnSync. Returns null when binary is not found or times out. */
+export function probeDockerVersion(): string | null {
+  try {
+    const result = spawnSync("docker", ["version", "--format", "{{.Server.Version}}"], {
+      timeout: 3000,
+      encoding: "utf-8",
+    });
+    if (result.status !== 0 || result.error || !result.stdout) return null;
+    const version = result.stdout.trim();
+    return version.length > 0 ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Probe vLLM version via HTTP. Returns null on any error. */
+export async function probeVllmVersion(): Promise<string | null> {
+  const baseUrl = process.env.VLLM_BASE_URL;
+  if (!baseUrl) return null;
+  try {
+    const res = await fetch(`${baseUrl}/version`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { version?: string };
+    return data.version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Probe Ollama version via HTTP. Returns null on any error. */
+export async function probeOllamaVersion(): Promise<string | null> {
+  const baseUrl = process.env.OLLAMA_BASE_URL ?? "http://localhost:11434";
+  try {
+    const res = await fetch(`${baseUrl}/api/version`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { version?: string };
+    return data.version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract a clean semver string from a full PostgreSQL version string.
+ * e.g. "PostgreSQL 16.1 on x86_64-pc-linux-gnu, ..." → "16.1"
+ * Returns null when the input is not a recognisable version string.
+ */
+export function extractPostgresVersion(raw: string): string | null {
+  // Match patterns like "16.1", "15.4", "14.10" — major.minor only
+  const match = raw.match(/\bPostgreSQL\s+(\d+\.\d+)/i);
+  if (match) return match[1];
+  // Fallback: bare semver-like token
+  const bare = raw.match(/(\d+\.\d+(?:\.\d+)?)/);
+  return bare ? bare[1] : null;
+}
+
+/** Probe PostgreSQL version via the DB connection. Returns null on any error. */
+async function probePostgresVersion(): Promise<string | null> {
+  try {
+    const { sql } = await import("drizzle-orm");
+    const rows = (await db.execute(sql`SELECT version()`)) as unknown as Array<{ version?: string }>;
+    const raw = rows[0]?.version ?? "";
+    return extractPostgresVersion(raw);
+  } catch {
+    return null;
+  }
 }
 
 export function registerSettingsRoutes(router: Router, gateway: Gateway) {
@@ -104,6 +196,43 @@ export function registerSettingsRoutes(router: Router, gateway: Gateway) {
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });
     }
+  });
+
+  /**
+   * GET /api/settings/versions — live component version report.
+   *
+   * Uses Promise.allSettled so every probe failure is isolated — this endpoint
+   * will NEVER return 500 due to an unavailable downstream service.
+   */
+  router.get("/api/settings/versions", async (_req, res) => {
+    const pkgVersion = getPackageVersion();
+
+    const [dockerResult, vllmResult, ollamaResult, pgResult] = await Promise.allSettled([
+      Promise.resolve(probeDockerVersion()),
+      probeVllmVersion(),
+      probeOllamaVersion(),
+      probePostgresVersion(),
+    ]);
+
+    const response: VersionsResponse = {
+      platform: {
+        frontend: pkgVersion,
+        backend: pkgVersion,
+        node: process.version,
+        buildDate: process.env.BUILD_DATE ?? "dev",
+        gitCommit: process.env.GIT_COMMIT ?? "dev",
+      },
+      runtimes: {
+        docker: dockerResult.status === "fulfilled" ? dockerResult.value : null,
+        vllm: vllmResult.status === "fulfilled" ? vllmResult.value : null,
+        ollama: ollamaResult.status === "fulfilled" ? ollamaResult.value : null,
+      },
+      database: {
+        postgres: pgResult.status === "fulfilled" ? pgResult.value : null,
+      },
+    };
+
+    res.json(response);
   });
 }
 
