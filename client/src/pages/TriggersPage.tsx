@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Zap, Plus, Loader2 } from "lucide-react";
+import { Zap, Plus, Loader2, ZapOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TriggerCard } from "@/components/triggers/TriggerCard";
 import { TriggerForm } from "@/components/triggers/TriggerForm";
@@ -20,6 +20,7 @@ export default function TriggersPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editingTrigger, setEditingTrigger] = useState<PipelineTrigger | undefined>();
 
+  const subsystemDisabled = (error as (Error & { disabled?: boolean }) | null)?.disabled === true || (error as (Error & { status?: number }) | null)?.status === 503;
   const triggerList: PipelineTrigger[] = Array.isArray(triggers) ? triggers : [];
   const pipelines: Pipeline[] = Array.isArray(pipelinesData) ? pipelinesData : [];
 
@@ -56,7 +57,7 @@ export default function TriggersPage() {
           size="sm"
           className="h-8 text-xs"
           onClick={handleAdd}
-          disabled={pipelines.length === 0}
+          disabled={pipelines.length === 0 || subsystemDisabled}
         >
           <Plus className="h-3 w-3 mr-2" />
           Add Trigger
@@ -72,10 +73,20 @@ export default function TriggersPage() {
           </div>
         )}
 
-        {error && (
+        {error && !subsystemDisabled && (
           <div className="flex items-center justify-center py-16">
             <p className="text-sm text-destructive">
               Failed to load triggers: {error.message}
+            </p>
+          </div>
+        )}
+
+        {subsystemDisabled && (
+          <div className="flex flex-col items-center justify-center py-20 text-center">
+            <ZapOff className="h-10 w-10 text-muted-foreground/40 mb-4" />
+            <p className="text-sm font-medium text-muted-foreground">Trigger subsystem is not configured</p>
+            <p className="text-xs text-muted-foreground mt-1 max-w-xs">
+              Set the <code className="font-mono bg-muted px-1 rounded">TRIGGER_SECRET_KEY</code> environment variable to enable webhooks, schedules, and event triggers.
             </p>
           </div>
         )}
