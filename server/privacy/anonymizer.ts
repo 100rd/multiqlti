@@ -88,6 +88,31 @@ function generatePseudonym(
     case "env_variable":
       return "<REDACTED>";
 
+    // ─── K8s + ArgoCD pseudonyms (Phase 6.10) ──────────────────────────────────
+    case "k8s_pod":
+      return `pod-${label}-example`;
+
+    case "k8s_service":
+      return `svc-${label}.ns-${label}.svc.cluster.local`;
+
+    case "k8s_configmap":
+      return `cm-${label}`;
+
+    case "k8s_secret_ref":
+      return `secret-${label}`;
+
+    case "k8s_ingress":
+      return `ingress-${label}`;
+
+    case "k8s_cluster":
+      if (value.startsWith("arn:aws:eks:")) {
+        return value.replace(/cluster\/[^/\s]+/, `cluster/cluster-${label}`);
+      }
+      return `cluster-${label}`;
+
+    case "argocd_project":
+      return `project-${label}`;
+
     default:
       return `[${type.toUpperCase()}_${index + 1}]`;
   }

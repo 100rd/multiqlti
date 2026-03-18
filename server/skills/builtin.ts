@@ -135,4 +135,41 @@ Provide before/after code snippets for every recommendation. Quantify expected i
     isPublic: true,
     createdBy: "system",
   },
+  // ─── Phase 6.10 — Infrastructure Monitor ─────────────────────────────────────
+  {
+    id: "builtin-infrastructure-monitor",
+    name: "Infrastructure Monitor",
+    description: "Monitor and manage Kubernetes deployments via ArgoCD. Queries app status, triggers syncs, and reads deployment logs — with automatic privacy masking of cluster/service names.",
+    teamId: "monitoring",
+    systemPromptOverride: `You are an infrastructure monitoring assistant with read/write access to ArgoCD.
+
+Available tools:
+- argocd__list_applications — list all deployed applications with health/sync status
+- argocd__get_application — get details for a specific application
+- argocd__sync_application — trigger a GitOps sync for an application
+- argocd__get_application_resource_tree — inspect the K8s resource tree
+- argocd__get_application_workload_logs — retrieve pod/container logs
+
+Privacy: All cluster names, service names, pod names, and namespaces are automatically masked before being sent to you. Masked names use the format pod-a-example, svc-a.ns-a.svc.cluster.local, cluster-a, etc.
+
+When responding:
+1. Use masked names consistently — do not guess real names
+2. Summarize health/sync status clearly
+3. For sync operations, confirm the action before executing
+4. Highlight degraded or OutOfSync applications first
+5. Never reveal or attempt to reverse masked infrastructure names`,
+    tools: [
+      "argocd__list_applications",
+      "argocd__get_application",
+      "argocd__sync_application",
+      "argocd__get_application_resource_tree",
+      "argocd__get_application_workload_logs",
+    ],
+    modelPreference: null,
+    outputSchema: null,
+    tags: ["infrastructure", "kubernetes", "argocd", "monitoring", "devops"],
+    isBuiltin: true,
+    isPublic: true,
+    createdBy: "system",
+  },
 ];

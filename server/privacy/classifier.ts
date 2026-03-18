@@ -70,7 +70,12 @@ const BUILTIN_PATTERNS: PatternDefinition[] = [
   {
     type: "k8s_namespace",
     severity: "medium",
-    patterns: [/namespace:\s*['"]?([a-z0-9][a-z0-9-]{0,61}[a-z0-9])/gi],
+    patterns: [
+      // YAML format: namespace: production-services
+      /namespace:\s*['"]?([a-z0-9][a-z0-9-]{0,61}[a-z0-9])/gi,
+      // JSON format: "namespace": "production-services"
+      /"namespace":\s*"([a-z0-9][a-z0-9-]{0,61}[a-z0-9])"/gi,
+    ],
     allowlist: [
       "default",
       "kube-system",
@@ -89,6 +94,72 @@ const BUILTIN_PATTERNS: PatternDefinition[] = [
     type: "env_variable",
     severity: "high",
     patterns: [/\b[A-Z][A-Z0-9_]{3,}=[^\s]{8,}/g],
+  },
+  // ─── K8s + ArgoCD patterns (Phase 6.10) ─────────────────────────────────────
+  {
+    type: "k8s_pod",
+    severity: "medium",
+    patterns: [
+      // Standard pod name: <deployment>-<replicaset-5chars>-<random-5chars>
+      /\b([a-z0-9][a-z0-9-]{1,50})-[a-z0-9]{5}-[a-z0-9]{5}\b/g,
+      // Explicit podName: key in YAML/JSON
+      /pod(?:Name)?:\s*['"]?([a-z0-9][a-z0-9-]{2,62})/gi,
+    ],
+  },
+  {
+    type: "k8s_service",
+    severity: "medium",
+    patterns: [
+      // K8s service DNS: svc.namespace.svc.cluster.local
+      /\b([a-z0-9][a-z0-9-]{0,61}[a-z0-9])\.([a-z0-9-]+)\.svc\.cluster\.local\b/g,
+      // service: key in YAML (preceded by start of line or whitespace)
+      /(?:^|\s)service:\s*['"]?([a-z0-9][a-z0-9-]{1,61}[a-z0-9])/gim,
+    ],
+  },
+  {
+    type: "k8s_configmap",
+    severity: "low",
+    patterns: [
+      /configMap(?:Name)?:\s*['"]?([a-z0-9][a-z0-9-]{2,62})/gi,
+      /configmap\/([a-z0-9][a-z0-9-]{2,62})/gi,
+    ],
+  },
+  {
+    type: "k8s_secret_ref",
+    severity: "high",
+    patterns: [
+      /secretName:\s*['"]?([a-z0-9][a-z0-9-]{2,62})/gi,
+      /secret\/([a-z0-9][a-z0-9-]{2,62})/gi,
+    ],
+  },
+  {
+    type: "k8s_ingress",
+    severity: "medium",
+    patterns: [
+      /ingress\/([a-z0-9][a-z0-9-]{2,62})/gi,
+      /ingressName:\s*['"]?([a-z0-9][a-z0-9-]{2,62})/gi,
+    ],
+  },
+  {
+    type: "k8s_cluster",
+    severity: "high",
+    patterns: [
+      // AWS EKS cluster ARN
+      /arn:aws:eks:[a-z0-9-]+:\d{12}:cluster\/([a-z0-9][a-z0-9-]{2,99})/g,
+      // kubeconfig current-context
+      /current-context:\s*['"]?([a-z0-9][a-z0-9._-]{2,100})/gi,
+    ],
+  },
+  {
+    type: "argocd_project",
+    severity: "medium",
+    patterns: [
+      // project: key in YAML (preceded by start of line or whitespace)
+      /(?:^|\s)project:\s*['"]?([a-z0-9][a-z0-9-]{2,62})/gim,
+      // project in JSON: "project": "value"
+      /"project":\s*"([a-z0-9][a-z0-9-]{2,62})"/g,
+    ],
+    allowlist: ["default"],
   },
 ];
 

@@ -42,6 +42,7 @@ import {
 } from "@/hooks/use-pipeline";
 import { cn } from "@/lib/utils";
 import { useQueryClient, useMutation, useQuery } from "@tanstack/react-query";
+import { ArgocdSettings } from "@/components/settings/ArgocdSettings";
 
 type CloudProvider = "anthropic" | "google" | "xai";
 
@@ -1376,6 +1377,9 @@ export default function Settings() {
               </div>
             </CardContent>
           </Card>
+
+          {/* ── Infrastructure: ArgoCD ──────────────── */}
+          <ArgocdSettings />
 
           {/* ── Maintenance Autopilot ───────────────────── */}
           <MaintenanceSettings />
