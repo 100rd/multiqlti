@@ -20,10 +20,18 @@ export interface DependencyGraphResponse {
   edges: DGEdge[];
 }
 
+// ─── Auth helper ──────────────────────────────────────────────────────────────
+
+function getAuthToken(): string | null {
+  return localStorage.getItem("auth_token");
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 async function fetchDependencyGraph(workspaceId: string): Promise<DependencyGraphResponse> {
-  const res = await fetch(`/api/workspaces/${workspaceId}/dependency-graph`);
+  const token = getAuthToken();
+  const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const res = await fetch(`/api/workspaces/${workspaceId}/dependency-graph`, { headers: authHeaders });
   if (res.status === 409) {
     const body = (await res.json()) as { error: string; indexStatus: string };
     throw Object.assign(new Error(body.error ?? "Workspace not yet indexed"), {

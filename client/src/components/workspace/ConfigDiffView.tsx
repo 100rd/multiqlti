@@ -11,6 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { ProjectConfigResponse, ConfigDiffEntry } from "@shared/types";
+import { apiRequest } from "@/hooks/use-pipeline";
 
 interface Props {
   workspaceId: string;
@@ -41,11 +42,7 @@ function changeBadge(changeType: ConfigDiffEntry["changeType"]) {
 export function ConfigDiffView({ workspaceId, onAccept, onIgnore }: Props) {
   const { data, isLoading, error } = useQuery<ProjectConfigResponse>({
     queryKey: ["/api/workspaces", workspaceId, "config"],
-    queryFn: async () => {
-      const res = await fetch(`/api/workspaces/${workspaceId}/config`);
-      if (!res.ok) throw new Error(await res.text());
-      return res.json();
-    },
+    queryFn: () => apiRequest("GET", `/api/workspaces/${workspaceId}/config`),
   });
 
   if (isLoading) {

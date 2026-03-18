@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Send } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { apiRequest } from "@/hooks/use-pipeline";
 
 interface Message {
   id: string;
@@ -21,22 +22,11 @@ async function sendChat(
   modelSlug: string,
   filePaths: string[],
 ): Promise<string> {
-  const res = await fetch(`/api/workspaces/${workspaceId}/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message,
-      modelSlug,
-      context: filePaths.length > 0 ? { filePaths } : undefined,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "Request failed" }));
-    throw new Error((err as { error: string }).error ?? "Request failed");
-  }
-
-  const data = await res.json() as { reply: string };
+  const data = await apiRequest("POST", `/api/workspaces/${workspaceId}/chat`, {
+    message,
+    modelSlug,
+    context: filePaths.length > 0 ? { filePaths } : undefined,
+  }) as { reply: string };
   return data.reply;
 }
 

@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
+import { apiRequest } from "@/hooks/use-pipeline";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,9 +37,7 @@ async function fetchSymbols(
 ): Promise<SymbolSearchResult[]> {
   const params = new URLSearchParams({ q });
   if (kind) params.set("kind", kind);
-  const res = await fetch(`/api/workspaces/${workspaceId}/symbols?${params.toString()}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json() as Promise<SymbolSearchResult[]>;
+  return apiRequest("GET", `/api/workspaces/${workspaceId}/symbols?${params.toString()}`);
 }
 
 export function useSymbolSearch(
