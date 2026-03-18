@@ -5,7 +5,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Send, Bot, User, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useModels, useStandaloneChat } from "@/hooks/use-pipeline";
+import { useModels, useStandaloneChat, useGatewayStatus } from "@/hooks/use-pipeline";
 
 interface ChatMsg {
   role: string;
@@ -37,29 +37,55 @@ const DEFAULT_GREETING: ChatMsg = {
   content: "Local environment initialized. Sandboxes are active. I am restricted from external network access. How can I help you today?",
 };
 
+type GatewayStatus = Record<string, boolean | string | null>;
+type ModelRecord = Record<string, unknown>;
+
+function isProviderAvailable(provider: string, gatewayStatus: GatewayStatus | undefined): boolean {
+  if (!gatewayStatus) return true; // not yet loaded — don't hide anything
+  if (provider === "mock") return true;
+  return !!gatewayStatus[provider];
+}
+
 export default function Chat() {
   const { data: models } = useModels();
+  const { data: gatewayStatus } = useGatewayStatus();
   const chatMutation = useStandaloneChat();
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const modelList = Array.isArray(models)
-    ? models.filter((m: Record<string, unknown>) => m.isActive)
+  // Only show active models whose provider is actually configured (has API key / endpoint)
+  const modelList: ModelRecord[] = Array.isArray(models)
+    ? models.filter((m: ModelRecord) =>
+        m.isActive && isProviderAvailable(m.provider as string, gatewayStatus as GatewayStatus)
+      )
     : [];
 
-  // Default model: first active model slug, falls back to empty string
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [messages, setMessages] = useState<ChatMsg[]>(() => {
     const saved = loadHistory();
     return saved.length > 0 ? saved : [DEFAULT_GREETING];
   });
   const [input, setInput] = useState("");
+  const [tokensUsed, setTokensUsed] = useState(0);
 
   // Set default model once models are loaded
   useEffect(() => {
     if (!selectedModel && modelList.length > 0) {
-      setSelectedModel((modelList[0] as Record<string, unknown>).slug as string);
+      setSelectedModel(modelList[0].slug as string);
     }
   }, [modelList, selectedModel]);
+
+  // If the selected model's provider loses its key, switch to first available
+  useEffect(() => {
+    if (selectedModel && gatewayStatus && modelList.length > 0) {
+      const still = modelList.find((m) => (m.slug as string) === selectedModel);
+      if (!still) setSelectedModel(modelList[0].slug as string);
+    }
+  }, [modelList, selectedModel, gatewayStatus]);
+
+  // Reset token counter when switching models
+  useEffect(() => {
+    setTokensUsed(0);
+  }, [selectedModel]);
 
   // Persist chat history on every message change
   useEffect(() => {
@@ -73,8 +99,13 @@ export default function Chat() {
     }
   }, [messages]);
 
+  const selectedModelData = modelList.find((m) => (m.slug as string) === selectedModel);
+  const contextLimit = (selectedModelData?.contextLimit as number) ?? 0;
+  const noModelsAvailable = !!gatewayStatus && modelList.length === 0;
+  const canSend = !!selectedModel && !chatMutation.isPending && !!input.trim() && !noModelsAvailable;
+
   const handleSend = () => {
-    if (!input.trim() || chatMutation.isPending) return;
+    if (!canSend) return;
     const userMsg: ChatMsg = { role: "user", content: input };
     const updatedMessages = [...messages, userMsg];
     setMessages(updatedMessages);
@@ -87,11 +118,14 @@ export default function Chat() {
         history: updatedMessages.slice(-10),
       },
       {
-        onSuccess: (data: { content: string }) => {
+        onSuccess: (data: { content: string; tokensUsed?: number }) => {
           setMessages((prev) => [
             ...prev,
             { role: "assistant", content: data.content },
           ]);
+          if (data.tokensUsed) {
+            setTokensUsed((prev) => prev + (data.tokensUsed ?? 0));
+          }
         },
         onError: (error: Error) => {
           setMessages((prev) => [
@@ -107,7 +141,10 @@ export default function Chat() {
     const fresh = [DEFAULT_GREETING];
     setMessages(fresh);
     saveHistory(fresh);
+    setTokensUsed(0);
   };
+
+  const tokenPct = contextLimit > 0 ? tokensUsed / contextLimit : 0;
 
   return (
     <div className="flex flex-col h-full bg-background">
@@ -121,12 +158,22 @@ export default function Chat() {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Token usage counter */}
+          {contextLimit > 0 && (
+            <div className={cn(
+              "text-xs font-mono tabular-nums",
+              tokenPct >= 0.9 ? "text-destructive" : tokenPct >= 0.7 ? "text-yellow-500" : "text-muted-foreground"
+            )}>
+              {tokensUsed.toLocaleString()} / {(contextLimit / 1024).toFixed(0)}k ctx
+            </div>
+          )}
+
           <Select value={selectedModel} onValueChange={setSelectedModel}>
             <SelectTrigger className="w-[200px] h-8 text-xs bg-background">
-              <SelectValue placeholder="Select Model" />
+              <SelectValue placeholder={noModelsAvailable ? "No models — add API key" : "Select Model"} />
             </SelectTrigger>
             <SelectContent>
-              {modelList.map((m: Record<string, unknown>) => (
+              {modelList.map((m) => (
                 <SelectItem key={m.slug as string} value={m.slug as string}>
                   {m.name as string}
                   <span className="text-muted-foreground ml-1">({m.provider as string})</span>
@@ -134,11 +181,20 @@ export default function Chat() {
               ))}
             </SelectContent>
           </Select>
+
           <Button variant="outline" size="icon" className="h-8 w-8" onClick={handleClearHistory} title="Clear history">
             <Settings2 className="h-4 w-4" />
           </Button>
         </div>
       </div>
+
+      {/* No-models banner */}
+      {noModelsAvailable && (
+        <div className="px-6 py-2 text-center text-xs bg-muted/60 border-b border-border text-muted-foreground">
+          No models available. Add an API key or endpoint in{" "}
+          <strong>Settings → Providers</strong>.
+        </div>
+      )}
 
       {/* Chat Area */}
       <ScrollArea className="flex-1 p-6">
@@ -187,23 +243,33 @@ export default function Chat() {
         <div className="max-w-3xl mx-auto relative flex items-center">
           <Input
             className="w-full pr-12 py-6 rounded-full border-border bg-card shadow-sm focus-visible:ring-1"
-            placeholder="Instruct the local agent..."
+            placeholder={
+              noModelsAvailable
+                ? "Configure an API key in Settings to chat…"
+                : !selectedModel
+                  ? "Select a model above to start…"
+                  : "Instruct the local agent…"
+            }
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-            disabled={chatMutation.isPending}
+            onKeyDown={(e) => e.key === "Enter" && handleSend()}
+            disabled={chatMutation.isPending || noModelsAvailable || !selectedModel}
           />
           <Button
             size="icon"
             className="absolute right-2 h-8 w-8 rounded-full z-10"
             onClick={handleSend}
-            disabled={!input.trim() || chatMutation.isPending}
+            disabled={!canSend}
           >
             <Send className="h-4 w-4" />
           </Button>
         </div>
         <p className="text-center text-[10px] text-muted-foreground mt-3 font-mono">
-          Model: {selectedModel || "not selected"} &bull; All processing is performed strictly on-device.
+          {noModelsAvailable
+            ? "No models available — add an API key or local endpoint in Settings"
+            : selectedModel
+              ? `Model: ${selectedModel} \u2022 All processing is performed strictly on-device.`
+              : "Select a model to begin"}
         </p>
       </div>
     </div>
