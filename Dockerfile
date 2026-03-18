@@ -25,4 +25,9 @@ COPY shared/ ./shared/
 
 EXPOSE 5000
 
+ARG BUILD_DATE=dev
+ARG GIT_COMMIT=dev
+ENV BUILD_DATE=$BUILD_DATE
+ENV GIT_COMMIT=$GIT_COMMIT
+
 CMD ["node", "dist/index.cjs"]

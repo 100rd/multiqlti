@@ -28,6 +28,7 @@ import {
   Link2,
   Shield,
   ShieldCheck,
+  Info,
 } from "lucide-react";
 import {
   useModels,
@@ -44,6 +45,7 @@ import { cn } from "@/lib/utils";
 import { useQueryClient, useMutation, useQuery } from "@tanstack/react-query";
 import { ArgocdSettings } from "@/components/settings/ArgocdSettings";
 import { SettingsSection } from "@/components/settings/SettingsSection";
+import { VersionInfoPanel } from "@/components/settings/VersionInfoPanel";
 
 type CloudProvider = "anthropic" | "google" | "xai";
 
@@ -1412,6 +1414,17 @@ export default function Settings() {
             defaultOpen={false}
           >
             <MemoryPreferences noCard />
+          </SettingsSection>
+
+          {/* ── 11. Version Information ────────────────── */}
+          <SettingsSection
+            title="Version Information"
+            icon={<Info className="h-5 w-5" />}
+            shortDescription="Installed component versions and build info"
+            longDescription="Shows versions of the frontend, backend, Node.js runtime, Docker engine, local LLM runtimes (vLLM, Ollama), and the connected PostgreSQL database. Build date and git commit are shown when the platform is deployed via Docker."
+            defaultOpen={false}
+          >
+            <VersionInfoPanel />
           </SettingsSection>
 
         </div>
