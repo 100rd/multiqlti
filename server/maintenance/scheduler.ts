@@ -13,10 +13,10 @@
 
 import cron, { type ScheduledTask } from "node-cron";
 import { db } from "../db";
-import { maintenancePolicies, maintenanceScans } from "@shared/schema";
+import { maintenancePolicies, maintenanceScans, pipelineRuns, autoTriggerAudit } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { runScout } from "./scout";
-import type { MaintenanceCategoryConfig } from "@shared/types";
+import type { MaintenanceCategoryConfig, LogSourceConfig, ScoutFinding } from "@shared/types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -102,8 +102,8 @@ export class MaintenanceScheduler {
    * Immediately execute a scan for a policy (bypass cron schedule).
    * Returns the scan id.
    */
-  async triggerNow(policyId: string): Promise<string | null> {
-    return this.executeScan(policyId);
+  async triggerNow(policyId: string, triggeredBy?: string | null): Promise<string | null> {
+    return this.executeScan(policyId, triggeredBy);
   }
 
   /**
@@ -125,13 +125,13 @@ export class MaintenanceScheduler {
     }
 
     const task = cron.schedule(schedule, () => {
-      void this.executeScan(policyId);
+      void this.executeScan(policyId, null);
     });
 
     this.jobs.set(policyId, { policyId, schedule, task });
   }
 
-  private async executeScan(policyId: string): Promise<string | null> {
+  private async executeScan(policyId: string, triggeredBy: string | null | undefined): Promise<string | null> {
     // Fetch policy (it may have changed since registration)
     const [policy] = await db
       .select()
@@ -168,6 +168,7 @@ export class MaintenanceScheduler {
         workspacePath,
         scanId: scan.id,
         enabledCategories,
+        logSourceConfig: (policy.logSourceConfig as LogSourceConfig | null) ?? null,
       });
 
       await db
@@ -179,6 +180,46 @@ export class MaintenanceScheduler {
           completedAt: new Date(),
         })
         .where(eq(maintenanceScans.id, scan.id));
+
+      // ── Auto-trigger pipeline on critical findings ──────────────────────────
+      const criticalFindings = (result.findings as ScoutFinding[]).filter(
+        (f) => f.severity === "critical",
+      );
+      if (
+        criticalFindings.length > 0 &&
+        policy.autoTriggerEnabled &&
+        policy.autoTriggerPipelineId
+      ) {
+        try {
+          const [run] = await db
+            .insert(pipelineRuns)
+            .values({
+              pipelineId: policy.autoTriggerPipelineId,
+              status: "pending",
+              input: JSON.stringify({
+                source: "maintenance_auto_trigger",
+                scanId: scan.id,
+                criticalFindings,
+              }),
+              triggeredBy: triggeredBy ?? null,
+              dagMode: false,
+            })
+            .returning();
+
+          const auditRows = criticalFindings.map((f) => ({
+            scanId: scan.id,
+            findingId: f.id,
+            pipelineRunId: run.id,
+            triggeredBy: triggeredBy ?? null,
+          }));
+
+          if (auditRows.length > 0) {
+            await db.insert(autoTriggerAudit).values(auditRows);
+          }
+        } catch {
+          // Auto-trigger failure is non-fatal
+        }
+      }
 
       return scan.id;
     } catch {

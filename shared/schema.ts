@@ -14,7 +14,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter } from "./types.js";
+import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -448,6 +448,9 @@ export const maintenancePolicies = pgTable("maintenance_policies", {
   notifyChannels: jsonb("notify_channels")
     .$type<string[]>()
     .default(sql`'[]'::jsonb`),
+  autoTriggerPipelineId: varchar("auto_trigger_pipeline_id"),
+  autoTriggerEnabled: boolean("auto_trigger_enabled").notNull().default(false),
+  logSourceConfig: jsonb("log_source_config").$type<LogSourceConfig | null>(),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -477,6 +480,23 @@ export const maintenanceScans = pgTable("maintenance_scans", {
 });
 
 export type MaintenanceScanRow = typeof maintenanceScans.$inferSelect;
+
+// ─── Auto-Trigger Audit (Phase 6.11) ─────────────────────────────────────────
+
+export const autoTriggerAudit = pgTable("auto_trigger_audit", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  scanId: varchar("scan_id")
+    .notNull()
+    .references(() => maintenanceScans.id, { onDelete: "restrict" }),
+  findingId: varchar("finding_id").notNull(),
+  pipelineRunId: varchar("pipeline_run_id").notNull(),
+  triggeredAt: timestamp("triggered_at").notNull().defaultNow(),
+  triggeredBy: varchar("triggered_by").references(() => users.id, { onDelete: "restrict" }),
+});
+
+export type AutoTriggerAuditRow = typeof autoTriggerAudit.$inferSelect;
 
 // ─── Delegation Requests (Phase 6.4) ─────────────────────────────────────────
 
@@ -536,6 +556,11 @@ export const skills = pgTable("skills", {
   isBuiltin: boolean("is_builtin").notNull().default(false),
   isPublic: boolean("is_public").notNull().default(true),
   createdBy: text("created_by").notNull().default("system"),
+  // Phase 6.16 columns
+  version: text("version").notNull().default("1.0.0"),
+  sharing: text("sharing").notNull().default("public").$type<"private" | "team" | "public">(),
+  usageCount: integer("usage_count").notNull().default(0),
+  forkedFrom: varchar("forked_from"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -543,6 +568,31 @@ export const skills = pgTable("skills", {
 export const insertSkillSchema = createInsertSchema(skills).omit({ createdAt: true, updatedAt: true });
 export type InsertSkill = z.infer<typeof insertSkillSchema>;
 export type Skill = typeof skills.$inferSelect;
+
+// ─── Skill Versions (Phase 6.16) ────────────────────────────────────────────
+
+export const skillVersions = pgTable("skill_versions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  skillId: varchar("skill_id")
+    .notNull()
+    .references(() => skills.id, { onDelete: "cascade" }),
+  version: text("version").notNull(),
+  config: jsonb("config").notNull().$type<SkillVersionConfig>(),
+  changelog: text("changelog").notNull().default(""),
+  createdBy: text("created_by").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  skillVersionIdx: index("skill_versions_skill_id_idx").on(table.skillId),
+  uniqueSkillVersion: unique().on(table.skillId, table.version),
+}));
+
+export const insertSkillVersionSchema = createInsertSchema(skillVersions).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertSkillVersion = z.infer<typeof insertSkillVersionSchema>;
+export type SkillVersionRow = typeof skillVersions.$inferSelect;
 
 // ─── Pipeline Triggers (Phase 6.3) ───────────────────────────────────────────
 

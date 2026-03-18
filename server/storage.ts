@@ -26,8 +26,10 @@ import {
   type TriggerRow,
   type InsertTrace,
   type TraceRow,
+  type SkillVersionRow,
+  type InsertSkillVersion,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType } from "@shared/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
 import { configLoader } from "./config/loader";
@@ -174,6 +176,15 @@ export interface IStorage {
   createSkill(data: InsertSkill): Promise<Skill>;
   updateSkill(id: string, updates: Partial<InsertSkill>): Promise<Skill>;
   deleteSkill(id: string): Promise<void>;
+
+  // Skill Versions (Phase 6.16)
+  getSkillVersions(skillId: string, limit: number, offset: number): Promise<{ rows: SkillVersionRecord[]; total: number }>;
+  getSkillVersion(skillId: string, version: string): Promise<SkillVersionRecord | undefined>;
+  createSkillVersion(data: InsertSkillVersionType): Promise<SkillVersionRecord>;
+
+  // Marketplace (Phase 6.16)
+  getMarketplaceSkills(filters: MarketplaceFilters): Promise<{ rows: MarketplaceSkill[]; total: number }>;
+  incrementSkillUsage(id: string): Promise<number>;
 
   // Manager Iterations (Phase 6.6)
   createManagerIteration(data: InsertManagerIteration): Promise<ManagerIterationRow>;
@@ -941,6 +952,10 @@ export class MemStorage implements IStorage {
       isBuiltin: data.isBuiltin ?? false,
       isPublic: data.isPublic ?? true,
       createdBy: data.createdBy ?? "system",
+      version: data.version ?? "1.0.0",
+      sharing: (data.sharing ?? "public") as "private" | "team" | "public",
+      usageCount: data.usageCount ?? 0,
+      forkedFrom: data.forkedFrom ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -964,6 +979,123 @@ export class MemStorage implements IStorage {
 
   async deleteSkill(id: string): Promise<void> {
     this.skillsMap.delete(id);
+  }
+
+  // ─── Skill Versions (Phase 6.16) ────────────────────────────────────────────
+
+  private skillVersionsMap: Map<string, SkillVersionRow> = new Map();
+
+  async getSkillVersions(
+    skillId: string,
+    limit: number,
+    offset: number,
+  ): Promise<{ rows: SkillVersionRecord[]; total: number }> {
+    const all = Array.from(this.skillVersionsMap.values())
+      .filter((v) => v.skillId === skillId)
+      .sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0));
+    const total = all.length;
+    const rows = all.slice(offset, offset + limit);
+    return { rows, total };
+  }
+
+  async getSkillVersion(
+    skillId: string,
+    version: string,
+  ): Promise<SkillVersionRecord | undefined> {
+    return Array.from(this.skillVersionsMap.values()).find(
+      (v) => v.skillId === skillId && v.version === version,
+    );
+  }
+
+  async createSkillVersion(data: InsertSkillVersionType): Promise<SkillVersionRecord> {
+    const id = randomUUID();
+    const row: SkillVersionRow = {
+      id,
+      skillId: data.skillId,
+      version: data.version,
+      config: data.config,
+      changelog: data.changelog,
+      createdBy: data.createdBy,
+      createdAt: new Date(),
+    };
+    this.skillVersionsMap.set(id, row);
+    return row;
+  }
+
+  // ─── Marketplace (Phase 6.16) ───────────────────────────────────────────────
+
+  async getMarketplaceSkills(
+    filters: MarketplaceFilters,
+  ): Promise<{ rows: MarketplaceSkill[]; total: number }> {
+    let result = Array.from(this.skillsMap.values()).filter((s) => {
+      const sharing = (s as Skill & { sharing?: string }).sharing ?? "public";
+      return sharing === "public" || sharing === "team";
+    });
+
+    if (filters.search) {
+      const lower = filters.search.toLowerCase();
+      result = result.filter(
+        (s) =>
+          s.name.toLowerCase().includes(lower) ||
+          s.description.toLowerCase().includes(lower) ||
+          (s.tags as string[]).some((t) => t.toLowerCase().includes(lower)),
+      );
+    }
+
+    if (filters.tags && filters.tags.length > 0) {
+      result = result.filter((s) =>
+        filters.tags!.some((t) => (s.tags as string[]).includes(t)),
+      );
+    }
+
+    if (filters.teamId) {
+      result = result.filter((s) => s.teamId === filters.teamId);
+    }
+
+    if (filters.author) {
+      result = result.filter((s) => s.createdBy === filters.author);
+    }
+
+    const mapped: MarketplaceSkill[] = result.map((s) => ({
+      id: s.id,
+      name: s.name,
+      description: s.description,
+      teamId: s.teamId,
+      tags: s.tags as string[],
+      version: (s as Skill & { version?: string }).version ?? "1.0.0",
+      author: s.createdBy,
+      usageCount: (s as Skill & { usageCount?: number }).usageCount ?? 0,
+      sharing: ((s as Skill & { sharing?: string }).sharing ?? "public") as MarketplaceSkill["sharing"],
+      modelPreference: s.modelPreference,
+      createdAt: s.createdAt ?? new Date(),
+      updatedAt: s.updatedAt ?? new Date(),
+    }));
+
+    switch (filters.sort) {
+      case "usageCount":
+        mapped.sort((a, b) => b.usageCount - a.usageCount);
+        break;
+      case "name":
+        mapped.sort((a, b) => a.name.localeCompare(b.name));
+        break;
+      case "newest":
+      default:
+        mapped.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+        break;
+    }
+
+    const total = mapped.length;
+    const rows = mapped.slice(filters.offset, filters.offset + filters.limit);
+    return { rows, total };
+  }
+
+  async incrementSkillUsage(id: string): Promise<number> {
+    const skill = this.skillsMap.get(id);
+    if (!skill) throw new Error(`Skill not found: ${id}`);
+    const currentCount = (skill as Skill & { usageCount?: number }).usageCount ?? 0;
+    const updated = { ...skill, usageCount: currentCount + 1 };
+    this.skillsMap.set(id, updated as Skill);
+    return currentCount + 1;
   }
 
   // ─── Manager Iterations (Phase 6.6) ────────────────────────────────────────

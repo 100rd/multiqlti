@@ -725,7 +725,30 @@ export type MaintenanceCategory =
   | "cert_expiry"
   | "infra_drift"
   | "vendor_status"
-  | "system_hardening";
+  | "system_hardening"
+  | "cve_scan"
+  | "log_analysis"
+  | "container_scan";
+
+// ─── Log Source Config (Phase 6.11) ──────────────────────────────────────────
+
+export interface LogSourceConfig {
+  type: "file" | "http";
+  path?: string;
+  url?: string;
+  headers?: Record<string, string>;
+}
+
+// ─── Auto-Trigger Audit (Phase 6.11) ─────────────────────────────────────────
+
+export interface AutoTriggerAuditRow {
+  id: string;
+  scanId: string;
+  findingId: string;
+  pipelineRunId: string;
+  triggeredAt: Date;
+  triggeredBy: string | null;
+}
 
 export type MaintenanceSeverity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -745,6 +768,9 @@ export interface MaintenancePolicy {
   severityThreshold: MaintenanceSeverity;
   autoMerge: boolean;
   notifyChannels: string[];
+  autoTriggerPipelineId: string | null;
+  autoTriggerEnabled: boolean;
+  logSourceConfig: LogSourceConfig | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -1328,3 +1354,83 @@ export const SwarmConfigSchema = z.object({
   },
   { message: "customClonePrompts length must equal cloneCount when splitter is 'custom'" }
 );
+
+// ─── Skill Marketplace Types (Phase 6.16) ─────────────────────────────────────
+
+export type SharingLevel = "private" | "team" | "public";
+
+export interface SkillVersionConfig {
+  name: string;
+  description: string;
+  teamId: string;
+  systemPromptOverride: string;
+  tools: string[];
+  modelPreference: string | null;
+  outputSchema: Record<string, unknown> | null;
+  tags: string[];
+}
+
+export interface SkillVersionRecord {
+  id: string;
+  skillId: string;
+  version: string;
+  config: SkillVersionConfig;
+  changelog: string;
+  createdBy: string;
+  createdAt: Date;
+}
+
+export interface SkillYaml {
+  apiVersion: "multiqlti/v1";
+  kind: "Skill";
+  metadata: {
+    name: string;
+    version: string;
+    author: string;
+    tags: string[];
+    description: string;
+  };
+  spec: {
+    teamId: string;
+    systemPrompt: string;
+    tools: string[];
+    modelPreference: string | null;
+    outputSchema: Record<string, unknown> | null;
+    sharing: SharingLevel;
+  };
+}
+
+export interface MarketplaceSkill {
+  id: string;
+  name: string;
+  description: string;
+  teamId: string;
+  tags: string[];
+  version: string;
+  author: string;
+  usageCount: number;
+  sharing: SharingLevel;
+  modelPreference: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type MarketplaceSortField = "usageCount" | "newest" | "name";
+
+export interface MarketplaceFilters {
+  search?: string;
+  tags?: string[];
+  teamId?: string;
+  author?: string;
+  sort: MarketplaceSortField;
+  limit: number;
+  offset: number;
+}
+
+export interface InsertSkillVersion {
+  skillId: string;
+  version: string;
+  config: SkillVersionConfig;
+  changelog: string;
+  createdBy: string;
+}

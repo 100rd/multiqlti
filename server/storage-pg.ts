@@ -10,6 +10,7 @@ import {
   delegationRequests,
   specializationProfiles,
   skills,
+  skillVersions,
   triggers,
   managerIterations,
   traces,
@@ -25,12 +26,13 @@ import {
   type InsertSpecializationProfile,
   type SpecializationProfileRow,
   type Skill, type InsertSkill,
+  type SkillVersionRow,
   type InsertManagerIteration, type ManagerIterationRow,
   type TriggerRow,
   type InsertTrace,
   type TraceRow,
 } from "@shared/schema";
-import type { TraceSpan } from "@shared/types";
+import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion } from "@shared/types";
 
 export class PgStorage implements IStorage {
 
@@ -699,6 +701,157 @@ export class PgStorage implements IStorage {
 
   async deleteSkill(id: string): Promise<void> {
     await db.delete(skills).where(eq(skills.id, id));
+  }
+
+  // ─── Skill Versions (Phase 6.16) ──────────────────────────────────────────
+
+  async getSkillVersions(
+    skillId: string,
+    limit: number,
+    offset: number,
+  ): Promise<{ rows: SkillVersionRecord[]; total: number }> {
+    const countResult = await db
+      .select({ count: drizzleSql<number>`count(*)::int` })
+      .from(skillVersions)
+      .where(eq(skillVersions.skillId, skillId));
+    const total = countResult[0]?.count ?? 0;
+
+    const rows = await db
+      .select()
+      .from(skillVersions)
+      .where(eq(skillVersions.skillId, skillId))
+      .orderBy(desc(skillVersions.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    return { rows, total };
+  }
+
+  async getSkillVersion(
+    skillId: string,
+    version: string,
+  ): Promise<SkillVersionRecord | undefined> {
+    const [row] = await db
+      .select()
+      .from(skillVersions)
+      .where(
+        and(
+          eq(skillVersions.skillId, skillId),
+          eq(skillVersions.version, version),
+        ),
+      );
+    return row;
+  }
+
+  async createSkillVersion(data: InsertSkillVersion): Promise<SkillVersionRecord> {
+    const [row] = await db
+      .insert(skillVersions)
+      .values({
+        skillId: data.skillId,
+        version: data.version,
+        config: data.config,
+        changelog: data.changelog,
+        createdBy: data.createdBy,
+      })
+      .returning();
+    return row;
+  }
+
+  // ─── Marketplace (Phase 6.16) ─────────────────────────────────────────────
+
+  async getMarketplaceSkills(
+    filters: MarketplaceFilters,
+  ): Promise<{ rows: MarketplaceSkill[]; total: number }> {
+    const conditions = [
+      or(
+        eq(skills.sharing, "public"),
+        eq(skills.sharing, "team"),
+      ),
+    ];
+
+    if (filters.search) {
+      const searchTerm = `%${filters.search}%`;
+      conditions.push(
+        or(
+          ilike(skills.name, searchTerm),
+          ilike(skills.description, searchTerm),
+        )!,
+      );
+    }
+
+    if (filters.teamId) {
+      conditions.push(eq(skills.teamId, filters.teamId));
+    }
+
+    if (filters.author) {
+      conditions.push(eq(skills.createdBy, filters.author));
+    }
+
+    const whereClause = and(...conditions);
+
+    const countResult = await db
+      .select({ count: drizzleSql<number>`count(*)::int` })
+      .from(skills)
+      .where(whereClause);
+    const total = countResult[0]?.count ?? 0;
+
+    let orderBy;
+    switch (filters.sort) {
+      case "usageCount":
+        orderBy = desc(skills.usageCount);
+        break;
+      case "name":
+        orderBy = asc(skills.name);
+        break;
+      case "newest":
+      default:
+        orderBy = desc(skills.createdAt);
+        break;
+    }
+
+    const rows = await db
+      .select()
+      .from(skills)
+      .where(whereClause)
+      .orderBy(orderBy)
+      .limit(filters.limit)
+      .offset(filters.offset);
+
+    const mapped: MarketplaceSkill[] = rows.map((s) => ({
+      id: s.id,
+      name: s.name,
+      description: s.description,
+      teamId: s.teamId,
+      tags: s.tags as string[],
+      version: s.version,
+      author: s.createdBy,
+      usageCount: s.usageCount,
+      sharing: s.sharing,
+      modelPreference: s.modelPreference,
+      createdAt: s.createdAt ?? new Date(),
+      updatedAt: s.updatedAt ?? new Date(),
+    }));
+
+    // Post-filter by tags if needed (JSONB array matching)
+    let filtered = mapped;
+    if (filters.tags && filters.tags.length > 0) {
+      filtered = mapped.filter((s) =>
+        filters.tags!.some((t) => s.tags.includes(t)),
+      );
+    }
+
+    return { rows: filtered, total };
+  }
+
+  async incrementSkillUsage(id: string): Promise<number> {
+    const [row] = await db
+      .update(skills)
+      .set({
+        usageCount: drizzleSql`${skills.usageCount} + 1`,
+      })
+      .where(eq(skills.id, id))
+      .returning({ usageCount: skills.usageCount });
+    return row?.usageCount ?? 0;
   }
 
   // ─── Manager Iterations (Phase 6.6) ────────────────────────────────────────
