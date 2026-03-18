@@ -119,10 +119,16 @@ interface AutoTriggerAuditRecord {
 
 // ─── API Helpers ──────────────────────────────────────────────────────────────
 
+function getAuthToken(): string | null {
+  return localStorage.getItem("auth_token");
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getAuthToken();
+  const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
   const res = await fetch(path, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: { "Content-Type": "application/json", ...authHeaders, ...init?.headers },
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: "Unknown error" }));
