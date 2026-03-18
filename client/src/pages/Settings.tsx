@@ -374,7 +374,7 @@ export default function Settings() {
   const [showKey, setShowKey] = useState<Partial<Record<CloudProvider, boolean>>>({});
 
   // Load provider key metadata from DB
-  const { data: providerStatuses, refetch: refetchProviderStatuses } = useQuery<ProviderStatus[]>({
+  const { data: providerStatuses, isLoading: providerStatusesLoading, refetch: refetchProviderStatuses } = useQuery<ProviderStatus[]>({
     queryKey: ["/api/settings/providers"],
     queryFn: async () => {
       return apiRequest("GET", "/api/settings/providers").catch(() => [] as ProviderStatus[]);
@@ -598,6 +598,11 @@ export default function Settings() {
                     <div className="text-xs text-muted-foreground font-mono">
                       {(gatewayStatus as Record<string, unknown>)?.vllmEndpoint as string ?? "Not configured"}
                     </div>
+                    {!(gatewayStatus as Record<string, unknown>)?.vllmEndpoint && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Set via <code className="font-mono">VLLM_ENDPOINT</code> environment variable
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-3 p-3 rounded-lg border border-border">
@@ -611,6 +616,11 @@ export default function Settings() {
                     <div className="text-xs text-muted-foreground font-mono">
                       {(gatewayStatus as Record<string, unknown>)?.ollamaEndpoint as string ?? "Not configured"}
                     </div>
+                    {!(gatewayStatus as Record<string, unknown>)?.ollamaEndpoint && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Set via <code className="font-mono">OLLAMA_ENDPOINT</code> environment variable
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -669,7 +679,7 @@ export default function Settings() {
                               Saved in DB
                             </Badge>
                           )}
-                          {source === "env" && (
+                          {!providerStatusesLoading && source === "env" && (
                             <Badge variant="outline" className="text-[10px] text-muted-foreground">
                               From env var
                             </Badge>
@@ -778,6 +788,12 @@ export default function Settings() {
                         </Button>
                       )}
                     </div>
+                    {(saveKey.isError && (saveKey.variables as { provider: CloudProvider })?.provider === key) && (
+                      <p className="text-xs text-destructive mt-1">{(saveKey.error as Error)?.message}</p>
+                    )}
+                    {(removeKey.isError && removeKey.variables === key) && (
+                      <p className="text-xs text-destructive mt-1">{(removeKey.error as Error)?.message}</p>
+                    )}
                   </div>
                 );
               })}
@@ -1171,7 +1187,7 @@ export default function Settings() {
                             if (!window.confirm(`Delete model "${model.name}"? This cannot be undone.`)) return;
                             deleteModel.mutate(model.id as string);
                           }}
-                          disabled={deleteModel.isPending}
+                          disabled={deleteModel.isPending && deleteModel.variables === model.id}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
