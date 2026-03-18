@@ -273,6 +273,8 @@ export type WsEventType =
   | "parallel:subtask:started"
   | "parallel:subtask:completed"
   | "parallel:merged"
+  | "parallel:cost:warning"
+  | "parallel:cost:exceeded"
   | "guardrail:checking"
   | "guardrail:passed"
   | "guardrail:failed"
@@ -831,6 +833,28 @@ export interface Recommendation {
 
 export type MergeStrategy = "concatenate" | "review" | "auto";
 
+// ─── Sharding Types (Phase 6.12) ────────────────────────────────────────────
+
+export type ShardingMode = "equal" | "weighted" | "natural";
+
+export interface ShardComplexity {
+  /** Estimated token count for the full input */
+  inputTokens: number;
+  /** Number of files referenced */
+  fileCount: number;
+  /** Number of test cases/suites detected */
+  testCount: number;
+  /** Composite complexity score */
+  score: number;
+}
+
+export interface CostThresholdConfig {
+  /** Warn (but proceed) above this USD amount */
+  warnUsd?: number;
+  /** Block execution above this USD amount */
+  blockUsd?: number;
+}
+
 export interface ParallelConfig {
   enabled: boolean;
   mode: "auto" | "manual";
@@ -838,6 +862,15 @@ export interface ParallelConfig {
   splitterModelSlug?: string;
   mergerModelSlug?: string;
   mergeStrategy: MergeStrategy;
+  // ── Phase 6.12 additions ──────────────────────────────────────────────────
+  /** Sharding strategy for dynamic shard sizing */
+  shardingStrategy?: ShardingMode;
+  /** Target complexity score per shard; splitter computes shard count automatically */
+  shardTargetSize?: number;
+  /** Maximum tokens allowed per subtask input; input is truncated + summarised if exceeded */
+  maxTokensPerSubtask?: number;
+  /** Cost-gate configuration; warn or block before expensive splits */
+  costThreshold?: CostThresholdConfig;
 }
 
 export interface ModelParallelCapabilities {
@@ -875,55 +908,18 @@ export interface ParallelExecutionMeta {
   succeededCount: number;
   failedCount: number;
   totalTokens: number;
-}
-
-// ─── Parallel Split Execution Types (Phase 3.8) ───────────────────────────────
-
-
-export interface ParallelConfig {
-  enabled: boolean;
-  mode: "auto" | "manual";
-  maxAgents: number;
-  splitterModelSlug?: string;
-  mergerModelSlug?: string;
-  mergeStrategy: MergeStrategy;
-}
-
-export interface ModelParallelCapabilities {
-  maxConcurrentAgents: number;
-  supportedMergeStrategies: MergeStrategy[];
-  recommendedForSplitting: boolean;
-}
-
-export interface SubTask {
-  id: string;
-  title: string;
-  description: string;
-  context: string[];
-  suggestedModel?: string;
-  estimatedComplexity: "low" | "medium" | "high";
-}
-
-export interface SplitPlan {
-  shouldSplit: boolean;
-  reason: string;
-  subtasks: SubTask[];
-}
-
-export interface SubTaskResult {
-  subtask: SubTask;
-  output: string;
-  tokensUsed: number;
-  modelSlug: string;
-  durationMs: number;
-}
-
-export interface ParallelExecutionMeta {
-  parallelExecution: true;
-  subtaskCount: number;
-  succeededCount: number;
-  failedCount: number;
-  totalTokens: number;
+  /** Populated when a cost threshold was hit */
+  costExceeded?: {
+    estimatedUsd: number;
+    limitUsd: number;
+    action: "warned" | "blocked";
+  };
+  /** Dynamic sharding metadata */
+  sharding?: {
+    mode: ShardingMode;
+    shardCount: number;
+    complexityScore: number;
+  };
 }
 
 // ─── Custom Stage Types (Phase 5) ────────────────────────────────────────────

@@ -1,17 +1,38 @@
 import type { Gateway } from "../gateway/index";
-import type { ParallelConfig, SplitPlan, SubTask } from "@shared/types";
+import type { ParallelConfig, SplitPlan, SubTask, ShardingMode } from "@shared/types";
+import {
+  estimateComplexity,
+  computeShardCount,
+  DEFAULT_SHARD_TARGET_SIZE,
+} from "./complexity-estimator";
+import { pickCheapestModelSlug, checkSplitCost } from "./model-tier-router";
 
 const MIN_INPUT_LENGTH_TO_SPLIT = 200;
 
-/** Picks the cheapest model slug based on a simple cost-tier heuristic. */
-function pickCheapestModelSlug(splitterSlug: string | undefined, fallback: string): string {
-  return splitterSlug ?? fallback;
+// ─── Sharding system prompt ───────────────────────────────────────────────────
+
+function shardingModeHint(mode: ShardingMode): string {
+  switch (mode) {
+    case "equal":
+      return "Divide the work into equal-sized chunks.";
+    case "weighted":
+      return "Divide the work so that more complex parts get their own chunk (weight by estimated effort).";
+    case "natural":
+      return "Split along natural boundaries such as file boundaries, module boundaries, or test suites.";
+  }
 }
 
-function buildSplitterSystemPrompt(teamId: string, maxAgents: number): string {
+function buildSplitterSystemPrompt(
+  teamId: string,
+  maxAgents: number,
+  shardCount: number,
+  shardingMode: ShardingMode,
+): string {
   return `You are a task splitter. Given a task for the "${teamId}" stage, decide:
 1. Can this task be meaningfully parallelized?
-2. If yes, split into independent subtasks (max ${maxAgents}).
+2. If yes, split into independent subtasks (target: ${shardCount}, max: ${maxAgents}).
+
+Sharding strategy: ${shardingModeHint(shardingMode)}
 
 Rules:
 - Each subtask MUST be independent (no cross-dependencies)
@@ -36,8 +57,21 @@ Output ONLY valid JSON matching this schema:
 }`;
 }
 
+// ─── Validation ───────────────────────────────────────────────────────────────
+
 function isTooShortToSplit(input: string): boolean {
   return input.trim().length < MIN_INPUT_LENGTH_TO_SPLIT;
+}
+
+function isValidSubTask(item: unknown): item is SubTask {
+  if (typeof item !== "object" || item === null) return false;
+  const obj = item as Record<string, unknown>;
+  return (
+    typeof obj.id === "string" &&
+    typeof obj.title === "string" &&
+    typeof obj.description === "string" &&
+    Array.isArray(obj.context)
+  );
 }
 
 function parseSplitPlan(raw: string): SplitPlan {
@@ -72,17 +106,6 @@ function parseSplitPlan(raw: string): SplitPlan {
   }
 }
 
-function isValidSubTask(item: unknown): item is SubTask {
-  if (typeof item !== "object" || item === null) return false;
-  const obj = item as Record<string, unknown>;
-  return (
-    typeof obj.id === "string" &&
-    typeof obj.title === "string" &&
-    typeof obj.description === "string" &&
-    Array.isArray(obj.context)
-  );
-}
-
 function capSubtasks(plan: SplitPlan, maxAgents: number): SplitPlan {
   if (plan.subtasks.length <= maxAgents) return plan;
   return {
@@ -90,6 +113,20 @@ function capSubtasks(plan: SplitPlan, maxAgents: number): SplitPlan {
     subtasks: plan.subtasks.slice(0, maxAgents),
   };
 }
+
+// ─── Pre-check result ─────────────────────────────────────────────────────────
+
+export interface SplitPreCheck {
+  shardCount: number;
+  shardingMode: ShardingMode;
+  complexityScore: number;
+  cheapModelSlug: string;
+  costAction: "proceed" | "warn" | "block";
+  costMessage?: string;
+  estimatedCostUsd: number;
+}
+
+// ─── Splitter class ───────────────────────────────────────────────────────────
 
 export class Splitter {
   private gateway: Gateway;
@@ -100,17 +137,105 @@ export class Splitter {
     this.config = config;
   }
 
-  async split(stageInput: string, teamId: string): Promise<SplitPlan> {
+  /**
+   * Pre-split analysis: compute shards and cost estimate without calling the LLM.
+   * Callers may surface the warning or abort when costAction === "block".
+   */
+  preCheck(stageInput: string, primaryModelSlug: string): SplitPreCheck {
+    const shardingMode: ShardingMode = this.config.shardingStrategy ?? "equal";
+    const { score } = estimateComplexity(stageInput);
+    const shardCount = computeShardCount(
+      score,
+      this.config.shardTargetSize ?? DEFAULT_SHARD_TARGET_SIZE,
+      this.config.maxAgents,
+    );
+    const cheapModelSlug = pickCheapestModelSlug(primaryModelSlug, primaryModelSlug);
+
+    const inputTokens = Math.ceil(stageInput.length / 4);
+    const costResult = checkSplitCost(
+      inputTokens,
+      shardCount,
+      primaryModelSlug,
+      this.config.costThreshold,
+    );
+
+    return {
+      shardCount,
+      shardingMode,
+      complexityScore: score,
+      cheapModelSlug,
+      costAction: costResult.action,
+      costMessage: costResult.action !== "proceed" ? costResult.message : undefined,
+      estimatedCostUsd: costResult.estimate.totalCostUsd,
+    };
+  }
+
+  async split(
+    stageInput: string,
+    teamId: string,
+    primaryModelSlug?: string,
+  ): Promise<SplitPlan & { preCheck?: SplitPreCheck }> {
     if (!this.config.enabled) {
       return { shouldSplit: false, reason: "parallel execution disabled", subtasks: [] };
     }
 
     if (isTooShortToSplit(stageInput)) {
-      return { shouldSplit: false, reason: "input too short to benefit from splitting", subtasks: [] };
+      return {
+        shouldSplit: false,
+        reason: "input too short to benefit from splitting",
+        subtasks: [],
+      };
     }
 
-    const modelSlug = pickCheapestModelSlug(this.config.splitterModelSlug, "mock");
-    const systemPrompt = buildSplitterSystemPrompt(teamId, this.config.maxAgents);
+    // ── Dynamic sharding ──────────────────────────────────────────────────────
+    const shardingMode: ShardingMode = this.config.shardingStrategy ?? "equal";
+    const { score } = estimateComplexity(stageInput);
+    const shardCount = computeShardCount(
+      score,
+      this.config.shardTargetSize ?? DEFAULT_SHARD_TARGET_SIZE,
+      this.config.maxAgents,
+    );
+
+    // ── Model-tier routing ────────────────────────────────────────────────────
+    const resolvedPrimary = primaryModelSlug ?? this.config.splitterModelSlug ?? "mock";
+    const cheapModel = pickCheapestModelSlug(resolvedPrimary, resolvedPrimary);
+    const modelSlug = this.config.splitterModelSlug ?? cheapModel;
+
+    // ── Cost pre-check ────────────────────────────────────────────────────────
+    const inputTokens = Math.ceil(stageInput.length / 4);
+    const costResult = checkSplitCost(
+      inputTokens,
+      shardCount,
+      resolvedPrimary,
+      this.config.costThreshold,
+    );
+
+    const preCheck: SplitPreCheck = {
+      shardCount,
+      shardingMode,
+      complexityScore: score,
+      cheapModelSlug: cheapModel,
+      costAction: costResult.action,
+      costMessage: costResult.action !== "proceed" ? costResult.message : undefined,
+      estimatedCostUsd: costResult.estimate.totalCostUsd,
+    };
+
+    if (costResult.action === "block") {
+      return {
+        shouldSplit: false,
+        reason: `Split blocked: ${costResult.message ?? "cost limit exceeded"}`,
+        subtasks: [],
+        preCheck,
+      };
+    }
+
+    // ── LLM splitting call ────────────────────────────────────────────────────
+    const systemPrompt = buildSplitterSystemPrompt(
+      teamId,
+      this.config.maxAgents,
+      shardCount,
+      shardingMode,
+    );
 
     const response = await this.gateway.complete({
       modelSlug,
@@ -121,6 +246,8 @@ export class Splitter {
     });
 
     const plan = parseSplitPlan(response.content);
-    return capSubtasks(plan, this.config.maxAgents);
+    const capped = capSubtasks(plan, this.config.maxAgents);
+
+    return { ...capped, preCheck };
   }
 }

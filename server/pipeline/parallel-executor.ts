@@ -11,6 +11,9 @@ import type {
 } from "@shared/types";
 import { Splitter } from "./splitter";
 import { Merger } from "./merger";
+import { truncateToTokenBudget } from "./token-budget";
+import { estimateCostUsd } from "@shared/constants";
+import { pickCheapestModelSlug } from "./model-tier-router";
 
 export interface ParallelStageResult {
   output: Record<string, unknown>;
@@ -19,11 +22,15 @@ export interface ParallelStageResult {
   meta: ParallelExecutionMeta;
 }
 
-function buildSubtaskInput(subtask: SubTask): Record<string, unknown> {
+function buildSubtaskInput(subtask: SubTask, maxTokens?: number): Record<string, unknown> {
   const contextNote = subtask.context.length > 0
     ? `\n\nContext:\n${subtask.context.join("\n")}`
     : "";
-  return { taskDescription: `${subtask.description}${contextNote}` };
+  const raw = `${subtask.description}${contextNote}`;
+  const taskDescription = maxTokens !== undefined
+    ? truncateToTokenBudget(raw, maxTokens)
+    : raw;
+  return { taskDescription };
 }
 
 function stageInputToString(input: Record<string, unknown>): string {
@@ -52,18 +59,31 @@ export class ParallelExecutor {
     if (!parallelConfig?.enabled) return null;
 
     const inputStr = stageInputToString(stageInput);
+    const primaryModel = stage.modelSlug ?? "mock";
     const splitter = new Splitter(this.gateway, parallelConfig);
-    const plan = await splitter.split(inputStr, stage.teamId);
+    const plan = await splitter.split(inputStr, stage.teamId, primaryModel);
 
     if (!plan.shouldSplit || plan.subtasks.length === 0) return null;
 
-    this.broadcastSplit(context.runId, stageId, plan.subtasks);
+    // Surface cost-check warning via WS if applicable
+    if (plan.preCheck?.costAction === "warn" && plan.preCheck.costMessage) {
+      this.broadcastCostWarning(context.runId, stageId, {
+        estimatedUsd: plan.preCheck.estimatedCostUsd,
+        message: plan.preCheck.costMessage,
+      });
+    }
 
-    const subtaskResults = await this.runSubtasksInParallel(
+    this.broadcastSplit(context.runId, stageId, plan.subtasks, plan.preCheck);
+
+    // ── Run subtasks with token-budget enforcement & cumulative cost abort ───
+    const blockLimitUsd = parallelConfig.costThreshold?.blockUsd;
+    const subtaskResults = await this.runSubtasksWithBudget(
       plan.subtasks,
       stage,
       context,
       stageId,
+      parallelConfig.maxTokensPerSubtask,
+      blockLimitUsd,
     );
 
     const succeeded = subtaskResults.filter((r): r is SubTaskResult => r !== null);
@@ -73,7 +93,8 @@ export class ParallelExecutor {
       throw new Error(`All ${plan.subtasks.length} parallel subtasks failed`);
     }
 
-    const mergerModelSlug = parallelConfig.mergerModelSlug ?? stage.modelSlug;
+    // ── Merge: use primary model (not cheap model) ───────────────────────────
+    const mergerModelSlug = parallelConfig.mergerModelSlug ?? primaryModel;
     const merger = new Merger();
     const mergedOutput = await merger.merge(
       succeeded,
@@ -97,6 +118,13 @@ export class ParallelExecutor {
       succeededCount: succeeded.length,
       failedCount,
       totalTokens,
+      sharding: plan.preCheck
+        ? {
+            mode: plan.preCheck.shardingMode,
+            shardCount: plan.preCheck.shardCount,
+            complexityScore: plan.preCheck.complexityScore,
+          }
+        : undefined,
     };
 
     const team = this.teamRegistry.getTeam(stage.teamId);
@@ -110,21 +138,72 @@ export class ParallelExecutor {
     };
   }
 
-  private async runSubtasksInParallel(
+  /**
+   * Run all subtasks in parallel with per-subtask token-budget truncation and
+   * cumulative cost enforcement.  When the cumulative cost limit is exceeded,
+   * remaining subtasks that haven't started yet receive an abort signal via a
+   * shared flag — tasks already in-flight complete normally (Promise.allSettled
+   * semantics), but pending slots return null.
+   *
+   * NOTE: Because all subtasks are launched concurrently with Promise.allSettled,
+   * we cannot cancel already-launched promises.  We therefore abort at the
+   * per-result level: once the tracker fires, we mark subsequent results as null
+   * when collecting. A future iteration could use a streaming/sequential approach
+   * to abort earlier.
+   */
+  private async runSubtasksWithBudget(
     subtasks: SubTask[],
     stage: PipelineStageConfig,
     context: StageContext,
     stageId: string,
+    maxTokensPerSubtask: number | undefined,
+    blockLimitUsd: number | undefined,
   ): Promise<Array<SubTaskResult | null>> {
     const subtaskPromises = subtasks.map((subtask) =>
-      this.runSingleSubtask(subtask, stage, context, stageId),
+      this.runSingleSubtask(subtask, stage, context, stageId, maxTokensPerSubtask),
     );
 
     const settledResults = await Promise.allSettled(subtaskPromises);
 
+    let cumulativeCostUsd = 0;
+    let aborted = false;
+    let abortedCount = 0;
+    let completedCount = 0;
+
     return settledResults.map((result) => {
-      if (result.status === "fulfilled") return result.value;
-      return null;
+      if (aborted) {
+        abortedCount++;
+        return null;
+      }
+
+      if (result.status === "rejected") {
+        return null;
+      }
+
+      const subtaskResult = result.value;
+      completedCount++;
+
+      // Accumulate cost estimate for this subtask
+      if (blockLimitUsd !== undefined) {
+        const subtaskCost = estimateCostUsd(
+          subtaskResult.modelSlug,
+          subtaskResult.tokensUsed,
+          subtaskResult.tokensUsed, // approximate output ≈ input
+        );
+        cumulativeCostUsd += subtaskCost;
+
+        if (cumulativeCostUsd >= blockLimitUsd && !aborted) {
+          aborted = true;
+          this.broadcastCostExceeded(context.runId, stageId, {
+            cumulativeCostUsd,
+            limitUsd: blockLimitUsd,
+            completedSubtasks: completedCount,
+            abortedSubtasks: subtasks.length - completedCount,
+          });
+        }
+      }
+
+      return subtaskResult;
     });
   }
 
@@ -133,15 +212,19 @@ export class ParallelExecutor {
     stage: PipelineStageConfig,
     context: StageContext,
     stageId: string,
+    maxTokensPerSubtask: number | undefined,
   ): Promise<SubTaskResult> {
-    const modelSlug = subtask.suggestedModel ?? stage.modelSlug;
+    // ── Model-tier routing: use cheap model for chunks ────────────────────────
+    const primaryModel = stage.modelSlug ?? "mock";
+    const cheapModel = pickCheapestModelSlug(primaryModel, primaryModel);
+    const modelSlug = subtask.suggestedModel ?? cheapModel;
 
     this.broadcastSubtaskStarted(context.runId, stageId, subtask.id, modelSlug);
 
     const start = Date.now();
 
     const team = this.teamRegistry.getTeam(stage.teamId);
-    const subtaskInput = buildSubtaskInput(subtask);
+    const subtaskInput = buildSubtaskInput(subtask, maxTokensPerSubtask);
     const subtaskContext: StageContext = {
       ...context,
       modelSlug,
@@ -178,11 +261,28 @@ export class ParallelExecutor {
     };
   }
 
-  private broadcastSplit(runId: string, stageId: string, subtasks: SubTask[]): void {
+  private broadcastSplit(
+    runId: string,
+    stageId: string,
+    subtasks: SubTask[],
+    preCheck?: { shardCount: number; complexityScore: number; costAction: string; estimatedCostUsd: number } | undefined,
+  ): void {
     this.wsManager.broadcastToRun(runId, {
       type: "parallel:split",
       runId,
-      payload: { stageId, planId: `${stageId}-plan`, subtasks },
+      payload: {
+        stageId,
+        planId: `${stageId}-plan`,
+        subtasks,
+        sharding: preCheck
+          ? {
+              shardCount: preCheck.shardCount,
+              complexityScore: preCheck.complexityScore,
+              costAction: preCheck.costAction,
+              estimatedCostUsd: preCheck.estimatedCostUsd,
+            }
+          : undefined,
+      },
       timestamp: new Date().toISOString(),
     });
   }
@@ -229,6 +329,47 @@ export class ParallelExecutor {
         strategy: info.strategy,
         subtaskCount: info.subtaskCount,
         totalTokens: info.totalTokens,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  private broadcastCostWarning(
+    runId: string,
+    stageId: string,
+    info: { estimatedUsd: number; message: string },
+  ): void {
+    this.wsManager.broadcastToRun(runId, {
+      type: "parallel:cost:warning",
+      runId,
+      payload: {
+        stageId,
+        estimatedUsd: info.estimatedUsd,
+        message: info.message,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  private broadcastCostExceeded(
+    runId: string,
+    stageId: string,
+    info: {
+      cumulativeCostUsd: number;
+      limitUsd: number;
+      completedSubtasks: number;
+      abortedSubtasks: number;
+    },
+  ): void {
+    this.wsManager.broadcastToRun(runId, {
+      type: "parallel:cost:exceeded",
+      runId,
+      payload: {
+        stageId,
+        cumulativeCostUsd: info.cumulativeCostUsd,
+        limitUsd: info.limitUsd,
+        completedSubtasks: info.completedSubtasks,
+        abortedSubtasks: info.abortedSubtasks,
       },
       timestamp: new Date().toISOString(),
     });

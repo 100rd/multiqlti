@@ -192,3 +192,92 @@ describe("Splitter", () => {
     });
   });
 });
+
+// ─── Phase 6.12 additions ─────────────────────────────────────────────────────
+
+describe("Phase 6.12 — dynamic sharding + cost routing", () => {
+  describe("preCheck", () => {
+    it("returns sharding metadata without calling the LLM", () => {
+      const gateway = makeGateway("{}");
+      const splitter = new Splitter(gateway, makeConfig({ maxAgents: 5, shardTargetSize: 100 }));
+
+      const check = splitter.preCheck(LONG_INPUT, "claude-sonnet-4-6");
+
+      expect(check.shardCount).toBeGreaterThanOrEqual(1);
+      expect(check.shardCount).toBeLessThanOrEqual(5);
+      expect(check.shardingMode).toBe("equal");
+      expect(check.cheapModelSlug).toBe("claude-haiku-4-5");
+      expect(gateway.complete).not.toHaveBeenCalled();
+    });
+
+    it("respects custom shardingStrategy in config", () => {
+      const gateway = makeGateway("{}");
+      const splitter = new Splitter(gateway, makeConfig({ shardingStrategy: "natural" }));
+      const check = splitter.preCheck(LONG_INPUT, "mock");
+      expect(check.shardingMode).toBe("natural");
+    });
+  });
+
+  describe("cost blocking", () => {
+    it("blocks split and does not call LLM when cost exceeds blockUsd", async () => {
+      const gateway = makeGateway("{}");
+      const splitter = new Splitter(
+        gateway,
+        makeConfig({
+          maxAgents: 5,
+          costThreshold: { blockUsd: 0.000001 }, // absurdly small threshold
+        }),
+      );
+
+      const plan = await splitter.split(LONG_INPUT, "development", "claude-sonnet-4-6");
+
+      expect(plan.shouldSplit).toBe(false);
+      expect(plan.reason).toContain("blocked");
+      expect(plan.preCheck?.costAction).toBe("block");
+      expect(gateway.complete).not.toHaveBeenCalled();
+    });
+
+    it("proceeds (and calls LLM) when cost is below blockUsd", async () => {
+      const llmResponse = JSON.stringify({ shouldSplit: false, reason: "single task", subtasks: [] });
+      const gateway = makeGateway(llmResponse);
+      const splitter = new Splitter(
+        gateway,
+        makeConfig({
+          costThreshold: { blockUsd: 1000 }, // generous threshold
+        }),
+      );
+
+      await splitter.split(LONG_INPUT, "development", "claude-sonnet-4-6");
+
+      expect(gateway.complete).toHaveBeenCalledOnce();
+    });
+
+    it("attaches preCheck to result even for allowed splits", async () => {
+      const llmResponse = JSON.stringify({ shouldSplit: false, reason: "ok", subtasks: [] });
+      const gateway = makeGateway(llmResponse);
+      const splitter = new Splitter(gateway, makeConfig());
+
+      const plan = await splitter.split(LONG_INPUT, "planning", "mock");
+
+      expect(plan.preCheck).toBeDefined();
+      expect(plan.preCheck?.shardCount).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe("sharding hint in system prompt", () => {
+    it("includes sharding mode hint in the LLM system prompt", async () => {
+      const llmResponse = JSON.stringify({ shouldSplit: false, reason: "ok", subtasks: [] });
+      const gateway = makeGateway(llmResponse);
+      const splitter = new Splitter(
+        gateway,
+        makeConfig({ shardingStrategy: "weighted", maxAgents: 4 }),
+      );
+
+      await splitter.split(LONG_INPUT, "development");
+
+      const callArgs = (gateway.complete as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      const systemMsg = callArgs.messages.find((m: { role: string }) => m.role === "system");
+      expect(systemMsg.content).toContain("weight by estimated effort");
+    });
+  });
+});
