@@ -292,6 +292,25 @@ export class Gateway {
     return this.anonymizer;
   }
 
+  /**
+   * Test a cloud provider's API key by making a minimal real call directly to
+   * the registered provider instance — bypasses model-slug DB lookup which
+   * would otherwise fall back to MockProvider for unknown slugs.
+   */
+  async testProvider(providerKey: string): Promise<void> {
+    const provider = this.registry.get(providerKey);
+    if (!provider) throw new Error("Provider not configured");
+
+    const testModelIds: Record<string, string> = {
+      anthropic: "claude-haiku-4-5-20251001",
+      google: "gemini-1.5-flash",
+      xai: "grok-beta",
+    };
+
+    const modelId = testModelIds[providerKey] ?? providerKey;
+    await provider.complete(modelId, [{ role: "user", content: "ping" }], { maxTokens: 5 });
+  }
+
   getStatus() {
     const providers = configLoader.get().providers;
     return {
