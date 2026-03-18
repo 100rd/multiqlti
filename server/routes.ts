@@ -40,6 +40,7 @@ import { requireAuth } from "./auth/middleware";
 import { tracer } from "./tracing/tracer";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
+import { registerArgoCdSettingsRoutes, autoConnectArgoCdFromEnv } from "./routes/argocd-settings";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -106,6 +107,7 @@ export async function registerRoutes(
   registerDelegationRoutes(app, storage);
   registerDAGRoutes(app, storage);
   registerTraceRoutes(app, storage);
+  registerArgoCdSettingsRoutes(app as unknown as Router);
 
   // Phase 6.3 — Trigger subsystem
   let triggerService: TriggerService | null = null;
@@ -154,6 +156,9 @@ export async function registerRoutes(
     fileWatcherService?.stopAll();
     stopRateLimitCleanup();
   });
+
+  // Phase 6.10 — ArgoCD auto-connect from env vars (if configured)
+  await autoConnectArgoCdFromEnv();
 
   // Seed built-in skills (idempotent — checks each by ID)
   for (const skill of BUILTIN_SKILLS) {

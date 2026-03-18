@@ -685,14 +685,15 @@ export class PgStorage implements IStorage {
   }
 
   async createSkill(data: InsertSkill): Promise<Skill> {
-    const [row] = await db.insert(skills).values(data).returning();
+    type SkillInsert = Parameters<typeof db.insert<typeof skills>>[0] extends object ? Parameters<ReturnType<typeof db.insert<typeof skills>>["values"]>[0] : never;
+    const [row] = await db.insert(skills).values(data as unknown as SkillInsert).returning();
     return row;
   }
 
   async updateSkill(id: string, updates: Partial<InsertSkill>): Promise<Skill> {
     const [row] = await db
       .update(skills)
-      .set({ ...updates, updatedAt: new Date() })
+      .set({ ...(updates as Record<string, unknown>), updatedAt: new Date() } as Parameters<ReturnType<typeof db.update<typeof skills>>["set"]>[0])
       .where(eq(skills.id, id))
       .returning();
     if (!row) throw new Error(`Skill not found: ${id}`);
@@ -761,7 +762,7 @@ export class PgStorage implements IStorage {
 
   async getMarketplaceSkills(
     filters: MarketplaceFilters,
-  ): Promise<{ rows: MarketplaceSkill[]; total: number }> {
+  ): Promise<{ skills: MarketplaceSkill[]; total: number }> {
     const conditions = [
       or(
         eq(skills.sharing, "public"),
@@ -826,7 +827,7 @@ export class PgStorage implements IStorage {
       version: s.version,
       author: s.createdBy,
       usageCount: s.usageCount,
-      sharing: s.sharing,
+      sharing: s.sharing as 'private' | 'team' | 'public',
       modelPreference: s.modelPreference,
       createdAt: s.createdAt ?? new Date(),
       updatedAt: s.updatedAt ?? new Date(),
@@ -840,7 +841,7 @@ export class PgStorage implements IStorage {
       );
     }
 
-    return { rows: filtered, total };
+    return { skills: filtered, total };
   }
 
   async incrementSkillUsage(id: string): Promise<number> {

@@ -360,6 +360,34 @@ export const insertMcpServerSchema = createInsertSchema(mcpServers).omit({
 export type InsertMcpServer = z.infer<typeof insertMcpServerSchema>;
 export type McpServerRow = typeof mcpServers.$inferSelect;
 
+// ─── ArgoCD Config (Phase 6.10) ───────────────────────────────────────────────
+
+export const ARGOCD_HEALTH_STATUS = ['connected', 'error', 'unknown'] as const;
+export type ArgoCdHealthStatus = typeof ARGOCD_HEALTH_STATUS[number];
+
+export const argoCdConfig = pgTable('argocd_config', {
+  id: integer('id').primaryKey().default(1),
+  serverUrl: text('server_url'),
+  tokenEnc: text('token_enc'),
+  verifySsl: boolean('verify_ssl').notNull().default(true),
+  enabled: boolean('enabled').notNull().default(false),
+  mcpServerId: integer('mcp_server_id').references(() => mcpServers.id, { onDelete: 'set null' }),
+  lastHealthCheckAt: timestamp('last_health_check_at'),
+  healthStatus: text('health_status').notNull().default('unknown').$type<ArgoCdHealthStatus>(),
+  healthError: text('health_error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+});
+
+export const insertArgoCdConfigSchema = createInsertSchema(argoCdConfig).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertArgoCdConfig = z.infer<typeof insertArgoCdConfigSchema>;
+export type ArgoCdConfigRow = typeof argoCdConfig.$inferSelect;
+
 // ─── Workspaces ──────────────────────────────────────────────────────────────
 
 // ─── Workspace Index Status ────────────────────────────────────────────────
