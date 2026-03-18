@@ -691,6 +691,12 @@ export class PgStorage implements IStorage {
   }
 
   async updateSkill(id: string, updates: Partial<InsertSkill>): Promise<Skill> {
+    const { sharing: rawSharing, ...rest } = updates;
+    const setPayload: Parameters<typeof db.update<typeof skills>>[0] extends never ? never : object = {
+      ...rest,
+      ...(rawSharing !== undefined ? { sharing: rawSharing as "private" | "team" | "public" } : {}),
+      updatedAt: new Date(),
+    };
     const [row] = await db
       .update(skills)
       .set({ ...(updates as Record<string, unknown>), updatedAt: new Date() } as Parameters<ReturnType<typeof db.update<typeof skills>>["set"]>[0])
