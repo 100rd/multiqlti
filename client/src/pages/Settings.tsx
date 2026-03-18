@@ -260,19 +260,13 @@ function MemoryPreferences() {
 
   const savePreference = useMutation({
     mutationFn: async ({ key, value }: { key: string; value: string }) => {
-      const res = await fetch("/api/memories", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scope: "global",
-          type: "preference",
-          key,
-          content: value,
-          confidence: 1.0,
-        }),
+      return apiRequest("POST", "/api/memories", {
+        scope: "global",
+        type: "preference",
+        key,
+        content: value,
+        confidence: 1.0,
       });
-      if (!res.ok) throw new Error("Failed to save preference");
-      return res.json();
     },
     onSuccess: (_data, { key }) => {
       setSaved((prev) => ({ ...prev, [key]: true }));
@@ -353,20 +347,13 @@ export default function Settings() {
   const { data: providerStatuses, refetch: refetchProviderStatuses } = useQuery<ProviderStatus[]>({
     queryKey: ["/api/settings/providers"],
     queryFn: async () => {
-      const res = await fetch("/api/settings/providers");
-      if (!res.ok) return [];
-      return res.json() as Promise<ProviderStatus[]>;
+      return apiRequest("GET", "/api/settings/providers").catch(() => [] as ProviderStatus[]);
     },
   });
 
   const testProvider = useMutation({
     mutationFn: async (provider: CloudProvider): Promise<{ provider: CloudProvider } & ProviderTestResult> => {
-      const res = await fetch(`/api/gateway/test/${provider}`, { method: "POST" });
-      if (!res.ok) {
-        const text = await res.text().catch(() => res.statusText);
-        return { provider, ok: false, error: text || res.statusText };
-      }
-      const data = await res.json() as ProviderTestResult;
+      const data = await apiRequest("POST", `/api/gateway/test/${provider}`) as ProviderTestResult;
       return { provider, ...data };
     },
     onMutate: (provider: CloudProvider) => {
@@ -388,16 +375,7 @@ export default function Settings() {
 
   const saveKey = useMutation({
     mutationFn: async ({ provider, apiKey }: { provider: CloudProvider; apiKey: string }) => {
-      const res = await fetch(`/api/settings/providers/${provider}/key`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey }),
-      });
-      if (!res.ok) {
-        const data = await res.json() as { error: string };
-        throw new Error(data.error ?? "Save failed");
-      }
-      return res.json();
+      return apiRequest("POST", `/api/settings/providers/${provider}/key`, { apiKey });
     },
     onSuccess: (_data, { provider }) => {
       setKeyInputs((prev) => ({ ...prev, [provider]: "" }));
@@ -408,12 +386,7 @@ export default function Settings() {
 
   const removeKey = useMutation({
     mutationFn: async (provider: CloudProvider) => {
-      const res = await fetch(`/api/settings/providers/${provider}/key`, { method: "DELETE" });
-      if (!res.ok) {
-        const data = await res.json() as { error: string };
-        throw new Error(data.error ?? "Remove failed");
-      }
-      return res.json();
+      return apiRequest("DELETE", `/api/settings/providers/${provider}/key`);
     },
     onSuccess: () => {
       void refetchProviderStatuses();
@@ -426,63 +399,48 @@ export default function Settings() {
   const { data: mcpServers, refetch: refetchMcpServers } = useQuery({
     queryKey: ["/api/mcp/servers"],
     queryFn: async () => {
-      const res = await fetch("/api/mcp/servers");
-      if (!res.ok) return [];
-      return res.json() as Promise<Array<Record<string, unknown>>>;
+      return apiRequest("GET", "/api/mcp/servers").catch(() => [] as Array<Record<string, unknown>>);
     },
   });
 
   const { data: toolsStatus } = useQuery({
     queryKey: ["/api/tools/status"],
     queryFn: async () => {
-      const res = await fetch("/api/tools/status");
-      if (!res.ok) return {};
-      return res.json() as Promise<Record<string, { configured: boolean; keySource: string; premium?: boolean }>>;
+      return apiRequest("GET", "/api/tools/status").catch(() => ({}) as Record<string, { configured: boolean; keySource: string; premium?: boolean }>);
     },
   });
 
   const connectMcpServer = useMutation({
     mutationFn: async (id: number) => {
-      const res = await fetch(`/api/mcp/servers/${id}/connect`, { method: "POST" });
-      return res.json();
+      return apiRequest("POST", `/api/mcp/servers/${id}/connect`);
     },
     onSuccess: () => void refetchMcpServers(),
   });
 
   const disconnectMcpServer = useMutation({
     mutationFn: async (id: number) => {
-      const res = await fetch(`/api/mcp/servers/${id}/disconnect`, { method: "POST" });
-      return res.json();
+      return apiRequest("POST", `/api/mcp/servers/${id}/disconnect`);
     },
     onSuccess: () => void refetchMcpServers(),
   });
 
   const deleteMcpServer = useMutation({
     mutationFn: async (id: number) => {
-      await fetch(`/api/mcp/servers/${id}`, { method: "DELETE" });
+      return apiRequest("DELETE", `/api/mcp/servers/${id}`);
     },
     onSuccess: () => void refetchMcpServers(),
   });
 
   const addMcpServer = useMutation({
     mutationFn: async (data: typeof mcpForm) => {
-      const res = await fetch("/api/mcp/servers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: data.name,
-          transport: data.transport,
-          command: data.transport === "stdio" ? data.command || undefined : undefined,
-          url: data.transport !== "stdio" ? data.url || undefined : undefined,
-          autoConnect: data.autoConnect,
-          enabled: true,
-        }),
+      return apiRequest("POST", "/api/mcp/servers", {
+        name: data.name,
+        transport: data.transport,
+        command: data.transport === "stdio" ? data.command || undefined : undefined,
+        url: data.transport !== "stdio" ? data.url || undefined : undefined,
+        autoConnect: data.autoConnect,
+        enabled: true,
       });
-      if (!res.ok) {
-        const err = await res.json() as { error: unknown };
-        throw new Error(JSON.stringify(err.error));
-      }
-      return res.json();
     },
     onSuccess: () => {
       setMcpForm({ name: "", transport: "stdio", command: "", url: "", autoConnect: false });
