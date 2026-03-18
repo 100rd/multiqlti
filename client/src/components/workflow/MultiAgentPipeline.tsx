@@ -25,7 +25,6 @@ import type {
   SpecializationProfile, PipelineDAG, DAGStage, SwarmConfig,
 } from "@shared/types";
 import { useSetSwarmConfig, useDeleteSwarmConfig } from "@/hooks/use-pipeline";
-import type { SwarmConfig } from "@/components/pipeline/SwarmConfigPanel";
 
 // Lazy-load DAGCanvas to avoid adding ~200KB reactflow to the main bundle
 const DAGCanvas = lazy(() =>
@@ -696,6 +695,8 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                                 onSwarmChange={(_, cfg) => updateSwarmConfig(stage.teamId, cfg)}
                                 approvalRequired={stage.approvalRequired ?? false}
                                 onApprovalChange={(_, val) => updateApprovalRequired(stage.teamId, val)}
+                                pipelineId={pipelineId ?? ""}
+                                stageIndex={idx}
                                 isLast={idx === localStages.length - 1}
                               />
                             </div>

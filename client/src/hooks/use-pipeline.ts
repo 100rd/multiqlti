@@ -441,8 +441,7 @@ export function useDeleteManagerConfig() {
 
 // ─── Swarm Config ────────────────────────────────────────────────────────────
 
-import type { SwarmConfig } from "@/components/pipeline/SwarmConfigPanel";
-import type { SwarmCloneResult, SwarmMeta } from "@/components/pipeline/SwarmResultView";
+import type { SwarmConfig, SwarmCloneResult, SwarmResult } from "@shared/types";
 
 export function useSetSwarmConfig() {
   const qc = useQueryClient();
@@ -490,7 +489,7 @@ export function useDeleteSwarmConfig() {
 }
 
 export function useSwarmResults(runId: string, stageIndex: number) {
-  return useQuery<{ swarmMeta: SwarmMeta; cloneResults: SwarmCloneResult[] }>({
+  return useQuery<{ swarmMeta: SwarmResult; cloneResults: SwarmCloneResult[] }>({
     queryKey: ["/api/runs", runId, "stages", stageIndex, "swarm-results"],
     queryFn: () =>
       apiRequest("GET", `/api/runs/${runId}/stages/${stageIndex}/swarm-results`),

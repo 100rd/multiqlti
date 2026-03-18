@@ -63,8 +63,6 @@ interface AgentNodeProps {
   appliedSkillName?: string;
   /** Optional: callback when a skill is applied (skillId) or cleared (null). */
   onApplySkill?: (id: string, skillId: string | null) => void;
-  swarmConfig?: SwarmConfig;
-  onSwarmChange: (id: string, config: SwarmConfig | undefined) => void;
 }
 
 
@@ -364,7 +362,6 @@ export default function AgentNode({
   const [parallelExpanded, setParallelExpanded] = useState(false);
   const [swarmExpanded, setSwarmExpanded] = useState(false);
   const [guardrailsExpanded, setGuardrailsExpanded] = useState(false);
-  const [swarmExpanded, setSwarmExpanded] = useState(false);
   const [localPrompt, setLocalPrompt] = useState(systemPromptOverride ?? "");
   const [localMaxTokens, setLocalMaxTokens] = useState(
     String(maxTokens ?? DEFAULT_MAX_TOKENS),

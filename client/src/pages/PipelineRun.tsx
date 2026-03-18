@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams } from "wouter";
-import { usePipelineRun, useCancelRun, useApproveStage, useRejectStage, useExportRun, usePipeline } from "@/hooks/use-pipeline";
+import { usePipelineRun, useCancelRun, useApproveStage, useRejectStage, useExportRun, usePipeline, useSwarmResults } from "@/hooks/use-pipeline";
 import { usePipelineEvents, useWebSocket } from "@/hooks/use-websocket";
 import StageProgress from "@/components/pipeline/StageProgress";
 import QuestionPanel from "@/components/pipeline/QuestionPanel";
@@ -22,13 +22,20 @@ import {
 import { StopCircle, ArrowLeft, Loader2, CheckCircle2, XCircle, Download, ChevronDown } from "lucide-react";
 import { Link } from "wouter";
 import { SDLC_TEAMS } from "@shared/constants";
-import type { PipelineStageConfig, SwarmResult } from "@shared/types";
+import type { PipelineStageConfig, SwarmResult, SwarmCloneResult, SwarmMerger } from "@shared/types";
 import { cn } from "@/lib/utils";
-import SwarmProgress from "@/components/pipeline/SwarmProgress";
-import type { SwarmCloneState } from "@/components/pipeline/SwarmProgress";
-import SwarmResultView from "@/components/pipeline/SwarmResultView";
-import { useSwarmResults } from "@/hooks/use-pipeline";
-import type { SwarmMerger } from "@/components/pipeline/SwarmConfigPanel";
+
+
+// Live-tracking state for a swarm clone during execution (not yet a completed SwarmCloneResult)
+interface SwarmCloneState {
+  cloneIndex: number;
+  status: "running" | "succeeded" | "failed";
+  systemPromptPreview?: string;
+  tokensUsed?: number;
+  outputPreview?: string;
+  durationMs?: number;
+  error?: string;
+}
 
 // ─── SwarmResultLoader: fetches results and renders SwarmResultView ────────────
 
@@ -45,7 +52,7 @@ function SwarmResultLoader({ runId, stageIndex }: SwarmResultLoaderProps) {
     <SwarmResultView
       mergedOutput={""}
       cloneResults={data.cloneResults}
-      meta={data.swarmMeta}
+      swarmMeta={data.swarmMeta}
     />
   );
 }
