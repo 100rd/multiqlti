@@ -468,6 +468,10 @@ export default function Settings() {
       setManualError('Name and Model ID/slug are required');
       return;
     }
+    if (manualEndpoint && !manualEndpoint.startsWith("http://") && !manualEndpoint.startsWith("https://")) {
+      setManualError("Endpoint must start with http:// or https://");
+      return;
+    }
     const slug = manualSlug.trim().replace(/[^a-z0-9-]/gi, '-').toLowerCase();
     if (registeredSlugs.has(slug)) {
       setManualError('A model with this slug is already registered');
@@ -1124,7 +1128,10 @@ export default function Settings() {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                          onClick={() => deleteModel.mutate(model.id as string)}
+                          onClick={() => {
+                            if (!window.confirm(`Delete model "${model.name}"? This cannot be undone.`)) return;
+                            deleteModel.mutate(model.id as string);
+                          }}
                           disabled={deleteModel.isPending}
                         >
                           <Trash2 className="h-4 w-4" />
@@ -1219,7 +1226,10 @@ export default function Settings() {
                           variant="ghost"
                           size="icon"
                           className="h-7 w-7 text-muted-foreground hover:text-destructive shrink-0"
-                          onClick={() => deleteMcpServer.mutate(server.id as number)}
+                          onClick={() => {
+                            if (!window.confirm(`Remove MCP server "${server.name}"?`)) return;
+                            deleteMcpServer.mutate(server.id as number);
+                          }}
                         >
                           <Trash2 className="h-3 w-3" />
                         </Button>
@@ -1281,6 +1291,9 @@ export default function Settings() {
                         value={mcpForm.url}
                         onChange={(e) => setMcpForm((f) => ({ ...f, url: e.target.value }))}
                       />
+                      {mcpForm.transport !== "stdio" && !mcpForm.url.trim() && (
+                        <p className="text-xs text-destructive mt-1">URL is required for {mcpForm.transport} transport</p>
+                      )}
                     </div>
                   )}
                   <div className="flex items-center gap-2">
@@ -1299,7 +1312,7 @@ export default function Settings() {
                     size="sm"
                     className="h-7 text-xs w-full"
                     onClick={() => addMcpServer.mutate(mcpForm)}
-                    disabled={!mcpForm.name.trim() || addMcpServer.isPending}
+                    disabled={addMcpServer.isPending || !mcpForm.name.trim() || (mcpForm.transport !== "stdio" && !mcpForm.url.trim())}
                   >
                     {addMcpServer.isPending ? (
                       <Loader2 className="h-3 w-3 mr-1 animate-spin" />

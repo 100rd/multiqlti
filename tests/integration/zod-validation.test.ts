@@ -479,13 +479,28 @@ describe("Zod validation — POST /api/providers/probe", () => {
     expectValidationFailure(res.body);
   });
 
-  it("passes through with valid body", async () => {
+  it("passes through with valid public endpoint", async () => {
     const app = createGatewayApp();
     const res = await request(app)
       .post("/api/providers/probe")
-      .send({ endpoint: "http://localhost:8000", providerType: "vllm" });
-    // Gateway stub returns [] so response is 200 { models: [] }
-    expect(res.status).toBe(200);
+      .send({ endpoint: "http://vllm.example.com:8000", providerType: "vllm" });
+    // Gateway stub returns [] / connection refused — either 200 or 502 is fine; 400 is not
+    expect(res.status).not.toBe(400);
+  });
+
+  it("returns 400 when endpoint is a private/loopback address (SSRF)", async () => {
+    const app = createGatewayApp();
+    for (const blocked of [
+      "http://localhost:8000",
+      "http://127.0.0.1:8000",
+      "http://192.168.1.1:8000",
+      "http://10.0.0.1:8000",
+    ]) {
+      const res = await request(app)
+        .post("/api/providers/probe")
+        .send({ endpoint: blocked, providerType: "vllm" });
+      expect(res.status).toBe(400);
+    }
   });
 });
 

@@ -4,18 +4,33 @@ import type { Gateway } from "../gateway/index";
 import { SDLC_TEAMS, TEAM_ORDER } from "@shared/constants";
 import { validateBody } from "../middleware/validate.js";
 
-// ─── SSRF denylist ────────────────────────────────────────────────────────────
-
-const SSRF_DENYLIST_PATTERNS = [
-  /^https?:\/\/169\.254\./,           // AWS IMDSv1
-  /^https?:\/\/\[?fd00:ec2/i,         // AWS IMDSv2 IPv6
-  /^https?:\/\/metadata\.google/,     // GCP metadata
-  /^https?:\/\/metadata\.internal/,   // GCP alt
-  /^https?:\/\/169\.254\.169\.254/,   // Common cloud metadata
-];
+// ─── SSRF protection ──────────────────────────────────────────────────────────
 
 function isSsrfBlocked(url: string): boolean {
-  return SSRF_DENYLIST_PATTERNS.some((re) => re.test(url));
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return true; // unparseable URL is blocked
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return true;
+  const host = parsed.hostname.toLowerCase();
+  // Loopback, unspecified, link-local, private ranges, cloud metadata
+  const blocked = [
+    /^localhost$/,
+    /^127\./,
+    /^0\.0\.0\.0$/,
+    /^::1$/,
+    /^\[::1\]$/,
+    /^10\./,
+    /^172\.(1[6-9]|2[0-9]|3[01])\./,
+    /^192\.168\./,
+    /^169\.254\./,     // AWS IMDSv1 + link-local
+    /^fd00:ec2/i,      // AWS IMDSv2 IPv6
+    /^metadata\.google/,
+    /^metadata\.internal/,
+  ];
+  return blocked.some((re) => re.test(host));
 }
 
 // ─── Zod schemas ──────────────────────────────────────────────────────────────
