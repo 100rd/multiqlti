@@ -25,8 +25,11 @@ const WORKER_POOL_SIZE = 4;
 const PARSE_TIMEOUT_MS = 5_000;
 const BATCH_SIZE = 50;
 
-// Worker script path (resolved relative to this module)
-const workerScriptPath = fileURLToPath(new URL("./swc-worker.ts", import.meta.url));
+// Worker script path — supports both ESM (import.meta.url) and CJS (__dirname)
+const workerScriptPath =
+  typeof __dirname !== "undefined"
+    ? path.resolve(__dirname, "swc-worker.js")
+    : fileURLToPath(new URL("./swc-worker.ts", import.meta.url));
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 

@@ -9,7 +9,7 @@
 # Caddy reads this file as-is; environment variable substitution is handled
 # by the entrypoint via envsubst or caddy's native {env.VAR} syntax.
 
-{env.CADDY_DOMAIN} {
+${CADDY_DOMAIN} {
     # Reverse proxy all traffic to the app container
     reverse_proxy multiqlti:5000
 
