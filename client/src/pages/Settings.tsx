@@ -375,7 +375,7 @@ export default function Settings() {
 
   const saveKey = useMutation({
     mutationFn: async ({ provider, apiKey }: { provider: CloudProvider; apiKey: string }) => {
-      return apiRequest("POST", `/api/settings/providers/${provider}/key`, { apiKey });
+      return apiRequest("POST", `/api/settings/providers/${provider}/key`, { key: apiKey });
     },
     onSuccess: (_data, { provider }) => {
       setKeyInputs((prev) => ({ ...prev, [provider]: "" }));
