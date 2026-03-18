@@ -16,6 +16,7 @@ import {
   Wrench,
   Zap,
   Sparkles,
+  Store,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -50,6 +51,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
     { icon: Sparkles, label: "Skills", href: "/skills" },
+    { icon: Store, label: "Skill Market", href: "/skills/marketplace" },
     { icon: BarChart3, label: "Statistics", href: "/stats" },
     { icon: Brain, label: "Memory", href: "/memories" },
     { icon: ShieldCheck, label: "Privacy", href: "/privacy" },
@@ -83,8 +85,10 @@ export default function MainLayout({ children }: MainLayoutProps) {
           <nav className="p-4 space-y-1">
             {navItems.map((item) => {
               const isActive =
-                location === item.href ||
-                (item.href !== "/" && location.startsWith(item.href));
+                item.href === "/skills"
+                  ? location === "/skills"
+                  : location === item.href ||
+                    (item.href !== "/" && location.startsWith(item.href));
               const Icon = item.icon;
               return (
                 <Link key={item.href} href={item.href}>
