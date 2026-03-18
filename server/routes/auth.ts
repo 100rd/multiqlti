@@ -19,6 +19,7 @@ const updateMeSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   email: z.string().email().optional(),
   password: z.string().min(8).optional(),
+  currentPassword: z.string().optional(),
 });
 
 const updateRoleSchema = z.object({
@@ -111,8 +112,22 @@ export function registerAuthRoutes(app: Express): void {
       return;
     }
 
+    // Verify current password before allowing a password change
+    if (parsed.data.password) {
+      if (!parsed.data.currentPassword) {
+        res.status(400).json({ error: "Current password is required to set a new password" });
+        return;
+      }
+      const valid = await authService.verifyPassword(req.user.id, parsed.data.currentPassword);
+      if (!valid) {
+        res.status(403).json({ error: "Current password is incorrect" });
+        return;
+      }
+    }
+
     try {
-      const updated = await authService.updateUser(req.user.id, parsed.data);
+      const { currentPassword: _cp, ...updates } = parsed.data;
+      const updated = await authService.updateUser(req.user.id, updates);
       res.json({ user: updated });
     } catch (err) {
       const error = err as Error;

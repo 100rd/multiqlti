@@ -11,6 +11,7 @@ async function updateProfile(data: {
   name?: string;
   email?: string;
   password?: string;
+  currentPassword?: string;
 }): Promise<{ user: User }> {
   const res = await fetch("/api/auth/me", {
     method: "PUT",
@@ -82,9 +83,14 @@ export default function ProfileSettings() {
       return;
     }
 
+    if (!currentPassword) {
+      setError("Current password is required to set a new password.");
+      return;
+    }
+
     setSaving(true);
     try {
-      await updateProfile({ password: newPassword });
+      await updateProfile({ password: newPassword, currentPassword });
       setNewPassword("");
       setConfirmPassword("");
       setCurrentPassword("");

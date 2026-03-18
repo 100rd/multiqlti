@@ -92,6 +92,14 @@ class AuthService {
     return authStorage.getAllUsers();
   }
 
+  async verifyPassword(userId: string, password: string): Promise<boolean> {
+    const user = await authStorage.getUserById(userId);
+    if (!user) return false;
+    const hash = await authStorage.getPasswordHashByEmail(user.email);
+    if (!hash) return false;
+    return bcrypt.compare(password, hash);
+  }
+
   async updateUser(
     id: string,
     updates: { name?: string; email?: string; password?: string },

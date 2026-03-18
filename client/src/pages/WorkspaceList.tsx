@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@/hooks/use-toast";
 import { Link } from "wouter";
 import { FolderGit2, Plus, Trash2, RefreshCw, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -191,6 +192,7 @@ function StatusBadge({ status }: { status: WorkspaceRow["status"] }) {
 // ─── Workspace card ───────────────────────────────────────────────────────────
 
 function WorkspaceCard({ workspace }: { workspace: WorkspaceRowWithIndex }) {
+  const { toast } = useToast();
   const qc = useQueryClient();
   const indexTrigger = useIndexTrigger(workspace.id);
 
@@ -198,11 +200,13 @@ function WorkspaceCard({ workspace }: { workspace: WorkspaceRowWithIndex }) {
     mutationFn: () =>
       fetch(`/api/workspaces/${workspace.id}`, { method: "DELETE", headers: buildAuthHeaders() }).then((r) => r.json()),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["workspaces"] }),
+    onError: (err: Error) => toast({ variant: "destructive", title: "Delete failed", description: err.message }),
   });
 
   const syncMutation = useMutation({
     mutationFn: () => postJson(`/api/workspaces/${workspace.id}/sync`, {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["workspaces"] }),
+    onError: (err: Error) => toast({ variant: "destructive", title: "Sync failed", description: err.message }),
   });
 
   return (

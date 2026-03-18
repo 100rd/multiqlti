@@ -341,35 +341,43 @@ export default function PipelineRun() {
           <p className="text-xs font-medium text-amber-800 mb-2">
             Waiting for approval before continuing
           </p>
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-3">
             {activeApprovals.map((approval) => (
-              <div key={approval.stageIndex} className="flex items-center gap-3">
+              <div key={approval.stageIndex} className="flex flex-col gap-1.5">
                 <span className="text-xs text-amber-700">
                   Stage {approval.stageIndex + 1} ({approval.teamId}) is awaiting approval
                 </span>
-                <Button
-                  size="sm"
-                  className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
-                  disabled={approveMutation.isPending}
-                  onClick={() => approveMutation.mutate({ runId, stageIndex: approval.stageIndex })}
-                >
-                  <CheckCircle2 className="h-3 w-3 mr-1" />
-                  Approve
-                </Button>
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  className="h-7 text-xs"
-                  disabled={rejectMutation.isPending}
-                  onClick={() => rejectMutation.mutate({
-                    runId,
-                    stageIndex: approval.stageIndex,
-                    reason: rejectReasonMap[approval.stageIndex],
-                  })}
-                >
-                  <XCircle className="h-3 w-3 mr-1" />
-                  Reject
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                    disabled={approveMutation.isPending}
+                    onClick={() => approveMutation.mutate({ runId, stageIndex: approval.stageIndex })}
+                  >
+                    <CheckCircle2 className="h-3 w-3 mr-1" />
+                    Approve
+                  </Button>
+                  <input
+                    className="h-7 flex-1 rounded border border-amber-300 bg-white px-2 text-xs text-amber-900 placeholder:text-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                    placeholder="Rejection reason (optional)"
+                    value={rejectReasonMap[approval.stageIndex] ?? ""}
+                    onChange={(e) => setRejectReasonMap((prev) => ({ ...prev, [approval.stageIndex]: e.target.value }))}
+                  />
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    className="h-7 text-xs"
+                    disabled={rejectMutation.isPending}
+                    onClick={() => rejectMutation.mutate({
+                      runId,
+                      stageIndex: approval.stageIndex,
+                      reason: rejectReasonMap[approval.stageIndex],
+                    })}
+                  >
+                    <XCircle className="h-3 w-3 mr-1" />
+                    Reject
+                  </Button>
+                </div>
               </div>
             ))}
           </div>

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useToast } from "@/hooks/use-toast";
 import {
   AreaChart,
   Area,
@@ -313,6 +314,7 @@ function ModelTable() {
 // ─── Request Log ─────────────────────────────────────────────────────────────
 
 function RequestLog() {
+  const { toast } = useToast();
   const [page, setPage] = useState(1);
   const [modelFilter, setModelFilter] = useState("");
   const [providerFilter, setProviderFilter] = useState("");
@@ -352,7 +354,11 @@ function RequestLog() {
         status: statusFilter || undefined,
       }),
     });
-    if (!res.ok) return;
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string };
+      toast({ variant: "destructive", title: "Export failed", description: err.error ?? `HTTP ${res.status}` });
+      return;
+    }
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
