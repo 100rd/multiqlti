@@ -5,7 +5,7 @@ function getAuthToken(): string | null {
   return localStorage.getItem("auth_token");
 }
 
-async function apiRequest(method: string, url: string, body?: unknown) {
+export async function apiRequest(method: string, url: string, body?: unknown) {
   const headers: Record<string, string> = {};
   if (body) headers["Content-Type"] = "application/json";
   const token = getAuthToken();
