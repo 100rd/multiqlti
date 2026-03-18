@@ -17,8 +17,12 @@ async function apiRequest(method: string, url: string, body?: unknown): Promise<
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: res.statusText }));
-    throw new Error((err as { message?: string }).message || res.statusText);
+    const err = await res.json().catch(() => ({ error: res.statusText })) as { message?: string; error?: string; disabled?: boolean };
+    const message = err.message ?? err.error ?? res.statusText;
+    const error = new Error(message) as Error & { disabled?: boolean; status?: number };
+    error.disabled = err.disabled ?? false;
+    error.status = res.status;
+    throw error;
   }
   if (res.status === 204) return null;
   return res.json();

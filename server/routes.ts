@@ -146,8 +146,18 @@ export async function registerRoutes(
 
     log("[triggers] Trigger subsystem started", "triggers");
   } catch (e) {
-    // TriggerCrypto throws if TRIGGER_SECRET_KEY is absent — subsystem is disabled
+    // TriggerCrypto throws if TRIGGER_SECRET_KEY is absent — subsystem is disabled.
+    // Register stub routes so the UI receives JSON instead of Express's HTML 404.
     log(`[triggers] Trigger subsystem disabled: ${(e as Error).message}`, "triggers");
+    app.get("/api/triggers", (_req, res) => {
+      res.status(503).json({ error: "Trigger subsystem is disabled (TRIGGER_SECRET_KEY not configured)", disabled: true });
+    });
+    app.get("/api/pipelines/:pipelineId/triggers", (_req, res) => {
+      res.status(503).json({ error: "Trigger subsystem is disabled (TRIGGER_SECRET_KEY not configured)", disabled: true });
+    });
+    app.use("/api/triggers/:id", (_req, res) => {
+      res.status(503).json({ error: "Trigger subsystem is disabled (TRIGGER_SECRET_KEY not configured)", disabled: true });
+    });
   }
 
   // Graceful shutdown
