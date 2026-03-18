@@ -183,7 +183,7 @@ export interface IStorage {
   createSkillVersion(data: InsertSkillVersionType): Promise<SkillVersionRecord>;
 
   // Marketplace (Phase 6.16)
-  getMarketplaceSkills(filters: MarketplaceFilters): Promise<{ rows: MarketplaceSkill[]; total: number }>;
+  getMarketplaceSkills(filters: MarketplaceFilters): Promise<{ skills: MarketplaceSkill[]; total: number }>;
   incrementSkillUsage(id: string): Promise<number>;
 
   // Manager Iterations (Phase 6.6)
@@ -971,6 +971,7 @@ export class MemStorage implements IStorage {
       ...updates,
       tools: (updates.tools as string[] | undefined) ?? existing.tools,
       tags: (updates.tags as string[] | undefined) ?? existing.tags,
+      sharing: (updates.sharing as "private" | "team" | "public" | undefined) ?? existing.sharing,
       updatedAt: new Date(),
     };
     this.skillsMap.set(id, updated);
@@ -1026,7 +1027,7 @@ export class MemStorage implements IStorage {
 
   async getMarketplaceSkills(
     filters: MarketplaceFilters,
-  ): Promise<{ rows: MarketplaceSkill[]; total: number }> {
+  ): Promise<{ skills: MarketplaceSkill[]; total: number }> {
     let result = Array.from(this.skillsMap.values()).filter((s) => {
       const sharing = (s as Skill & { sharing?: string }).sharing ?? "public";
       return sharing === "public" || sharing === "team";
@@ -1085,8 +1086,8 @@ export class MemStorage implements IStorage {
     }
 
     const total = mapped.length;
-    const rows = mapped.slice(filters.offset, filters.offset + filters.limit);
-    return { rows, total };
+    const skills = mapped.slice(filters.offset, filters.offset + filters.limit);
+    return { skills, total };
   }
 
   async incrementSkillUsage(id: string): Promise<number> {

@@ -126,7 +126,7 @@ export function registerSkillRoutes(app: Express, storage: IStorage) {
       limit,
       offset,
     });
-    res.json({ skills: result.rows, total: result.total });
+    res.json({ skills: result.skills, total: result.total });
   });
 
   // ─── BULK EXPORT ──────────────────────────────────────────────────────────
