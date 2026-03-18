@@ -37,8 +37,17 @@ export interface SaveArgoCdConfigPayload {
 
 // ─── Query helpers ────────────────────────────────────────────────────────────
 
+function getAuthToken(): string | null {
+  return localStorage.getItem("auth_token");
+}
+
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(url, options);
+  const token = getAuthToken();
+  const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const res = await fetch(url, {
+    ...options,
+    headers: { ...authHeaders, ...options?.headers },
+  });
   if (!res.ok) {
     const data = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
     throw new Error(data.error ?? `HTTP ${res.status}`);
@@ -77,13 +86,7 @@ export function useSaveArgoCdConfig() {
 export function useDeleteArgoCdConfig() {
   const qc = useQueryClient();
   return useMutation<void, Error>({
-    mutationFn: async () => {
-      const res = await fetch("/api/settings/argocd", { method: "DELETE" });
-      if (!res.ok && res.status !== 204) {
-        const data = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
-        throw new Error(data.error ?? `HTTP ${res.status}`);
-      }
-    },
+    mutationFn: () => fetchJson<void>("/api/settings/argocd", { method: "DELETE" }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: QUERY_KEY });
     },
