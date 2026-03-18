@@ -9,8 +9,17 @@ export interface IndexTriggerResponse {
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
+function getAuthToken(): string | null {
+  return localStorage.getItem("auth_token");
+}
+
 async function triggerIndex(workspaceId: string): Promise<IndexTriggerResponse> {
-  const res = await fetch(`/api/workspaces/${workspaceId}/index`, { method: "POST" });
+  const token = getAuthToken();
+  const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const res = await fetch(`/api/workspaces/${workspaceId}/index`, {
+    method: "POST",
+    headers: authHeaders,
+  });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: "Request failed" }));
     throw new Error((body as { error: string }).error ?? "Request failed");

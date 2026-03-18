@@ -15,11 +15,6 @@ interface StatsSummary {
 function useStatsSummary() {
   return useQuery<StatsSummary>({
     queryKey: ["/api/stats/summary"],
-    queryFn: async () => {
-      const res = await fetch("/api/stats/summary");
-      if (!res.ok) throw new Error("Failed to load stats");
-      return res.json() as Promise<StatsSummary>;
-    },
     refetchInterval: 30_000,
   });
 }

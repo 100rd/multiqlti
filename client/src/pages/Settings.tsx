@@ -278,21 +278,14 @@ function MemoryPreferences({ noCard = false }: MemoryPreferencesProps) {
   const [saved, setSaved] = useState<Record<string, boolean>>({});
 
   const savePreference = useMutation({
-    mutationFn: async ({ key, value }: { key: string; value: string }) => {
-      const res = await fetch("/api/memories", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          scope: "global",
-          type: "preference",
-          key,
-          content: value,
-          confidence: 1.0,
-        }),
-      });
-      if (!res.ok) throw new Error("Failed to save preference");
-      return res.json();
-    },
+    mutationFn: ({ key, value }: { key: string; value: string }) =>
+      apiRequest("POST", "/api/memories", {
+        scope: "global",
+        type: "preference",
+        key,
+        content: value,
+        confidence: 1.0,
+      }),
     onSuccess: (_data, { key }) => {
       setSaved((prev) => ({ ...prev, [key]: true }));
       void qc.invalidateQueries({ queryKey: ["/api/memories"] });

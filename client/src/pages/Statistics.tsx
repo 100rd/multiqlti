@@ -63,8 +63,17 @@ interface RequestsResponse {
 
 // ─── Fetchers ────────────────────────────────────────────────────────────────
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+function getAuthToken(): string | null {
+  return localStorage.getItem("auth_token");
+}
+
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const token = getAuthToken();
+  const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const res = await fetch(url, {
+    ...init,
+    headers: { ...authHeaders, ...init?.headers },
+  });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -332,9 +341,11 @@ function RequestLog() {
   const totalPages = data ? Math.ceil(data.total / 50) : 1;
 
   async function handleExport(format: "csv" | "json") {
+    const token = getAuthToken();
+    const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
     const res = await fetch(`/api/stats/export?format=${format}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders },
       body: JSON.stringify({
         model: modelFilter || undefined,
         provider: providerFilter || undefined,
