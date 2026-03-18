@@ -81,8 +81,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: 5000
-      DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER:-multiqlti}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-multiqlti}}
-      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (min 32 chars, generate with: openssl rand -hex 32)}
+      DATABASE_URL: "${DATABASE_URL:-postgres://multiqlti:${POSTGRES_PASSWORD}@postgres:5432/multiqlti}"
+      JWT_SECRET: "${JWT_SECRET:?Set JWT_SECRET in .env}"
       VLLM_ENDPOINT: http://vllm:8000
       OLLAMA_ENDPOINT: http://ollama:11434
       SANDBOX_ENABLED: ${SANDBOX_ENABLED:-true}
@@ -98,7 +98,7 @@ services:
     # Run DB migrations then start the server
     command: sh -c "npm run db:push && node dist/index.cjs"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:5000/api/health | grep -q '\"status\":\"ok\\|degraded\"' || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5000/api/health | grep -q 'status' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -118,10 +118,15 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      CADDY_DOMAIN: ${CADDY_DOMAIN:-localhost}
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile.tmpl:ro
       - caddy_data:/data
       - caddy_config:/config
+    # Preprocess Caddyfile with envsubst to inject CADDY_DOMAIN, then run caddy
+    command: >
+      sh -c "apk add --no-cache gettext && envsubst < /etc/caddy/Caddyfile.tmpl > /tmp/Caddyfile && caddy run --config /tmp/Caddyfile --adapter caddyfile"
     networks:
       - internal
     depends_on:

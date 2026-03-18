@@ -139,6 +139,28 @@ async function assertPipelineOwnership(
 
 export function registerTriggerRoutes(app: Express, triggerService: TriggerService, storage: IStorage): void {
 
+  // GET /api/triggers — list all triggers across all pipelines the current user can see
+  app.get("/api/triggers", async (req, res) => {
+    try {
+      const pipelineId = req.query.pipelineId ? String(req.query.pipelineId) : undefined;
+      if (pipelineId) {
+        const allowed = await assertPipelineOwnership(pipelineId, storage, req, res);
+        if (!allowed) return;
+        return res.json(await triggerService.getTriggers(pipelineId));
+      }
+
+      const pipelines = await storage.getPipelines();
+      const allTriggers = await Promise.all(
+        pipelines.map((p) => triggerService.getTriggers(p.id))
+      );
+      return res.json(allTriggers.flat());
+    } catch (e) {
+      const cid = correlationId();
+      console.error(`[triggers] GET /api/triggers error cid=${cid}`, e);
+      return res.status(500).json({ error: "Internal server error", correlationId: cid });
+    }
+  });
+
   // GET /api/pipelines/:pipelineId/triggers
   // VETO-1: resolve pipeline and gate on ownership before returning triggers.
   app.get("/api/pipelines/:pipelineId/triggers", async (req, res) => {
