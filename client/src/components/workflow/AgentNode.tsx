@@ -50,6 +50,10 @@ interface AgentNodeProps {
   onToolConfigChange: (id: string, config: StageToolConfig) => void;
   parallelConfig?: ParallelConfig;
   onParallelChange: (id: string, config: ParallelConfig | undefined) => void;
+  swarmConfig?: SwarmConfig;
+  onSwarmChange: (id: string, config: SwarmConfig | undefined) => void;
+  pipelineId: string;
+  stageIndex: number;
   approvalRequired?: boolean;
   onApprovalChange: (id: string, value: boolean) => void;
   guardrails?: StageGuardrail[];
@@ -59,8 +63,6 @@ interface AgentNodeProps {
   appliedSkillName?: string;
   /** Optional: callback when a skill is applied (skillId) or cleared (null). */
   onApplySkill?: (id: string, skillId: string | null) => void;
-  swarmConfig?: SwarmConfig;
-  onSwarmChange: (id: string, config: SwarmConfig | undefined) => void;
 }
 
 
