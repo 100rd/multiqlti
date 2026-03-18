@@ -100,11 +100,7 @@ export function registerGatewayRoutes(router: Router, gateway: Gateway) {
 
     const start = Date.now();
     try {
-      await gateway.complete({
-        modelSlug: `__test__${provider}`,
-        messages: [{ role: "user", content: "ping" }],
-        maxTokens: 5,
-      });
+      await gateway.testProvider(provider);
       res.json({ ok: true, latencyMs: Date.now() - start });
     } catch (e) {
       res.json({ ok: false, error: (e as Error).message });

@@ -188,3 +188,45 @@ describe("MockProvider", () => {
     });
   });
 });
+
+// ─── Gateway.testProvider() ────────────────────────────────────────────────
+
+describe("Gateway.testProvider()", () => {
+  it("throws when provider is not registered", async () => {
+    // Minimal Gateway stub with empty registry
+    const { Gateway } = await import("../../server/gateway/index.js");
+    const fakeStorage = {
+      getModelBySlug: async () => null,
+      createLlmRequest: async () => {},
+    } as unknown as import("../../server/storage.js").IStorage;
+
+    const gw = new Gateway(fakeStorage);
+    await expect(gw.testProvider("anthropic")).rejects.toThrow("Provider not configured");
+  });
+
+  it("calls the real provider's complete() — does NOT fall back to MockProvider", async () => {
+    const { Gateway } = await import("../../server/gateway/index.js");
+    const calls: string[] = [];
+
+    const fakeProvider = {
+      complete: async (modelId: string) => {
+        calls.push(modelId);
+        return { content: "pong", tokensUsed: 1 };
+      },
+      stream: async function* () { yield ""; },
+    };
+
+    const fakeStorage = {
+      getModelBySlug: async () => null,
+      createLlmRequest: async () => {},
+    } as unknown as import("../../server/storage.js").IStorage;
+
+    const gw = new Gateway(fakeStorage);
+    // Inject fake provider directly into the registry
+    (gw as unknown as { registry: Map<string, unknown> }).registry.set("anthropic", fakeProvider);
+
+    await gw.testProvider("anthropic");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toBe("claude-haiku-4-5-20251001");
+  });
+});
