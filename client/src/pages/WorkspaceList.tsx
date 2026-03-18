@@ -13,8 +13,17 @@ type WorkspaceRowWithIndex = WorkspaceRow & { indexStatus?: WorkspaceIndexStatus
 
 // ─── API helpers ─────────────────────────────────────────────────────────────
 
+function getAuthToken(): string | null {
+  return localStorage.getItem("auth_token");
+}
+
+function buildAuthHeaders(): Record<string, string> {
+  const token = getAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: buildAuthHeaders() });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -22,7 +31,7 @@ async function fetchJson<T>(url: string): Promise<T> {
 async function postJson<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...buildAuthHeaders() },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -187,7 +196,7 @@ function WorkspaceCard({ workspace }: { workspace: WorkspaceRowWithIndex }) {
 
   const deleteMutation = useMutation({
     mutationFn: () =>
-      fetch(`/api/workspaces/${workspace.id}`, { method: "DELETE" }).then((r) => r.json()),
+      fetch(`/api/workspaces/${workspace.id}`, { method: "DELETE", headers: buildAuthHeaders() }).then((r) => r.json()),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["workspaces"] }),
   });
 

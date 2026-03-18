@@ -195,10 +195,6 @@ function PatternsTable() {
 
   const { data: patterns = [] } = useQuery<CustomPattern[]>({
     queryKey: ["/api/privacy/patterns"],
-    queryFn: async () => {
-      const res = await fetch("/api/privacy/patterns");
-      return res.json();
-    },
   });
 
   const createMutation = useMutation({
