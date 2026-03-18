@@ -39,6 +39,7 @@ import {
   useDiscoverProviderModels,
   useProbeEndpoint,
   useCreateModel,
+  apiRequest,
 } from "@/hooks/use-pipeline";
 import { cn } from "@/lib/utils";
 import { useQueryClient, useMutation, useQuery } from "@tanstack/react-query";
@@ -100,11 +101,8 @@ function MaintenanceSettings() {
 
   const { data: policies, isLoading } = useQuery<MaintenancePolicySummary[]>({
     queryKey: ["/api/maintenance/policies"],
-    queryFn: async () => {
-      const res = await fetch("/api/maintenance/policies");
-      if (!res.ok) return [];
-      return res.json() as Promise<MaintenancePolicySummary[]>;
-    },
+    queryFn: () =>
+      apiRequest("GET", "/api/maintenance/policies") as Promise<MaintenancePolicySummary[]>,
   });
 
   const firstPolicy = policies?.[0] ?? null;
@@ -113,48 +111,27 @@ function MaintenanceSettings() {
   const [severity, setSeverity] = useState<string>("high");
 
   const createPolicy = useMutation({
-    mutationFn: async () => {
-      const res = await fetch("/api/maintenance/policies", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          enabled: true,
-          schedule,
-          severityThreshold: severity,
-          categories: [],
-          autoMerge: false,
-          notifyChannels: [],
-        }),
-      });
-      if (!res.ok) throw new Error("Failed to create policy");
-      return res.json();
-    },
+    mutationFn: () =>
+      apiRequest("POST", "/api/maintenance/policies", {
+        enabled: true,
+        schedule,
+        severityThreshold: severity,
+        categories: [],
+        autoMerge: false,
+        notifyChannels: [],
+      }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["/api/maintenance/policies"] }),
   });
 
   const togglePolicy = useMutation({
-    mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) => {
-      const res = await fetch(`/api/maintenance/policies/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
-      });
-      if (!res.ok) throw new Error("Failed to update policy");
-      return res.json();
-    },
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      apiRequest("PUT", `/api/maintenance/policies/${id}`, { enabled }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["/api/maintenance/policies"] }),
   });
 
   const updatePolicy = useMutation({
-    mutationFn: async ({ id, schedule: s, severityThreshold }: { id: string; schedule: string; severityThreshold: string }) => {
-      const res = await fetch(`/api/maintenance/policies/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ schedule: s, severityThreshold }),
-      });
-      if (!res.ok) throw new Error("Failed to update policy");
-      return res.json();
-    },
+    mutationFn: ({ id, schedule: s, severityThreshold }: { id: string; schedule: string; severityThreshold: string }) =>
+      apiRequest("PUT", `/api/maintenance/policies/${id}`, { schedule: s, severityThreshold }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["/api/maintenance/policies"] }),
   });
 
