@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { apiRequest } from "@/lib/queryClient";
 
 type MemoryScope = "global" | "workspace" | "pipeline" | "run";
 type MemoryType = "decision" | "pattern" | "fact" | "preference" | "issue" | "dependency";
@@ -78,12 +79,12 @@ function AddMemoryForm({ onDone }: AddMemoryFormProps) {
 
   const create = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/memories", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope, type, key: key.trim(), content: content.trim() }),
+      const res = await apiRequest("POST", "/api/memories", {
+        scope,
+        type,
+        key: key.trim(),
+        content: content.trim(),
       });
-      if (!res.ok) throw new Error("Failed to create memory");
       return res.json();
     },
     onSuccess: () => {
@@ -239,24 +240,21 @@ export default function Memory() {
       const url = search
         ? `/api/memories?q=${encodeURIComponent(search)}`
         : "/api/memories";
-      const res = await fetch(url);
-      if (!res.ok) throw new Error("Failed to fetch memories");
+      const res = await apiRequest("GET", url);
       return res.json() as Promise<Memory[]>;
     },
   });
 
   const deleteMemory = useMutation({
     mutationFn: async (id: number) => {
-      const res = await fetch(`/api/memories/${id}`, { method: "DELETE" });
-      if (!res.ok && res.status !== 204) throw new Error("Delete failed");
+      await apiRequest("DELETE", `/api/memories/${id}`);
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["/api/memories"] }),
   });
 
   const clearStale = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/memories/stale", { method: "DELETE" });
-      if (!res.ok) throw new Error("Failed to clear stale");
+      const res = await apiRequest("DELETE", "/api/memories/stale");
       return res.json() as Promise<{ deleted: number }>;
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["/api/memories"] }),
