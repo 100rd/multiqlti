@@ -10,6 +10,7 @@
 
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@/hooks/use-toast";
 import {
   Shield,
   ShieldAlert,
@@ -838,6 +839,7 @@ function ContainerScanSection({ findings }: { findings: ScoutFinding[] }) {
 const CATEGORISED_CATEGORIES = new Set(["cve_scan", "log_analysis", "container_scan"]);
 
 function ScansTab() {
+  const { toast } = useToast();
   const [expandedScan, setExpandedScan] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const qc = useQueryClient();
@@ -860,6 +862,8 @@ function ScansTab() {
         body: JSON.stringify({ action, scanId }),
       });
       await qc.invalidateQueries({ queryKey: ["/api/maintenance/scans"] });
+    } catch (err) {
+      toast({ variant: "destructive", title: "Action failed", description: (err as Error).message });
     } finally {
       setActionLoading(null);
     }

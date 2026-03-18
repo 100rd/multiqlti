@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useRoute } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@/hooks/use-toast";
 import { RefreshCw, GitBranch, Eye, MessageSquare, Code2, Settings2, Network, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { FileTree } from "@/components/workspace/FileTree";
@@ -123,6 +124,7 @@ type MainView = "files" | "graph";
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function Workspace() {
+  const { toast } = useToast();
   const [, params] = useRoute<{ id: string }>("/workspaces/:id");
   const workspaceId = params?.id ?? "";
 
@@ -169,6 +171,7 @@ export default function Workspace() {
       qc.invalidateQueries({ queryKey: ["workspace", workspaceId] });
       qc.invalidateQueries({ queryKey: ["workspace-files", workspaceId] });
     },
+    onError: (err: Error) => toast({ variant: "destructive", title: "Sync failed", description: err.message }),
   });
 
   const loadDirContents = async (dirPath: string): Promise<FileEntry[]> => {
@@ -197,6 +200,8 @@ export default function Workspace() {
         { filePaths: [selectedFile], models: reviewModels },
       );
       setReviewResults(results);
+    } catch (err) {
+      toast({ variant: "destructive", title: "Review failed", description: (err as Error).message });
     } finally {
       setIsReviewing(false);
     }
