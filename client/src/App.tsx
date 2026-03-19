@@ -32,6 +32,7 @@ import Skills from "@/pages/Skills";
 import SkillMarketplace from "@/pages/SkillMarketplace";
 import TaskGroupList from "@/pages/TaskGroupList";
 import TaskGroupPage from "@/pages/TaskGroup";
+import CreateTaskGroup from "@/pages/CreateTaskGroup";
 
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
@@ -111,6 +112,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/memories" component={() => (
           <ErrorBoundary><Memory /></ErrorBoundary>
+        )} />
+        <Route path="/task-groups/new" component={() => (
+          <ErrorBoundary><CreateTaskGroup /></ErrorBoundary>
         )} />
         <Route path="/task-groups/:id" component={() => (
           <ErrorBoundary><TaskGroupPage /></ErrorBoundary>
