@@ -11,6 +11,7 @@ import {
   specializationProfiles,
   skills,
   skillVersions,
+  skillTeams,
   triggers,
   managerIterations,
   traces,
@@ -27,6 +28,7 @@ import {
   type SpecializationProfileRow,
   type Skill, type InsertSkill,
   type SkillVersionRow,
+  type SkillTeam, type InsertSkillTeam,
   type InsertManagerIteration, type ManagerIterationRow,
   type TriggerRow,
   type InsertTrace,
@@ -34,12 +36,15 @@ import {
   taskGroups,
   tasks,
   taskTraces,
+  trackerConnections,
   type TaskGroupRow,
   type InsertTaskGroup,
   type TaskRow,
   type InsertTask,
   type TaskTraceRow,
   type InsertTaskTrace,
+  type TrackerConnectionRow,
+  type InsertTrackerConnection,
 } from "@shared/schema";
 import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion } from "@shared/types";
 
@@ -870,6 +875,21 @@ export class PgStorage implements IStorage {
     return row?.usageCount ?? 0;
   }
 
+  // ─── Skill Teams ─────────────────────────────────────────────────────────────
+
+  async getSkillTeams(): Promise<SkillTeam[]> {
+    return db.select().from(skillTeams).orderBy(skillTeams.createdAt);
+  }
+
+  async createSkillTeam(data: InsertSkillTeam): Promise<SkillTeam> {
+    const [row] = await db.insert(skillTeams).values(data).returning();
+    return row;
+  }
+
+  async deleteSkillTeam(id: string): Promise<void> {
+    await db.delete(skillTeams).where(eq(skillTeams.id, id));
+  }
+
   // ─── Manager Iterations (Phase 6.6) ────────────────────────────────────────
 
   async createManagerIteration(data: InsertManagerIteration): Promise<ManagerIterationRow> {
@@ -1071,6 +1091,30 @@ export class PgStorage implements IStorage {
       .where(eq(taskTraces.id, id))
       .returning();
     return row;
+  }
+
+  // ─── Tracker Connections (Issue Tracker Integration) ────────────────────────
+
+  async getTrackerConnectionsByGroup(taskGroupId: string): Promise<TrackerConnectionRow[]> {
+    return db.select().from(trackerConnections)
+      .where(eq(trackerConnections.taskGroupId, taskGroupId));
+  }
+
+  async getTrackerConnection(id: string): Promise<TrackerConnectionRow | undefined> {
+    const [row] = await db.select().from(trackerConnections)
+      .where(eq(trackerConnections.id, id));
+    return row;
+  }
+
+  async createTrackerConnection(data: InsertTrackerConnection): Promise<TrackerConnectionRow> {
+    const [row] = await db.insert(trackerConnections)
+      .values(data as typeof trackerConnections.$inferInsert)
+      .returning();
+    return row;
+  }
+
+  async deleteTrackerConnection(id: string): Promise<void> {
+    await db.delete(trackerConnections).where(eq(trackerConnections.id, id));
   }
 
 }
