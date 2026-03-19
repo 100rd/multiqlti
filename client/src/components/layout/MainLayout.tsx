@@ -17,6 +17,7 @@ import {
   Zap,
   Sparkles,
   Store,
+  ListChecks,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -48,6 +49,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
       href: "/pipelines",
       badge: pendingCount > 0 ? pendingCount : undefined,
     },
+    { icon: ListChecks, label: "Task Groups", href: "/task-groups" },
     { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
     { icon: Sparkles, label: "Skills", href: "/skills" },

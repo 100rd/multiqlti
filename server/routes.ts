@@ -41,6 +41,8 @@ import { tracer } from "./tracing/tracer";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
 import { registerArgoCdSettingsRoutes, autoConnectArgoCdFromEnv } from "./routes/argocd-settings";
+import { registerTaskGroupRoutes } from "./routes/task-groups";
+import { TaskOrchestrator } from "./services/task-orchestrator";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -85,6 +87,7 @@ export async function registerRoutes(
   app.use("/api/guardrails", requireAuth);
   app.use("/api/triggers", requireAuth);
   app.use("/api/traces", requireAuth);
+  app.use("/api/task-groups", requireAuth);
 
   // Register route implementations
   registerModelRoutes(app, storage);
@@ -108,6 +111,10 @@ export async function registerRoutes(
   registerDAGRoutes(app, storage);
   registerTraceRoutes(app, storage);
   registerArgoCdSettingsRoutes(app as unknown as Router);
+
+  // Task Orchestrator
+  const taskOrchestrator = new TaskOrchestrator(storage, wsManager, controller, gateway);
+  registerTaskGroupRoutes(app, storage, taskOrchestrator);
 
   // Phase 6.3 — Trigger subsystem
   let triggerService: TriggerService | null = null;

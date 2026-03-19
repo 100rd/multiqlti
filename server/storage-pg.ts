@@ -31,6 +31,12 @@ import {
   type TriggerRow,
   type InsertTrace,
   type TraceRow,
+  taskGroups,
+  tasks,
+  type TaskGroupRow,
+  type InsertTaskGroup,
+  type TaskRow,
+  type InsertTask,
 } from "@shared/schema";
 import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion } from "@shared/types";
 
@@ -982,6 +988,66 @@ export class PgStorage implements IStorage {
     await db.update(traces)
       .set({ spans: spans as TraceRow["spans"], updatedAt: new Date() })
       .where(eq(traces.traceId, traceId));
+  }
+
+  // ─── Task Groups (Task Orchestrator) ────────────────────────────────────────
+
+  async getTaskGroups(): Promise<TaskGroupRow[]> {
+    return db.select().from(taskGroups).orderBy(desc(taskGroups.createdAt));
+  }
+
+  async getTaskGroup(id: string): Promise<TaskGroupRow | undefined> {
+    const [row] = await db.select().from(taskGroups).where(eq(taskGroups.id, id));
+    return row;
+  }
+
+  async createTaskGroup(data: InsertTaskGroup): Promise<TaskGroupRow> {
+    const [row] = await db.insert(taskGroups).values(data as typeof taskGroups.$inferInsert).returning();
+    return row;
+  }
+
+  async updateTaskGroup(id: string, updates: Partial<TaskGroupRow>): Promise<TaskGroupRow> {
+    const [row] = await db.update(taskGroups).set(updates).where(eq(taskGroups.id, id)).returning();
+    return row;
+  }
+
+  async deleteTaskGroup(id: string): Promise<void> {
+    await db.delete(taskGroups).where(eq(taskGroups.id, id));
+  }
+
+  // ─── Tasks (Task Orchestrator) ──────────────────────────────────────────────
+
+  async getTasksByGroup(groupId: string): Promise<TaskRow[]> {
+    return db.select().from(tasks)
+      .where(eq(tasks.groupId, groupId))
+      .orderBy(asc(tasks.sortOrder), asc(tasks.createdAt));
+  }
+
+  async getTask(id: string): Promise<TaskRow | undefined> {
+    const [row] = await db.select().from(tasks).where(eq(tasks.id, id));
+    return row;
+  }
+
+  async createTask(data: InsertTask): Promise<TaskRow> {
+    const [row] = await db.insert(tasks).values(data as typeof tasks.$inferInsert).returning();
+    return row;
+  }
+
+  async updateTask(id: string, updates: Partial<TaskRow>): Promise<TaskRow> {
+    const [row] = await db.update(tasks).set(updates).where(eq(tasks.id, id)).returning();
+    return row;
+  }
+
+  async getReadyTasks(groupId: string): Promise<TaskRow[]> {
+    return db.select().from(tasks)
+      .where(and(eq(tasks.groupId, groupId), eq(tasks.status, "ready")))
+      .orderBy(asc(tasks.sortOrder));
+  }
+
+  async getBlockedTasks(groupId: string): Promise<TaskRow[]> {
+    return db.select().from(tasks)
+      .where(and(eq(tasks.groupId, groupId), eq(tasks.status, "blocked")))
+      .orderBy(asc(tasks.sortOrder));
   }
 
 }
