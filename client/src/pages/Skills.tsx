@@ -21,7 +21,8 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Sparkles, Upload, Download, Plus, Users } from "lucide-react";
+import { Sparkles, Upload, Download, Plus, Users, Cpu } from "lucide-react";
+import { ModelSkillsTab } from "@/components/skills/ModelSkillsTab";
 import { cn } from "@/lib/utils";
 import { SDLC_TEAMS } from "@shared/constants";
 import {
@@ -164,6 +165,7 @@ function CreateTeamDialog({ open, onClose }: CreateTeamDialogProps) {
 
 export default function Skills() {
   const { toast } = useToast();
+  const [activeTab, setActiveTab] = useState<"library" | "model-skills">("library");
   const { data: skills = [], isLoading, error } = useSkills();
   const { data: customTeams = [] } = useSkillTeams();
   const deleteSkill = useDeleteSkill();
@@ -333,6 +335,42 @@ export default function Skills() {
         </div>
       </div>
 
+      {/* Tab Switcher */}
+      <div className="flex items-center gap-1 px-6 py-0 border-b border-border shrink-0">
+        <button
+          type="button"
+          onClick={() => setActiveTab("library")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            activeTab === "library"
+              ? "border-primary text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <span className="flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5" />
+            Library
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab("model-skills")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            activeTab === "model-skills"
+              ? "border-primary text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <span className="flex items-center gap-1.5">
+            <Cpu className="h-3.5 w-3.5" />
+            Model Skills
+          </span>
+        </button>
+      </div>
+
+      {activeTab === "model-skills" ? (
+        <ModelSkillsTab />
+      ) : (
+      <>
       {/* Filters */}
       <div className="flex items-center gap-3 px-6 py-3 border-b border-border shrink-0 flex-wrap">
         {/* Search */}
@@ -471,6 +509,11 @@ export default function Skills() {
         )}
       </div>
 
+      </>
+      )}
+
+      {activeTab === "library" && (
+      <>
       {/* Skill Detail Modal (view only) */}
       <SkillLibraryDetailModal
         skill={viewingSkill ?? null}
@@ -502,6 +545,8 @@ export default function Skills() {
         open={createTeamOpen}
         onClose={() => setCreateTeamOpen(false)}
       />
+      </>
+      )}
     </div>
   );
 }

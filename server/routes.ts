@@ -43,6 +43,7 @@ import { log } from "./index";
 import { registerArgoCdSettingsRoutes, autoConnectArgoCdFromEnv } from "./routes/argocd-settings";
 import { registerTaskGroupRoutes } from "./routes/task-groups";
 import { registerSkillTeamRoutes } from "./routes/skill-teams";
+import { registerModelSkillBindingRoutes } from "./routes/model-skill-bindings";
 import { registerTaskTraceRoutes } from "./routes/task-traces";
 import { registerTrackerRoutes } from "./routes/tracker";
 import { TaskOrchestrator } from "./services/task-orchestrator";
@@ -113,6 +114,7 @@ export async function registerRoutes(
   registerSettingsRoutes(app as unknown as Router, gateway);
   registerMaintenanceRoutes(app as unknown as Router);
   registerSpecializationRoutes(app, storage);
+  registerModelSkillBindingRoutes(app, storage);
   registerSkillRoutes(app, storage);
   registerGuardrailRoutes(app, storage, gateway);
   registerDelegationRoutes(app, storage);

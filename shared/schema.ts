@@ -903,3 +903,20 @@ export const insertTrackerConnectionSchema = createInsertSchema(trackerConnectio
 
 export type InsertTrackerConnection = z.infer<typeof insertTrackerConnectionSchema>;
 export type TrackerConnectionRow = typeof trackerConnections.$inferSelect;
+
+// ─── Model Skill Bindings (Phase 6.17) ───────────────────────────────────────
+
+export const modelSkillBindings = pgTable("model_skill_bindings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  modelId: text("model_id").notNull(),
+  skillId: varchar("skill_id").notNull().references(() => skills.id, { onDelete: "cascade" }),
+  createdBy: text("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => ({
+  uniqueModelSkill: unique().on(t.modelId, t.skillId),
+  modelIdIdx: index("model_skill_bindings_model_id_idx").on(t.modelId),
+}));
+
+export const insertModelSkillBindingSchema = createInsertSchema(modelSkillBindings).omit({ id: true, createdAt: true });
+export type InsertModelSkillBinding = z.infer<typeof insertModelSkillBindingSchema>;
+export type ModelSkillBinding = typeof modelSkillBindings.$inferSelect;
