@@ -18,6 +18,7 @@ import {
   Sparkles,
   Store,
   ListChecks,
+  BookOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -55,6 +56,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: Sparkles, label: "Skills", href: "/skills" },
     { icon: Store, label: "Skill Market", href: "/skills/marketplace" },
     { icon: BarChart3, label: "Statistics", href: "/stats" },
+    { icon: BookOpen, label: "Library", href: "/library" },
     { icon: Brain, label: "Memory", href: "/memories" },
     { icon: ShieldCheck, label: "Privacy", href: "/privacy" },
     { icon: Wrench, label: "Maintenance", href: "/maintenance" },

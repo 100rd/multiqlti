@@ -822,3 +822,73 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
 
 export type InsertTask = z.infer<typeof insertTaskSchema>;
 export type TaskRow = typeof tasks.$inferSelect;
+
+// ─── Library Channels (Phase 7) ─────────────────────────────────────────────
+
+export const LIBRARY_CHANNEL_TYPES = ["rss", "manual", "github", "cve"] as const;
+export type LibraryChannelType = typeof LIBRARY_CHANNEL_TYPES[number];
+
+export const libraryChannels = pgTable("library_channels", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  type: text("type").notNull().$type<LibraryChannelType>(),
+  url: text("url"),
+  config: jsonb("config").notNull().default(sql`'{}'::jsonb`).$type<Record<string, unknown>>(),
+  enabled: boolean("enabled").notNull().default(true),
+  pollIntervalMinutes: integer("poll_interval_minutes").notNull().default(60),
+  lastPolledAt: timestamp("last_polled_at"),
+  errorMessage: text("error_message"),
+  createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertLibraryChannelSchema = createInsertSchema(libraryChannels).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  lastPolledAt: true,
+  errorMessage: true,
+});
+
+export type InsertLibraryChannel = z.infer<typeof insertLibraryChannelSchema>;
+export type LibraryChannelRow = typeof libraryChannels.$inferSelect;
+
+// ─── Library Items (Phase 7) ────────────────────────────────────────────────
+
+export const libraryItems = pgTable(
+  "library_items",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    channelId: varchar("channel_id").references(() => libraryChannels.id, { onDelete: "set null" }),
+    title: text("title").notNull(),
+    url: text("url"),
+    contentText: text("content_text"),
+    summary: text("summary"),
+    author: text("author"),
+    tags: jsonb("tags").notNull().$type<string[]>().default(sql`'[]'::jsonb`),
+    sourceType: text("source_type").notNull().default("manual"),
+    /** De-duplication key — usually the item URL or a hash of the content */
+    externalId: text("external_id"),
+    publishedAt: timestamp("published_at"),
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    channelIdx: index("library_items_channel_id_idx").on(table.channelId),
+    externalIdx: index("library_items_external_id_idx").on(table.externalId),
+    publishedIdx: index("library_items_published_at_idx").on(table.publishedAt),
+  }),
+);
+
+export const insertLibraryItemSchema = createInsertSchema(libraryItems).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertLibraryItem = z.infer<typeof insertLibraryItemSchema>;
+export type LibraryItemRow = typeof libraryItems.$inferSelect;
