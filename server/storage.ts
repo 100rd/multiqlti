@@ -1005,6 +1005,8 @@ export class MemStorage implements IStorage {
       sharing: (data.sharing ?? "public") as "private" | "team" | "public",
       usageCount: data.usageCount ?? 0,
       forkedFrom: data.forkedFrom ?? null,
+      sourceType: (data.sourceType ?? "manual") as "manual" | "git",
+      gitSourceId: data.gitSourceId ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -1021,6 +1023,7 @@ export class MemStorage implements IStorage {
       tools: (updates.tools as string[] | undefined) ?? existing.tools,
       tags: (updates.tags as string[] | undefined) ?? existing.tags,
       sharing: (updates.sharing as "private" | "team" | "public" | undefined) ?? existing.sharing,
+      sourceType: (updates.sourceType as "manual" | "git" | undefined) ?? existing.sourceType,
       updatedAt: new Date(),
     };
     this.skillsMap.set(id, updated);

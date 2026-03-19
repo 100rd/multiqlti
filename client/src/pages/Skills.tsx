@@ -37,6 +37,8 @@ import { SkillEditor } from "@/components/skills/SkillEditor";
 import { SkillLibraryDetailModal } from "@/components/skills/SkillLibraryDetailModal";
 import type { Skill } from "@shared/schema";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
+import { GitSourcesSection } from "@/components/skills/GitSourcesSection";
 
 type SkillFilter = "all" | "builtin" | "custom";
 
@@ -168,6 +170,8 @@ export default function Skills() {
   const [activeTab, setActiveTab] = useState<"library" | "model-skills">("library");
   const { data: skills = [], isLoading, error } = useSkills();
   const { data: customTeams = [] } = useSkillTeams();
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const deleteSkill = useDeleteSkill();
   const exportSkills = useExportSkills();
   const importSkills = useImportSkills();
@@ -507,6 +511,11 @@ export default function Skills() {
             ))}
           </div>
         )}
+      </div>
+
+      {/* Git Sources Section */}
+      <div className="px-6 pb-4">
+        <GitSourcesSection isAdmin={isAdmin} />
       </div>
 
       </>

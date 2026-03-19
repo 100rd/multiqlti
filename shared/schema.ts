@@ -541,6 +541,27 @@ export const insertSpecializationProfileSchema = createInsertSchema(specializati
 export type InsertSpecializationProfile = z.infer<typeof insertSpecializationProfileSchema>;
 export type SpecializationProfileRow = typeof specializationProfiles.$inferSelect;
 
+// ─── Git Skill Sources (issue #161) ─────────────────────────────────────────
+
+export const gitSkillSources = pgTable("git_skill_sources", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  repoUrl: text("repo_url").notNull(),
+  branch: text("branch").notNull().default("main"),
+  path: text("path").notNull().default("/"),
+  syncOnStart: boolean("sync_on_start").notNull().default(false),
+  lastSyncedAt: timestamp("last_synced_at"),
+  lastError: text("last_error"),
+  // Encrypted PAT for private repos (AES-256-GCM, same as provider keys)
+  encryptedPat: text("encrypted_pat"),
+  createdBy: varchar("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertGitSkillSourceSchema = createInsertSchema(gitSkillSources).omit({ id: true, createdAt: true });
+export type InsertGitSkillSource = z.infer<typeof insertGitSkillSourceSchema>;
+export type GitSkillSourceRow = typeof gitSkillSources.$inferSelect;
+
 // ─── Skills (Phase 3.1b) ─────────────────────────────────────────────────────
 
 export const skills = pgTable("skills", {
@@ -561,6 +582,9 @@ export const skills = pgTable("skills", {
   sharing: text("sharing").notNull().default("public").$type<"private" | "team" | "public">(),
   usageCount: integer("usage_count").notNull().default(0),
   forkedFrom: varchar("forked_from"),
+  // Git skill source tracking (issue #161)
+  sourceType: text("source_type").notNull().default("manual").$type<"manual" | "git">(),
+  gitSourceId: varchar("git_source_id").references(() => gitSkillSources.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
