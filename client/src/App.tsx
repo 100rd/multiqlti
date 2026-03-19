@@ -30,6 +30,8 @@ import ProfileSettings from "@/pages/ProfileSettings";
 import Maintenance from "@/pages/Maintenance";
 import Skills from "@/pages/Skills";
 import SkillMarketplace from "@/pages/SkillMarketplace";
+import TaskGroupList from "@/pages/TaskGroupList";
+import TaskGroupPage from "@/pages/TaskGroup";
 
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
@@ -109,6 +111,12 @@ function ProtectedRouter() {
         )} />
         <Route path="/memories" component={() => (
           <ErrorBoundary><Memory /></ErrorBoundary>
+        )} />
+        <Route path="/task-groups/:id" component={() => (
+          <ErrorBoundary><TaskGroupPage /></ErrorBoundary>
+        )} />
+        <Route path="/task-groups" component={() => (
+          <ErrorBoundary><TaskGroupList /></ErrorBoundary>
         )} />
         <Route path="/maintenance" component={() => (
           <ErrorBoundary><Maintenance /></ErrorBoundary>

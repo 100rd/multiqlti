@@ -743,3 +743,82 @@ export const insertWorkspaceSymbolSchema = createInsertSchema(workspaceSymbols).
 
 export type InsertWorkspaceSymbol = z.infer<typeof insertWorkspaceSymbolSchema>;
 export type WorkspaceSymbolRow = typeof workspaceSymbols.$inferSelect;
+
+// ─── Task Groups (Task Orchestrator) ────────────────────────────────────────
+
+export const TASK_GROUP_STATUSES = ["pending", "running", "completed", "failed", "cancelled"] as const;
+export type TaskGroupStatus = typeof TASK_GROUP_STATUSES[number];
+
+export const taskGroups = pgTable("task_groups", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  status: text("status").notNull().default("pending").$type<TaskGroupStatus>(),
+  input: text("input").notNull(),
+  output: jsonb("output"),
+  createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertTaskGroupSchema = createInsertSchema(taskGroups).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertTaskGroup = z.infer<typeof insertTaskGroupSchema>;
+export type TaskGroupRow = typeof taskGroups.$inferSelect;
+
+// ─── Tasks (Task Orchestrator) ──────────────────────────────────────────────
+
+export const TASK_STATUSES = ["pending", "blocked", "ready", "running", "completed", "failed", "cancelled"] as const;
+export type TaskStatus = typeof TASK_STATUSES[number];
+
+export const TASK_EXECUTION_MODES = ["pipeline_run", "direct_llm"] as const;
+export type TaskExecutionMode = typeof TASK_EXECUTION_MODES[number];
+
+export const tasks = pgTable(
+  "tasks",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    groupId: varchar("group_id")
+      .notNull()
+      .references(() => taskGroups.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description").notNull(),
+    status: text("status").notNull().default("pending").$type<TaskStatus>(),
+    executionMode: text("execution_mode").notNull().default("direct_llm").$type<TaskExecutionMode>(),
+    dependsOn: jsonb("depends_on").notNull().default(sql`'[]'::jsonb`).$type<string[]>(),
+    pipelineId: varchar("pipeline_id"),
+    pipelineRunId: varchar("pipeline_run_id"),
+    modelSlug: text("model_slug"),
+    teamId: text("team_id"),
+    input: jsonb("input").notNull().default(sql`'{}'::jsonb`),
+    output: jsonb("output"),
+    summary: text("summary"),
+    artifacts: jsonb("artifacts").$type<Record<string, unknown>[]>(),
+    decisions: jsonb("decisions").$type<string[]>(),
+    errorMessage: text("error_message"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    startedAt: timestamp("started_at"),
+    completedAt: timestamp("completed_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    groupIdIdx: index("tasks_group_id_idx").on(table.groupId),
+    statusIdx: index("tasks_status_idx").on(table.status),
+  }),
+);
+
+export const insertTaskSchema = createInsertSchema(tasks).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertTask = z.infer<typeof insertTaskSchema>;
+export type TaskRow = typeof tasks.$inferSelect;

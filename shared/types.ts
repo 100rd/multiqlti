@@ -300,7 +300,18 @@ export type WsEventType =
   | "workspace:index_start"
   | "workspace:index_progress"
   | "workspace:index_complete"
-  | "workspace:index_error";
+  | "workspace:index_error"
+  // ─── Task Orchestrator Events ───────────────────────────────────────────────
+  | "task:created"
+  | "task:ready"
+  | "task:started"
+  | "task:progress"
+  | "task:completed"
+  | "task:failed"
+  | "taskgroup:started"
+  | "taskgroup:progress"
+  | "taskgroup:completed"
+  | "taskgroup:failed";
 
 export interface WsEvent {
   type: WsEventType;
@@ -1429,6 +1440,21 @@ export interface InsertSkillVersion {
   config: SkillVersionConfig;
   changelog: string;
   createdBy: string;
+}
+
+// ─── Platform Version Types ────────────────────────────────────────────────────
+
+// ─── Task Orchestrator Types ───────────────────────────────────────────────
+
+export type TaskGroupStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+export type TaskStatus = "pending" | "blocked" | "ready" | "running" | "completed" | "failed" | "cancelled";
+export type TaskExecutionMode = "pipeline_run" | "direct_llm";
+
+export interface TaskResult {
+  summary: string;
+  artifacts?: Record<string, unknown>[];
+  decisions?: string[];
+  output?: Record<string, unknown>;
 }
 
 // ─── Platform Version Types ────────────────────────────────────────────────────

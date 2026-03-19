@@ -6,6 +6,7 @@ const config = configLoader.load();
 
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
+import { runMigrations } from "./db";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 
@@ -66,6 +67,9 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Apply pending database migrations before starting the server
+  await runMigrations();
+
   await registerRoutes(httpServer, app);
 
   app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {

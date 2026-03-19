@@ -28,6 +28,10 @@ import {
   type TraceRow,
   type SkillVersionRow,
   type InsertSkillVersion,
+  type TaskGroupRow,
+  type InsertTaskGroup,
+  type TaskRow,
+  type InsertTask,
 } from "@shared/schema";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType } from "@shared/types";
 import { randomUUID } from "crypto";
@@ -211,6 +215,20 @@ export interface IStorage {
   getTraces(limit?: number, offset?: number): Promise<TraceRow[]>;
   updateTraceSpans(traceId: string, spans: TraceSpan[]): Promise<void>;
 
+  // Task Groups (Task Orchestrator)
+  getTaskGroups(): Promise<TaskGroupRow[]>;
+  getTaskGroup(id: string): Promise<TaskGroupRow | undefined>;
+  createTaskGroup(data: InsertTaskGroup): Promise<TaskGroupRow>;
+  updateTaskGroup(id: string, updates: Partial<TaskGroupRow>): Promise<TaskGroupRow>;
+  deleteTaskGroup(id: string): Promise<void>;
+
+  // Tasks (Task Orchestrator)
+  getTasksByGroup(groupId: string): Promise<TaskRow[]>;
+  getTask(id: string): Promise<TaskRow | undefined>;
+  createTask(data: InsertTask): Promise<TaskRow>;
+  updateTask(id: string, updates: Partial<TaskRow>): Promise<TaskRow>;
+  getReadyTasks(groupId: string): Promise<TaskRow[]>;
+  getBlockedTasks(groupId: string): Promise<TaskRow[]>;
 }
 
 export class MemStorage implements IStorage {
@@ -1244,6 +1262,102 @@ export class MemStorage implements IStorage {
     const updated: TraceRow = { ...row, spans: spans as TraceSpan[], updatedAt: new Date() };
     this.tracesById.set(traceId, updated);
     this.tracesByRunId.set(row.runId, updated);
+  }
+
+  // ─── Task Groups (Task Orchestrator) — MemStorage stubs ─────────────────────
+
+  private taskGroupsMap = new Map<string, TaskGroupRow>();
+  private tasksMap = new Map<string, TaskRow>();
+
+  async getTaskGroups(): Promise<TaskGroupRow[]> {
+    return Array.from(this.taskGroupsMap.values()).sort(
+      (a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0),
+    );
+  }
+
+  async getTaskGroup(id: string): Promise<TaskGroupRow | undefined> {
+    return this.taskGroupsMap.get(id);
+  }
+
+  async createTaskGroup(data: InsertTaskGroup): Promise<TaskGroupRow> {
+    const id = randomUUID();
+    const row: TaskGroupRow = { id, name: data.name, description: data.description, input: data.input, status: (data.status as TaskGroupRow["status"]) ?? "pending", output: data.output ?? null, createdBy: data.createdBy ?? null, startedAt: data.startedAt ?? null, completedAt: data.completedAt ?? null, createdAt: new Date() };
+    this.taskGroupsMap.set(id, row);
+    return row;
+  }
+
+  async updateTaskGroup(id: string, updates: Partial<TaskGroupRow>): Promise<TaskGroupRow> {
+    const existing = this.taskGroupsMap.get(id);
+    if (!existing) throw new Error(`TaskGroup ${id} not found`);
+    const updated = { ...existing, ...updates };
+    this.taskGroupsMap.set(id, updated);
+    return updated;
+  }
+
+  async deleteTaskGroup(id: string): Promise<void> {
+    this.taskGroupsMap.delete(id);
+    for (const [tid, t] of this.tasksMap) {
+      if (t.groupId === id) this.tasksMap.delete(tid);
+    }
+  }
+
+  async getTasksByGroup(groupId: string): Promise<TaskRow[]> {
+    return Array.from(this.tasksMap.values())
+      .filter((t) => t.groupId === groupId)
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+  }
+
+  async getTask(id: string): Promise<TaskRow | undefined> {
+    return this.tasksMap.get(id);
+  }
+
+  async createTask(data: InsertTask): Promise<TaskRow> {
+    const id = randomUUID();
+    const row: TaskRow = {
+      id,
+      groupId: data.groupId,
+      name: data.name,
+      description: data.description,
+      status: (data.status as TaskRow["status"]) ?? "pending",
+      executionMode: (data.executionMode as TaskRow["executionMode"]) ?? "direct_llm",
+      dependsOn: data.dependsOn ?? [],
+      input: data.input ?? {},
+      sortOrder: data.sortOrder ?? 0,
+      pipelineId: data.pipelineId ?? null,
+      pipelineRunId: data.pipelineRunId ?? null,
+      modelSlug: data.modelSlug ?? null,
+      teamId: data.teamId ?? null,
+      output: data.output ?? null,
+      summary: data.summary ?? null,
+      artifacts: data.artifacts ?? null,
+      decisions: data.decisions ?? null,
+      errorMessage: data.errorMessage ?? null,
+      startedAt: data.startedAt ?? null,
+      completedAt: data.completedAt ?? null,
+      createdAt: new Date(),
+    };
+    this.tasksMap.set(id, row);
+    return row;
+  }
+
+  async updateTask(id: string, updates: Partial<TaskRow>): Promise<TaskRow> {
+    const existing = this.tasksMap.get(id);
+    if (!existing) throw new Error(`Task ${id} not found`);
+    const updated = { ...existing, ...updates };
+    this.tasksMap.set(id, updated);
+    return updated;
+  }
+
+  async getReadyTasks(groupId: string): Promise<TaskRow[]> {
+    return Array.from(this.tasksMap.values())
+      .filter((t) => t.groupId === groupId && t.status === "ready")
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+  }
+
+  async getBlockedTasks(groupId: string): Promise<TaskRow[]> {
+    return Array.from(this.tasksMap.values())
+      .filter((t) => t.groupId === groupId && t.status === "blocked")
+      .sort((a, b) => a.sortOrder - b.sortOrder);
   }
 
 }
