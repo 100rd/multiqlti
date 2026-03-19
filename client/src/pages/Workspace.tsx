@@ -347,7 +347,7 @@ export default function Workspace() {
             {/* Code viewer */}
             <div className="flex-1 flex flex-col overflow-hidden border-r border-border">
               {selectedFile && fileContent ? (
-                <CodeViewer content={fileContent} filePath={selectedFile} className="flex-1" />
+                <CodeViewer content={fileContent} filePath={selectedFile} workspacePath={workspace?.path} className="flex-1" />
               ) : (
                 <div className="flex-1 flex items-center justify-center">
                   <p className="text-xs text-muted-foreground">Select a file to view</p>
@@ -433,7 +433,7 @@ export default function Workspace() {
               {/* Panel content */}
               <div className="flex-1 overflow-hidden">
                 {rightPanel === "review" ? (
-                  <ReviewPanel results={reviewResults} isLoading={isReviewing} />
+                  <ReviewPanel results={reviewResults} isLoading={isReviewing} workspacePath={workspace?.path} />
                 ) : rightPanel === "symbols" ? (
                   <SymbolSearch
                     workspaceId={workspaceId}
