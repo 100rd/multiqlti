@@ -311,7 +311,11 @@ export type WsEventType =
   | "taskgroup:started"
   | "taskgroup:progress"
   | "taskgroup:completed"
-  | "taskgroup:failed";
+  | "taskgroup:failed"
+  // ─── Task Trace Events ──────────────────────────────────────────────────────
+  | "trace:span:started"
+  | "trace:span:completed"
+  | "trace:span:failed";
 
 export interface WsEvent {
   type: WsEventType;
@@ -1475,4 +1479,36 @@ export interface VersionsResponse {
   database: {
     postgres: string | null;
   };
+}
+
+// ─── Task Trace Types (End-to-End Request Observability) ─────────────────────
+
+export type TaskTraceSpanType = "task_group" | "task" | "pipeline_run" | "stage" | "llm_call";
+export type TaskTraceSpanStatus = "running" | "completed" | "failed";
+
+export interface TaskTraceSpanMetadata {
+  taskId?: string;
+  pipelineRunId?: string;
+  stageIndex?: number;
+  modelSlug?: string;
+  provider?: string;
+  tokensUsed?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  estimatedCostUsd?: number;
+  inputSizeBytes?: number;
+  outputSizeBytes?: number;
+  error?: string;
+}
+
+export interface TaskTraceSpan {
+  spanId: string;
+  parentSpanId: string | null;
+  name: string;
+  type: TaskTraceSpanType;
+  status: TaskTraceSpanStatus;
+  startTime: number;       // epoch ms
+  endTime?: number;        // epoch ms
+  durationMs?: number;
+  metadata: TaskTraceSpanMetadata;
 }

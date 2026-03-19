@@ -4,6 +4,7 @@ import type { PipelineController } from "../controller/pipeline-controller";
 import type { Gateway } from "../gateway/index";
 import type { TaskGroupRow, TaskRow, InsertTaskGroup, InsertTask } from "@shared/schema";
 import type { WsEvent, TaskResult } from "@shared/types";
+import type { TaskTracer } from "./task-tracer";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -34,12 +35,21 @@ export interface CreateTaskGroupParams {
 // ─── Task Orchestrator ──────────────────────────────────────────────────────
 
 export class TaskOrchestrator {
+  private tracer: TaskTracer | null = null;
+  /** Map groupId → { traceId, taskSpanIds } for active traces */
+  private activeGroupTraces = new Map<string, { traceId: string; taskSpanIds: Map<string, string> }>();
+
   constructor(
     private storage: IStorage,
     private wsManager: WsManager,
     private pipelineController: PipelineController,
     private gateway: Gateway,
   ) {}
+
+  /** Attach a tracer instance (called during route registration). */
+  setTracer(tracer: TaskTracer): void {
+    this.tracer = tracer;
+  }
 
   /**
    * Create a task group with tasks. Resolves task name references in
@@ -113,6 +123,16 @@ export class TaskOrchestrator {
 
     await this.storage.updateTaskGroup(groupId, { status: "running", startedAt: new Date() });
 
+    // Start tracing
+    if (this.tracer) {
+      try {
+        const traceId = await this.tracer.startGroupTrace(groupId, `TaskGroup: ${group.name}`);
+        this.activeGroupTraces.set(groupId, { traceId, taskSpanIds: new Map() });
+      } catch {
+        // Tracing failure should not block execution
+      }
+    }
+
     const allTasks = await this.storage.getTasksByGroup(groupId);
     const readyTasks = allTasks.filter((t) => t.status === "ready");
 
@@ -139,6 +159,9 @@ export class TaskOrchestrator {
       }
     }
     await this.storage.updateTaskGroup(groupId, { status: "cancelled", completedAt: new Date() });
+
+    // Complete the group trace span
+    this.completeGroupTrace(groupId);
 
     this.broadcast(groupId, {
       type: "taskgroup:failed",
@@ -182,6 +205,18 @@ export class TaskOrchestrator {
   private async executeTask(task: TaskRow, group: TaskGroupRow): Promise<void> {
     await this.storage.updateTask(task.id, { status: "running", startedAt: new Date() });
 
+    // Start task trace span
+    const traceCtx = this.activeGroupTraces.get(group.id);
+    let taskSpanId = "";
+    if (this.tracer && traceCtx) {
+      try {
+        taskSpanId = this.tracer.startTaskSpan(traceCtx.traceId, task.id, `Task: ${task.name}`);
+        traceCtx.taskSpanIds.set(task.id, taskSpanId);
+      } catch {
+        // Non-fatal
+      }
+    }
+
     this.broadcast(group.id, {
       type: "task:started",
       runId: group.id,
@@ -212,6 +247,15 @@ export class TaskOrchestrator {
         completedAt: new Date(),
       });
 
+      // Complete task trace span
+      if (this.tracer && traceCtx && taskSpanId) {
+        try {
+          this.tracer.completeSpan(traceCtx.traceId, taskSpanId, { taskId: task.id });
+        } catch {
+          // Non-fatal
+        }
+      }
+
       this.broadcast(group.id, {
         type: "task:completed",
         runId: group.id,
@@ -228,11 +272,35 @@ export class TaskOrchestrator {
       await this.onTaskCompleted(task);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
+
+      // Fail task trace span
+      if (this.tracer && traceCtx && taskSpanId) {
+        try {
+          this.tracer.failSpan(traceCtx.traceId, taskSpanId, errorMessage);
+        } catch {
+          // Non-fatal
+        }
+      }
+
       await this.onTaskFailed(task, errorMessage);
     }
   }
 
   private async executeDirectLlm(task: TaskRow, group: TaskGroupRow): Promise<TaskResult> {
+    // Start LLM call trace span
+    const traceCtx = this.activeGroupTraces.get(group.id);
+    const taskSpanId = traceCtx?.taskSpanIds.get(task.id) ?? "";
+    let llmSpanId = "";
+    const modelSlug = task.modelSlug ?? "mock";
+
+    if (this.tracer && traceCtx && taskSpanId) {
+      try {
+        llmSpanId = this.tracer.startLlmCallSpan(traceCtx.traceId, taskSpanId, modelSlug, "gateway");
+      } catch {
+        // Non-fatal
+      }
+    }
+
     // Assemble context from completed dependency outputs
     const allTasks = await this.storage.getTasksByGroup(group.id);
     const depOutputs: Record<string, unknown> = {};
@@ -259,16 +327,31 @@ Respond with a JSON object:
   "decisions": ["key decision 1", "key decision 2"]
 }`;
 
-    const modelSlug = task.modelSlug ?? "mock";
+    const inputContent = typeof task.input === "string" ? task.input : JSON.stringify(task.input);
+
     const response = await this.gateway.complete({
       modelSlug,
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: typeof task.input === "string" ? task.input : JSON.stringify(task.input) },
+        { role: "user", content: inputContent },
       ],
       temperature: 0.7,
       maxTokens: 4096,
     });
+
+    // Complete LLM trace span
+    if (this.tracer && traceCtx && llmSpanId) {
+      try {
+        this.tracer.completeSpan(traceCtx.traceId, llmSpanId, {
+          tokensUsed: response.tokensUsed,
+          modelSlug,
+          inputSizeBytes: new TextEncoder().encode(inputContent).length,
+          outputSizeBytes: new TextEncoder().encode(response.content).length,
+        });
+      } catch {
+        // Non-fatal
+      }
+    }
 
     // Try to parse structured response
     try {
@@ -293,12 +376,47 @@ Respond with a JSON object:
 
     await this.storage.updateTask(task.id, { pipelineRunId: run.id });
 
-    // Poll for completion
-    const result = await this.pollRunCompletion(run.id);
-    return {
-      summary: typeof result === "string" ? result.slice(0, 200) : JSON.stringify(result).slice(0, 200),
-      output: typeof result === "object" && result !== null ? result as Record<string, unknown> : { raw: result },
-    };
+    // Start pipeline run trace span
+    const traceCtx = this.activeGroupTraces.get(group.id);
+    const taskSpanId = traceCtx?.taskSpanIds.get(task.id) ?? "";
+    let pipelineSpanId = "";
+
+    if (this.tracer && traceCtx && taskSpanId) {
+      try {
+        pipelineSpanId = this.tracer.startPipelineRunSpan(traceCtx.traceId, taskSpanId, run.id);
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    try {
+      // Poll for completion
+      const result = await this.pollRunCompletion(run.id);
+
+      // Complete pipeline run trace span
+      if (this.tracer && traceCtx && pipelineSpanId) {
+        try {
+          this.tracer.completeSpan(traceCtx.traceId, pipelineSpanId, { pipelineRunId: run.id });
+        } catch {
+          // Non-fatal
+        }
+      }
+
+      return {
+        summary: typeof result === "string" ? result.slice(0, 200) : JSON.stringify(result).slice(0, 200),
+        output: typeof result === "object" && result !== null ? result as Record<string, unknown> : { raw: result },
+      };
+    } catch (err) {
+      // Fail pipeline run trace span
+      if (this.tracer && traceCtx && pipelineSpanId) {
+        try {
+          this.tracer.failSpan(traceCtx.traceId, pipelineSpanId, err instanceof Error ? err.message : String(err));
+        } catch {
+          // Non-fatal
+        }
+      }
+      throw err;
+    }
   }
 
   private pollRunCompletion(runId: string): Promise<unknown> {
@@ -395,6 +513,9 @@ Respond with a JSON object:
     // Fail the group
     await this.storage.updateTaskGroup(task.groupId, { status: "failed", completedAt: new Date() });
 
+    // Fail the group trace
+    this.failGroupTrace(task.groupId, error);
+
     this.broadcast(task.groupId, {
       type: "taskgroup:failed",
       runId: task.groupId,
@@ -425,12 +546,53 @@ Respond with a JSON object:
       completedAt: new Date(),
     });
 
+    // Complete the group trace
+    this.completeGroupTrace(groupId);
+
     this.broadcast(groupId, {
       type: "taskgroup:completed",
       runId: groupId,
       payload: { totalTasks: allTasks.length, completedTasks: output.completedCount, output },
       timestamp: new Date().toISOString(),
     });
+  }
+
+  // ─── Private: trace helpers ──────────────────────────────────────────────
+
+  private completeGroupTrace(groupId: string): void {
+    if (!this.tracer) return;
+    const traceCtx = this.activeGroupTraces.get(groupId);
+    if (!traceCtx) return;
+
+    try {
+      this.storage.getTaskTrace(groupId).then((trace) => {
+        if (trace?.spans && (trace.spans as Array<{ spanId: string }>).length > 0) {
+          const rootSpan = (trace.spans as Array<{ spanId: string }>)[0];
+          this.tracer!.completeSpan(traceCtx.traceId, rootSpan.spanId);
+        }
+      }).catch(() => { /* swallow */ });
+    } catch {
+      // Non-fatal
+    }
+    this.activeGroupTraces.delete(groupId);
+  }
+
+  private failGroupTrace(groupId: string, error: string): void {
+    if (!this.tracer) return;
+    const traceCtx = this.activeGroupTraces.get(groupId);
+    if (!traceCtx) return;
+
+    try {
+      this.storage.getTaskTrace(groupId).then((trace) => {
+        if (trace?.spans && (trace.spans as Array<{ spanId: string }>).length > 0) {
+          const rootSpan = (trace.spans as Array<{ spanId: string }>)[0];
+          this.tracer!.failSpan(traceCtx.traceId, rootSpan.spanId, error);
+        }
+      }).catch(() => { /* swallow */ });
+    } catch {
+      // Non-fatal
+    }
+    this.activeGroupTraces.delete(groupId);
   }
 
   // ─── Private: WebSocket broadcast ─────────────────────────────────────────

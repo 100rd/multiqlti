@@ -32,8 +32,10 @@ import {
   type InsertTaskGroup,
   type TaskRow,
   type InsertTask,
+  type TaskTraceRow,
+  type InsertTaskTrace,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType } from "@shared/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
 import { configLoader } from "./config/loader";
@@ -229,6 +231,11 @@ export interface IStorage {
   updateTask(id: string, updates: Partial<TaskRow>): Promise<TaskRow>;
   getReadyTasks(groupId: string): Promise<TaskRow[]>;
   getBlockedTasks(groupId: string): Promise<TaskRow[]>;
+
+  // Task Traces (End-to-End Request Observability)
+  createTaskTrace(data: InsertTaskTrace): Promise<TaskTraceRow>;
+  getTaskTrace(groupId: string): Promise<TaskTraceRow | null>;
+  updateTaskTrace(id: string, updates: Partial<TaskTraceRow>): Promise<TaskTraceRow>;
 }
 
 export class MemStorage implements IStorage {
@@ -1281,7 +1288,7 @@ export class MemStorage implements IStorage {
 
   async createTaskGroup(data: InsertTaskGroup): Promise<TaskGroupRow> {
     const id = randomUUID();
-    const row: TaskGroupRow = { id, name: data.name, description: data.description, input: data.input, status: (data.status as TaskGroupRow["status"]) ?? "pending", output: data.output ?? null, createdBy: data.createdBy ?? null, startedAt: data.startedAt ?? null, completedAt: data.completedAt ?? null, createdAt: new Date() };
+    const row: TaskGroupRow = { id, name: data.name, description: data.description, input: data.input, status: (data.status as TaskGroupRow["status"]) ?? "pending", output: data.output ?? null, traceId: (data as Record<string, unknown>).traceId as string | null ?? null, createdBy: data.createdBy ?? null, startedAt: data.startedAt ?? null, completedAt: data.completedAt ?? null, createdAt: new Date() };
     this.taskGroupsMap.set(id, row);
     return row;
   }
@@ -1358,6 +1365,44 @@ export class MemStorage implements IStorage {
     return Array.from(this.tasksMap.values())
       .filter((t) => t.groupId === groupId && t.status === "blocked")
       .sort((a, b) => a.sortOrder - b.sortOrder);
+  }
+
+  // ─── Task Traces (End-to-End Request Observability) ──────────────────────────
+
+  private taskTracesMap = new Map<string, TaskTraceRow>();
+  private taskTracesByGroupId = new Map<string, TaskTraceRow>();
+
+  async createTaskTrace(data: InsertTaskTrace): Promise<TaskTraceRow> {
+    const id = randomUUID();
+    const now = new Date();
+    const row: TaskTraceRow = {
+      id,
+      groupId: data.groupId,
+      traceId: data.traceId,
+      rootSpan: (data.rootSpan as TaskTraceSpan) ?? null,
+      spans: (data.spans as TaskTraceSpan[]) ?? [],
+      totalDurationMs: data.totalDurationMs ?? 0,
+      totalTokens: data.totalTokens ?? 0,
+      totalCostUsd: data.totalCostUsd ?? 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.taskTracesMap.set(id, row);
+    this.taskTracesByGroupId.set(data.groupId, row);
+    return row;
+  }
+
+  async getTaskTrace(groupId: string): Promise<TaskTraceRow | null> {
+    return this.taskTracesByGroupId.get(groupId) ?? null;
+  }
+
+  async updateTaskTrace(id: string, updates: Partial<TaskTraceRow>): Promise<TaskTraceRow> {
+    const existing = this.taskTracesMap.get(id);
+    if (!existing) throw new Error(`TaskTrace ${id} not found`);
+    const updated: TaskTraceRow = { ...existing, ...updates, updatedAt: new Date() };
+    this.taskTracesMap.set(id, updated);
+    this.taskTracesByGroupId.set(updated.groupId, updated);
+    return updated;
   }
 
 }

@@ -14,7 +14,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig } from "./types.js";
+import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -758,6 +758,7 @@ export const taskGroups = pgTable("task_groups", {
   status: text("status").notNull().default("pending").$type<TaskGroupStatus>(),
   input: text("input").notNull(),
   output: jsonb("output"),
+  traceId: text("trace_id"),
   createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
@@ -822,3 +823,38 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
 
 export type InsertTask = z.infer<typeof insertTaskSchema>;
 export type TaskRow = typeof tasks.$inferSelect;
+
+// ─── Task Traces (End-to-End Request Observability) ──────────────────────────
+
+export const taskTraces = pgTable(
+  "task_traces",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    groupId: varchar("group_id")
+      .notNull()
+      .references(() => taskGroups.id, { onDelete: "cascade" }),
+    traceId: text("trace_id").notNull().unique(),
+    rootSpan: jsonb("root_span").$type<TaskTraceSpan>(),
+    spans: jsonb("spans").notNull().default(sql`'[]'::jsonb`).$type<TaskTraceSpan[]>(),
+    totalDurationMs: integer("total_duration_ms").notNull().default(0),
+    totalTokens: integer("total_tokens").notNull().default(0),
+    totalCostUsd: real("total_cost_usd").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    groupIdIdx: index("task_traces_group_id_idx").on(table.groupId),
+    traceIdIdx: index("task_traces_trace_id_idx").on(table.traceId),
+  }),
+);
+
+export const insertTaskTraceSchema = createInsertSchema(taskTraces).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertTaskTrace = z.infer<typeof insertTaskTraceSchema>;
+export type TaskTraceRow = typeof taskTraces.$inferSelect;

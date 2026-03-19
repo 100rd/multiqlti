@@ -4,7 +4,7 @@ import { useTaskGroupEvents } from "@/hooks/use-task-events";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Play, XCircle, RotateCcw, ArrowLeft, CheckCircle2, Clock, Loader2, AlertCircle, Ban } from "lucide-react";
+import { Play, XCircle, RotateCcw, ArrowLeft, CheckCircle2, Clock, Loader2, AlertCircle, Ban, Activity } from "lucide-react";
 import { Link } from "wouter";
 import { useEffect, useRef } from "react";
 
@@ -117,6 +117,14 @@ export default function TaskGroupPage() {
               <XCircle className="h-4 w-4 mr-2" />
               Cancel
             </Button>
+          )}
+          {effectiveStatus !== "pending" && (
+            <Link href={`/task-groups/${id}/trace`}>
+              <Button variant="outline">
+                <Activity className="h-4 w-4 mr-2" />
+                Trace
+              </Button>
+            </Link>
           )}
         </div>
       </div>
