@@ -12,6 +12,7 @@ import {
   skills,
   skillVersions,
   skillTeams,
+  modelSkillBindings,
   triggers,
   managerIterations,
   traces,
@@ -45,6 +46,8 @@ import {
   type InsertTaskTrace,
   type TrackerConnectionRow,
   type InsertTrackerConnection,
+  type ModelSkillBinding,
+  type InsertModelSkillBinding,
 } from "@shared/schema";
 import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion } from "@shared/types";
 
@@ -1115,6 +1118,53 @@ export class PgStorage implements IStorage {
 
   async deleteTrackerConnection(id: string): Promise<void> {
     await db.delete(trackerConnections).where(eq(trackerConnections.id, id));
+  }
+
+  // ─── Model Skill Bindings (Phase 6.17) ──────────────────────────────────────
+
+  async getModelSkillBindings(modelId: string): Promise<ModelSkillBinding[]> {
+    return db.select().from(modelSkillBindings)
+      .where(eq(modelSkillBindings.modelId, modelId))
+      .orderBy(asc(modelSkillBindings.createdAt));
+  }
+
+  async getModelsWithSkillBindings(): Promise<string[]> {
+    const rows = await db
+      .selectDistinct({ modelId: modelSkillBindings.modelId })
+      .from(modelSkillBindings)
+      .orderBy(asc(modelSkillBindings.modelId));
+    return rows.map((r) => r.modelId);
+  }
+
+  async createModelSkillBinding(data: InsertModelSkillBinding): Promise<ModelSkillBinding> {
+    const [row] = await db.insert(modelSkillBindings)
+      .values(data as typeof modelSkillBindings.$inferInsert)
+      .returning();
+    return row;
+  }
+
+  async deleteModelSkillBinding(modelId: string, skillId: string): Promise<void> {
+    const result = await db.delete(modelSkillBindings)
+      .where(
+        and(
+          eq(modelSkillBindings.modelId, modelId),
+          eq(modelSkillBindings.skillId, skillId),
+        ),
+      )
+      .returning();
+    if (result.length === 0) {
+      throw new Error(`Binding not found for model ${modelId} skill ${skillId}`);
+    }
+  }
+
+  async resolveSkillsForModel(modelId: string): Promise<Skill[]> {
+    const rows = await db
+      .select({ skill: skills })
+      .from(modelSkillBindings)
+      .innerJoin(skills, eq(modelSkillBindings.skillId, skills.id))
+      .where(eq(modelSkillBindings.modelId, modelId))
+      .orderBy(asc(modelSkillBindings.createdAt));
+    return rows.map((r) => r.skill);
   }
 
 }

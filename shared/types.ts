@@ -1539,3 +1539,18 @@ export interface TaskTraceSpan {
   durationMs?: number;
   metadata: TaskTraceSpanMetadata;
 }
+
+// ─── Model Skill Binding Types (Phase 6.17) ───────────────────────────────────
+
+export interface ModelSkillBinding {
+  id: string;
+  modelId: string;
+  skillId: string;
+  createdBy: string | null;
+  createdAt: Date;
+}
+
+export interface ModelWithSkills {
+  modelId: string;
+  skills: import("./schema.js").Skill[];
+}

@@ -1020,22 +1020,52 @@ export class PipelineController {
   }
 
   /**
-   * If the stage has a skillId, load that skill and merge its settings into
-   * the stage config (skill values act as fallbacks — explicit stage settings win).
+   * Applies skill settings to a stage config.
+   *
+   * Resolution order:
+   * 1. Model-specific skill bindings (per-model wins): if the stage's modelSlug
+   *    has bindings in model_skill_bindings, those skills are merged first.
+   * 2. Stage-level skillId (existing behaviour): if the stage has a skillId,
+   *    that skill's settings are merged on top.
+   *
+   * Within each merge pass, explicit stage settings always win over skill
+   * fallbacks (so stage.systemPromptOverride is appended, not replaced).
    */
   private async applySkill(stage: PipelineStageConfig): Promise<PipelineStageConfig> {
-    if (!stage.skillId) return stage;
+    let resolved = { ...stage };
 
-    const skill = await this.storage.getSkill(stage.skillId);
-    if (!skill) return stage;
+    // Step 1 — model-specific skill bindings
+    if (stage.modelSlug) {
+      const modelSkills = await this.storage.resolveSkillsForModel(stage.modelSlug);
+      for (const skill of modelSkills) {
+        resolved = this.mergeSkillIntoStage(resolved, skill);
+      }
+    }
 
+    // Step 2 — stage-level skillId (existing behaviour, takes precedence)
+    if (stage.skillId) {
+      const skill = await this.storage.getSkill(stage.skillId);
+      if (skill) {
+        resolved = this.mergeSkillIntoStage(resolved, skill);
+      }
+    }
+
+    return resolved;
+  }
+
+  /**
+   * Merges a single skill's settings into a stage config.
+   * Explicit stage settings always win; skill values act as fallbacks.
+   */
+  private mergeSkillIntoStage(
+    stage: PipelineStageConfig,
+    skill: import("@shared/schema").Skill,
+  ): PipelineStageConfig {
     return {
       ...stage,
       modelSlug: stage.modelSlug || skill.modelPreference || stage.modelSlug,
       systemPromptOverride: stage.systemPromptOverride
-        ? `${skill.systemPromptOverride}
-
-${stage.systemPromptOverride}`
+        ? `${skill.systemPromptOverride}\n\n${stage.systemPromptOverride}`
         : skill.systemPromptOverride || stage.systemPromptOverride,
       tools: stage.tools
         ? {

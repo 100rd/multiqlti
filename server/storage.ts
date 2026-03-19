@@ -38,6 +38,8 @@ import {
   type InsertTrackerConnection,
   type SkillTeam,
   type InsertSkillTeam,
+  type ModelSkillBinding,
+  type InsertModelSkillBinding,
 } from "@shared/schema";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType } from "@shared/types";
 import { randomUUID } from "crypto";
@@ -251,6 +253,13 @@ export interface IStorage {
   getTrackerConnection(id: string): Promise<TrackerConnectionRow | undefined>;
   createTrackerConnection(data: InsertTrackerConnection): Promise<TrackerConnectionRow>;
   deleteTrackerConnection(id: string): Promise<void>;
+
+  // Model Skill Bindings (Phase 6.17)
+  getModelSkillBindings(modelId: string): Promise<ModelSkillBinding[]>;
+  getModelsWithSkillBindings(): Promise<string[]>;
+  createModelSkillBinding(data: InsertModelSkillBinding): Promise<ModelSkillBinding>;
+  deleteModelSkillBinding(modelId: string, skillId: string): Promise<void>;
+  resolveSkillsForModel(modelId: string): Promise<Skill[]>;
 }
 
 export class MemStorage implements IStorage {
@@ -1483,6 +1492,68 @@ export class MemStorage implements IStorage {
 
   async deleteTrackerConnection(id: string): Promise<void> {
     this.trackerConnectionsMap.delete(id);
+  }
+
+
+  // ─── Model Skill Bindings ────────────────────────────────────────────────
+
+  private modelSkillBindingsMap: Map<string, ModelSkillBinding> = new Map();
+
+  async getModelSkillBindings(modelId: string): Promise<ModelSkillBinding[]> {
+    return Array.from(this.modelSkillBindingsMap.values()).filter(
+      (b) => b.modelId === modelId,
+    );
+  }
+
+  async getModelsWithSkillBindings(): Promise<string[]> {
+    const modelIds = new Set<string>();
+    for (const b of this.modelSkillBindingsMap.values()) {
+      modelIds.add(b.modelId);
+    }
+    return Array.from(modelIds).sort();
+  }
+
+  async createModelSkillBinding(data: InsertModelSkillBinding): Promise<ModelSkillBinding> {
+    // Check uniqueness
+    const duplicate = Array.from(this.modelSkillBindingsMap.values()).find(
+      (b) => b.modelId === data.modelId && b.skillId === data.skillId,
+    );
+    if (duplicate) {
+      const err = new Error("Unique constraint violation: model_skill_bindings_model_id_skill_id_unique");
+      (err as NodeJS.ErrnoException).code = "23505";
+      throw err;
+    }
+    const id = randomUUID();
+    const binding: ModelSkillBinding = {
+      id,
+      modelId: data.modelId,
+      skillId: data.skillId,
+      createdBy: data.createdBy ?? null,
+      createdAt: new Date(),
+    };
+    this.modelSkillBindingsMap.set(id, binding);
+    return binding;
+  }
+
+  async deleteModelSkillBinding(modelId: string, skillId: string): Promise<void> {
+    for (const [key, binding] of this.modelSkillBindingsMap.entries()) {
+      if (binding.modelId === modelId && binding.skillId === skillId) {
+        this.modelSkillBindingsMap.delete(key);
+        return;
+      }
+    }
+    throw new Error(`Binding not found for model ${modelId} skill ${skillId}`);
+  }
+
+  async resolveSkillsForModel(modelId: string): Promise<Skill[]> {
+    const bindings = await this.getModelSkillBindings(modelId);
+    if (bindings.length === 0) return [];
+    const result: Skill[] = [];
+    for (const b of bindings) {
+      const skill = this.skillsMap.get(b.skillId);
+      if (skill) result.push(skill);
+    }
+    return result;
   }
 
 }
