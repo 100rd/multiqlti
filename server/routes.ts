@@ -44,6 +44,7 @@ import { registerArgoCdSettingsRoutes, autoConnectArgoCdFromEnv } from "./routes
 import { registerTaskGroupRoutes } from "./routes/task-groups";
 import { registerSkillTeamRoutes } from "./routes/skill-teams";
 import { registerModelSkillBindingRoutes } from "./routes/model-skill-bindings";
+import { registerGitSkillSourceRoutes } from "./routes/git-skill-sources";
 import { registerTaskTraceRoutes } from "./routes/task-traces";
 import { registerTrackerRoutes } from "./routes/tracker";
 import { TaskOrchestrator } from "./services/task-orchestrator";
@@ -128,6 +129,7 @@ export async function registerRoutes(
   taskOrchestrator.setTracer(taskTracer);
   registerTaskGroupRoutes(app, storage, taskOrchestrator);
   registerSkillTeamRoutes(app, storage);
+  registerGitSkillSourceRoutes(app);
   registerTaskTraceRoutes(app, storage);
 
   // Tracker Integration

@@ -1554,3 +1554,21 @@ export interface ModelWithSkills {
   modelId: string;
   skills: import("./schema.js").Skill[];
 }
+
+// ─── Git Skill Sources (issue #161) ──────────────────────────────────────────
+
+export interface GitSkillSource {
+  id: string;
+  name: string;
+  repoUrl: string;
+  branch: string;
+  path: string;
+  syncOnStart: boolean;
+  lastSyncedAt: Date | null;
+  lastError: string | null;
+  createdAt: Date;
+}
+
+export interface GitSkillSourceWithStats extends GitSkillSource {
+  skillCount: number;
+}
