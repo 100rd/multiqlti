@@ -33,10 +33,13 @@ import {
   type TraceRow,
   taskGroups,
   tasks,
+  taskTraces,
   type TaskGroupRow,
   type InsertTaskGroup,
   type TaskRow,
   type InsertTask,
+  type TaskTraceRow,
+  type InsertTaskTrace,
 } from "@shared/schema";
 import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion } from "@shared/types";
 
@@ -1048,6 +1051,26 @@ export class PgStorage implements IStorage {
     return db.select().from(tasks)
       .where(and(eq(tasks.groupId, groupId), eq(tasks.status, "blocked")))
       .orderBy(asc(tasks.sortOrder));
+  }
+
+  // ─── Task Traces (End-to-End Request Observability) ──────────────────────────
+
+  async createTaskTrace(data: InsertTaskTrace): Promise<TaskTraceRow> {
+    const [row] = await db.insert(taskTraces).values(data as typeof taskTraces.$inferInsert).returning();
+    return row;
+  }
+
+  async getTaskTrace(groupId: string): Promise<TaskTraceRow | null> {
+    const [row] = await db.select().from(taskTraces).where(eq(taskTraces.groupId, groupId));
+    return row ?? null;
+  }
+
+  async updateTaskTrace(id: string, updates: Partial<TaskTraceRow>): Promise<TaskTraceRow> {
+    const [row] = await db.update(taskTraces)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(taskTraces.id, id))
+      .returning();
+    return row;
   }
 
 }
