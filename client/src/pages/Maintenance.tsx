@@ -31,6 +31,8 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Switch } from "@/components/ui/switch";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import MaintenanceSettings from "@/components/settings/MaintenanceSettings";
 import { useAuth } from "@/hooks/use-auth";
 
 // ─── API Types ────────────────────────────────────────────────────────────────
@@ -1108,15 +1110,16 @@ function AuditTab() {
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
-type Tab = "overview" | "policies" | "scans" | "audit";
+type Tab = "configuration" | "overview" | "policies" | "scans" | "audit";
 
 export default function Maintenance() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
 
-  const [activeTab, setActiveTab] = useState<Tab>("overview");
+  const [activeTab, setActiveTab] = useState<Tab>("configuration");
 
   const tabs: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
+    { id: "configuration", label: "Configuration", icon: <Settings2 className="h-4 w-4" /> },
     { id: "overview", label: "Overview", icon: <ShieldAlert className="h-4 w-4" /> },
     { id: "policies", label: "Policies", icon: <Settings2 className="h-4 w-4" /> },
     { id: "scans", label: "Scans", icon: <Activity className="h-4 w-4" /> },
@@ -1159,6 +1162,19 @@ export default function Maintenance() {
       </div>
 
       {/* Tab Content */}
+      {activeTab === "configuration" && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Autopilot Configuration</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Configure the maintenance autopilot schedule, severity threshold, and enable or disable automated scanning.
+            </p>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <MaintenanceSettings noCard />
+          </CardContent>
+        </Card>
+      )}
       {activeTab === "overview" && <OverviewTab />}
       {activeTab === "policies" && <PoliciesTab />}
       {activeTab === "scans" && <ScansTab />}

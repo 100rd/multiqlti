@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
+import MemoryPreferences from "@/components/settings/MemoryPreferences";
 
 type MemoryScope = "global" | "workspace" | "pipeline" | "run";
 type MemoryType = "decision" | "pattern" | "fact" | "preference" | "issue" | "dependency";
@@ -278,6 +279,19 @@ export default function Memory() {
 
       <ScrollArea className="flex-1">
         <div className="max-w-4xl mx-auto p-6 space-y-4">
+          {/* Memory Preferences */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Brain className="h-4 w-4" />
+                Memory Preferences
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <MemoryPreferences noCard />
+            </CardContent>
+          </Card>
+
           {/* Search + Actions */}
           <div className="flex items-center gap-3">
             <div className="relative flex-1">
