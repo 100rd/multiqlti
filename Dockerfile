@@ -22,6 +22,7 @@ COPY --from=build /app/dist ./dist
 COPY package.json ./
 COPY drizzle.config.ts ./
 COPY shared/ ./shared/
+COPY migrations/ ./migrations/
 
 EXPOSE 5000
 

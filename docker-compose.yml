@@ -95,8 +95,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # Run DB migrations then start the server
-    command: sh -c "npm run db:push && node dist/index.cjs"
+    # Migrations are run by the app on startup via runMigrations()
+    command: sh -c "node dist/index.cjs"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5000/api/health | grep -q 'status' || exit 1"]
       interval: 30s
