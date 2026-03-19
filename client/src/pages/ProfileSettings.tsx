@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAuth } from "@/hooks/use-auth";
+import { usePreferredIde, type IdeChoice } from "@/hooks/use-preferred-ide";
 import type { User } from "@shared/types";
 
 function getAuthHeader(): Record<string, string> {
@@ -25,8 +26,15 @@ async function updateProfile(data: {
   return res.json() as Promise<{ user: User }>;
 }
 
+const IDE_OPTIONS: { value: IdeChoice; label: string; description: string }[] = [
+  { value: "vscode", label: "VS Code", description: "Open files via vscode:// protocol" },
+  { value: "cursor", label: "Cursor", description: "Open files via cursor:// protocol" },
+  { value: "none", label: "Disabled", description: "Hide \"Open in IDE\" buttons" },
+];
+
 export default function ProfileSettings() {
   const { user, login } = useAuth();
+  const { ide, setIde } = usePreferredIde();
 
   const [name, setName] = useState(user?.name ?? "");
   const [email, setEmail] = useState(user?.email ?? "");
@@ -134,6 +142,39 @@ export default function ProfileSettings() {
         <p className="text-xs text-muted-foreground mt-1">
           Contact an administrator to change your role.
         </p>
+      </div>
+
+      {/* Editor integration */}
+      <div className="space-y-3">
+        <h2 className="text-lg font-semibold">Editor Integration</h2>
+        <p className="text-xs text-muted-foreground">
+          Choose which IDE opens when you click "Open in IDE" buttons throughout the app.
+        </p>
+        <div className="flex flex-col gap-2">
+          {IDE_OPTIONS.map((opt) => (
+            <label
+              key={opt.value}
+              className={`flex items-center gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+                ide === opt.value
+                  ? "border-primary bg-primary/5"
+                  : "border-border bg-muted/20 hover:bg-muted/40"
+              }`}
+            >
+              <input
+                type="radio"
+                name="preferred_ide"
+                value={opt.value}
+                checked={ide === opt.value}
+                onChange={() => setIde(opt.value)}
+                className="accent-primary"
+              />
+              <div>
+                <span className="text-sm font-medium">{opt.label}</span>
+                <p className="text-xs text-muted-foreground">{opt.description}</p>
+              </div>
+            </label>
+          ))}
+        </div>
       </div>
 
       {/* Edit name & email */}

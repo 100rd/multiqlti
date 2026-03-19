@@ -7,6 +7,7 @@ import StrategyViewer from "./StrategyViewer";
 import SandboxOutput from "./SandboxOutput";
 import ThoughtTree from "./ThoughtTree";
 import { CodeBlock } from "@/components/ui/CodeBlock";
+import { OpenInIdeButton } from "@/components/ui/OpenInIdeButton";
 import type { StrategyResult, SandboxResult, ThoughtTree as ThoughtTreeType, ToolCallLogEntry } from "@shared/types";
 import ToolCallLog from "./ToolCallLog";
 
@@ -18,6 +19,7 @@ interface StageOutputProps {
   isActive?: boolean;
   thoughtTree?: ThoughtTreeType | null;
   toolCallLog?: ToolCallLogEntry[] | null;
+  workspacePath?: string;
 }
 
 export default function StageOutput({
@@ -28,6 +30,7 @@ export default function StageOutput({
   isActive,
   thoughtTree,
   toolCallLog,
+  workspacePath,
 }: StageOutputProps) {
   const [expanded, setExpanded] = useState(isActive ?? false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -91,20 +94,23 @@ export default function StageOutput({
                     <span className="text-xs font-mono text-muted-foreground">
                       {file.path}
                     </span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 text-[10px]"
-                      onClick={() =>
-                        handleCopy(file.content, `${teamId}-${idx}`)
-                      }
-                    >
-                      {copiedKey === `${teamId}-${idx}` ? (
-                        <Check className="h-3 w-3" />
-                      ) : (
-                        <Copy className="h-3 w-3" />
-                      )}
-                    </Button>
+                    <div className="flex items-center gap-0.5">
+                      <OpenInIdeButton filePath={file.path} workspacePath={workspacePath} />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-[10px]"
+                        onClick={() =>
+                          handleCopy(file.content, `${teamId}-${idx}`)
+                        }
+                      >
+                        {copiedKey === `${teamId}-${idx}` ? (
+                          <Check className="h-3 w-3" />
+                        ) : (
+                          <Copy className="h-3 w-3" />
+                        )}
+                      </Button>
+                    </div>
                   </div>
                   <CodeBlock
                     code={file.content}

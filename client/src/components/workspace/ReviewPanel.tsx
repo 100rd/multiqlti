@@ -1,9 +1,11 @@
 import { cn } from "@/lib/utils";
+import { usePreferredIde } from "@/hooks/use-preferred-ide";
 import type { ReviewResult, ReviewIssue } from "@shared/types";
 
 interface ReviewPanelProps {
   results: Record<string, ReviewResult>;
   isLoading?: boolean;
+  workspacePath?: string;
 }
 
 const severityConfig: Record<ReviewIssue["severity"], { label: string; classes: string }> = {
@@ -21,15 +23,33 @@ function SeverityBadge({ severity }: { severity: ReviewIssue["severity"] }) {
   );
 }
 
-function IssueCard({ issue }: { issue: ReviewIssue }) {
+function IssueCard({ issue, workspacePath }: { issue: ReviewIssue; workspacePath?: string }) {
+  const { openInIde, ide } = usePreferredIde();
+  const fileLabel = `${issue.file}${issue.line ? `:${issue.line}` : ""}`;
+  const canOpen = ide !== "none" && issue.file;
+
   return (
     <div className="rounded-md border border-border bg-muted/20 p-2.5 space-y-1">
       <div className="flex items-start gap-2">
         <SeverityBadge severity={issue.severity} />
-        <span className="text-xs text-muted-foreground font-mono">
-          {issue.file}
-          {issue.line ? `:${issue.line}` : ""}
-        </span>
+        {canOpen ? (
+          <button
+            className="text-xs text-primary font-mono hover:underline cursor-pointer"
+            onClick={() => {
+              const abs = workspacePath
+                ? `${workspacePath.replace(/\/+$/, "")}/${issue.file.replace(/^\/+/, "")}`
+                : issue.file;
+              openInIde(abs, issue.line);
+            }}
+            title={`Open in IDE`}
+          >
+            {fileLabel}
+          </button>
+        ) : (
+          <span className="text-xs text-muted-foreground font-mono">
+            {fileLabel}
+          </span>
+        )}
       </div>
       <p className="text-xs text-foreground">{issue.message}</p>
       {issue.suggestion && (
@@ -39,7 +59,7 @@ function IssueCard({ issue }: { issue: ReviewIssue }) {
   );
 }
 
-function ModelReview({ result }: { result: ReviewResult }) {
+function ModelReview({ result, workspacePath }: { result: ReviewResult; workspacePath?: string }) {
   const errorCount = result.issues.filter((i) => i.severity === "error").length;
   const warnCount = result.issues.filter((i) => i.severity === "warning").length;
   const infoCount = result.issues.filter((i) => i.severity === "info").length;
@@ -72,7 +92,7 @@ function ModelReview({ result }: { result: ReviewResult }) {
       {result.issues.length > 0 && (
         <div className="space-y-1.5">
           {result.issues.map((issue, idx) => (
-            <IssueCard key={idx} issue={issue} />
+            <IssueCard key={idx} issue={issue} workspacePath={workspacePath} />
           ))}
         </div>
       )}
@@ -84,7 +104,7 @@ function ModelReview({ result }: { result: ReviewResult }) {
   );
 }
 
-export function ReviewPanel({ results, isLoading }: ReviewPanelProps) {
+export function ReviewPanel({ results, isLoading, workspacePath }: ReviewPanelProps) {
   const entries = Object.values(results);
 
   if (isLoading) {
@@ -110,7 +130,7 @@ export function ReviewPanel({ results, isLoading }: ReviewPanelProps) {
   return (
     <div className="p-3 space-y-3 overflow-y-auto">
       {entries.map((result) => (
-        <ModelReview key={result.model} result={result} />
+        <ModelReview key={result.model} result={result} workspacePath={workspacePath} />
       ))}
     </div>
   );
