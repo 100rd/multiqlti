@@ -42,9 +42,13 @@ import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
 import { registerArgoCdSettingsRoutes, autoConnectArgoCdFromEnv } from "./routes/argocd-settings";
 import { registerTaskGroupRoutes } from "./routes/task-groups";
+import { registerSkillTeamRoutes } from "./routes/skill-teams";
 import { registerTaskTraceRoutes } from "./routes/task-traces";
+import { registerTrackerRoutes } from "./routes/tracker";
 import { TaskOrchestrator } from "./services/task-orchestrator";
 import { TaskTracer } from "./services/task-tracer";
+import { TaskSplitter } from "./services/task-splitter";
+import { TrackerSyncService } from "./services/tracker-sync";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -90,6 +94,8 @@ export async function registerRoutes(
   app.use("/api/triggers", requireAuth);
   app.use("/api/traces", requireAuth);
   app.use("/api/task-groups", requireAuth);
+  app.use("/api/skill-teams", requireAuth);
+  app.use("/api/tracker-connections", requireAuth);
 
   // Register route implementations
   registerModelRoutes(app, storage);
@@ -119,7 +125,13 @@ export async function registerRoutes(
   const taskOrchestrator = new TaskOrchestrator(storage, wsManager, controller, gateway);
   taskOrchestrator.setTracer(taskTracer);
   registerTaskGroupRoutes(app, storage, taskOrchestrator);
+  registerSkillTeamRoutes(app, storage);
   registerTaskTraceRoutes(app, storage);
+
+  // Tracker Integration
+  const taskSplitter = new TaskSplitter(gateway);
+  const trackerSync = new TrackerSyncService(storage);
+  registerTrackerRoutes(app, storage, taskSplitter, trackerSync, taskOrchestrator);
 
   // Phase 6.3 — Trigger subsystem
   let triggerService: TriggerService | null = null;

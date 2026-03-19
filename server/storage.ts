@@ -34,6 +34,10 @@ import {
   type InsertTask,
   type TaskTraceRow,
   type InsertTaskTrace,
+  type TrackerConnectionRow,
+  type InsertTrackerConnection,
+  type SkillTeam,
+  type InsertSkillTeam,
 } from "@shared/schema";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType } from "@shared/types";
 import { randomUUID } from "crypto";
@@ -192,6 +196,11 @@ export interface IStorage {
   getMarketplaceSkills(filters: MarketplaceFilters): Promise<{ skills: MarketplaceSkill[]; total: number }>;
   incrementSkillUsage(id: string): Promise<number>;
 
+  // Skill Teams
+  getSkillTeams(): Promise<SkillTeam[]>;
+  createSkillTeam(data: InsertSkillTeam): Promise<SkillTeam>;
+  deleteSkillTeam(id: string): Promise<void>;
+
   // Manager Iterations (Phase 6.6)
   createManagerIteration(data: InsertManagerIteration): Promise<ManagerIterationRow>;
   updateManagerIteration(
@@ -236,6 +245,12 @@ export interface IStorage {
   createTaskTrace(data: InsertTaskTrace): Promise<TaskTraceRow>;
   getTaskTrace(groupId: string): Promise<TaskTraceRow | null>;
   updateTaskTrace(id: string, updates: Partial<TaskTraceRow>): Promise<TaskTraceRow>;
+
+  // Tracker Connections (Issue Tracker Integration)
+  getTrackerConnectionsByGroup(taskGroupId: string): Promise<TrackerConnectionRow[]>;
+  getTrackerConnection(id: string): Promise<TrackerConnectionRow | undefined>;
+  createTrackerConnection(data: InsertTrackerConnection): Promise<TrackerConnectionRow>;
+  deleteTrackerConnection(id: string): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -1124,6 +1139,33 @@ export class MemStorage implements IStorage {
     return currentCount + 1;
   }
 
+  // ─── Skill Teams ────────────────────────────────────────────────
+
+  private skillTeamsMap: Map<string, SkillTeam> = new Map();
+
+  async getSkillTeams(): Promise<SkillTeam[]> {
+    return Array.from(this.skillTeamsMap.values()).sort((a, b) =>
+      a.createdAt.getTime() - b.createdAt.getTime(),
+    );
+  }
+
+  async createSkillTeam(data: InsertSkillTeam): Promise<SkillTeam> {
+    const id = randomUUID();
+    const row: SkillTeam = {
+      id,
+      name: data.name,
+      description: data.description ?? "",
+      createdBy: data.createdBy ?? null,
+      createdAt: new Date(),
+    };
+    this.skillTeamsMap.set(id, row);
+    return row;
+  }
+
+  async deleteSkillTeam(id: string): Promise<void> {
+    this.skillTeamsMap.delete(id);
+  }
+
   // ─── Manager Iterations (Phase 6.6) ────────────────────────────────────────
 
   async createManagerIteration(data: InsertManagerIteration): Promise<ManagerIterationRow> {
@@ -1403,6 +1445,44 @@ export class MemStorage implements IStorage {
     this.taskTracesMap.set(id, updated);
     this.taskTracesByGroupId.set(updated.groupId, updated);
     return updated;
+  }
+
+  // ─── Tracker Connections (Issue Tracker Integration) — MemStorage stubs ─────
+
+  private trackerConnectionsMap = new Map<string, TrackerConnectionRow>();
+
+  async getTrackerConnectionsByGroup(taskGroupId: string): Promise<TrackerConnectionRow[]> {
+    return Array.from(this.trackerConnectionsMap.values()).filter(
+      (c) => c.taskGroupId === taskGroupId,
+    );
+  }
+
+  async getTrackerConnection(id: string): Promise<TrackerConnectionRow | undefined> {
+    return this.trackerConnectionsMap.get(id);
+  }
+
+  async createTrackerConnection(data: InsertTrackerConnection): Promise<TrackerConnectionRow> {
+    const id = randomUUID();
+    const row: TrackerConnectionRow = {
+      id,
+      taskGroupId: data.taskGroupId,
+      provider: data.provider as TrackerConnectionRow["provider"],
+      issueUrl: data.issueUrl,
+      issueKey: data.issueKey,
+      projectKey: data.projectKey ?? null,
+      syncComments: data.syncComments ?? true,
+      syncSubtasks: data.syncSubtasks ?? true,
+      apiToken: data.apiToken ?? null,
+      baseUrl: data.baseUrl ?? null,
+      metadata: data.metadata ?? null,
+      createdAt: new Date(),
+    };
+    this.trackerConnectionsMap.set(id, row);
+    return row;
+  }
+
+  async deleteTrackerConnection(id: string): Promise<void> {
+    this.trackerConnectionsMap.delete(id);
   }
 
 }

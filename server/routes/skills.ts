@@ -233,7 +233,8 @@ export function registerSkillRoutes(app: Express, storage: IStorage) {
       parsed.data.limit,
       parsed.data.offset,
     );
-    res.json({ versions: result.rows, total: result.total });
+    // Return `rows` to match SkillVersionHistory component expectations
+    res.json({ rows: result.rows, total: result.total });
   });
 
   // ─── MANUAL VERSION BUMP ─────────────────────────────────────────────────

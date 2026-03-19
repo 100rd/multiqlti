@@ -14,7 +14,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan } from "./types.js";
+import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -594,6 +594,20 @@ export const insertSkillVersionSchema = createInsertSchema(skillVersions).omit({
 export type InsertSkillVersion = z.infer<typeof insertSkillVersionSchema>;
 export type SkillVersionRow = typeof skillVersions.$inferSelect;
 
+// ─── Skill Teams ─────────────────────────────────────────────────────────────
+
+export const skillTeams = pgTable("skill_teams", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  createdBy: text("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertSkillTeamSchema = createInsertSchema(skillTeams).omit({ id: true, createdAt: true });
+export type InsertSkillTeam = z.infer<typeof insertSkillTeamSchema>;
+export type SkillTeam = typeof skillTeams.$inferSelect;
+
 // ─── Pipeline Triggers (Phase 6.3) ───────────────────────────────────────────
 
 export const TRIGGER_TYPES = ["webhook", "schedule", "github_event", "file_change"] as const;
@@ -858,3 +872,34 @@ export const insertTaskTraceSchema = createInsertSchema(taskTraces).omit({
 
 export type InsertTaskTrace = z.infer<typeof insertTaskTraceSchema>;
 export type TaskTraceRow = typeof taskTraces.$inferSelect;
+
+// ─── Tracker Connections (Issue Tracker Integration) ──────────────────────────
+
+export const TRACKER_PROVIDERS = ["jira", "clickup", "linear", "github"] as const;
+
+export const trackerConnections = pgTable("tracker_connections", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  taskGroupId: varchar("task_group_id")
+    .notNull()
+    .references(() => taskGroups.id, { onDelete: "cascade" }),
+  provider: text("provider").notNull().$type<TrackerProvider>(),
+  issueUrl: text("issue_url").notNull(),
+  issueKey: text("issue_key").notNull(),
+  projectKey: text("project_key"),
+  syncComments: boolean("sync_comments").notNull().default(true),
+  syncSubtasks: boolean("sync_subtasks").notNull().default(true),
+  apiToken: text("api_token"),
+  baseUrl: text("base_url"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertTrackerConnectionSchema = createInsertSchema(trackerConnections).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertTrackerConnection = z.infer<typeof insertTrackerConnectionSchema>;
+export type TrackerConnectionRow = typeof trackerConnections.$inferSelect;

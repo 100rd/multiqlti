@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -109,6 +109,11 @@ export function SkillDetailModal({
   const [activeTab, setActiveTab] = useState<string>("config");
 
   const isOwner = Boolean(currentUserId && skill?.author === currentUserId);
+
+  // Reset to config tab whenever a different skill is opened
+  useEffect(() => {
+    if (skill) setActiveTab("config");
+  }, [skill?.id]);
 
   const handleExportJson = useCallback(async () => {
     if (!skill) return;

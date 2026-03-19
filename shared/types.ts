@@ -1501,6 +1501,33 @@ export interface TaskTraceSpanMetadata {
   error?: string;
 }
 
+// ─── Issue Tracker Integration Types ─────────────────────────────────────────
+
+export type TrackerProvider = "jira" | "clickup" | "linear" | "github";
+
+export interface TrackerConnection {
+  id: string;
+  taskGroupId: string;
+  provider: TrackerProvider;
+  issueUrl: string;
+  issueKey: string;
+  projectKey: string | null;
+  syncComments: boolean;
+  syncSubtasks: boolean;
+  apiToken: string | null;
+  baseUrl: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: Date;
+}
+
+export interface SplitTask {
+  name: string;
+  description: string;
+  conditionsOfDone: string[];
+  tests: string[];
+  dependsOn?: string[];
+}
+
 export interface TaskTraceSpan {
   spanId: string;
   parentSpanId: string | null;
