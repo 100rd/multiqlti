@@ -32,6 +32,7 @@ import Skills from "@/pages/Skills";
 import SkillMarketplace from "@/pages/SkillMarketplace";
 import TaskGroupList from "@/pages/TaskGroupList";
 import TaskGroupPage from "@/pages/TaskGroup";
+import Library from "@/pages/Library";
 import CreateTaskGroup from "@/pages/CreateTaskGroup";
 import TaskGroupTrace from "@/pages/TaskGroupTrace";
 
@@ -128,6 +129,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/maintenance" component={() => (
           <ErrorBoundary><Maintenance /></ErrorBoundary>
+        )} />
+        <Route path="/library" component={() => (
+          <ErrorBoundary><Library /></ErrorBoundary>
         )} />
         <Route component={NotFound} />
       </Switch>
