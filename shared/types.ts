@@ -59,7 +59,7 @@ export type ApprovalStatus = "pending" | "approved" | "rejected";
 
 export type QuestionStatus = "pending" | "answered" | "dismissed";
 
-export type ModelProvider = "vllm" | "ollama" | "mock" | "anthropic" | "google" | "xai";
+export type ModelProvider = "vllm" | "ollama" | "mock" | "anthropic" | "google" | "xai" | "lmstudio";
 
 export interface TeamConfig {
   id: TeamId;

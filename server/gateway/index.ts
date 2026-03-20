@@ -7,6 +7,7 @@ import { OllamaProvider } from "./providers/ollama";
 import { ClaudeProvider } from "./providers/claude";
 import { GeminiProvider } from "./providers/gemini";
 import { GrokProvider } from "./providers/grok";
+import { LmStudioProvider } from "./providers/lmstudio";
 import { AnonymizerService } from "../privacy/anonymizer";
 import { estimateCostUsd } from "@shared/constants";
 import { configLoader } from "../config/loader";
@@ -42,6 +43,12 @@ export class Gateway {
     }
     if (providers.ollama.endpoint) {
       this.registry.set("ollama", new OllamaProvider(providers.ollama.endpoint));
+    }
+
+    // LM Studio: endpoint-gated
+    const lmStudioEndpoint = (providers as Record<string, { endpoint?: string }>).lmstudio?.endpoint;
+    if (lmStudioEndpoint) {
+      this.registry.set("lmstudio", new LmStudioProvider(lmStudioEndpoint));
     }
 
     // Cloud: API-key-gated (config values; DB keys loaded later via loadDbKeys())
@@ -98,6 +105,14 @@ export class Gateway {
         this.registry.set("xai", new GrokProvider(apiKey));
         break;
     }
+  }
+
+  /**
+   * Register (or re-register) the LM Studio provider with the given endpoint.
+   * Called from lmstudio route handlers when user connects or changes endpoint.
+   */
+  connectLmStudio(endpoint: string): void {
+    this.registry.set("lmstudio", new LmStudioProvider(endpoint));
   }
 
   /** Resolve the ILLMProvider for a model record's provider string. */
@@ -313,14 +328,17 @@ export class Gateway {
 
   getStatus() {
     const providers = configLoader.get().providers;
+    const lmStudioProvider = this.registry.get("lmstudio") as LmStudioProvider | undefined;
     return {
       vllm: this.registry.has("vllm"),
       ollama: this.registry.has("ollama"),
       anthropic: this.registry.has("anthropic"),
       google: this.registry.has("google"),
       xai: this.registry.has("xai"),
+      lmstudio: this.registry.has("lmstudio"),
       vllmEndpoint: providers.vllm.endpoint ?? null,
       ollamaEndpoint: providers.ollama.endpoint ?? null,
+      lmstudioEndpoint: lmStudioProvider?.endpoint ?? null,
     };
   }
 
@@ -429,9 +447,10 @@ export class Gateway {
 
   async discoverFromEndpoint(
     endpoint: string,
-    providerType: "vllm" | "ollama",
+    providerType: "vllm" | "ollama" | "lmstudio",
   ): Promise<unknown[]> {
     if (providerType === "vllm") return new VllmProvider(endpoint).listModels();
+    if (providerType === "lmstudio") return new LmStudioProvider(endpoint).listModels();
     return new OllamaProvider(endpoint).listModels();
   }
 }
