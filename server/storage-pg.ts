@@ -11,6 +11,8 @@ import {
   specializationProfiles,
   skills,
   skillVersions,
+  skillTeams,
+  modelSkillBindings,
   triggers,
   managerIterations,
   traces,
@@ -27,16 +29,25 @@ import {
   type SpecializationProfileRow,
   type Skill, type InsertSkill,
   type SkillVersionRow,
+  type SkillTeam, type InsertSkillTeam,
   type InsertManagerIteration, type ManagerIterationRow,
   type TriggerRow,
   type InsertTrace,
   type TraceRow,
   taskGroups,
   tasks,
+  taskTraces,
+  trackerConnections,
   type TaskGroupRow,
   type InsertTaskGroup,
   type TaskRow,
   type InsertTask,
+  type TaskTraceRow,
+  type InsertTaskTrace,
+  type TrackerConnectionRow,
+  type InsertTrackerConnection,
+  type ModelSkillBinding,
+  type InsertModelSkillBinding,
 } from "@shared/schema";
 import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion } from "@shared/types";
 
@@ -867,6 +878,21 @@ export class PgStorage implements IStorage {
     return row?.usageCount ?? 0;
   }
 
+  // ─── Skill Teams ─────────────────────────────────────────────────────────────
+
+  async getSkillTeams(): Promise<SkillTeam[]> {
+    return db.select().from(skillTeams).orderBy(skillTeams.createdAt);
+  }
+
+  async createSkillTeam(data: InsertSkillTeam): Promise<SkillTeam> {
+    const [row] = await db.insert(skillTeams).values(data).returning();
+    return row;
+  }
+
+  async deleteSkillTeam(id: string): Promise<void> {
+    await db.delete(skillTeams).where(eq(skillTeams.id, id));
+  }
+
   // ─── Manager Iterations (Phase 6.6) ────────────────────────────────────────
 
   async createManagerIteration(data: InsertManagerIteration): Promise<ManagerIterationRow> {
@@ -1048,6 +1074,97 @@ export class PgStorage implements IStorage {
     return db.select().from(tasks)
       .where(and(eq(tasks.groupId, groupId), eq(tasks.status, "blocked")))
       .orderBy(asc(tasks.sortOrder));
+  }
+
+  // ─── Task Traces (End-to-End Request Observability) ──────────────────────────
+
+  async createTaskTrace(data: InsertTaskTrace): Promise<TaskTraceRow> {
+    const [row] = await db.insert(taskTraces).values(data as typeof taskTraces.$inferInsert).returning();
+    return row;
+  }
+
+  async getTaskTrace(groupId: string): Promise<TaskTraceRow | null> {
+    const [row] = await db.select().from(taskTraces).where(eq(taskTraces.groupId, groupId));
+    return row ?? null;
+  }
+
+  async updateTaskTrace(id: string, updates: Partial<TaskTraceRow>): Promise<TaskTraceRow> {
+    const [row] = await db.update(taskTraces)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(taskTraces.id, id))
+      .returning();
+    return row;
+  }
+
+  // ─── Tracker Connections (Issue Tracker Integration) ────────────────────────
+
+  async getTrackerConnectionsByGroup(taskGroupId: string): Promise<TrackerConnectionRow[]> {
+    return db.select().from(trackerConnections)
+      .where(eq(trackerConnections.taskGroupId, taskGroupId));
+  }
+
+  async getTrackerConnection(id: string): Promise<TrackerConnectionRow | undefined> {
+    const [row] = await db.select().from(trackerConnections)
+      .where(eq(trackerConnections.id, id));
+    return row;
+  }
+
+  async createTrackerConnection(data: InsertTrackerConnection): Promise<TrackerConnectionRow> {
+    const [row] = await db.insert(trackerConnections)
+      .values(data as typeof trackerConnections.$inferInsert)
+      .returning();
+    return row;
+  }
+
+  async deleteTrackerConnection(id: string): Promise<void> {
+    await db.delete(trackerConnections).where(eq(trackerConnections.id, id));
+  }
+
+  // ─── Model Skill Bindings (Phase 6.17) ──────────────────────────────────────
+
+  async getModelSkillBindings(modelId: string): Promise<ModelSkillBinding[]> {
+    return db.select().from(modelSkillBindings)
+      .where(eq(modelSkillBindings.modelId, modelId))
+      .orderBy(asc(modelSkillBindings.createdAt));
+  }
+
+  async getModelsWithSkillBindings(): Promise<string[]> {
+    const rows = await db
+      .selectDistinct({ modelId: modelSkillBindings.modelId })
+      .from(modelSkillBindings)
+      .orderBy(asc(modelSkillBindings.modelId));
+    return rows.map((r) => r.modelId);
+  }
+
+  async createModelSkillBinding(data: InsertModelSkillBinding): Promise<ModelSkillBinding> {
+    const [row] = await db.insert(modelSkillBindings)
+      .values(data as typeof modelSkillBindings.$inferInsert)
+      .returning();
+    return row;
+  }
+
+  async deleteModelSkillBinding(modelId: string, skillId: string): Promise<void> {
+    const result = await db.delete(modelSkillBindings)
+      .where(
+        and(
+          eq(modelSkillBindings.modelId, modelId),
+          eq(modelSkillBindings.skillId, skillId),
+        ),
+      )
+      .returning();
+    if (result.length === 0) {
+      throw new Error(`Binding not found for model ${modelId} skill ${skillId}`);
+    }
+  }
+
+  async resolveSkillsForModel(modelId: string): Promise<Skill[]> {
+    const rows = await db
+      .select({ skill: skills })
+      .from(modelSkillBindings)
+      .innerJoin(skills, eq(modelSkillBindings.skillId, skills.id))
+      .where(eq(modelSkillBindings.modelId, modelId))
+      .orderBy(asc(modelSkillBindings.createdAt));
+    return rows.map((r) => r.skill);
   }
 
 }

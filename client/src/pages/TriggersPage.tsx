@@ -82,12 +82,42 @@ export default function TriggersPage() {
         )}
 
         {subsystemDisabled && (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
+          <div className="flex flex-col items-center justify-center py-16 text-center max-w-lg mx-auto">
             <ZapOff className="h-10 w-10 text-muted-foreground/40 mb-4" />
-            <p className="text-sm font-medium text-muted-foreground">Trigger subsystem is not configured</p>
-            <p className="text-xs text-muted-foreground mt-1 max-w-xs">
-              Set the <code className="font-mono bg-muted px-1 rounded">TRIGGER_SECRET_KEY</code> environment variable to enable webhooks, schedules, and event triggers.
+            <p className="text-base font-semibold mb-1">Trigger subsystem not configured</p>
+            <p className="text-sm text-muted-foreground mb-6">
+              To enable webhooks, schedules, and event triggers, set the{" "}
+              <code className="font-mono bg-muted px-1 rounded text-xs">TRIGGER_SECRET_KEY</code> environment variable.
             </p>
+            <div className="w-full text-left space-y-4">
+              <div className="rounded-lg border border-border bg-card p-4 space-y-3">
+                <p className="text-sm font-medium">Setup steps</p>
+                <ol className="space-y-3 text-sm text-muted-foreground list-none">
+                  <li className="flex gap-3">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs flex items-center justify-center font-medium">1</span>
+                    <span>Generate a 64-character hex secret key:</span>
+                  </li>
+                  <li className="pl-8">
+                    <code className="block font-mono text-xs bg-muted p-2 rounded select-all">
+                      openssl rand -hex 32
+                    </code>
+                  </li>
+                  <li className="flex gap-3">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs flex items-center justify-center font-medium">2</span>
+                    <span>Add it to your <code className="font-mono text-xs bg-muted px-1 rounded">.env</code> file:</span>
+                  </li>
+                  <li className="pl-8">
+                    <code className="block font-mono text-xs bg-muted p-2 rounded select-all">
+                      TRIGGER_SECRET_KEY=&lt;paste-your-64-char-key-here&gt;
+                    </code>
+                  </li>
+                  <li className="flex gap-3">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary/10 text-primary text-xs flex items-center justify-center font-medium">3</span>
+                    <span>Restart the platform for the change to take effect.</span>
+                  </li>
+                </ol>
+              </div>
+            </div>
           </div>
         )}
 

@@ -33,6 +33,8 @@ import SkillMarketplace from "@/pages/SkillMarketplace";
 import TaskGroupList from "@/pages/TaskGroupList";
 import TaskGroupPage from "@/pages/TaskGroup";
 import Library from "@/pages/Library";
+import CreateTaskGroup from "@/pages/CreateTaskGroup";
+import TaskGroupTrace from "@/pages/TaskGroupTrace";
 
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
@@ -112,6 +114,12 @@ function ProtectedRouter() {
         )} />
         <Route path="/memories" component={() => (
           <ErrorBoundary><Memory /></ErrorBoundary>
+        )} />
+        <Route path="/task-groups/new" component={() => (
+          <ErrorBoundary><CreateTaskGroup /></ErrorBoundary>
+        )} />
+        <Route path="/task-groups/:id/trace" component={() => (
+          <ErrorBoundary><TaskGroupTrace /></ErrorBoundary>
         )} />
         <Route path="/task-groups/:id" component={() => (
           <ErrorBoundary><TaskGroupPage /></ErrorBoundary>

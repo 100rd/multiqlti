@@ -311,7 +311,11 @@ export type WsEventType =
   | "taskgroup:started"
   | "taskgroup:progress"
   | "taskgroup:completed"
-  | "taskgroup:failed";
+  | "taskgroup:failed"
+  // ─── Task Trace Events ──────────────────────────────────────────────────────
+  | "trace:span:started"
+  | "trace:span:completed"
+  | "trace:span:failed";
 
 export interface WsEvent {
   type: WsEventType;
@@ -1475,4 +1479,96 @@ export interface VersionsResponse {
   database: {
     postgres: string | null;
   };
+}
+
+// ─── Task Trace Types (End-to-End Request Observability) ─────────────────────
+
+export type TaskTraceSpanType = "task_group" | "task" | "pipeline_run" | "stage" | "llm_call";
+export type TaskTraceSpanStatus = "running" | "completed" | "failed";
+
+export interface TaskTraceSpanMetadata {
+  taskId?: string;
+  pipelineRunId?: string;
+  stageIndex?: number;
+  modelSlug?: string;
+  provider?: string;
+  tokensUsed?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  estimatedCostUsd?: number;
+  inputSizeBytes?: number;
+  outputSizeBytes?: number;
+  error?: string;
+}
+
+// ─── Issue Tracker Integration Types ─────────────────────────────────────────
+
+export type TrackerProvider = "jira" | "clickup" | "linear" | "github";
+
+export interface TrackerConnection {
+  id: string;
+  taskGroupId: string;
+  provider: TrackerProvider;
+  issueUrl: string;
+  issueKey: string;
+  projectKey: string | null;
+  syncComments: boolean;
+  syncSubtasks: boolean;
+  apiToken: string | null;
+  baseUrl: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: Date;
+}
+
+export interface SplitTask {
+  name: string;
+  description: string;
+  conditionsOfDone: string[];
+  tests: string[];
+  dependsOn?: string[];
+}
+
+export interface TaskTraceSpan {
+  spanId: string;
+  parentSpanId: string | null;
+  name: string;
+  type: TaskTraceSpanType;
+  status: TaskTraceSpanStatus;
+  startTime: number;       // epoch ms
+  endTime?: number;        // epoch ms
+  durationMs?: number;
+  metadata: TaskTraceSpanMetadata;
+}
+
+// ─── Model Skill Binding Types (Phase 6.17) ───────────────────────────────────
+
+export interface ModelSkillBinding {
+  id: string;
+  modelId: string;
+  skillId: string;
+  createdBy: string | null;
+  createdAt: Date;
+}
+
+export interface ModelWithSkills {
+  modelId: string;
+  skills: import("./schema.js").Skill[];
+}
+
+// ─── Git Skill Sources (issue #161) ──────────────────────────────────────────
+
+export interface GitSkillSource {
+  id: string;
+  name: string;
+  repoUrl: string;
+  branch: string;
+  path: string;
+  syncOnStart: boolean;
+  lastSyncedAt: Date | null;
+  lastError: string | null;
+  createdAt: Date;
+}
+
+export interface GitSkillSourceWithStats extends GitSkillSource {
+  skillCount: number;
 }

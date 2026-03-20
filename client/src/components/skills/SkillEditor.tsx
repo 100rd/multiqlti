@@ -15,13 +15,18 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { Plus, Loader2 } from "lucide-react";
 import { SDLC_TEAMS } from "@shared/constants";
 import { useCreateSkill, useUpdateSkill, type CreateSkillPayload } from "@/hooks/use-skills";
+import { useSkillTeams, useCreateSkillTeam } from "@/hooks/use-skill-teams";
 import type { Skill } from "@shared/schema";
 
 const AVAILABLE_TOOLS = [
@@ -97,8 +102,15 @@ export function SkillEditor({ skill, open, onClose, onSaved }: SkillEditorProps)
   const [form, setForm] = useState<FormState>(() => buildInitialForm(skill));
   const [errors, setErrors] = useState<FormErrors>({});
 
+  // Inline new-team creation state
+  const [showNewTeam, setShowNewTeam] = useState(false);
+  const [newTeamName, setNewTeamName] = useState("");
+  const [newTeamError, setNewTeamError] = useState<string | undefined>();
+
   const createSkill = useCreateSkill();
   const updateSkill = useUpdateSkill();
+  const { data: customTeams = [] } = useSkillTeams();
+  const createTeam = useCreateSkillTeam();
 
   const isPending = createSkill.isPending || updateSkill.isPending;
 
@@ -107,6 +119,9 @@ export function SkillEditor({ skill, open, onClose, onSaved }: SkillEditorProps)
     if (open) {
       setForm(buildInitialForm(skill));
       setErrors({});
+      setShowNewTeam(false);
+      setNewTeamName("");
+      setNewTeamError(undefined);
     }
   }, [open, skill]);
 
@@ -124,6 +139,27 @@ export function SkillEditor({ skill, open, onClose, onSaved }: SkillEditorProps)
         ? prev.tools.filter((t) => t !== tool)
         : [...prev.tools, tool],
     }));
+  }
+
+  async function handleCreateTeam() {
+    const trimmed = newTeamName.trim();
+    if (!trimmed) {
+      setNewTeamError("Team name is required.");
+      return;
+    }
+    if (trimmed.length > 100) {
+      setNewTeamError("Team name must be 100 characters or less.");
+      return;
+    }
+    try {
+      const created = await createTeam.mutateAsync({ name: trimmed });
+      setField("teamId", created.id);
+      setShowNewTeam(false);
+      setNewTeamName("");
+      setNewTeamError(undefined);
+    } catch (err) {
+      setNewTeamError(err instanceof Error ? err.message : "Failed to create team.");
+    }
   }
 
   async function handleSave() {
@@ -160,7 +196,7 @@ export function SkillEditor({ skill, open, onClose, onSaved }: SkillEditorProps)
     onClose();
   }
 
-  const teamEntries = Object.entries(SDLC_TEAMS);
+  const builtinTeamEntries = Object.entries(SDLC_TEAMS);
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -208,18 +244,102 @@ export function SkillEditor({ skill, open, onClose, onSaved }: SkillEditorProps)
             <Label className="text-xs font-medium">
               Team <span className="text-destructive">*</span>
             </Label>
-            <Select value={form.teamId} onValueChange={(v) => setField("teamId", v)}>
-              <SelectTrigger className="h-8 text-sm">
-                <SelectValue placeholder="Select a team" />
-              </SelectTrigger>
-              <SelectContent>
-                {teamEntries.map(([id, config]) => (
-                  <SelectItem key={id} value={id}>
-                    {config.name}
+            {!showNewTeam ? (
+              <Select value={form.teamId} onValueChange={(v) => {
+                if (v === "__new__") {
+                  setShowNewTeam(true);
+                } else {
+                  setField("teamId", v);
+                }
+              }}>
+                <SelectTrigger className="h-8 text-sm">
+                  <SelectValue placeholder="Select a team" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectLabel className="text-[10px]">Built-in Teams</SelectLabel>
+                    {builtinTeamEntries.map(([id, config]) => (
+                      <SelectItem key={id} value={id}>
+                        {config.name}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                  {customTeams.length > 0 && (
+                    <>
+                      <SelectSeparator />
+                      <SelectGroup>
+                        <SelectLabel className="text-[10px]">Custom Teams</SelectLabel>
+                        {customTeams.map((t) => (
+                          <SelectItem key={t.id} value={t.id}>
+                            {t.name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </>
+                  )}
+                  <SelectSeparator />
+                  <SelectItem value="__new__" className="text-primary">
+                    <div className="flex items-center gap-1.5">
+                      <Plus className="h-3 w-3" />
+                      New team
+                    </div>
                   </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+                </SelectContent>
+              </Select>
+            ) : (
+              <div className="space-y-2 rounded-md border border-border p-2 bg-muted/30">
+                <p className="text-[10px] text-muted-foreground font-medium">New custom team</p>
+                <div className="flex gap-2">
+                  <Input
+                    className="h-7 text-xs flex-1"
+                    placeholder="Team name..."
+                    value={newTeamName}
+                    onChange={(e) => {
+                      setNewTeamName(e.target.value);
+                      setNewTeamError(undefined);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void handleCreateTeam();
+                      }
+                      if (e.key === "Escape") {
+                        setShowNewTeam(false);
+                        setNewTeamName("");
+                      }
+                    }}
+                    autoFocus
+                  />
+                  <Button
+                    size="sm"
+                    className="h-7 text-xs px-2"
+                    onClick={() => void handleCreateTeam()}
+                    disabled={createTeam.isPending}
+                  >
+                    {createTeam.isPending ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      "Create"
+                    )}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs px-2"
+                    onClick={() => {
+                      setShowNewTeam(false);
+                      setNewTeamName("");
+                      setNewTeamError(undefined);
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+                {newTeamError && (
+                  <p className="text-xs text-destructive">{newTeamError}</p>
+                )}
+              </div>
+            )}
             {errors.teamId && (
               <p className="text-xs text-destructive">{errors.teamId}</p>
             )}

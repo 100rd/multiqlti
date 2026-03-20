@@ -32,8 +32,16 @@ import {
   type InsertTaskGroup,
   type TaskRow,
   type InsertTask,
+  type TaskTraceRow,
+  type InsertTaskTrace,
+  type TrackerConnectionRow,
+  type InsertTrackerConnection,
+  type SkillTeam,
+  type InsertSkillTeam,
+  type ModelSkillBinding,
+  type InsertModelSkillBinding,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType } from "@shared/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
 import { configLoader } from "./config/loader";
@@ -190,6 +198,11 @@ export interface IStorage {
   getMarketplaceSkills(filters: MarketplaceFilters): Promise<{ skills: MarketplaceSkill[]; total: number }>;
   incrementSkillUsage(id: string): Promise<number>;
 
+  // Skill Teams
+  getSkillTeams(): Promise<SkillTeam[]>;
+  createSkillTeam(data: InsertSkillTeam): Promise<SkillTeam>;
+  deleteSkillTeam(id: string): Promise<void>;
+
   // Manager Iterations (Phase 6.6)
   createManagerIteration(data: InsertManagerIteration): Promise<ManagerIterationRow>;
   updateManagerIteration(
@@ -229,6 +242,24 @@ export interface IStorage {
   updateTask(id: string, updates: Partial<TaskRow>): Promise<TaskRow>;
   getReadyTasks(groupId: string): Promise<TaskRow[]>;
   getBlockedTasks(groupId: string): Promise<TaskRow[]>;
+
+  // Task Traces (End-to-End Request Observability)
+  createTaskTrace(data: InsertTaskTrace): Promise<TaskTraceRow>;
+  getTaskTrace(groupId: string): Promise<TaskTraceRow | null>;
+  updateTaskTrace(id: string, updates: Partial<TaskTraceRow>): Promise<TaskTraceRow>;
+
+  // Tracker Connections (Issue Tracker Integration)
+  getTrackerConnectionsByGroup(taskGroupId: string): Promise<TrackerConnectionRow[]>;
+  getTrackerConnection(id: string): Promise<TrackerConnectionRow | undefined>;
+  createTrackerConnection(data: InsertTrackerConnection): Promise<TrackerConnectionRow>;
+  deleteTrackerConnection(id: string): Promise<void>;
+
+  // Model Skill Bindings (Phase 6.17)
+  getModelSkillBindings(modelId: string): Promise<ModelSkillBinding[]>;
+  getModelsWithSkillBindings(): Promise<string[]>;
+  createModelSkillBinding(data: InsertModelSkillBinding): Promise<ModelSkillBinding>;
+  deleteModelSkillBinding(modelId: string, skillId: string): Promise<void>;
+  resolveSkillsForModel(modelId: string): Promise<Skill[]>;
 }
 
 export class MemStorage implements IStorage {
@@ -974,6 +1005,8 @@ export class MemStorage implements IStorage {
       sharing: (data.sharing ?? "public") as "private" | "team" | "public",
       usageCount: data.usageCount ?? 0,
       forkedFrom: data.forkedFrom ?? null,
+      sourceType: (data.sourceType ?? "manual") as "manual" | "git",
+      gitSourceId: data.gitSourceId ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -990,6 +1023,7 @@ export class MemStorage implements IStorage {
       tools: (updates.tools as string[] | undefined) ?? existing.tools,
       tags: (updates.tags as string[] | undefined) ?? existing.tags,
       sharing: (updates.sharing as "private" | "team" | "public" | undefined) ?? existing.sharing,
+      sourceType: (updates.sourceType as "manual" | "git" | undefined) ?? existing.sourceType,
       updatedAt: new Date(),
     };
     this.skillsMap.set(id, updated);
@@ -1115,6 +1149,33 @@ export class MemStorage implements IStorage {
     const updated = { ...skill, usageCount: currentCount + 1 };
     this.skillsMap.set(id, updated as Skill);
     return currentCount + 1;
+  }
+
+  // ─── Skill Teams ────────────────────────────────────────────────
+
+  private skillTeamsMap: Map<string, SkillTeam> = new Map();
+
+  async getSkillTeams(): Promise<SkillTeam[]> {
+    return Array.from(this.skillTeamsMap.values()).sort((a, b) =>
+      a.createdAt.getTime() - b.createdAt.getTime(),
+    );
+  }
+
+  async createSkillTeam(data: InsertSkillTeam): Promise<SkillTeam> {
+    const id = randomUUID();
+    const row: SkillTeam = {
+      id,
+      name: data.name,
+      description: data.description ?? "",
+      createdBy: data.createdBy ?? null,
+      createdAt: new Date(),
+    };
+    this.skillTeamsMap.set(id, row);
+    return row;
+  }
+
+  async deleteSkillTeam(id: string): Promise<void> {
+    this.skillTeamsMap.delete(id);
   }
 
   // ─── Manager Iterations (Phase 6.6) ────────────────────────────────────────
@@ -1281,7 +1342,7 @@ export class MemStorage implements IStorage {
 
   async createTaskGroup(data: InsertTaskGroup): Promise<TaskGroupRow> {
     const id = randomUUID();
-    const row: TaskGroupRow = { id, name: data.name, description: data.description, input: data.input, status: (data.status as TaskGroupRow["status"]) ?? "pending", output: data.output ?? null, createdBy: data.createdBy ?? null, startedAt: data.startedAt ?? null, completedAt: data.completedAt ?? null, createdAt: new Date() };
+    const row: TaskGroupRow = { id, name: data.name, description: data.description, input: data.input, status: (data.status as TaskGroupRow["status"]) ?? "pending", output: data.output ?? null, traceId: (data as Record<string, unknown>).traceId as string | null ?? null, createdBy: data.createdBy ?? null, startedAt: data.startedAt ?? null, completedAt: data.completedAt ?? null, createdAt: new Date() };
     this.taskGroupsMap.set(id, row);
     return row;
   }
@@ -1358,6 +1419,144 @@ export class MemStorage implements IStorage {
     return Array.from(this.tasksMap.values())
       .filter((t) => t.groupId === groupId && t.status === "blocked")
       .sort((a, b) => a.sortOrder - b.sortOrder);
+  }
+
+  // ─── Task Traces (End-to-End Request Observability) ──────────────────────────
+
+  private taskTracesMap = new Map<string, TaskTraceRow>();
+  private taskTracesByGroupId = new Map<string, TaskTraceRow>();
+
+  async createTaskTrace(data: InsertTaskTrace): Promise<TaskTraceRow> {
+    const id = randomUUID();
+    const now = new Date();
+    const row: TaskTraceRow = {
+      id,
+      groupId: data.groupId,
+      traceId: data.traceId,
+      rootSpan: (data.rootSpan as TaskTraceSpan) ?? null,
+      spans: (data.spans as TaskTraceSpan[]) ?? [],
+      totalDurationMs: data.totalDurationMs ?? 0,
+      totalTokens: data.totalTokens ?? 0,
+      totalCostUsd: data.totalCostUsd ?? 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.taskTracesMap.set(id, row);
+    this.taskTracesByGroupId.set(data.groupId, row);
+    return row;
+  }
+
+  async getTaskTrace(groupId: string): Promise<TaskTraceRow | null> {
+    return this.taskTracesByGroupId.get(groupId) ?? null;
+  }
+
+  async updateTaskTrace(id: string, updates: Partial<TaskTraceRow>): Promise<TaskTraceRow> {
+    const existing = this.taskTracesMap.get(id);
+    if (!existing) throw new Error(`TaskTrace ${id} not found`);
+    const updated: TaskTraceRow = { ...existing, ...updates, updatedAt: new Date() };
+    this.taskTracesMap.set(id, updated);
+    this.taskTracesByGroupId.set(updated.groupId, updated);
+    return updated;
+  }
+
+  // ─── Tracker Connections (Issue Tracker Integration) — MemStorage stubs ─────
+
+  private trackerConnectionsMap = new Map<string, TrackerConnectionRow>();
+
+  async getTrackerConnectionsByGroup(taskGroupId: string): Promise<TrackerConnectionRow[]> {
+    return Array.from(this.trackerConnectionsMap.values()).filter(
+      (c) => c.taskGroupId === taskGroupId,
+    );
+  }
+
+  async getTrackerConnection(id: string): Promise<TrackerConnectionRow | undefined> {
+    return this.trackerConnectionsMap.get(id);
+  }
+
+  async createTrackerConnection(data: InsertTrackerConnection): Promise<TrackerConnectionRow> {
+    const id = randomUUID();
+    const row: TrackerConnectionRow = {
+      id,
+      taskGroupId: data.taskGroupId,
+      provider: data.provider as TrackerConnectionRow["provider"],
+      issueUrl: data.issueUrl,
+      issueKey: data.issueKey,
+      projectKey: data.projectKey ?? null,
+      syncComments: data.syncComments ?? true,
+      syncSubtasks: data.syncSubtasks ?? true,
+      apiToken: data.apiToken ?? null,
+      baseUrl: data.baseUrl ?? null,
+      metadata: data.metadata ?? null,
+      createdAt: new Date(),
+    };
+    this.trackerConnectionsMap.set(id, row);
+    return row;
+  }
+
+  async deleteTrackerConnection(id: string): Promise<void> {
+    this.trackerConnectionsMap.delete(id);
+  }
+
+
+  // ─── Model Skill Bindings ────────────────────────────────────────────────
+
+  private modelSkillBindingsMap: Map<string, ModelSkillBinding> = new Map();
+
+  async getModelSkillBindings(modelId: string): Promise<ModelSkillBinding[]> {
+    return Array.from(this.modelSkillBindingsMap.values()).filter(
+      (b) => b.modelId === modelId,
+    );
+  }
+
+  async getModelsWithSkillBindings(): Promise<string[]> {
+    const modelIds = new Set<string>();
+    for (const b of this.modelSkillBindingsMap.values()) {
+      modelIds.add(b.modelId);
+    }
+    return Array.from(modelIds).sort();
+  }
+
+  async createModelSkillBinding(data: InsertModelSkillBinding): Promise<ModelSkillBinding> {
+    // Check uniqueness
+    const duplicate = Array.from(this.modelSkillBindingsMap.values()).find(
+      (b) => b.modelId === data.modelId && b.skillId === data.skillId,
+    );
+    if (duplicate) {
+      const err = new Error("Unique constraint violation: model_skill_bindings_model_id_skill_id_unique");
+      (err as NodeJS.ErrnoException).code = "23505";
+      throw err;
+    }
+    const id = randomUUID();
+    const binding: ModelSkillBinding = {
+      id,
+      modelId: data.modelId,
+      skillId: data.skillId,
+      createdBy: data.createdBy ?? null,
+      createdAt: new Date(),
+    };
+    this.modelSkillBindingsMap.set(id, binding);
+    return binding;
+  }
+
+  async deleteModelSkillBinding(modelId: string, skillId: string): Promise<void> {
+    for (const [key, binding] of this.modelSkillBindingsMap.entries()) {
+      if (binding.modelId === modelId && binding.skillId === skillId) {
+        this.modelSkillBindingsMap.delete(key);
+        return;
+      }
+    }
+    throw new Error(`Binding not found for model ${modelId} skill ${skillId}`);
+  }
+
+  async resolveSkillsForModel(modelId: string): Promise<Skill[]> {
+    const bindings = await this.getModelSkillBindings(modelId);
+    if (bindings.length === 0) return [];
+    const result: Skill[] = [];
+    for (const b of bindings) {
+      const skill = this.skillsMap.get(b.skillId);
+      if (skill) result.push(skill);
+    }
+    return result;
   }
 
 }

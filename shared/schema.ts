@@ -14,7 +14,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig } from "./types.js";
+import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -541,6 +541,27 @@ export const insertSpecializationProfileSchema = createInsertSchema(specializati
 export type InsertSpecializationProfile = z.infer<typeof insertSpecializationProfileSchema>;
 export type SpecializationProfileRow = typeof specializationProfiles.$inferSelect;
 
+// ─── Git Skill Sources (issue #161) ─────────────────────────────────────────
+
+export const gitSkillSources = pgTable("git_skill_sources", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  repoUrl: text("repo_url").notNull(),
+  branch: text("branch").notNull().default("main"),
+  path: text("path").notNull().default("/"),
+  syncOnStart: boolean("sync_on_start").notNull().default(false),
+  lastSyncedAt: timestamp("last_synced_at"),
+  lastError: text("last_error"),
+  // Encrypted PAT for private repos (AES-256-GCM, same as provider keys)
+  encryptedPat: text("encrypted_pat"),
+  createdBy: varchar("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertGitSkillSourceSchema = createInsertSchema(gitSkillSources).omit({ id: true, createdAt: true });
+export type InsertGitSkillSource = z.infer<typeof insertGitSkillSourceSchema>;
+export type GitSkillSourceRow = typeof gitSkillSources.$inferSelect;
+
 // ─── Skills (Phase 3.1b) ─────────────────────────────────────────────────────
 
 export const skills = pgTable("skills", {
@@ -561,6 +582,9 @@ export const skills = pgTable("skills", {
   sharing: text("sharing").notNull().default("public").$type<"private" | "team" | "public">(),
   usageCount: integer("usage_count").notNull().default(0),
   forkedFrom: varchar("forked_from"),
+  // Git skill source tracking (issue #161)
+  sourceType: text("source_type").notNull().default("manual").$type<"manual" | "git">(),
+  gitSourceId: varchar("git_source_id").references(() => gitSkillSources.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -593,6 +617,20 @@ export const insertSkillVersionSchema = createInsertSchema(skillVersions).omit({
 
 export type InsertSkillVersion = z.infer<typeof insertSkillVersionSchema>;
 export type SkillVersionRow = typeof skillVersions.$inferSelect;
+
+// ─── Skill Teams ─────────────────────────────────────────────────────────────
+
+export const skillTeams = pgTable("skill_teams", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  createdBy: text("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertSkillTeamSchema = createInsertSchema(skillTeams).omit({ id: true, createdAt: true });
+export type InsertSkillTeam = z.infer<typeof insertSkillTeamSchema>;
+export type SkillTeam = typeof skillTeams.$inferSelect;
 
 // ─── Pipeline Triggers (Phase 6.3) ───────────────────────────────────────────
 
@@ -758,6 +796,7 @@ export const taskGroups = pgTable("task_groups", {
   status: text("status").notNull().default("pending").$type<TaskGroupStatus>(),
   input: text("input").notNull(),
   output: jsonb("output"),
+  traceId: text("trace_id"),
   createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),
@@ -892,3 +931,86 @@ export const insertLibraryItemSchema = createInsertSchema(libraryItems).omit({
 
 export type InsertLibraryItem = z.infer<typeof insertLibraryItemSchema>;
 export type LibraryItemRow = typeof libraryItems.$inferSelect;
+
+// ─── Task Traces (End-to-End Request Observability) ──────────────────────────
+
+export const taskTraces = pgTable(
+  "task_traces",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    groupId: varchar("group_id")
+      .notNull()
+      .references(() => taskGroups.id, { onDelete: "cascade" }),
+    traceId: text("trace_id").notNull().unique(),
+    rootSpan: jsonb("root_span").$type<TaskTraceSpan>(),
+    spans: jsonb("spans").notNull().default(sql`'[]'::jsonb`).$type<TaskTraceSpan[]>(),
+    totalDurationMs: integer("total_duration_ms").notNull().default(0),
+    totalTokens: integer("total_tokens").notNull().default(0),
+    totalCostUsd: real("total_cost_usd").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    groupIdIdx: index("task_traces_group_id_idx").on(table.groupId),
+    traceIdIdx: index("task_traces_trace_id_idx").on(table.traceId),
+  }),
+);
+
+export const insertTaskTraceSchema = createInsertSchema(taskTraces).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertTaskTrace = z.infer<typeof insertTaskTraceSchema>;
+export type TaskTraceRow = typeof taskTraces.$inferSelect;
+
+// ─── Tracker Connections (Issue Tracker Integration) ──────────────────────────
+
+export const TRACKER_PROVIDERS = ["jira", "clickup", "linear", "github"] as const;
+
+export const trackerConnections = pgTable("tracker_connections", {
+  id: varchar("id")
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  taskGroupId: varchar("task_group_id")
+    .notNull()
+    .references(() => taskGroups.id, { onDelete: "cascade" }),
+  provider: text("provider").notNull().$type<TrackerProvider>(),
+  issueUrl: text("issue_url").notNull(),
+  issueKey: text("issue_key").notNull(),
+  projectKey: text("project_key"),
+  syncComments: boolean("sync_comments").notNull().default(true),
+  syncSubtasks: boolean("sync_subtasks").notNull().default(true),
+  apiToken: text("api_token"),
+  baseUrl: text("base_url"),
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertTrackerConnectionSchema = createInsertSchema(trackerConnections).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertTrackerConnection = z.infer<typeof insertTrackerConnectionSchema>;
+export type TrackerConnectionRow = typeof trackerConnections.$inferSelect;
+
+// ─── Model Skill Bindings (Phase 6.17) ───────────────────────────────────────
+
+export const modelSkillBindings = pgTable("model_skill_bindings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  modelId: text("model_id").notNull(),
+  skillId: varchar("skill_id").notNull().references(() => skills.id, { onDelete: "cascade" }),
+  createdBy: text("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => ({
+  uniqueModelSkill: unique().on(t.modelId, t.skillId),
+  modelIdIdx: index("model_skill_bindings_model_id_idx").on(t.modelId),
+}));
+
+export const insertModelSkillBindingSchema = createInsertSchema(modelSkillBindings).omit({ id: true, createdAt: true });
+export type InsertModelSkillBinding = z.infer<typeof insertModelSkillBindingSchema>;
+export type ModelSkillBinding = typeof modelSkillBindings.$inferSelect;

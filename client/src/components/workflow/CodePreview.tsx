@@ -5,6 +5,7 @@ import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { useRuns, usePipelineRun } from "@/hooks/use-pipeline";
 import { CodeBlock } from "@/components/ui/CodeBlock";
+import { OpenInIdeButton } from "@/components/ui/OpenInIdeButton";
 
 interface CodeFile {
   path: string;
@@ -25,9 +26,10 @@ interface StageExecution {
 
 interface CodePreviewProps {
   pipelineId?: string;
+  workspacePath?: string;
 }
 
-export default function CodePreview({ pipelineId }: CodePreviewProps) {
+export default function CodePreview({ pipelineId, workspacePath }: CodePreviewProps) {
   const { data: runs } = useRuns(pipelineId);
   const scopedRuns: Run[] = Array.isArray(runs) ? runs : [];
   const latestRun = scopedRuns.length > 0 ? scopedRuns[0] : null;
@@ -103,7 +105,8 @@ export default function CodePreview({ pipelineId }: CodePreviewProps) {
                       {block.description && (
                         <span className="text-xs text-muted-foreground truncate">{block.description}</span>
                       )}
-                      <div className="ml-auto">
+                      <div className="ml-auto flex items-center gap-1">
+                        <OpenInIdeButton filePath={block.path} workspacePath={workspacePath} className="h-7 text-xs" />
                         <Button
                           variant="ghost"
                           size="sm"
