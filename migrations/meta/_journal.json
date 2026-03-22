@@ -36,6 +36,13 @@
       "when": 1742601600000,
       "tag": "0008_add_task_groups_trace_id",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1742688000000,
+      "tag": "0005_phase_7_library",
+      "breakpoints": true
     }
   ]
 }
