@@ -7,36 +7,20 @@
  *   - Workspace POST validation (missing fields → 400)
  *
  * Note: The workspace routes use drizzle-orm directly (not the IStorage
- * abstraction), so they return 500 when DATABASE_URL is unset in the Playwright
- * webServer's in-memory environment. API tests that require a real DB are
- * documented as known gaps and tested at the UI level only.
+ * abstraction). DB-dependent tests require DATABASE_URL and are skipped
+ * when it is absent.
  */
 import { test, expect, request as playwrightRequest } from "@playwright/test";
-import { loginPage } from "./helpers/auth";
+import { loginPage, getAuthToken } from "./helpers/auth";
 
 const BASE_URL_FALLBACK = "http://localhost:3099";
-const LIVE_BASE = "https://localhost";
-const LIVE_EMAIL = "e2e@multiqlti.test";
-const LIVE_PASSWORD = "e2e-test-password-secure";
+const HAS_DATABASE = !!process.env.DATABASE_URL;
 
-async function authenticatedLiveContext() {
-  const ctx = await playwrightRequest.newContext({
-    baseURL: LIVE_BASE,
-    ignoreHTTPSErrors: true,
-  });
-  const loginRes = await ctx.post("/api/auth/login", {
-    data: { email: LIVE_EMAIL, password: LIVE_PASSWORD },
-  });
-  if (!loginRes.ok()) {
-    await ctx.dispose();
-    throw new Error(`Live auth failed: HTTP ${loginRes.status()}`);
-  }
-  const { token } = (await loginRes.json()) as { token: string };
-  await ctx.dispose();
-
+/** Create an authenticated API context against the Playwright webServer. */
+async function authenticatedApiContext(baseURL: string) {
+  const token = await getAuthToken(baseURL);
   return playwrightRequest.newContext({
-    baseURL: LIVE_BASE,
-    ignoreHTTPSErrors: true,
+    baseURL,
     extraHTTPHeaders: { Authorization: `Bearer ${token}` },
   });
 }
@@ -85,20 +69,20 @@ test.describe("Workspaces", () => {
   test("POST /api/workspaces with missing required fields → 400", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
 
-    // Missing both type and path — should fail schema validation before DB
     const res = await page.request.post(`${baseURL}/api/workspaces`, {
       data: {},
     });
-    // Schema validation returns 400 before DB is hit
     expect(res.status()).toBe(400);
   });
 
-  // ─── Workspace API: live DB tests ─────────────────────────────────────────
-  // These tests hit https://localhost (Docker + PostgreSQL) directly because
-  // workspace routes use drizzle-orm directly, not the IStorage abstraction.
+  // ─── Workspace API: DB-dependent tests ──────────────────────────────────
+  // These tests require DATABASE_URL (workspace routes use drizzle-orm directly).
+  // Skipped when DATABASE_URL is absent.
 
-  test("GET /api/workspaces returns an array (live DB)", async () => {
-    const ctx = await authenticatedLiveContext();
+  test("GET /api/workspaces returns an array (DB)", async ({}, testInfo) => {
+    test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    const ctx = await authenticatedApiContext(baseURL);
     try {
       const res = await ctx.get("/api/workspaces");
       expect(res.status()).toBe(200);
@@ -110,8 +94,10 @@ test.describe("Workspaces", () => {
     }
   });
 
-  test("GET /api/workspaces returns valid JSON not HTML (live DB)", async () => {
-    const ctx = await authenticatedLiveContext();
+  test("GET /api/workspaces returns valid JSON not HTML (DB)", async ({}, testInfo) => {
+    test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    const ctx = await authenticatedApiContext(baseURL);
     try {
       const res = await ctx.get("/api/workspaces");
       expect(res.status()).toBe(200);
@@ -126,8 +112,10 @@ test.describe("Workspaces", () => {
     }
   });
 
-  test("POST /api/workspaces with remote URL creates workspace (live DB)", async () => {
-    const ctx = await authenticatedLiveContext();
+  test("POST /api/workspaces with remote URL creates workspace (DB)", async ({}, testInfo) => {
+    test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    const ctx = await authenticatedApiContext(baseURL);
     try {
       const res = await ctx.post("/api/workspaces", {
         data: {
