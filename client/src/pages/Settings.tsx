@@ -43,6 +43,7 @@ import { useQueryClient, useMutation, useQuery } from "@tanstack/react-query";
 import { ArgocdSettings } from "@/components/settings/ArgocdSettings";
 import { SettingsSection } from "@/components/settings/SettingsSection";
 import { VersionInfoPanel } from "@/components/settings/VersionInfoPanel";
+import { LmStudioConnect } from "@/components/settings/LmStudioConnect";
 
 type CloudProvider = "anthropic" | "google" | "xai";
 
@@ -346,6 +347,9 @@ export default function Settings() {
               </div>
             </div>
           </SettingsSection>
+
+          {/* ── 1.5 LM Studio Quick Connect ───────────────── */}
+          <LmStudioConnect />
 
           {/* ── 2. Cloud Providers ─────────────────────────── */}
           <SettingsSection

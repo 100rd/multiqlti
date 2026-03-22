@@ -65,9 +65,12 @@ export function registerHealthRoutes(app: Express): void {
       }
     };
 
-    const [vllmStatus, ollamaStatus] = await Promise.all([
+    const lmstudioEndpoint = process.env.LMSTUDIO_ENDPOINT;
+
+    const [vllmStatus, ollamaStatus, lmstudioStatus] = await Promise.all([
       checkUrl(vllmEndpoint, "/health"),
       checkUrl(ollamaEndpoint, "/api/tags"),
+      checkUrl(lmstudioEndpoint, "/v1/models"),
     ]);
 
     // ── 3. Overall status ───────────────────────────────────────────────────
@@ -77,7 +80,7 @@ export function registerHealthRoutes(app: Express): void {
     const overallStatus =
       dbStatus.status === "error"
         ? "unhealthy"
-        : vllmStatus === "unreachable" || ollamaStatus === "unreachable"
+        : vllmStatus === "unreachable" || ollamaStatus === "unreachable" || lmstudioStatus === "unreachable"
           ? "degraded"
           : "ok";
 
@@ -89,6 +92,7 @@ export function registerHealthRoutes(app: Express): void {
       providers: {
         vllm: { status: vllmStatus },
         ollama: { status: ollamaStatus },
+        lmstudio: { status: lmstudioStatus },
       },
     };
 

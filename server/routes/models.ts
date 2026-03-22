@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import type { IStorage } from "../storage";
 
-const MODEL_PROVIDERS = ["vllm", "ollama", "mock", "anthropic", "google", "xai"] as const;
+const MODEL_PROVIDERS = ["vllm", "ollama", "mock", "anthropic", "google", "xai", "lmstudio"] as const;
 
 const CreateModelSchema = z.object({
   name: z.string().min(1).max(200),

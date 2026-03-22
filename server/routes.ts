@@ -32,6 +32,7 @@ import { registerTriggerRoutes } from "./routes/triggers";
 import { registerWebhookRoutes } from "./routes/webhooks";
 import { registerHealthRoutes } from "./routes/health";
 import { registerLibraryRoutes } from "./routes/library";
+import { registerLmStudioRoutes } from "./routes/lmstudio";
 import { TriggerService } from "./services/trigger-service";
 import { CronScheduler } from "./services/cron-scheduler";
 import { FileWatcherService } from "./services/file-watcher";
@@ -98,6 +99,7 @@ export async function registerRoutes(
   app.use("/api/traces", requireAuth);
   app.use("/api/task-groups", requireAuth);
   app.use("/api/library", requireAuth);
+  app.use("/api/lmstudio", requireAuth);
   app.use("/api/skill-teams", requireAuth);
   app.use("/api/tracker-connections", requireAuth);
 
@@ -125,6 +127,7 @@ export async function registerRoutes(
   registerTraceRoutes(app, storage);
   registerArgoCdSettingsRoutes(app as unknown as Router);
   registerLibraryRoutes(app as unknown as Router);
+  registerLmStudioRoutes(app as unknown as Router, storage, gateway);
 
   // Task Orchestrator + Tracer
   const taskTracer = new TaskTracer(storage, wsManager);
