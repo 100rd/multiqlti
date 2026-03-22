@@ -39,9 +39,9 @@ describe("Privacy API", () => {
     expect(Array.isArray(res.body)).toBe(true);
   });
 
-  // POST /api/privacy/patterns — no database → 503 ─────────────────────────────
+  // POST /api/privacy/patterns ─────────────────────────────────────────────────
 
-  it("POST /api/privacy/patterns → 503 (no database)", async () => {
+  it("POST /api/privacy/patterns → 503 (no database) or 201 (with database)", async () => {
     const res = await request(app)
       .post("/api/privacy/patterns")
       .send({
@@ -51,8 +51,8 @@ describe("Privacy API", () => {
         entityType: "custom_pattern",
         allowlist: [],
       });
-    // No database → 503
-    expect([503, 400]).toContain(res.status);
+    // Without DATABASE_URL → 503; with DATABASE_URL (nightly CI) → 201
+    expect([503, 201]).toContain(res.status);
   });
 
   it("POST /api/privacy/patterns with invalid regex → 400", async () => {
@@ -68,10 +68,11 @@ describe("Privacy API", () => {
     expect(res.status).toBe(400);
   });
 
-  // DELETE /api/privacy/patterns/:id — no database → 503 ──────────────────────
+  // DELETE /api/privacy/patterns/:id ──────────────────────────────────────────
 
-  it("DELETE /api/privacy/patterns/1 → 503 (no database)", async () => {
+  it("DELETE /api/privacy/patterns/1 → 503 (no database) or 204 (with database)", async () => {
     const res = await request(app).delete("/api/privacy/patterns/1");
+    // Without DATABASE_URL → 503; with DATABASE_URL (nightly CI) → 204
     expect([503, 204]).toContain(res.status);
   });
 
