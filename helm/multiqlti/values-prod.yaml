@@ -1,0 +1,77 @@
+# Production environment values
+replicaCount: 3
+
+env:
+  NODE_ENV: production
+  PORT: "5000"
+
+resources:
+  limits:
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+  hosts:
+    - host: multiqlti.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: multiqlti-prod-tls
+      hosts:
+        - multiqlti.example.com
+
+# Use external managed database in production (RDS, CloudSQL, etc.)
+postgresql:
+  enabled: false
+
+externalDatabase:
+  existingSecret: multiqlti-db-credentials
+  existingSecretKey: database-url
+
+# Use external secrets manager
+secrets:
+  create: false
+
+envFromSecrets:
+  JWT_SECRET:
+    secretName: multiqlti-app-secrets
+    key: jwt-secret
+  ANTHROPIC_API_KEY:
+    secretName: multiqlti-app-secrets
+    key: anthropic-api-key
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 60
+  targetMemoryUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+networkPolicy:
+  enabled: true
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - multiqlti
+          topologyKey: kubernetes.io/hostname

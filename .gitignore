@@ -19,3 +19,5 @@ PROJECT_STATUS.md
 TECHNICAL_DESIGN_PHASE0_PHASE1.md
 PLAN.md
 CLAUDE.md
+helm/multiqlti/charts/
+*.tgz

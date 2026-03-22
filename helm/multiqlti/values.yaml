@@ -1,0 +1,224 @@
+# Default values for multiqlti Helm chart.
+# Override per environment via values-dev.yaml, values-staging.yaml, values-prod.yaml.
+
+# -- Number of replicas for the main application
+replicaCount: 1
+
+image:
+  # -- Container image repository
+  repository: multiqlti
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Overrides the image tag (default: Chart appVersion)
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Create a ServiceAccount
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+# -- Pod-level annotations
+podAnnotations: {}
+
+# -- Pod-level security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# -- Container-level security context
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  # -- Service type
+  type: ClusterIP
+  # -- Service port
+  port: 80
+  # -- Container target port
+  targetPort: 5000
+
+ingress:
+  # -- Enable ingress
+  enabled: false
+  # -- Ingress class name
+  className: nginx
+  annotations: {}
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: multiqlti.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: multiqlti-tls
+  #    hosts:
+  #      - multiqlti.local
+
+# -- Application environment variables
+env:
+  # -- Node environment
+  NODE_ENV: production
+  # -- Server port (must match service.targetPort)
+  PORT: "5000"
+
+# -- Sensitive env vars from existing secrets
+envFromSecrets: {}
+  # JWT_SECRET:
+  #   secretName: multiqlti-secrets
+  #   key: jwt-secret
+  # ANTHROPIC_API_KEY:
+  #   secretName: multiqlti-secrets
+  #   key: anthropic-api-key
+
+# -- Create a Secret with these values (for simple setups; use external secrets in prod)
+secrets:
+  # -- Enable secret creation
+  create: true
+  # -- JWT signing secret (min 32 chars, auto-generated if empty)
+  jwtSecret: ""
+  # -- Anthropic API key (optional)
+  anthropicApiKey: ""
+  # -- Google AI API key (optional)
+  googleApiKey: ""
+  # -- xAI API key (optional)
+  xaiApiKey: ""
+
+resources:
+  limits:
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+autoscaling:
+  # -- Enable HPA
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# -- PodDisruptionBudget
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# -- Node selector
+nodeSelector: {}
+
+# -- Tolerations
+tolerations: []
+
+# -- Affinity rules
+affinity: {}
+
+# -- Liveness probe
+livenessProbe:
+  httpGet:
+    path: /api/health
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# -- Readiness probe
+readinessProbe:
+  httpGet:
+    path: /api/health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# -- Startup probe (gives app time to run migrations)
+startupProbe:
+  httpGet:
+    path: /api/health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 30
+
+# ── PostgreSQL (Bitnami subchart) ────────────────────────────────────────────
+
+postgresql:
+  # -- Deploy in-cluster PostgreSQL (disable for external DB)
+  enabled: true
+  auth:
+    username: multiqlti
+    database: multiqlti
+    # -- Set via --set or values override; auto-generated if empty
+    password: ""
+    existingSecret: ""
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+    resources:
+      limits:
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 256Mi
+
+# -- External database (used when postgresql.enabled=false)
+externalDatabase:
+  # -- Full connection string: postgresql://user:pass@host:5432/db
+  url: ""
+  # -- Or reference an existing secret
+  existingSecret: ""
+  existingSecretKey: "database-url"
+
+# ── Network Policies ─────────────────────────────────────────────────────────
+
+networkPolicy:
+  # -- Enable network policies
+  enabled: false
+
+# ── ArgoCD Application ───────────────────────────────────────────────────────
+
+argocd:
+  # -- Create an ArgoCD Application manifest
+  enabled: false
+  # -- ArgoCD project
+  project: default
+  # -- Git repo URL for source
+  repoURL: ""
+  # -- Target revision (branch/tag)
+  targetRevision: HEAD
+  # -- Path to Helm chart in the repo
+  path: helm/multiqlti
+  # -- Destination cluster
+  server: https://kubernetes.default.svc
+  # -- Destination namespace
+  namespace: multiqlti
+  # -- Sync policy
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+
+# ── Sandbox (code execution) ─────────────────────────────────────────────────
+
+sandbox:
+  # -- Enable sandbox execution pods
+  enabled: false
+  # -- Max concurrent sandbox pods
+  maxConcurrent: 3
+  # -- Default timeout (seconds)
+  defaultTimeout: 120
