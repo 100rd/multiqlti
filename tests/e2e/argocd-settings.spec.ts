@@ -8,8 +8,8 @@
  *   - API: PUT /api/settings/argocd SSRF protection (private IP → 400)
  *   - API: PUT /api/settings/argocd with invalid URL → 400
  *   - API: PUT /api/settings/argocd with missing serverUrl → 400
- *   - API: PUT /api/settings/argocd missing token on first config → 400 (live DB only)
- *   - API: DELETE /api/settings/argocd idempotent 204 (live DB only)
+ *   - API: PUT /api/settings/argocd missing token on first config → 400 (DB required)
+ *   - API: DELETE /api/settings/argocd idempotent 204 (DB required)
  *   - API: POST /api/settings/argocd/test returns JSON
  *   - UI: ArgoCD card renders server URL + token fields
  *   - UI: ArgoCD card renders SSL toggle and Enabled toggle
@@ -18,46 +18,41 @@
  *   - UI: SSL disabled warning badge appears when SSL toggled off
  *   - UI: status badge shows "Not configured" initially
  *
- * Note: Tests marked "live DB only" use https://localhost (the Docker-hosted app
- * backed by PostgreSQL) because the ArgoCD settings routes query the database
- * directly via drizzle-orm and do not go through the IStorage abstraction used
- * by the Playwright webServer's in-memory MemStorage fallback.
+ * Note: The ArgoCD section on the Settings page is inside a collapsed
+ * SettingsSection (defaultOpen=false). UI tests must expand it first.
  *
- * Bug documented: argocd-settings routes use `db` (drizzle PG) directly, bypassing
- * IStorage — so they fail with 500 when DATABASE_URL is unset (test environment).
+ * DB-dependent API tests use the Playwright webServer (port 3099) which
+ * has DATABASE_URL set in CI. They are skipped when DATABASE_URL is absent.
  */
 import { test, expect, request as playwrightRequest } from "@playwright/test";
-import { loginPage } from "./helpers/auth";
+import { loginPage, getAuthToken } from "./helpers/auth";
 
 const BASE_URL_FALLBACK = "http://localhost:3099";
-/** Live Docker app — always has PostgreSQL available. */
-const LIVE_BASE = "https://localhost";
+const HAS_DATABASE = !!process.env.DATABASE_URL;
 
-const LIVE_EMAIL = "e2e@multiqlti.test";
-const LIVE_PASSWORD = "e2e-test-password-secure";
+/**
+ * Navigate to Settings and expand the ArgoCD collapsible section.
+ */
+async function openArgoCdSection(page: import("@playwright/test").Page) {
+  await page.goto("/settings");
+  await page.waitForLoadState("networkidle");
 
-/** Authenticate against the live Docker app and return an API context. */
-async function authenticatedLiveContext() {
-  const ctx = await playwrightRequest.newContext({
-    baseURL: LIVE_BASE,
-    ignoreHTTPSErrors: true,
-  });
-
-  const loginRes = await ctx.post("/api/auth/login", {
-    data: { email: LIVE_EMAIL, password: LIVE_PASSWORD },
-  });
-
-  if (!loginRes.ok()) {
-    await ctx.dispose();
-    throw new Error(`Live auth failed: HTTP ${loginRes.status()} — ${await loginRes.text()}`);
+  // The ArgoCD section is a collapsed SettingsSection — click its trigger to expand
+  const sectionTrigger = page.locator("button", { hasText: "ArgoCD" }).first();
+  // Only expand if it's currently collapsed
+  const expanded = await sectionTrigger.getAttribute("aria-expanded");
+  if (expanded !== "true") {
+    await sectionTrigger.click();
   }
+  // Wait for the collapsible content to become visible
+  await page.waitForTimeout(300);
+}
 
-  const { token } = (await loginRes.json()) as { token: string };
-  await ctx.dispose();
-
+/** Create an authenticated API context against the Playwright webServer. */
+async function authenticatedApiContext(baseURL: string) {
+  const token = await getAuthToken(baseURL);
   return playwrightRequest.newContext({
-    baseURL: LIVE_BASE,
-    ignoreHTTPSErrors: true,
+    baseURL,
     extraHTTPHeaders: { Authorization: `Bearer ${token}` },
   });
 }
@@ -79,36 +74,32 @@ test.describe("ArgoCD Settings", () => {
     expect(body).not.toContain("Page Not Found");
   });
 
-  test("settings page contains Infrastructure ArgoCD section", async ({ page }) => {
+  test("settings page contains ArgoCD section", async ({ page }) => {
     await page.goto("/settings");
     await page.waitForLoadState("networkidle");
 
     const body = await page.locator("body").textContent();
     expect(body).toMatch(/ArgoCD/);
-    expect(body).toMatch(/Infrastructure/);
+    expect(body).toMatch(/GitOps deployment integration/);
   });
 
   test("ArgoCD card renders server URL input field", async ({ page }) => {
-    await page.goto("/settings");
-    await page.waitForLoadState("networkidle");
+    await openArgoCdSection(page);
 
     const serverUrlInput = page.locator("#argocd-server-url");
     await expect(serverUrlInput).toBeVisible();
   });
 
   test("ArgoCD card renders authentication token input field", async ({ page }) => {
-    await page.goto("/settings");
-    await page.waitForLoadState("networkidle");
+    await openArgoCdSection(page);
 
     const tokenInput = page.locator("#argocd-token");
     await expect(tokenInput).toBeVisible();
-    // Token field should be type=password by default
     await expect(tokenInput).toHaveAttribute("type", "password");
   });
 
   test("ArgoCD token field has show/hide toggle button", async ({ page }) => {
-    await page.goto("/settings");
-    await page.waitForLoadState("networkidle");
+    await openArgoCdSection(page);
 
     const tokenInput = page.locator("#argocd-token");
     await expect(tokenInput).toHaveAttribute("type", "password");
@@ -122,50 +113,43 @@ test.describe("ArgoCD Settings", () => {
   });
 
   test("ArgoCD card renders SSL toggle", async ({ page }) => {
-    await page.goto("/settings");
-    await page.waitForLoadState("networkidle");
+    await openArgoCdSection(page);
 
     const sslSwitch = page.locator("#argocd-verify-ssl");
     await expect(sslSwitch).toBeVisible();
   });
 
   test("ArgoCD card renders Enabled toggle", async ({ page }) => {
-    await page.goto("/settings");
-    await page.waitForLoadState("networkidle");
+    await openArgoCdSection(page);
 
     const enabledSwitch = page.locator("#argocd-enabled");
     await expect(enabledSwitch).toBeVisible();
   });
 
   test("ArgoCD card status badge shows Not configured when unconfigured", async ({ page }) => {
-    await page.goto("/settings");
-    await page.waitForLoadState("networkidle");
+    await openArgoCdSection(page);
 
-    const body = await page.locator("body").textContent();
-    // Status badge shows "Not configured" when no ArgoCD config exists
-    expect(body).toMatch(/Not configured/);
+    const sectionContent = page.locator("[id^='settings-section-content-']").filter({ hasText: "ArgoCD" });
+    const text = await sectionContent.textContent();
+    expect(text).toMatch(/Not configured/);
   });
 
   test("ArgoCD Test Connection button exists", async ({ page }) => {
-    await page.goto("/settings");
-    await page.waitForLoadState("networkidle");
+    await openArgoCdSection(page);
 
     const testBtn = page.getByRole("button", { name: /Test Connection/i });
     await expect(testBtn).toBeVisible();
   });
 
   test("ArgoCD Test Connection button is disabled when no URL or config", async ({ page }) => {
-    await page.goto("/settings");
-    await page.waitForLoadState("networkidle");
+    await openArgoCdSection(page);
 
-    // When not configured and no URL entered, the button should be disabled
     const testBtn = page.getByRole("button", { name: /Test Connection/i });
     await expect(testBtn).toBeDisabled();
   });
 
   test("ArgoCD Test Connection button enables when URL is typed", async ({ page }) => {
-    await page.goto("/settings");
-    await page.waitForLoadState("networkidle");
+    await openArgoCdSection(page);
 
     const serverUrlInput = page.locator("#argocd-server-url");
     await serverUrlInput.fill("https://argocd.example.com");
@@ -175,27 +159,27 @@ test.describe("ArgoCD Settings", () => {
   });
 
   test("ArgoCD SSL warning badge appears when SSL is toggled off", async ({ page }) => {
-    await page.goto("/settings");
-    await page.waitForLoadState("networkidle");
+    await openArgoCdSection(page);
 
     const sslSwitch = page.locator("#argocd-verify-ssl");
     await sslSwitch.click();
 
-    const body = await page.locator("body").textContent();
-    expect(body).toMatch(/SSL disabled/i);
+    const sectionContent = page.locator("[id^='settings-section-content-']").filter({ hasText: "ArgoCD" });
+    const text = await sectionContent.textContent();
+    expect(text).toMatch(/SSL disabled/i);
   });
 
   test("ArgoCD card describes token encryption method", async ({ page }) => {
-    await page.goto("/settings");
-    await page.waitForLoadState("networkidle");
+    await openArgoCdSection(page);
 
-    const body = await page.locator("body").textContent();
-    expect(body).toMatch(/AES-256-GCM|encrypted/i);
+    const sectionContent = page.locator("[id^='settings-section-content-']").filter({ hasText: "ArgoCD" });
+    const text = await sectionContent.textContent();
+    expect(text).toMatch(/AES-256-GCM|encrypted/i);
   });
 
   // ─── API: PUT /api/settings/argocd validation ─────────────────────────────
   // These validation checks (SSRF, bad URL) fire before any DB query, so they
-  // work against the in-process playwright webServer too.
+  // work against the in-process Playwright webServer too.
 
   test("PUT /api/settings/argocd with SSRF URL (localhost) → 400", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
@@ -260,18 +244,19 @@ test.describe("ArgoCD Settings", () => {
         token: "some-token",
         verifySsl: true,
         enabled: true,
-        // serverUrl missing
       },
     });
     expect(res.status()).toBe(400);
   });
 
-  // ─── API: DB-dependent tests (live Docker app) ────────────────────────────
-  // These tests target https://localhost (Docker + PostgreSQL) directly because
-  // the ArgoCD route uses drizzle-orm directly and fails without a real DB.
+  // ─── API: DB-dependent tests ──────────────────────────────────────────────
+  // These tests require DATABASE_URL (argocd routes use drizzle-orm directly).
+  // Skipped when DATABASE_URL is absent (e.g. local dev without Postgres).
 
-  test("GET /api/settings/argocd returns configured field (live DB)", async () => {
-    const ctx = await authenticatedLiveContext();
+  test("GET /api/settings/argocd returns configured field (DB)", async ({}, testInfo) => {
+    test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    const ctx = await authenticatedApiContext(baseURL);
     try {
       const res = await ctx.get("/api/settings/argocd");
       expect(res.status()).toBe(200);
@@ -283,8 +268,10 @@ test.describe("ArgoCD Settings", () => {
     }
   });
 
-  test("GET /api/settings/argocd response is valid JSON not HTML (live DB)", async () => {
-    const ctx = await authenticatedLiveContext();
+  test("GET /api/settings/argocd response is valid JSON not HTML (DB)", async ({}, testInfo) => {
+    test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    const ctx = await authenticatedApiContext(baseURL);
     try {
       const res = await ctx.get("/api/settings/argocd");
       expect(res.status()).toBe(200);
@@ -299,10 +286,11 @@ test.describe("ArgoCD Settings", () => {
     }
   });
 
-  test("PUT /api/settings/argocd missing token on first config → 400 (live DB)", async () => {
-    const ctx = await authenticatedLiveContext();
+  test("PUT /api/settings/argocd missing token on first config → 400 (DB)", async ({}, testInfo) => {
+    test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    const ctx = await authenticatedApiContext(baseURL);
     try {
-      // Ensure no config exists first
       await ctx.delete("/api/settings/argocd");
 
       const res = await ctx.put("/api/settings/argocd", {
@@ -310,7 +298,6 @@ test.describe("ArgoCD Settings", () => {
           serverUrl: "https://argocd.example.com",
           verifySsl: true,
           enabled: true,
-          // token omitted — required on first setup
         },
       });
       expect(res.status()).toBe(400);
@@ -319,13 +306,12 @@ test.describe("ArgoCD Settings", () => {
     }
   });
 
-  test("DELETE /api/settings/argocd returns 204 when no config exists (live DB)", async () => {
-    const ctx = await authenticatedLiveContext();
+  test("DELETE /api/settings/argocd returns 204 when no config exists (DB)", async ({}, testInfo) => {
+    test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    const ctx = await authenticatedApiContext(baseURL);
     try {
-      // First delete to ensure clean state
       await ctx.delete("/api/settings/argocd");
-
-      // Second delete — nothing to delete, still 204
       const res = await ctx.delete("/api/settings/argocd");
       expect(res.status()).toBe(204);
     } finally {
@@ -333,12 +319,13 @@ test.describe("ArgoCD Settings", () => {
     }
   });
 
-  test("POST /api/settings/argocd/test returns JSON response (live DB)", async () => {
-    const ctx = await authenticatedLiveContext();
+  test("POST /api/settings/argocd/test returns JSON response (DB)", async ({}, testInfo) => {
+    test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    const ctx = await authenticatedApiContext(baseURL);
     try {
       const res = await ctx.post("/api/settings/argocd/test");
 
-      // Never 404
       expect(res.status()).not.toBe(404);
       const contentType = res.headers()["content-type"];
       expect(contentType).toMatch(/application\/json/);
@@ -347,10 +334,11 @@ test.describe("ArgoCD Settings", () => {
     }
   });
 
-  test("POST /api/settings/argocd/test when not configured returns ok:false (live DB)", async () => {
-    const ctx = await authenticatedLiveContext();
+  test("POST /api/settings/argocd/test when not configured returns ok:false (DB)", async ({}, testInfo) => {
+    test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    const ctx = await authenticatedApiContext(baseURL);
     try {
-      // Ensure no config
       await ctx.delete("/api/settings/argocd");
 
       const res = await ctx.post("/api/settings/argocd/test");
