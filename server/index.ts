@@ -11,6 +11,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 
 const app = express();
+app.disable("x-powered-by");
 const httpServer = createServer(app);
 
 declare module "http" {
@@ -84,6 +85,11 @@ app.use((req, res, next) => {
     }
 
     return res.status(status).json({ message });
+  });
+
+  // Catch-all for unmatched /api/* routes — return JSON 404 instead of SPA HTML
+  app.all("/api/{*path}", (_req: Request, res: Response) => {
+    res.status(404).json({ error: "Not Found" });
   });
 
   // importantly only setup vite in development and after

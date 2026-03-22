@@ -1,8 +1,18 @@
 import type { Express } from "express";
 import { z } from "zod";
+import rateLimit from "express-rate-limit";
 import { authService } from "../auth/service";
 import { requireAuth, requireRole } from "../auth/middleware";
 import { USER_ROLES } from "@shared/schema";
+
+const loginLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  message: { error: "Too many login attempts, please try again later" },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip ?? "unknown",
+});
 
 const registerSchema = z.object({
   email: z.string().email(),
@@ -24,6 +34,13 @@ const updateMeSchema = z.object({
 
 const updateRoleSchema = z.object({
   role: z.enum(USER_ROLES),
+});
+
+const adminUpdateUserSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  email: z.string().email().optional(),
+  role: z.enum(USER_ROLES).optional(),
+  isActive: z.boolean().optional(),
 });
 
 export function registerAuthRoutes(app: Express): void {
@@ -60,8 +77,8 @@ export function registerAuthRoutes(app: Express): void {
     }
   });
 
-  // Public: login
-  app.post("/api/auth/login", async (req, res) => {
+  // Public: login (rate-limited)
+  app.post("/api/auth/login", loginLimiter, async (req, res) => {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: "Invalid input", details: parsed.error.flatten() });
@@ -166,6 +183,73 @@ export function registerAuthRoutes(app: Express): void {
       const error = err as Error;
       if (error.message === "User not found") {
         res.status(404).json({ error: "User not found" });
+        return;
+      }
+      throw err;
+    }
+  });
+
+  // Admin: update a user (name, email, role, isActive)
+  app.patch("/api/users/:id", requireAuth, requireRole("admin"), async (req, res) => {
+    const parsed = adminUpdateUserSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid input", details: parsed.error.flatten() });
+      return;
+    }
+
+    const updates = parsed.data;
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ error: "No fields to update" });
+      return;
+    }
+
+    // Prevent admin from changing their own role
+    if (req.user?.id === req.params["id"] && updates.role && updates.role !== "admin") {
+      res.status(400).json({ error: "Cannot change your own role" });
+      return;
+    }
+
+    try {
+      const userId = req.params["id"] as string;
+      let updated;
+
+      // Apply profile updates (name, email)
+      if (updates.name !== undefined || updates.email !== undefined) {
+        updated = await authService.updateUser(userId, {
+          name: updates.name,
+          email: updates.email,
+        });
+      }
+
+      // Apply role change
+      if (updates.role !== undefined) {
+        updated = await authService.updateUserRole(userId, updates.role);
+      }
+
+      // Apply active status change
+      if (updates.isActive === false) {
+        updated = await authService.deactivateUser(userId);
+      }
+
+      if (!updated) {
+        // Fetch current state if no mutations were applied
+        const users = await authService.getAllUsers();
+        updated = users.find((u) => u.id === userId);
+        if (!updated) {
+          res.status(404).json({ error: "User not found" });
+          return;
+        }
+      }
+
+      res.json({ user: updated });
+    } catch (err) {
+      const error = err as Error;
+      if (error.message === "User not found") {
+        res.status(404).json({ error: "User not found" });
+        return;
+      }
+      if (error.message?.includes("unique") || error.message?.includes("duplicate")) {
+        res.status(409).json({ error: "Email already in use" });
         return;
       }
       throw err;

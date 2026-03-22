@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { pool } from "../db";
 import { configLoader } from "../config/loader";
+import { authService } from "../auth/service";
 
 /**
  * GET /api/health
@@ -26,7 +27,19 @@ import { configLoader } from "../config/loader";
  *   503 — unhealthy (DB is down; app cannot serve requests)
  */
 export function registerHealthRoutes(app: Express): void {
-  app.get("/api/health", async (_req, res) => {
+  app.get("/api/health", async (req, res) => {
+    // Check if caller is authenticated (optional — unauthenticated gets minimal response)
+    let isAuthenticated = false;
+    const authHeader = req.headers.authorization;
+    if (authHeader?.startsWith("Bearer ")) {
+      try {
+        await authService.validateToken(authHeader.slice(7));
+        isAuthenticated = true;
+      } catch {
+        // Not authenticated — serve minimal response
+      }
+    }
+
     // ── 1. Database check ───────────────────────────────────────────────────
     let dbStatus: { status: "ok" | "error"; latencyMs?: number; error?: string } = {
       status: "error",
@@ -84,6 +97,15 @@ export function registerHealthRoutes(app: Express): void {
           ? "degraded"
           : "ok";
 
+    const statusCode = overallStatus === "unhealthy" ? 503 : 200;
+
+    if (!isAuthenticated) {
+      // Minimal response for unauthenticated callers — no internal topology
+      res.status(statusCode).json({ status: overallStatus });
+      return;
+    }
+
+    // Full response for authenticated users
     const body = {
       status: overallStatus,
       version: process.env.npm_package_version ?? "unknown",
@@ -96,6 +118,6 @@ export function registerHealthRoutes(app: Express): void {
       },
     };
 
-    res.status(overallStatus === "unhealthy" ? 503 : 200).json(body);
+    res.status(statusCode).json(body);
   });
 }
