@@ -14,6 +14,7 @@ RUN npm run build
 
 # ── Production ────────────────────────────────────
 FROM base AS production
+RUN apk add --no-cache git
 ENV NODE_ENV=production
 ENV PORT=5000
 
