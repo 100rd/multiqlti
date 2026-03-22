@@ -29,6 +29,13 @@
       "when": 1742515200000,
       "tag": "0007_git_skill_sources",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1742601600000,
+      "tag": "0008_add_task_groups_trace_id",
+      "breakpoints": true
     }
   ]
 }
