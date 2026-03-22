@@ -34,6 +34,31 @@ jobs:
       - run: npm run test:coverage
         continue-on-error: true
 
+  helm-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.17.0
+      - name: Build dependencies
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm dependency build helm/multiqlti
+      - name: Lint default values
+        run: helm lint helm/multiqlti
+      - name: Lint dev values
+        run: helm lint helm/multiqlti -f helm/multiqlti/values-dev.yaml
+      - name: Lint staging values
+        run: helm lint helm/multiqlti -f helm/multiqlti/values-staging.yaml
+      - name: Lint prod values
+        run: helm lint helm/multiqlti -f helm/multiqlti/values-prod.yaml
+      - name: Template render (dev)
+        run: helm template multiqlti helm/multiqlti -f helm/multiqlti/values-dev.yaml --set image.repository=test/multiqlti > /dev/null
+      - name: Template render (prod)
+        run: helm template multiqlti helm/multiqlti -f helm/multiqlti/values-prod.yaml --set image.repository=test/multiqlti > /dev/null
+
   e2e:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

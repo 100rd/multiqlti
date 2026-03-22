@@ -1,0 +1,50 @@
+# Staging environment values
+replicaCount: 2
+
+env:
+  NODE_ENV: production
+  PORT: "5000"
+
+resources:
+  limits:
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-staging
+  hosts:
+    - host: staging.multiqlti.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: multiqlti-staging-tls
+      hosts:
+        - staging.multiqlti.example.com
+
+postgresql:
+  enabled: true
+  auth:
+    username: multiqlti
+    database: multiqlti
+  primary:
+    persistence:
+      size: 10Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true

@@ -1,0 +1,21 @@
+multiqlti has been deployed!
+
+{{- if .Values.ingress.enabled }}
+Access the application at:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- else }}
+Get the application URL by running:
+  kubectl port-forward svc/{{ include "multiqlti.fullname" . }} 8080:{{ .Values.service.port }} -n {{ .Release.Namespace }}
+  Then open http://localhost:8080
+{{- end }}
+
+Check health:
+  kubectl exec deploy/{{ include "multiqlti.fullname" . }} -n {{ .Release.Namespace }} -- wget -qO- http://localhost:{{ .Values.service.targetPort }}/api/health
+
+{{- if .Values.postgresql.enabled }}
+PostgreSQL is running in-cluster.
+{{- else }}
+Using external database.
+{{- end }}

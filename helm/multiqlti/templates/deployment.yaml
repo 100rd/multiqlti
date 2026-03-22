@@ -1,0 +1,121 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "multiqlti.fullname" . }}
+  labels:
+    {{- include "multiqlti.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "multiqlti.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "multiqlti.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "multiqlti.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- if .Values.postgresql.enabled }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.postgresql.auth.existingSecret }}
+                  name: {{ .Values.postgresql.auth.existingSecret }}
+                  key: password
+                  {{- else }}
+                  name: {{ .Release.Name }}-postgresql
+                  key: password
+                  {{- end }}
+            - name: DATABASE_URL
+              value: {{ include "multiqlti.databaseUrl" . | quote }}
+            {{- else if .Values.externalDatabase.existingSecret }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalDatabase.existingSecret }}
+                  key: {{ .Values.externalDatabase.existingSecretKey }}
+            {{- else if .Values.externalDatabase.url }}
+            - name: DATABASE_URL
+              value: {{ .Values.externalDatabase.url | quote }}
+            {{- end }}
+            {{- if .Values.secrets.create }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "multiqlti.secretName" . }}
+                  key: jwt-secret
+            {{- end }}
+            {{- range $key, $ref := .Values.envFromSecrets }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ref.secretName }}
+                  key: {{ $ref.key }}
+            {{- end }}
+            {{- if .Values.sandbox.enabled }}
+            - name: SANDBOX_ENABLED
+              value: "true"
+            - name: SANDBOX_MAX_CONCURRENT
+              value: {{ .Values.sandbox.maxConcurrent | quote }}
+            - name: SANDBOX_DEFAULT_TIMEOUT
+              value: {{ .Values.sandbox.defaultTimeout | quote }}
+            {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
