@@ -43,7 +43,9 @@ jobs:
         with:
           version: v3.17.0
       - name: Build dependencies
-        run: helm dependency build helm/multiqlti
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm dependency build helm/multiqlti
       - name: Lint default values
         run: helm lint helm/multiqlti
       - name: Lint dev values
