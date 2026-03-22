@@ -17,6 +17,14 @@ const CreateModelSchema = z.object({
 
 const UpdateModelSchema = CreateModelSchema.partial();
 
+async function resolveModel(storage: IStorage, idOrSlug: string) {
+  // Try slug first (more common in URLs), then fall back to UUID
+  const bySlug = await storage.getModelBySlug(idOrSlug);
+  if (bySlug) return bySlug;
+  const models = await storage.getModels();
+  return models.find((m) => m.id === idOrSlug) ?? null;
+}
+
 export function registerModelRoutes(router: Router, storage: IStorage) {
   router.get("/api/models", async (_req, res) => {
     const models = await storage.getModels();
@@ -42,11 +50,19 @@ export function registerModelRoutes(router: Router, storage: IStorage) {
         issues: result.error.issues.map((i) => ({ path: i.path, message: i.message })),
       });
     }
-    const model = await storage.createModel(result.data);
-    res.status(201).json(model);
+    try {
+      const model = await storage.createModel(result.data);
+      res.status(201).json(model);
+    } catch (e) {
+      const msg = (e as Error).message ?? "";
+      if (msg.includes("unique") || msg.includes("duplicate")) {
+        return res.status(409).json({ error: "A model with this slug already exists" });
+      }
+      throw e;
+    }
   });
 
-  router.patch("/api/models/:id", async (req, res) => {
+  router.patch("/api/models/:idOrSlug", async (req, res) => {
     const result = UpdateModelSchema.safeParse(req.body);
     if (!result.success) {
       return res.status(400).json({
@@ -55,16 +71,20 @@ export function registerModelRoutes(router: Router, storage: IStorage) {
       });
     }
     try {
-      const model = await storage.updateModel(req.params.id, result.data);
-      res.json(model);
+      const model = await resolveModel(storage, req.params.idOrSlug);
+      if (!model) return res.status(404).json({ error: "Model not found" });
+      const updated = await storage.updateModel(model.id, result.data);
+      res.json(updated);
     } catch (e) {
       res.status(404).json({ error: (e as Error).message });
     }
   });
 
-  router.delete("/api/models/:id", async (req, res) => {
+  router.delete("/api/models/:idOrSlug", async (req, res) => {
     try {
-      await storage.deleteModel(req.params.id);
+      const model = await resolveModel(storage, req.params.idOrSlug);
+      if (!model) return res.status(404).json({ error: "Model not found" });
+      await storage.deleteModel(model.id);
       res.status(204).end();
     } catch (e) {
       res.status(404).json({ error: (e as Error).message });
