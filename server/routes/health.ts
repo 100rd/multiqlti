@@ -88,12 +88,12 @@ export function registerHealthRoutes(app: Express): void {
 
     // ── 3. Overall status ───────────────────────────────────────────────────
     // unhealthy  → DB is down; app cannot serve requests
-    // degraded   → DB is ok but a provider is unreachable
-    // ok         → everything is reachable
+    // degraded   → DB is ok but ollama (core local provider) is unreachable
+    // ok         → DB and ollama are reachable (vllm/lmstudio are optional)
     const overallStatus =
       dbStatus.status === "error"
         ? "unhealthy"
-        : vllmStatus === "unreachable" || ollamaStatus === "unreachable" || lmstudioStatus === "unreachable"
+        : ollamaStatus === "unreachable"
           ? "degraded"
           : "ok";
 
