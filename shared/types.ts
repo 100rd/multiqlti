@@ -472,6 +472,7 @@ export interface PipelineStageConfig {
   };
   skillId?: string;
   delegationEnabled?: boolean; // default false; stage must opt-in to receive delegate fn
+  remoteAgent?: RemoteAgentStageConfig;
 }
 
 export interface StageOutput {
@@ -1082,6 +1083,7 @@ export interface DAGStage {
   skillId?: string;
   position: { x: number; y: number };
   label?: string;
+  remoteAgent?: RemoteAgentStageConfig;
 }
 
 export interface PipelineDAG {
