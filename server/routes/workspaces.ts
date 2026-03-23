@@ -115,6 +115,19 @@ function recordIndex(workspaceId: string): void {
 
 // ─── Route registration ───────────────────────────────────────────────────────
 
+/** Strip internal paths from error messages to prevent information disclosure. */
+function sanitizeError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes("ENOENT") || msg.includes("no such file or directory")) {
+    return "Workspace files are not available. Please sync the workspace first.";
+  }
+  if (msg.includes("does not exist") && msg.includes("simple-git")) {
+    return "Workspace is not synced. Please sync the workspace first.";
+  }
+  // Strip absolute paths from any remaining messages
+  return msg.replace(/\/[^\s'":,]+/g, "[path]");
+}
+
 export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsManager?: WsManager): void {
   const manager = new WorkspaceManager();
   const codeChatService = new CodeChatService(gateway);
@@ -240,7 +253,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
 
       return res.status(201).json(row);
     } catch (err) {
-      return res.status(400).json({ error: (err as Error).message });
+      return res.status(400).json({ error: sanitizeError(err) });
     }
   });
 
@@ -286,7 +299,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       res.json({ message: "Workspace synced" });
     } catch (err) {
       await db.update(workspaces).set({ status: "error" }).where(eq(workspaces.id, row.id));
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   });
 
@@ -304,7 +317,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       const entries = await manager.listFiles(row, subpath);
       res.json(entries);
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      res.status(400).json({ error: sanitizeError(err) });
     }
   });
 
@@ -319,7 +332,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       const content = await manager.readFile(row, filePath);
       res.json({ path: filePath, content });
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      res.status(400).json({ error: sanitizeError(err) });
     }
   });
 
@@ -341,7 +354,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       await manager.writeFile(row, filePath, parsed.data.content);
       res.json({ message: "File updated" });
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      res.status(400).json({ error: sanitizeError(err) });
     }
   });
 
@@ -356,7 +369,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       await manager.deleteFile(row, filePath);
       res.json({ message: "File deleted" });
     } catch (err) {
-      res.status(400).json({ error: (err as Error).message });
+      res.status(400).json({ error: sanitizeError(err) });
     }
   });
 
@@ -370,7 +383,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       const status = await manager.gitStatus(row);
       res.json(status);
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   });
 
@@ -382,7 +395,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       const diff = await manager.gitDiff(row);
       res.json({ diff });
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   });
 
@@ -397,7 +410,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       await manager.gitCommit(row, parsed.data.message);
       res.json({ message: "Committed" });
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   });
 
@@ -412,7 +425,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       await manager.gitBranch(row, parsed.data.name);
       res.json({ message: `Branch '${parsed.data.name}' created and checked out` });
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   });
 
@@ -426,7 +439,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       const log = await manager.gitLog(row, limit);
       res.json(log);
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   });
 
@@ -440,7 +453,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       const result = await manager.listBranches(row);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   });
 
@@ -459,7 +472,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
         .where(eq(workspaces.id, row.id));
       res.json({ message: `Switched to branch '${parsed.data.branch}'` });
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   });
 
@@ -481,7 +494,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       );
       res.json(Object.fromEntries(results));
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   });
 
@@ -524,7 +537,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       }
     } catch (err) {
       if (!res.headersSent) {
-        res.status(500).json({ error: (err as Error).message });
+        res.status(500).json({ error: sanitizeError(err) });
       } else {
         res.write(`data: ${JSON.stringify({ error: (err as Error).message })}\n\n`);
         res.end();
@@ -652,7 +665,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       const graph = await dependencyGraph.buildGraph(row.id);
       res.json(graph);
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   });
 
@@ -678,7 +691,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
         total: files.length,
       });
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   });
 
@@ -703,7 +716,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
         definition,
       });
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   });
 
@@ -758,7 +771,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
         total: results.length,
       });
     } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: sanitizeError(err) });
     }
   });
 }
