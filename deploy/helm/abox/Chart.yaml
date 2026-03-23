@@ -1,0 +1,6 @@
+apiVersion: v2
+name: abox-agents
+description: ABOX Remote Agents for multiqlti
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

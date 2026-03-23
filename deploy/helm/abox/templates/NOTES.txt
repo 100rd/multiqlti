@@ -1,0 +1,20 @@
+ABOX agents have been deployed!
+
+Enabled agents:
+{{- range $agentType, $agent := .Values.agents }}
+{{- if $agent.enabled }}
+  - {{ $agentType }} (port {{ $agent.port }})
+    Service: {{ include "abox.fullname" $ }}-{{ $agentType }}.{{ $.Release.Namespace }}.svc:{{ $agent.port }}
+{{- end }}
+{{- end }}
+
+Control plane: {{ .Values.controlPlaneUrl }}
+
+Check agent health:
+{{- range $agentType, $agent := .Values.agents }}
+{{- if $agent.enabled }}
+  kubectl exec deploy/{{ include "abox.fullname" $ }}-{{ $agentType }} -n {{ $.Release.Namespace }} -- wget -qO- http://localhost:{{ $agent.port }}/healthz
+{{- end }}
+{{- end }}
+
+RBAC: ClusterRole {{ include "abox.fullname" . }} bound to ServiceAccount {{ include "abox.serviceAccountName" . }}.

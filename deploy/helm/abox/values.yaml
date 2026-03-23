@@ -1,0 +1,81 @@
+# Default values for abox-agents Helm chart.
+
+image:
+  # -- Container image repository
+  repository: multiqlti/remote-agent
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Overrides the image tag (default: Chart appVersion)
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Shared auth token for control plane communication
+authToken: ""
+# -- Use an existing secret instead of creating one
+existingAuthSecret: ""
+# -- Key within the existing secret
+authSecretKey: "auth-token"
+
+# -- Control plane endpoint
+controlPlaneUrl: "http://multiqlti:80"
+
+# -- Namespace the agents operate in (for RBAC scoping)
+agentNamespace: default
+
+agents:
+  k8s:
+    enabled: true
+    port: 8080
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 128Mi
+  helm:
+    enabled: true
+    port: 8081
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 128Mi
+  observability:
+    enabled: false
+    port: 8082
+    prometheusUrl: "http://prometheus:9090"
+    lokiUrl: "http://loki:3100"
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 128Mi
+  triage:
+    enabled: false
+    port: 8084
+    resources:
+      limits:
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 128Mi
+  release:
+    enabled: false
+    port: 8083
+    resources:
+      limits:
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 256Mi
+
+serviceAccount:
+  # -- Create a ServiceAccount for the agents
+  create: true
+  # -- Override the generated name
+  name: ""

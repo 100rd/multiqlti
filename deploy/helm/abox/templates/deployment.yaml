@@ -1,0 +1,77 @@
+{{- range $agentType, $agent := .Values.agents }}
+{{- if $agent.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "abox.fullname" $ }}-{{ $agentType }}
+  labels:
+    {{- include "abox.labels" $ | nindent 4 }}
+    multiqlti.io/agent: "true"
+    multiqlti.io/agent-type: {{ $agentType }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "abox.selectorLabels" $ | nindent 6 }}
+      multiqlti.io/agent-type: {{ $agentType }}
+  template:
+    metadata:
+      labels:
+        {{- include "abox.labels" $ | nindent 8 }}
+        multiqlti.io/agent: "true"
+        multiqlti.io/agent-type: {{ $agentType }}
+    spec:
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "abox.serviceAccountName" $ }}
+      containers:
+        - name: {{ $agentType }}-agent
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag | default $.Chart.AppVersion }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $agent.port }}
+              protocol: TCP
+          env:
+            - name: AGENT_TYPE
+              value: {{ $agentType | quote }}
+            - name: AGENT_PORT
+              value: {{ $agent.port | quote }}
+            - name: AGENT_NAMESPACE
+              value: {{ $.Values.agentNamespace | quote }}
+            - name: CONTROL_PLANE_URL
+              value: {{ $.Values.controlPlaneUrl | quote }}
+            {{- if or $.Values.authToken $.Values.existingAuthSecret }}
+            - name: AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "abox.authSecretName" $ }}
+                  key: {{ $.Values.authSecretKey }}
+            {{- end }}
+            {{- if and (eq $agentType "observability") $agent.prometheusUrl }}
+            - name: PROMETHEUS_URL
+              value: {{ $agent.prometheusUrl | quote }}
+            {{- end }}
+            {{- if and (eq $agentType "observability") $agent.lokiUrl }}
+            - name: LOKI_URL
+              value: {{ $agent.lokiUrl | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml $agent.resources | nindent 12 }}
+{{- end }}
+{{- end }}
