@@ -1572,3 +1572,90 @@ export interface GitSkillSource {
 export interface GitSkillSourceWithStats extends GitSkillSource {
   skillCount: number;
 }
+
+// ── Phase 8: Remote Agents (ABOX) ─────────────────────────────────────────
+
+export type RemoteAgentEnvironment = "kubernetes" | "linux" | "docker" | "cloud";
+export type RemoteAgentTransport = "mcp-sse" | "mcp-streamable-http" | "a2a-http" | "a2a-grpc";
+export type RemoteAgentStatus = "online" | "offline" | "degraded" | "connecting";
+export type A2ATaskStatus = "submitted" | "working" | "completed" | "failed" | "cancelled";
+
+export interface AgentSkill {
+  id: string;
+  name: string;
+  description?: string;
+  inputModes?: string[];
+  outputModes?: string[];
+}
+
+export interface AgentCapability {
+  streaming?: boolean;
+  pushNotifications?: boolean;
+  stateTransitionHistory?: boolean;
+}
+
+export interface AgentCard {
+  name: string;
+  description?: string;
+  version: string;
+  url: string;
+  capabilities?: AgentCapability;
+  skills: AgentSkill[];
+  defaultInputModes?: string[];
+  defaultOutputModes?: string[];
+}
+
+export interface RemoteAgentConfig {
+  id: string;
+  name: string;
+  environment: RemoteAgentEnvironment;
+  transport: RemoteAgentTransport;
+  endpoint: string;
+  cluster?: string | null;
+  namespace?: string | null;
+  labels?: Record<string, string> | null;
+  authTokenEnc?: string | null;
+  enabled: boolean;
+  autoConnect: boolean;
+  status: RemoteAgentStatus;
+  lastHeartbeatAt?: Date | null;
+  healthError?: string | null;
+  agentCard?: AgentCard | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface A2AMessage {
+  role: "user" | "agent";
+  parts: A2APart[];
+}
+
+export interface A2APart {
+  type: "text" | "data" | "file";
+  text?: string;
+  data?: Record<string, unknown>;
+  mimeType?: string;
+  uri?: string;
+}
+
+export interface A2ATask {
+  id: string;
+  agentId: string;
+  runId?: string | null;
+  stageExecutionId?: string | null;
+  skill?: string | null;
+  input: A2AMessage;
+  status: A2ATaskStatus;
+  output?: A2AMessage | null;
+  error?: string | null;
+  durationMs?: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface RemoteAgentStageConfig {
+  agentId?: string;
+  agentSelector?: Record<string, string>;
+  skill?: string;
+  timeoutMs?: number;
+}

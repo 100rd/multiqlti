@@ -43,6 +43,13 @@
       "when": 1742688000000,
       "tag": "0005_phase_7_library",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1742774400000,
+      "tag": "0009_remote_agents",
+      "breakpoints": true
     }
   ]
 }
