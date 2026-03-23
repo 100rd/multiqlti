@@ -2,12 +2,13 @@ import type { IStorage } from "../storage";
 import type { TeamRegistry } from "../teams/registry";
 import type { WsManager } from "../ws/manager";
 import type { Gateway } from "../gateway/index";
-import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput, DelegationRequest, DelegateFn, PipelineDAG, DAGStage, SwarmResult } from "@shared/types";
+import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput, DelegationRequest, DelegateFn, PipelineDAG, DAGStage, SwarmResult, RemoteAgentStageConfig, A2AMessage, TeamResult } from "@shared/types";
 import { DelegationService } from "../pipeline/delegation-service";
 import { DAGExecutor } from "../pipeline/dag-executor";
 import type { StageExecuteFn } from "../pipeline/dag-executor";
 import { ParallelExecutor } from "../pipeline/parallel-executor";
 import { SwarmExecutor } from "../pipeline/swarm-executor";
+import type { RemoteAgentManager } from "../remote-agents/remote-agent-manager";
 
 import type { PipelineRun } from "@shared/schema";
 import { SandboxExecutor } from "../sandbox/executor";
@@ -39,6 +40,7 @@ export class PipelineController {
   private dagExecutor: DAGExecutor;
   private managerAgent?: ManagerAgent;
   private tracer?: Tracer;
+  private remoteAgentManager?: RemoteAgentManager;
 
   constructor(
     private storage: IStorage,
@@ -48,6 +50,7 @@ export class PipelineController {
     delegationService?: DelegationService,
     managerAgent?: ManagerAgent,
     tracer?: Tracer,
+    remoteAgentManager?: RemoteAgentManager,
   ) {
     this.sandboxExecutor = new SandboxExecutor();
     this.parallelExecutor = new ParallelExecutor(
@@ -66,6 +69,7 @@ export class PipelineController {
     this.delegationService = delegationService;
     this.managerAgent = managerAgent;
     this.tracer = tracer;
+    this.remoteAgentManager = remoteAgentManager;
     this.dagExecutor = new DAGExecutor(storage, wsManager);
   }
 
@@ -238,7 +242,9 @@ export class PipelineController {
           stageConfig: dagStage as unknown as PipelineStageConfig,
         };
 
-        const result = await team.execute(stageInput, context, dagStage.executionStrategy);
+        const result = dagStage.remoteAgent
+          ? await this.executeRemoteStage(dagStage.remoteAgent, stageInput, run.id, stageExec.id)
+          : await team.execute(stageInput, context, dagStage.executionStrategy);
 
         const newMemories = await this.memoryExtractor.extractFromStageResult(
           dagStage.teamId,
@@ -579,8 +585,12 @@ export class PipelineController {
 
         // Pass execution strategy (undefined = single, handled in BaseTeam)
         // Swarm takes priority over parallel; falls back to single-agent if neither enabled
-        let result;
+        let result: TeamResult;
 
+
+        if (resolvedStage.remoteAgent) {
+          result = await this.executeRemoteStage(resolvedStage.remoteAgent, stageInput, run.id, stageExec.id);
+        } else {
         const stageInputStr = typeof stageInput === 'string'
           ? stageInput
           : (stageInput as Record<string, unknown>).taskDescription as string ?? JSON.stringify(stageInput);
@@ -625,6 +635,7 @@ export class PipelineController {
                 toolCallLog: undefined,
               }
             : await team.execute(stageInput, context, resolvedStage.executionStrategy);
+        }
         }
 
         // Collect thought tree from stage output
@@ -1081,6 +1092,77 @@ export class PipelineController {
         : (skill.tools as string[]).length > 0
           ? { enabled: true, allowedTools: skill.tools as string[] }
           : undefined,
+    };
+  }
+
+
+  /**
+   * Execute a pipeline stage by dispatching to a remote agent via A2A protocol.
+   * Resolves the target agent, builds an A2A message from the stage input,
+   * dispatches the task, and converts the response into a TeamResult.
+   */
+  private async executeRemoteStage(
+    config: RemoteAgentStageConfig,
+    stageInput: Record<string, unknown>,
+    runId: string,
+    stageExecutionId: string,
+  ): Promise<TeamResult> {
+    if (!this.remoteAgentManager) {
+      throw new Error("Remote agent execution requested but RemoteAgentManager is not configured");
+    }
+
+    // Resolve agent by ID, label selector, or fallback
+    const agent = await this.remoteAgentManager.resolveAgent({
+      agentId: config.agentId,
+      agentSelector: config.agentSelector,
+    });
+    if (!agent) {
+      throw new Error(
+        config.agentId
+          ? `Remote agent not found: ${config.agentId}`
+          : "No matching remote agent found for selector",
+      );
+    }
+
+    // Build A2A message from stage input
+    const inputText = typeof stageInput === "string"
+      ? stageInput
+      : (stageInput as Record<string, unknown>).taskDescription as string
+        ?? JSON.stringify(stageInput);
+
+    const message: A2AMessage = {
+      role: "user",
+      parts: [{ type: "text", text: inputText }],
+    };
+
+    // Dispatch task to remote agent
+    const dispatchResult = await this.remoteAgentManager.dispatchTask(
+      agent.id,
+      message,
+      { skill: config.skill, runId, stageExecutionId },
+    );
+
+    if (dispatchResult.status === "failed") {
+      throw new Error(`Remote agent task failed: ${dispatchResult.error ?? "unknown error"}`);
+    }
+
+    // Convert A2A response to TeamResult
+    const outputText = dispatchResult.output?.parts
+      ?.map((p) => p.text ?? (p.data ? JSON.stringify(p.data) : ""))
+      .join("\n")
+      ?? "";
+
+    return {
+      output: {
+        raw: outputText,
+        summary: outputText.slice(0, 500),
+        remoteAgentId: agent.id,
+        remoteTaskId: dispatchResult.taskId,
+        remoteStatus: dispatchResult.status,
+        remoteDurationMs: dispatchResult.durationMs,
+      },
+      tokensUsed: 0,
+      raw: outputText,
     };
   }
 
