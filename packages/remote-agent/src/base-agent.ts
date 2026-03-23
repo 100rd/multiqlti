@@ -1,5 +1,9 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 export interface AgentToolHandler {
   name: string;
@@ -51,6 +55,51 @@ export abstract class BaseAgent {
       else resolve();
     });
   }
+
+  // ─── Shell execution helpers ──────────────────────────────────────────────
+
+  /** Execute a command safely with timeout and max buffer. */
+  protected async exec(cmd: string, args: string[]): Promise<{ content: string }> {
+    const timeoutMs = parseInt(process.env.EXEC_TIMEOUT_MS ?? "30000", 10);
+    try {
+      const { stdout, stderr } = await execFileAsync(cmd, args, {
+        timeout: timeoutMs,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      return { content: stdout || stderr };
+    } catch (err: unknown) {
+      const e = err as { stderr?: string; message?: string };
+      return { content: `Error: ${e.stderr ?? e.message ?? String(err)}` };
+    }
+  }
+
+  /** Execute a command with stdin piped in. */
+  protected async execWithStdin(cmd: string, args: string[], stdin: string): Promise<{ content: string }> {
+    const timeoutMs = parseInt(process.env.EXEC_TIMEOUT_MS ?? "30000", 10);
+    return new Promise((resolve) => {
+      const proc = spawn(cmd, args, { timeout: timeoutMs });
+      let stdout = "";
+      let stderr = "";
+      proc.stdout.on("data", (d: Buffer) => {
+        stdout += d.toString();
+      });
+      proc.stderr.on("data", (d: Buffer) => {
+        stderr += d.toString();
+      });
+      proc.on("close", (code) => {
+        resolve({
+          content: code === 0 ? (stdout || stderr) : `Error (exit ${code}): ${stderr || stdout}`,
+        });
+      });
+      proc.on("error", (err) => {
+        resolve({ content: `Error: ${err.message}` });
+      });
+      proc.stdin.write(stdin);
+      proc.stdin.end();
+    });
+  }
+
+  // ─── HTTP handling ────────────────────────────────────────────────────────
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", `http://localhost:${this.config.port}`);
