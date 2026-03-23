@@ -1,0 +1,23 @@
+{{- range $agentType, $agent := .Values.agents }}
+{{- if $agent.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "abox.fullname" $ }}-{{ $agentType }}
+  labels:
+    {{- include "abox.labels" $ | nindent 4 }}
+    multiqlti.io/agent: "true"
+    multiqlti.io/agent-type: {{ $agentType }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ $agent.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "abox.selectorLabels" $ | nindent 4 }}
+    multiqlti.io/agent-type: {{ $agentType }}
+{{- end }}
+{{- end }}
