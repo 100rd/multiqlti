@@ -68,6 +68,14 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Reject API requests with path traversal sequences
+  app.use("/api", (req: Request, res: Response, next: NextFunction) => {
+    if (req.path.includes("..")) {
+      return res.status(400).json({ error: "Invalid path" });
+    }
+    next();
+  });
+
   // Apply pending database migrations before starting the server
   await runMigrations();
 
