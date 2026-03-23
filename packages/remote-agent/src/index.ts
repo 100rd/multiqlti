@@ -1,5 +1,9 @@
 export { BaseAgent } from "./base-agent.js";
 export type { AgentToolHandler } from "./base-agent.js";
+export { PeerDiscovery } from "./peer-discovery.js";
+export type { PeerAgent, PeerInfo } from "./peer-discovery.js";
+export { A2AClient } from "./a2a-client-lite.js";
+export type { AgentCardLite, A2ATaskSendParams, A2ATaskResponse, A2AClientLiteConfig } from "./a2a-client-lite.js";
 export { K8sAgent } from "./agents/k8s-agent.js";
 export { HelmAgent } from "./agents/helm-agent.js";
 export { ObservabilityAgent } from "./agents/observability-agent.js";
