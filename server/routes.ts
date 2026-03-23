@@ -53,6 +53,8 @@ import { TaskOrchestrator } from "./services/task-orchestrator";
 import { TaskTracer } from "./services/task-tracer";
 import { TaskSplitter } from "./services/task-splitter";
 import { TrackerSyncService } from "./services/tracker-sync";
+import { RemoteAgentManager } from "./remote-agents/remote-agent-manager";
+import { registerRemoteAgentRoutes } from "./routes/remote-agents";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -102,6 +104,7 @@ export async function registerRoutes(
   app.use("/api/lmstudio", requireAuth);
   app.use("/api/skill-teams", requireAuth);
   app.use("/api/tracker-connections", requireAuth);
+  app.use("/api/remote-agents", requireAuth);
 
   // Register route implementations
   registerModelRoutes(app, storage);
@@ -128,6 +131,18 @@ export async function registerRoutes(
   registerArgoCdSettingsRoutes(app as unknown as Router);
   registerLibraryRoutes(app as unknown as Router);
   registerLmStudioRoutes(app as unknown as Router, storage, gateway);
+
+  // Phase 8.9 — Remote Agent CRUD routes
+  let remoteAgentManager: RemoteAgentManager | null = null;
+  try {
+    remoteAgentManager = new RemoteAgentManager();
+    await remoteAgentManager.initialize();
+    log("[remote-agents] Remote agent manager initialized", "remote-agents");
+  } catch (e) {
+    log(`[remote-agents] Remote agent subsystem disabled: ${(e as Error).message}`, "remote-agents");
+    remoteAgentManager = null;
+  }
+  registerRemoteAgentRoutes(app as unknown as Router, remoteAgentManager);
 
   // Task Orchestrator + Tracer
   const taskTracer = new TaskTracer(storage, wsManager);
@@ -195,10 +210,11 @@ export async function registerRoutes(
   }
 
   // Graceful shutdown
-  httpServer.on("close", () => {
+  httpServer.on("close", async () => {
     cronScheduler?.stopAll();
     fileWatcherService?.stopAll();
     stopRateLimitCleanup();
+    await remoteAgentManager?.shutdown();
   });
 
   // Phase 6.10 — ArgoCD auto-connect from env vars (if configured)
