@@ -1014,3 +1014,43 @@ export const modelSkillBindings = pgTable("model_skill_bindings", {
 export const insertModelSkillBindingSchema = createInsertSchema(modelSkillBindings).omit({ id: true, createdAt: true });
 export type InsertModelSkillBinding = z.infer<typeof insertModelSkillBindingSchema>;
 export type ModelSkillBinding = typeof modelSkillBindings.$inferSelect;
+
+// ── Phase 8: Remote Agents ────────────────────────────────────────────────
+
+export const remoteAgents = pgTable("remote_agents", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull().unique(),
+  environment: text("environment").notNull().default("kubernetes"),
+  transport: text("transport").notNull().default("a2a-http"),
+  endpoint: text("endpoint").notNull(),
+  cluster: text("cluster"),
+  namespace: text("namespace"),
+  labels: jsonb("labels"),
+  authTokenEnc: text("auth_token_enc"),
+  enabled: boolean("enabled").notNull().default(true),
+  autoConnect: boolean("auto_connect").notNull().default(false),
+  status: text("status").notNull().default("offline"),
+  lastHeartbeatAt: timestamp("last_heartbeat_at"),
+  healthError: text("health_error"),
+  agentCard: jsonb("agent_card"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const a2aTasks = pgTable("a2a_tasks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  agentId: varchar("agent_id").notNull().references(() => remoteAgents.id),
+  runId: varchar("run_id"),
+  stageExecutionId: varchar("stage_execution_id"),
+  skill: text("skill"),
+  input: jsonb("input").notNull(),
+  status: text("status").notNull().default("submitted"),
+  output: jsonb("output"),
+  error: text("error"),
+  durationMs: integer("duration_ms"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertRemoteAgentSchema = createInsertSchema(remoteAgents);
+export const insertA2ATaskSchema = createInsertSchema(a2aTasks);
