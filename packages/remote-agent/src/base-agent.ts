@@ -2,6 +2,7 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { PeerDiscovery } from "./peer-discovery.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -21,11 +22,17 @@ interface AgentConfig {
 
 export abstract class BaseAgent {
   protected tools: Map<string, AgentToolHandler> = new Map();
+  protected peerDiscovery: PeerDiscovery;
   private server: Server | null = null;
   private readonly config: AgentConfig;
 
   constructor(config: AgentConfig) {
     this.config = config;
+    this.peerDiscovery = new PeerDiscovery(
+      config.name,
+      process.env.AGENT_NAMESPACE ?? "default",
+      process.env.PEER_AUTH_TOKEN,
+    );
   }
 
   /** Subclasses register their tools here. */
@@ -43,6 +50,21 @@ export abstract class BaseAgent {
     return new Promise((resolve) => {
       this.server!.listen(this.config.port, "0.0.0.0", () => {
         console.log(`[${this.config.name}] listening on :${this.config.port}`);
+
+        // Opt-in peer discovery after server is ready
+        if (process.env.ENABLE_PEER_DISCOVERY === "true") {
+          this.peerDiscovery
+            .discoverPeers()
+            .then((peers) => {
+              console.log(`[${this.config.name}] discovered ${peers.length} peer(s)`);
+              this.peerDiscovery.startRefresh();
+            })
+            .catch(() => {
+              console.log(`[${this.config.name}] peer discovery failed on startup, will retry`);
+              this.peerDiscovery.startRefresh();
+            });
+        }
+
         resolve();
       });
     });
@@ -50,6 +72,7 @@ export abstract class BaseAgent {
 
   /** Stop the HTTP server gracefully. */
   async stop(): Promise<void> {
+    this.peerDiscovery.stop();
     return new Promise((resolve) => {
       if (this.server) this.server.close(() => resolve());
       else resolve();
@@ -120,6 +143,11 @@ export abstract class BaseAgent {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ status: "ok", agent: this.config.name, tools: this.tools.size }));
         return;
+      }
+
+      // GET /peers — List known peer agents
+      if (req.method === "GET" && url.pathname === "/peers") {
+        return this.handlePeersList(res);
       }
 
       // GET /mcp — MCP SSE endpoint (tool listing)
@@ -256,6 +284,12 @@ export abstract class BaseAgent {
     if (!firstTool) return "No tools registered";
     const result = await firstTool.handler({ input });
     return result.content;
+  }
+
+  private handlePeersList(res: ServerResponse): void {
+    const peers = this.peerDiscovery.listPeers();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ peers, count: peers.length }));
   }
 
   private handleMcpList(res: ServerResponse): void {
