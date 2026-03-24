@@ -58,6 +58,7 @@ import { registerRemoteAgentRoutes } from "./routes/remote-agents";
 import { registerSkillMarketRoutes } from "./routes/skill-market";
 import { RegistryManager } from "./skill-market/registry-manager";
 import { McpRegistryAdapter } from "./skill-market/adapters/mcp-registry-adapter";
+import { SkillUpdateChecker } from "./skill-market/update-checker";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -148,17 +149,24 @@ export async function registerRoutes(
   }
   registerRemoteAgentRoutes(app as unknown as Router, remoteAgentManager);
 
-  // Phase 9.5 — Skill Market unified search routes
+  // Phase 9.5 + 9.8 — Skill Market unified search + update checker
   let registryManager: RegistryManager | null = null;
+  let skillUpdateChecker: SkillUpdateChecker | null = null;
   try {
     registryManager = new RegistryManager();
     registryManager.register(new McpRegistryAdapter());
     log("[skill-market] Registry manager initialized with MCP adapter", "skill-market");
+
+    // Phase 9.8 — background update checker
+    skillUpdateChecker = new SkillUpdateChecker(registryManager);
+    skillUpdateChecker.start();
+    log("[skill-market] Update checker started", "skill-market");
   } catch (e) {
     log(`[skill-market] Skill market subsystem disabled: ${(e as Error).message}`, "skill-market");
     registryManager = null;
+    skillUpdateChecker = null;
   }
-  registerSkillMarketRoutes(app as unknown as Router, registryManager);
+  registerSkillMarketRoutes(app as unknown as Router, registryManager, skillUpdateChecker);
 
   // Task Orchestrator + Tracer
   const taskTracer = new TaskTracer(storage, wsManager);
@@ -231,6 +239,7 @@ export async function registerRoutes(
     fileWatcherService?.stopAll();
     stopRateLimitCleanup();
     await remoteAgentManager?.shutdown();
+    skillUpdateChecker?.stop();
   });
 
   // Phase 6.10 — ArgoCD auto-connect from env vars (if configured)
