@@ -585,6 +585,12 @@ export const skills = pgTable("skills", {
   // Git skill source tracking (issue #161)
   sourceType: text("source_type").notNull().default("manual").$type<"manual" | "git">(),
   gitSourceId: varchar("git_source_id").references(() => gitSkillSources.id, { onDelete: "set null" }),
+  // Phase 9: Skill Market columns (issue #208)
+  externalSource: text("external_source"),
+  externalId: text("external_id"),
+  externalVersion: text("external_version"),
+  installedAt: timestamp("installed_at"),
+  autoUpdate: boolean("auto_update").default(false),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -1054,3 +1060,34 @@ export const a2aTasks = pgTable("a2a_tasks", {
 
 export const insertRemoteAgentSchema = createInsertSchema(remoteAgents);
 export const insertA2ATaskSchema = createInsertSchema(a2aTasks);
+
+// ── Phase 9: Skill Market ─────────────────────────────────────────────────
+
+export const skillRegistrySources = pgTable("skill_registry_sources", {
+  id: serial("id").primaryKey(),
+  adapterId: text("adapter_id").notNull().unique(),
+  name: text("name").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  config: jsonb("config"),
+  lastSyncAt: timestamp("last_sync_at"),
+  lastHealthCheckAt: timestamp("last_health_check_at"),
+  healthStatus: text("health_status").notNull().default("unknown"),
+  healthError: text("health_error"),
+  catalogCount: integer("catalog_count").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const skillInstallLog = pgTable("skill_install_log", {
+  id: serial("id").primaryKey(),
+  skillId: varchar("skill_id"),
+  externalSource: text("external_source"),
+  externalId: text("external_id"),
+  action: text("action").notNull(),
+  fromVersion: text("from_version"),
+  toVersion: text("to_version"),
+  userId: text("user_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertSkillRegistrySourceSchema = createInsertSchema(skillRegistrySources);
+export const insertSkillInstallLogSchema = createInsertSchema(skillInstallLog);

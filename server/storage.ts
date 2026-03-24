@@ -1007,6 +1007,11 @@ export class MemStorage implements IStorage {
       forkedFrom: data.forkedFrom ?? null,
       sourceType: (data.sourceType ?? "manual") as "manual" | "git",
       gitSourceId: data.gitSourceId ?? null,
+      externalSource: data.externalSource ?? null,
+      externalId: data.externalId ?? null,
+      externalVersion: data.externalVersion ?? null,
+      installedAt: data.installedAt ?? null,
+      autoUpdate: data.autoUpdate ?? null,
       createdAt: now,
       updatedAt: now,
     };
