@@ -17,6 +17,7 @@ import {
   Zap,
   Sparkles,
   Store,
+  ShoppingBag,
   ListChecks,
   BookOpen,
 } from "lucide-react";
@@ -54,7 +55,8 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
     { icon: Sparkles, label: "Skills", href: "/skills" },
-    { icon: Store, label: "Skill Market", href: "/skills/marketplace" },
+    { icon: Store, label: "Marketplace", href: "/skills/marketplace" },
+    { icon: ShoppingBag, label: "Skill Market", href: "/skills/market" },
     { icon: BarChart3, label: "Statistics", href: "/stats" },
     { icon: BookOpen, label: "Library", href: "/library" },
     { icon: Brain, label: "Memory", href: "/memories" },

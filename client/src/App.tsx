@@ -30,6 +30,7 @@ import ProfileSettings from "@/pages/ProfileSettings";
 import Maintenance from "@/pages/Maintenance";
 import Skills from "@/pages/Skills";
 import SkillMarketplace from "@/pages/SkillMarketplace";
+import SkillMarket from "@/pages/SkillMarket";
 import TaskGroupList from "@/pages/TaskGroupList";
 import TaskGroupPage from "@/pages/TaskGroup";
 import Library from "@/pages/Library";
@@ -90,6 +91,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/workspaces/:id" component={() => (
           <ErrorBoundary><Workspace /></ErrorBoundary>
+        )} />
+        <Route path="/skills/market" component={() => (
+          <ErrorBoundary><SkillMarket /></ErrorBoundary>
         )} />
         <Route path="/skills/marketplace" component={() => (
           <ErrorBoundary><SkillMarketplace /></ErrorBoundary>
