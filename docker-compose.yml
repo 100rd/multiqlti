@@ -90,6 +90,7 @@ services:
       SANDBOX_DEFAULT_TIMEOUT: ${SANDBOX_DEFAULT_TIMEOUT:-120}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - workspace_data:/app/data/workspaces
     networks:
       - internal
     depends_on:
@@ -183,7 +184,7 @@ services:
     networks:
       - internal
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      test: ["CMD", "ollama", "list"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -245,6 +246,7 @@ volumes:
   pgbackups:
   vllm_cache:
   ollama_data:
+  workspace_data:
   caddy_data:
   caddy_config:
   prometheus_data:

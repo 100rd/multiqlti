@@ -1172,7 +1172,7 @@ export class PipelineController {
    */
   private hashRunId(id: string): number {
     const hex = id.replace(/-/g, "").slice(0, 8);
-    return parseInt(hex, 16) || 0;
+    return (parseInt(hex, 16) || 0) & 0x7FFFFFFF;
   }
 
   /**

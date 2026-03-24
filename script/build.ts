@@ -65,7 +65,7 @@ async function buildAll() {
     platform: "node",
     bundle: true,
     format: "cjs",
-    outfile: "dist/swc-worker.js",
+    outfile: "dist/swc-worker.cjs",
     minify: true,
     external: externals,
     logLevel: "info",

@@ -148,10 +148,11 @@ export default function Workspace() {
     enabled: !!workspaceId,
   });
 
-  const { data: files } = useQuery<FileEntry[]>({
+  const { data: files, error: filesError } = useQuery<FileEntry[]>({
     queryKey: ["workspace-files", workspaceId],
     queryFn: () => fetchJson(`/api/workspaces/${workspaceId}/files`),
     enabled: !!workspaceId,
+    retry: false,
   });
 
   const { data: gitStatus } = useQuery<GitStatus>({
@@ -334,13 +335,31 @@ export default function Workspace() {
                 <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">Files</p>
               </div>
               <div className="flex-1 overflow-y-auto py-1">
-                <FileTree
-                  entries={files ?? []}
-                  workspaceId={workspaceId}
-                  selectedPath={selectedFile}
-                  onSelect={handleFileSelect}
-                  onLoadDir={loadDirContents}
-                />
+                {filesError ? (
+                  <div className="px-3 py-4 text-center space-y-2">
+                    <p className="text-xs text-destructive">Files not available</p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {workspace?.status === "error" ? "Sync failed." : "Try syncing the workspace."}
+                    </p>
+                    {workspace?.type === "remote" && (
+                      <button
+                        onClick={() => syncMutation.mutate()}
+                        disabled={syncMutation.isPending}
+                        className="text-[10px] px-2 py-1 rounded border border-border text-primary hover:bg-primary/5"
+                      >
+                        {syncMutation.isPending ? "Syncing..." : "Sync Now"}
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <FileTree
+                    entries={files ?? []}
+                    workspaceId={workspaceId}
+                    selectedPath={selectedFile}
+                    onSelect={handleFileSelect}
+                    onLoadDir={loadDirContents}
+                  />
+                )}
               </div>
             </div>
 

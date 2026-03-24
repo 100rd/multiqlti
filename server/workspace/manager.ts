@@ -77,6 +77,12 @@ export class WorkspaceManager {
       throw new Error("Only remote workspaces can be synced");
     }
     const root = this.resolveRoot(workspace);
+    try {
+      await fs.access(path.join(root, ".git"));
+    } catch {
+      await this.cloneRemote(workspace.path, workspace.id, workspace.branch ?? "main");
+      return;
+    }
     const git = simpleGit(root);
     await git.pull();
   }

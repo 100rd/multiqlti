@@ -199,6 +199,23 @@ export function registerLibraryRoutes(app: Router): void {
     }
   });
 
+  app.put("/api/library/items/:id", async (req, res) => {
+    const parsed = createItemSchema.partial().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+    try {
+      const [updated] = await db
+        .update(libraryItems)
+        .set(parsed.data)
+        .where(eq(libraryItems.id, req.params.id))
+        .returning();
+      if (!updated) return res.status(404).json({ error: "Item not found" });
+      return res.json(updated);
+    } catch {
+      return res.status(500).json({ error: "Failed to update item" });
+    }
+  });
+
   app.delete("/api/library/items/:id", async (req, res) => {
     try {
       await db.delete(libraryItems).where(eq(libraryItems.id, req.params.id));

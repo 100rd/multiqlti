@@ -28,7 +28,7 @@ const BATCH_SIZE = 50;
 // Worker script path — supports both ESM (import.meta.url) and CJS (__dirname)
 const workerScriptPath =
   typeof __dirname !== "undefined"
-    ? path.resolve(__dirname, "swc-worker.js")
+    ? path.resolve(__dirname, "dist", "swc-worker.cjs")
     : fileURLToPath(new URL("./swc-worker.ts", import.meta.url));
 
 // ─── Public Types ─────────────────────────────────────────────────────────────

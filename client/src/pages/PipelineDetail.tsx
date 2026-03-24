@@ -85,9 +85,10 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
         ...(Object.keys(variables).length > 0 ? { variables } : {}),
       },
       {
-        onSuccess: (run: { id: string }) => {
+        onSuccess: (run: unknown) => {
           setShowVarsDialog(false);
-          navigate(`/runs/${run.id}`);
+          const runId = (run as Record<string, unknown>)?.id;
+          if (runId) navigate(`/runs/${runId}`);
         },
       },
     );
@@ -300,7 +301,7 @@ export default function PipelineDetail({ params }: PipelineDetailProps) {
                             Run {run.id.slice(0, 8)}
                             {run.dagMode
                               ? " · DAG mode"
-                              : ` · Stage ${run.currentStageIndex + 1}/7`}
+                              : ` · Stage ${(run.currentStageIndex ?? 0) + 1}/${Array.isArray(pipeline.stages) ? pipeline.stages.length : '?'}`}
                           </p>
                         </div>
                         <div className="flex items-center gap-3">
