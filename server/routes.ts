@@ -55,6 +55,9 @@ import { TaskSplitter } from "./services/task-splitter";
 import { TrackerSyncService } from "./services/tracker-sync";
 import { RemoteAgentManager } from "./remote-agents/remote-agent-manager";
 import { registerRemoteAgentRoutes } from "./routes/remote-agents";
+import { registerSkillMarketRoutes } from "./routes/skill-market";
+import { RegistryManager } from "./skill-market/registry-manager";
+import { McpRegistryAdapter } from "./skill-market/adapters/mcp-registry-adapter";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -105,6 +108,7 @@ export async function registerRoutes(
   app.use("/api/skill-teams", requireAuth);
   app.use("/api/tracker-connections", requireAuth);
   app.use("/api/remote-agents", requireAuth);
+  app.use("/api/skill-market", requireAuth);
 
   // Register route implementations
   registerModelRoutes(app, storage);
@@ -143,6 +147,18 @@ export async function registerRoutes(
     remoteAgentManager = null;
   }
   registerRemoteAgentRoutes(app as unknown as Router, remoteAgentManager);
+
+  // Phase 9.5 — Skill Market unified search routes
+  let registryManager: RegistryManager | null = null;
+  try {
+    registryManager = new RegistryManager();
+    registryManager.register(new McpRegistryAdapter());
+    log("[skill-market] Registry manager initialized with MCP adapter", "skill-market");
+  } catch (e) {
+    log(`[skill-market] Skill market subsystem disabled: ${(e as Error).message}`, "skill-market");
+    registryManager = null;
+  }
+  registerSkillMarketRoutes(app as unknown as Router, registryManager);
 
   // Task Orchestrator + Tracer
   const taskTracer = new TaskTracer(storage, wsManager);
