@@ -1661,3 +1661,71 @@ export interface RemoteAgentStageConfig {
   skill?: string;
   timeoutMs?: number;
 }
+
+// ── Phase 9: Skill Market ─────────────────────────────────────────────────
+
+export interface SkillRegistrySource {
+  id: number;
+  adapterId: string;
+  name: string;
+  enabled: boolean;
+  config?: Record<string, unknown> | null;
+  lastSyncAt?: Date | null;
+  lastHealthCheckAt?: Date | null;
+  healthStatus: string;
+  healthError?: string | null;
+  catalogCount: number;
+  createdAt: Date;
+}
+
+export interface ExternalSkillSummary {
+  externalId: string;
+  name: string;
+  description: string;
+  source: string;
+  tags: string[];
+  author?: string;
+  version?: string;
+  popularity?: number;
+  iconUrl?: string;
+  installable: boolean;
+}
+
+export interface ExternalSkillDetails extends ExternalSkillSummary {
+  tools: Array<{ name: string; description: string; inputSchema?: Record<string, unknown> }>;
+  readme?: string;
+  repositoryUrl?: string;
+  license?: string;
+  lastUpdated?: Date;
+  installInstructions?: string;
+  requiredConfig?: Array<{ key: string; description: string; secret: boolean }>;
+}
+
+export interface InstalledSkillResult {
+  skillId: string;
+  mcpServerId?: number;
+  toolsRegistered: number;
+  source: string;
+  externalId: string;
+}
+
+export interface SkillUpdateInfo {
+  skillId: string;
+  externalId: string;
+  source: string;
+  currentVersion: string;
+  latestVersion: string;
+  changelog?: string;
+}
+
+export interface SkillInstallLogEntry {
+  id: number;
+  skillId?: string | null;
+  externalSource?: string | null;
+  externalId?: string | null;
+  action: string;
+  fromVersion?: string | null;
+  toVersion?: string | null;
+  userId?: string | null;
+  createdAt: Date;
+}
