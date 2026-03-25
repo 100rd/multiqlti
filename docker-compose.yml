@@ -71,6 +71,23 @@ services:
       "
     restart: unless-stopped
 
+  # ── Redis (worker queue backing store) ─────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    profiles: [dev, full]
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   # ── Application ─────────────────────────────────────────────────────────────
   multiqlti:
     build: .
@@ -88,6 +105,8 @@ services:
       SANDBOX_ENABLED: ${SANDBOX_ENABLED:-true}
       SANDBOX_MAX_CONCURRENT: ${SANDBOX_MAX_CONCURRENT:-3}
       SANDBOX_DEFAULT_TIMEOUT: ${SANDBOX_DEFAULT_TIMEOUT:-120}
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379}"
+      MULTI_FEATURES_WORKER_QUEUE: "${MULTI_FEATURES_WORKER_QUEUE:-false}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - workspace_data:/app/data/workspaces
@@ -244,6 +263,7 @@ networks:
 volumes:
   pgdata:
   pgbackups:
+  redis-data:
   vllm_cache:
   ollama_data:
   workspace_data:
