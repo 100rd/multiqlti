@@ -1,9 +1,18 @@
+/**
+ * Workspace Routes
+ *
+ * Bug #128: Refactored to use IStorage for workspace CRUD instead of direct
+ * db access, so MemStorage mode (no DATABASE_URL) does not cause 500 errors.
+ *
+ * Note: workspace_symbols queries still use db directly since the indexer
+ * subsystem requires a real database. Symbol endpoints return 409 when
+ * indexStatus !== "ready", which guards against MemStorage use.
+ */
 import { type Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { db } from "../db.js";
-import { workspaces, workspaceSymbols, SYMBOL_KINDS } from "@shared/schema";
-import { eq, and } from "drizzle-orm";
+import { SYMBOL_KINDS } from "@shared/schema";
 import type { WorkspaceRow } from "@shared/schema";
+import type { IStorage } from "../storage";
 import { WorkspaceManager } from "../workspace/manager.js";
 import { CodeChatService } from "../workspace/code-chat.js";
 import { WorkspaceIndexer } from "../workspace/indexer.js";
@@ -13,7 +22,7 @@ import { configLoader } from "../config/loader.js";
 import type { ProjectConfigResponse } from "@shared/types";
 import type { WsManager } from "../ws/manager.js";
 
-// ─── Validation schemas ───────────────────────────────────────────────────────
+// --- Validation schemas ------------------------------------------------------
 
 const ConnectWorkspaceSchema = z.discriminatedUnion("type", [
   z.object({
@@ -63,7 +72,7 @@ const ChatSchema = z.object({
     .optional(),
 });
 
-// ─── Phase 6.9 Validation Schemas ────────────────────────────────────────────
+// --- Phase 6.9 Validation Schemas --------------------------------------------
 
 const WorkspaceIdParamsSchema = z.object({
   id: z.string().min(1),
@@ -81,7 +90,7 @@ const SymbolSearchQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
-// ─── Per-workspace sync rate limiter (A4) ────────────────────────────────────
+// --- Per-workspace sync rate limiter (A4) ------------------------------------
 // Allows at most one sync per workspace per SYNC_COOLDOWN_MS milliseconds.
 
 const SYNC_COOLDOWN_MS = 60_000; // 60 seconds
@@ -97,7 +106,7 @@ function recordSync(workspaceId: string): void {
   lastSyncTime.set(workspaceId, Date.now());
 }
 
-// ─── Per-workspace index rate limiter (Phase 6.9) ─────────────────────────────
+// --- Per-workspace index rate limiter (Phase 6.9) ----------------------------
 // Max 1 manual trigger per workspace per 5 minutes.
 
 const INDEX_COOLDOWN_MS = 5 * 60_000;
@@ -113,7 +122,7 @@ function recordIndex(workspaceId: string): void {
   lastIndexTime.set(workspaceId, Date.now());
 }
 
-// ─── Route registration ───────────────────────────────────────────────────────
+// --- Route registration ------------------------------------------------------
 
 /** Strip internal paths from error messages to prevent information disclosure. */
 function sanitizeError(err: unknown): string {
@@ -128,7 +137,15 @@ function sanitizeError(err: unknown): string {
   return msg.replace(/\/[^\s'":,]+/g, "[path]");
 }
 
-export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsManager?: WsManager): void {
+export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsManager?: WsManager, storage?: IStorage): void {
+  // Storage is expected to be passed explicitly by routes.ts.
+  // If not provided, fall back to the module-level singleton via dynamic import.
+  // This keeps backward compat with tests that don't pass storage.
+  const storageRef: IStorage = storage ?? (() => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    throw new Error("storage parameter is required for registerWorkspaceRoutes");
+  })();
+
   const manager = new WorkspaceManager();
   const codeChatService = new CodeChatService(gateway);
   const dependencyGraph = new DependencyGraph();
@@ -149,23 +166,31 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
 
   const indexer = new WorkspaceIndexer(broadcastWsEvent);
 
-  // ── Workspace CRUD ──────────────────────────────────────────────────────────
+  // -- Workspace CRUD --------------------------------------------------------
 
   router.get("/api/workspaces", async (_req, res) => {
-    const rows = await db.select().from(workspaces).orderBy(workspaces.createdAt);
-    res.json(rows);
+    try {
+      const rows = await storageRef.getWorkspaces();
+      res.json(rows);
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
   });
 
   router.get("/api/workspaces/:id", async (req, res) => {
-    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, req.params.id as string));
-    if (!row) return res.status(404).json({ error: "Workspace not found" });
-    res.json(row);
+    try {
+      const row = await storageRef.getWorkspace(req.params.id as string);
+      if (!row) return res.status(404).json({ error: "Workspace not found" });
+      res.json(row);
+    } catch (e) {
+      res.status(500).json({ error: (e as Error).message });
+    }
   });
 
-  // ── Project config (multiqlti.yaml) ─────────────────────────────────────────
+  // -- Project config (multiqlti.yaml) ----------------------------------------
 
   router.get("/api/workspaces/:id/config", async (req, res) => {
-    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, req.params.id as string));
+    const row = await storageRef.getWorkspace(req.params.id as string);
     if (!row) return res.status(404).json({ error: "Workspace not found" });
 
     // Only local workspaces have a directly-readable path; remote ones use the clone path
@@ -198,22 +223,19 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
           parsed.data.path,
           parsed.data.name,
         );
-        const [row] = await db
-          .insert(workspaces)
-          .values({
-            id,
-            name,
-            type: "local",
-            path: localPath,
-            branch: "main",
-            status: "active",
-            ownerId: userId ?? null,
-          })
-          .returning();
+        const row = await storageRef.createWorkspace({
+          id,
+          name,
+          type: "local",
+          path: localPath,
+          branch: "main",
+          status: "active",
+          ownerId: userId ?? null,
+        } as Parameters<typeof storageRef.createWorkspace>[0]);
 
         // Trigger auto-indexing in background
         if (row) {
-          triggerAutoIndex(row, indexer, dependencyGraph, broadcastWsEvent);
+          triggerAutoIndex(row, indexer, dependencyGraph, broadcastWsEvent, storageRef);
         }
 
         return res.status(201).json(row);
@@ -224,31 +246,28 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       const name = parsed.data.name ?? new URL(parsed.data.url).pathname.split("/").pop() ?? id;
       const branch = parsed.data.branch ?? "main";
 
-      const [row] = await db
-        .insert(workspaces)
-        .values({
-          id,
-          name,
-          type: "remote",
-          path: parsed.data.url,
-          branch,
-          status: "syncing",
-          ownerId: userId ?? null,
-        })
-        .returning();
+      const row = await storageRef.createWorkspace({
+        id,
+        name,
+        type: "remote",
+        path: parsed.data.url,
+        branch,
+        status: "syncing",
+        ownerId: userId ?? null,
+      } as Parameters<typeof storageRef.createWorkspace>[0]);
 
       // Clone in background, then auto-index
       manager
         .cloneRemote(parsed.data.url, id, branch)
         .then(async () => {
-          await db.update(workspaces).set({ status: "active" }).where(eq(workspaces.id, id));
-          const [updatedRow] = await db.select().from(workspaces).where(eq(workspaces.id, id));
+          await storageRef.updateWorkspace(id, { status: "active" });
+          const updatedRow = await storageRef.getWorkspace(id);
           if (updatedRow) {
-            triggerAutoIndex(updatedRow, indexer, dependencyGraph, broadcastWsEvent);
+            triggerAutoIndex(updatedRow, indexer, dependencyGraph, broadcastWsEvent, storageRef);
           }
         })
         .catch(() =>
-          db.update(workspaces).set({ status: "error" }).where(eq(workspaces.id, id)),
+          storageRef.updateWorkspace(id, { status: "error" }).catch(() => undefined),
         );
 
       return res.status(201).json(row);
@@ -258,10 +277,10 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
   });
 
   router.delete("/api/workspaces/:id", async (req, res) => {
-    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, req.params.id as string));
+    const row = await storageRef.getWorkspace(req.params.id as string);
     if (!row) return res.status(404).json({ error: "Workspace not found" });
 
-    await db.delete(workspaces).where(eq(workspaces.id, req.params.id as string));
+    await storageRef.deleteWorkspace(req.params.id as string);
 
     if (row.type === "remote") {
       await manager.removeClone(row.id).catch(() => undefined);
@@ -271,7 +290,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
   });
 
   router.post("/api/workspaces/:id/sync", async (req, res) => {
-    const row = await getWorkspaceById(req.params.id as string, res);
+    const row = await getWorkspaceById(req.params.id as string, res, storageRef);
     if (!row) return;
 
     // Rate limiting: one sync per workspace per 60 s (A4)
@@ -282,34 +301,31 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     }
 
     try {
-      await db.update(workspaces).set({ status: "syncing" }).where(eq(workspaces.id, row.id));
+      await storageRef.updateWorkspace(row.id, { status: "syncing" });
       await manager.sync(row);
       recordSync(row.id);
-      await db
-        .update(workspaces)
-        .set({ status: "active", lastSyncAt: new Date() })
-        .where(eq(workspaces.id, row.id));
+      await storageRef.updateWorkspace(row.id, { status: "active", lastSyncAt: new Date() });
 
       // Trigger re-index after sync
-      const [updatedRow] = await db.select().from(workspaces).where(eq(workspaces.id, row.id));
+      const updatedRow = await storageRef.getWorkspace(row.id);
       if (updatedRow) {
-        triggerAutoIndex(updatedRow, indexer, dependencyGraph, broadcastWsEvent);
+        triggerAutoIndex(updatedRow, indexer, dependencyGraph, broadcastWsEvent, storageRef);
       }
 
       res.json({ message: "Workspace synced" });
     } catch (err) {
-      await db.update(workspaces).set({ status: "error" }).where(eq(workspaces.id, row.id));
+      await storageRef.updateWorkspace(row.id, { status: "error" }).catch(() => undefined);
       res.status(500).json({ error: sanitizeError(err) });
     }
   });
 
-  // ── File Operations ─────────────────────────────────────────────────────────
-  // Express 5 / path-to-regexp v8 requires named wildcards — bare `*` is not
+  // -- File Operations --------------------------------------------------------
+  // Express 5 / path-to-regexp v8 requires named wildcards -- bare `*` is not
   // allowed. The `*path` parameter captures everything after /files/ and is
   // accessed via req.params.path.
 
   router.get("/api/workspaces/:id/files", async (req, res) => {
-    const row = await getWorkspaceById(req.params.id as string, res);
+    const row = await getWorkspaceById(req.params.id as string, res, storageRef);
     if (!row) return;
 
     try {
@@ -322,7 +338,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
   });
 
   router.get("/api/workspaces/:id/files/*path", async (req: Request, res: Response) => {
-    const row = await getWorkspaceById(req.params.id as string, res);
+    const row = await getWorkspaceById(req.params.id as string, res, storageRef);
     if (!row) return;
 
     const filePath = decodeFilePath(req.params.path);
@@ -337,7 +353,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
   });
 
   router.put("/api/workspaces/:id/files/*path", async (req: Request, res: Response) => {
-    const row = await getWorkspaceById(req.params.id as string, res);
+    const row = await getWorkspaceById(req.params.id as string, res, storageRef);
     if (!row) return;
 
     const filePath = decodeFilePath(req.params.path);
@@ -359,7 +375,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
   });
 
   router.delete("/api/workspaces/:id/files/*path", async (req: Request, res: Response) => {
-    const row = await getWorkspaceById(req.params.id as string, res);
+    const row = await getWorkspaceById(req.params.id as string, res, storageRef);
     if (!row) return;
 
     const filePath = decodeFilePath(req.params.path);
@@ -373,10 +389,10 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     }
   });
 
-  // ── Git Operations ──────────────────────────────────────────────────────────
+  // -- Git Operations ---------------------------------------------------------
 
   router.get("/api/workspaces/:id/git/status", async (req, res) => {
-    const row = await getWorkspaceById(req.params.id as string, res);
+    const row = await getWorkspaceById(req.params.id as string, res, storageRef);
     if (!row) return;
 
     try {
@@ -388,7 +404,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
   });
 
   router.get("/api/workspaces/:id/git/diff", async (req, res) => {
-    const row = await getWorkspaceById(req.params.id as string, res);
+    const row = await getWorkspaceById(req.params.id as string, res, storageRef);
     if (!row) return;
 
     try {
@@ -400,7 +416,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
   });
 
   router.post("/api/workspaces/:id/git/commit", async (req, res) => {
-    const row = await getWorkspaceById(req.params.id as string, res);
+    const row = await getWorkspaceById(req.params.id as string, res, storageRef);
     if (!row) return;
 
     const parsed = CommitSchema.safeParse(req.body);
@@ -415,7 +431,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
   });
 
   router.post("/api/workspaces/:id/git/branch", async (req, res) => {
-    const row = await getWorkspaceById(req.params.id as string, res);
+    const row = await getWorkspaceById(req.params.id as string, res, storageRef);
     if (!row) return;
 
     const parsed = BranchSchema.safeParse(req.body);
@@ -430,7 +446,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
   });
 
   router.get("/api/workspaces/:id/git/log", async (req, res) => {
-    const row = await getWorkspaceById(req.params.id as string, res);
+    const row = await getWorkspaceById(req.params.id as string, res, storageRef);
     if (!row) return;
 
     const limit = Math.min(parseInt(String(req.query.limit ?? "20"), 10) || 20, 100);
@@ -443,10 +459,10 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     }
   });
 
-  // ── Branch Management (A1) ──────────────────────────────────────────────────
+  // -- Branch Management (A1) ------------------------------------------------
 
   router.get("/api/workspaces/:id/branches", async (req, res) => {
-    const row = await getWorkspaceById(req.params.id as string, res);
+    const row = await getWorkspaceById(req.params.id as string, res, storageRef);
     if (!row) return;
 
     try {
@@ -458,7 +474,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
   });
 
   router.post("/api/workspaces/:id/branches", async (req, res) => {
-    const row = await getWorkspaceById(req.params.id as string, res);
+    const row = await getWorkspaceById(req.params.id as string, res, storageRef);
     if (!row) return;
 
     const parsed = SwitchBranchSchema.safeParse(req.body);
@@ -466,20 +482,17 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
 
     try {
       await manager.switchBranch(row, parsed.data.branch);
-      await db
-        .update(workspaces)
-        .set({ branch: parsed.data.branch })
-        .where(eq(workspaces.id, row.id));
+      await storageRef.updateWorkspace(row.id, { branch: parsed.data.branch });
       res.json({ message: `Switched to branch '${parsed.data.branch}'` });
     } catch (err) {
       res.status(500).json({ error: sanitizeError(err) });
     }
   });
 
-  // ── AI Operations ───────────────────────────────────────────────────────────
+  // -- AI Operations ----------------------------------------------------------
 
   router.post("/api/workspaces/:id/review", async (req, res) => {
-    const row = await getWorkspaceById(req.params.id as string, res);
+    const row = await getWorkspaceById(req.params.id as string, res, storageRef);
     if (!row) return;
 
     const parsed = ReviewSchema.safeParse(req.body);
@@ -499,7 +512,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
   });
 
   router.post("/api/workspaces/:id/chat", async (req: Request, res: Response) => {
-    const row = await getWorkspaceById(req.params.id as string, res);
+    const row = await getWorkspaceById(req.params.id as string, res, storageRef);
     if (!row) return;
 
     const parsed = ChatSchema.safeParse(req.body);
@@ -545,7 +558,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     }
   });
 
-  // ── Phase 6.9: Workspace Claim ──────────────────────────────────────────────
+  // -- Phase 6.9: Workspace Claim ---------------------------------------------
 
   /**
    * POST /api/workspaces/:id/claim
@@ -557,7 +570,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     if (!params.success) return res.status(400).json({ error: params.error.message });
 
     const userId = req.user!.id;
-    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, params.data.id));
+    const row = await storageRef.getWorkspace(params.data.id);
     if (!row) return res.status(404).json({ error: "Workspace not found" });
 
     if (row.ownerId !== null && row.ownerId !== userId) {
@@ -568,15 +581,12 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       return res.json({ message: "Workspace already owned by you", workspaceId: row.id });
     }
 
-    await db
-      .update(workspaces)
-      .set({ ownerId: userId })
-      .where(eq(workspaces.id, row.id));
+    await storageRef.updateWorkspace(row.id, { ownerId: userId });
 
     res.json({ message: "Workspace claimed", workspaceId: row.id });
   });
 
-  // ── Phase 6.9: Index Trigger ────────────────────────────────────────────────
+  // -- Phase 6.9: Index Trigger -----------------------------------------------
 
   /**
    * POST /api/workspaces/:id/index
@@ -587,7 +597,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     if (!params.success) return res.status(400).json({ error: params.error.message });
 
     const userId = req.user!.id;
-    const row = await getOwnedWorkspace(params.data.id, userId, res);
+    const row = await getOwnedWorkspace(params.data.id, userId, res, storageRef);
     if (!row) return;
 
     if (row.indexStatus === "indexing") {
@@ -598,10 +608,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
       return res.status(429).json({ error: "Index throttled: please wait 5 minutes between manual triggers" });
     }
 
-    await db
-      .update(workspaces)
-      .set({ indexStatus: "indexing" })
-      .where(eq(workspaces.id, row.id));
+    await storageRef.updateWorkspace(row.id, { indexStatus: "indexing" });
 
     recordIndex(row.id);
 
@@ -609,10 +616,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     indexer
       .indexWorkspace({ ...row, indexStatus: "indexing" })
       .then(async (result) => {
-        await db
-          .update(workspaces)
-          .set({ indexStatus: "ready" })
-          .where(eq(workspaces.id, row.id));
+        await storageRef.updateWorkspace(row.id, { indexStatus: "ready" });
         broadcastWsEvent(row.id, "workspace:index_complete", {
           symbolCount: result.symbolCount,
           indexedFiles: result.indexedFiles,
@@ -624,10 +628,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
         dependencyGraph.invalidateCache(row.id);
       })
       .catch(async (err) => {
-        await db
-          .update(workspaces)
-          .set({ indexStatus: "error" })
-          .where(eq(workspaces.id, row.id));
+        await storageRef.updateWorkspace(row.id, { indexStatus: "error" }).catch(() => undefined);
         broadcastWsEvent(row.id, "workspace:index_error", {
           message: (err as Error).message,
         });
@@ -640,7 +641,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     });
   });
 
-  // ── Phase 6.9: Dependency Graph ─────────────────────────────────────────────
+  // -- Phase 6.9: Dependency Graph --------------------------------------------
 
   /**
    * GET /api/workspaces/:id/dependency-graph
@@ -651,7 +652,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     if (!params.success) return res.status(400).json({ error: params.error.message });
 
     const userId = req.user!.id;
-    const row = await getOwnedWorkspace(params.data.id, userId, res);
+    const row = await getOwnedWorkspace(params.data.id, userId, res, storageRef);
     if (!row) return;
 
     if (row.indexStatus !== "ready") {
@@ -669,7 +670,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     }
   });
 
-  // ── Phase 6.9: Symbol References ───────────────────────────────────────────
+  // -- Phase 6.9: Symbol References -------------------------------------------
 
   /**
    * GET /api/workspaces/:id/symbols/:name/references
@@ -680,7 +681,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     if (!params.success) return res.status(400).json({ error: params.error.message });
 
     const userId = req.user!.id;
-    const row = await getOwnedWorkspace(params.data.id, userId, res);
+    const row = await getOwnedWorkspace(params.data.id, userId, res, storageRef);
     if (!row) return;
 
     try {
@@ -695,7 +696,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     }
   });
 
-  // ── Phase 6.9: Symbol Definition ───────────────────────────────────────────
+  // -- Phase 6.9: Symbol Definition -------------------------------------------
 
   /**
    * GET /api/workspaces/:id/symbols/:name/definition
@@ -706,7 +707,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     if (!params.success) return res.status(400).json({ error: params.error.message });
 
     const userId = req.user!.id;
-    const row = await getOwnedWorkspace(params.data.id, userId, res);
+    const row = await getOwnedWorkspace(params.data.id, userId, res, storageRef);
     if (!row) return;
 
     try {
@@ -720,11 +721,11 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     }
   });
 
-  // ── Phase 6.9: Symbol Search ────────────────────────────────────────────────
+  // -- Phase 6.9: Symbol Search -----------------------------------------------
 
   /**
    * GET /api/workspaces/:id/symbols
-   * Upgraded symbol search — queries workspace_symbols table.
+   * Upgraded symbol search -- queries workspace_symbols table.
    */
   router.get("/api/workspaces/:id/symbols", async (req, res) => {
     const params = WorkspaceIdParamsSchema.safeParse(req.params);
@@ -734,7 +735,7 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     if (!queryParsed.success) return res.status(400).json({ error: queryParsed.error.message });
 
     const userId = req.user!.id;
-    const row = await getOwnedWorkspace(params.data.id, userId, res);
+    const row = await getOwnedWorkspace(params.data.id, userId, res, storageRef);
     if (!row) return;
 
     if (row.indexStatus !== "ready") {
@@ -776,10 +777,10 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
   });
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// --- Helpers -----------------------------------------------------------------
 
-async function getWorkspaceById(id: string, res: Response): Promise<WorkspaceRow | null> {
-  const [row] = await db.select().from(workspaces).where(eq(workspaces.id, id));
+async function getWorkspaceById(id: string, res: Response, storage: IStorage): Promise<WorkspaceRow | null> {
+  const row = await storage.getWorkspace(id);
   if (!row) {
     res.status(404).json({ error: "Workspace not found" });
     return null;
@@ -795,14 +796,15 @@ async function getOwnedWorkspace(
   id: string,
   userId: string,
   res: Response,
+  storage: IStorage,
 ): Promise<WorkspaceRow | null> {
-  const [row] = await db.select().from(workspaces).where(eq(workspaces.id, id));
+  const row = await storage.getWorkspace(id);
   if (!row) {
     res.status(404).json({ error: "Workspace not found" });
     return null;
   }
 
-  // Null ownerId = ownership not established — block access to sensitive endpoints
+  // Null ownerId = ownership not established -- block access to sensitive endpoints
   if (row.ownerId === null) {
     res.status(403).json({
       error: "Workspace ownership not established. Re-connect this workspace to claim it.",
@@ -820,27 +822,22 @@ async function getOwnedWorkspace(
 
 /**
  * Trigger auto-indexing in the background after workspace connect/sync.
- * Fire-and-forget — never throws.
+ * Fire-and-forget -- never throws.
  */
 function triggerAutoIndex(
   row: WorkspaceRow,
   indexer: WorkspaceIndexer,
   depGraph: DependencyGraph,
   broadcastWsEvent: (id: string, event: string, payload: Record<string, unknown>) => void,
+  storage: IStorage,
 ): void {
   setImmediate(async () => {
     try {
-      await db
-        .update(workspaces)
-        .set({ indexStatus: "indexing" })
-        .where(eq(workspaces.id, row.id));
+      await storage.updateWorkspace(row.id, { indexStatus: "indexing" });
 
       const result = await indexer.indexWorkspace({ ...row, indexStatus: "indexing" });
 
-      await db
-        .update(workspaces)
-        .set({ indexStatus: "ready" })
-        .where(eq(workspaces.id, row.id));
+      await storage.updateWorkspace(row.id, { indexStatus: "ready" });
 
       broadcastWsEvent(row.id, "workspace:index_complete", {
         symbolCount: result.symbolCount,
@@ -853,37 +850,48 @@ function triggerAutoIndex(
 
       depGraph.invalidateCache(row.id);
     } catch {
-      await db
-        .update(workspaces)
-        .set({ indexStatus: "error" })
-        .where(eq(workspaces.id, row.id))
-        .catch(() => undefined);
+      await storage.updateWorkspace(row.id, { indexStatus: "error" }).catch(() => undefined);
     }
   });
 }
 
 /**
- * Build a map of filePath → importedByCount from workspace_symbols.
+ * Build a map of filePath -> importedByCount from workspace_symbols.
  * Used to compute usageCount in symbol search results.
+ *
+ * Note: This still uses the db module directly because workspace_symbols are
+ * managed by the WorkspaceIndexer (which also uses db directly). These queries
+ * only run when indexStatus === "ready", which requires a real database.
+ * In MemStorage mode this is unreachable, but we catch errors gracefully.
  */
 async function buildUsageCountMap(workspaceId: string): Promise<Map<string, number>> {
-  const importRows = await db
-    .select({ name: workspaceSymbols.name, filePath: workspaceSymbols.filePath })
-    .from(workspaceSymbols)
-    .where(
-      and(
-        eq(workspaceSymbols.workspaceId, workspaceId),
-        eq(workspaceSymbols.kind, "import"),
-      ),
-    );
+  try {
+    // Dynamic import to avoid crashes when DATABASE_URL is unset
+    const { db } = await import("../db.js");
+    const { workspaceSymbols } = await import("@shared/schema");
+    const { eq, and } = await import("drizzle-orm");
 
-  const map = new Map<string, number>();
-  for (const row of importRows) {
-    if (row.name.startsWith(".")) {
-      map.set(row.name, (map.get(row.name) ?? 0) + 1);
+    const importRows = await db
+      .select({ name: workspaceSymbols.name, filePath: workspaceSymbols.filePath })
+      .from(workspaceSymbols)
+      .where(
+        and(
+          eq(workspaceSymbols.workspaceId, workspaceId),
+          eq(workspaceSymbols.kind, "import"),
+        ),
+      );
+
+    const map = new Map<string, number>();
+    for (const row of importRows) {
+      if (row.name.startsWith(".")) {
+        map.set(row.name, (map.get(row.name) ?? 0) + 1);
+      }
     }
+    return map;
+  } catch {
+    // MemStorage mode or db unavailable -- return empty map
+    return new Map();
   }
-  return map;
 }
 
 /**

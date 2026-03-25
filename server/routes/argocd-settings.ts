@@ -1,25 +1,26 @@
 /**
- * ArgoCD Settings Routes — Phase 6.10
+ * ArgoCD Settings Routes -- Phase 6.10
  *
  * Endpoints:
- *   GET    /api/settings/argocd        — current config (no token)
- *   PUT    /api/settings/argocd        — save/update config
- *   DELETE /api/settings/argocd        — remove config
- *   POST   /api/settings/argocd/test   — test connectivity
+ *   GET    /api/settings/argocd        -- current config (no token)
+ *   PUT    /api/settings/argocd        -- save/update config
+ *   DELETE /api/settings/argocd        -- remove config
+ *   POST   /api/settings/argocd/test   -- test connectivity
  *
  * All routes require authentication (covered by upstream requireAuth middleware).
+ *
+ * Bug #128: Refactored to use IStorage instead of direct db access so
+ * MemStorage mode (no DATABASE_URL) does not cause 500 errors.
  */
 import { Router } from "express";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
-import { db } from "../db";
-import { argoCdConfig, mcpServers } from "@shared/schema";
+import type { IStorage } from "../storage";
 import { encrypt, decrypt } from "../crypto";
 import { mcpClientManager } from "../tools/mcp-client";
 import { argoCdService } from "../services/argocd-service";
-import { configLoader } from "../config/loader";
+import type { ArgoCdConfigRow } from "@shared/schema";
 
-// ─── SSRF protection ─────────────────────────────────────────────────────────
+// --- SSRF protection --------------------------------------------------------
 
 const BLOCKED_HOSTNAMES = new Set([
   "localhost",
@@ -41,11 +42,11 @@ function isSsrfUrl(urlStr: string): boolean {
     if (/^192\.168\./.test(hostname)) return true;
     return false;
   } catch {
-    return true; // Invalid URL — block it
+    return true; // Invalid URL -- block it
   }
 }
 
-// ─── Validation schemas ───────────────────────────────────────────────────────
+// --- Validation schemas ------------------------------------------------------
 
 const SaveArgoCdConfigSchema = z.object({
   serverUrl: z.string().url({ message: "serverUrl must be a valid URL" }).max(500),
@@ -54,14 +55,14 @@ const SaveArgoCdConfigSchema = z.object({
   enabled: z.boolean().default(true),
 });
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// --- Helpers -----------------------------------------------------------------
 
-/** Returns the effective ArgoCD server URL — env var takes precedence over DB. */
+/** Returns the effective ArgoCD server URL -- env var takes precedence over DB. */
 function getEnvServerUrl(): string | undefined {
   return process.env["ARGOCD_SERVER_URL"] ?? undefined;
 }
 
-/** Returns the effective ArgoCD token from env — env var takes precedence over DB. */
+/** Returns the effective ArgoCD token from env -- env var takes precedence over DB. */
 function getEnvToken(): string | undefined {
   return process.env["ARGOCD_TOKEN"] ?? undefined;
 }
@@ -99,15 +100,14 @@ function buildPublicConfig(
   };
 }
 
-// ─── Route registration ───────────────────────────────────────────────────────
+// --- Route registration ------------------------------------------------------
 
-export function registerArgoCdSettingsRoutes(router: Router): void {
+export function registerArgoCdSettingsRoutes(router: Router, storage: IStorage): void {
   /** GET /api/settings/argocd */
   router.get("/api/settings/argocd", async (_req, res) => {
     try {
       const envOverride = !!(getEnvServerUrl() && getEnvToken());
-      const rows = await db.select().from(argoCdConfig).where(eq(argoCdConfig.id, 1));
-      const row = rows[0] ?? null;
+      const row = await storage.getArgoCdConfig();
       return res.json(buildPublicConfig(row, envOverride));
     } catch (e) {
       return res.status(500).json({ error: (e as Error).message });
@@ -133,8 +133,7 @@ export function registerArgoCdSettingsRoutes(router: Router): void {
 
     try {
       // Get existing row to preserve token if not provided
-      const existing = await db.select().from(argoCdConfig).where(eq(argoCdConfig.id, 1));
-      const existingRow = existing[0] ?? null;
+      const existingRow = await storage.getArgoCdConfig();
 
       let tokenEnc: string | null = existingRow?.tokenEnc ?? null;
       if (token) {
@@ -145,81 +144,58 @@ export function registerArgoCdSettingsRoutes(router: Router): void {
         return res.status(400).json({ error: "token is required for the initial ArgoCD configuration" });
       }
 
-      const now = new Date();
-
       // Upsert mcp_servers row for ArgoCD
       const decryptedToken = decrypt(tokenEnc);
       let mcpServerId: number | null = existingRow?.mcpServerId ?? null;
 
       if (mcpServerId !== null) {
         // Update existing MCP server row
-        await db
-          .update(mcpServers)
-          .set({
-            url: serverUrl,
-            env: { ARGOCD_TOKEN: decryptedToken },
-            enabled,
-            autoConnect: enabled,
-          })
-          .where(eq(mcpServers.id, mcpServerId));
+        await storage.updateMcpServer(mcpServerId, {
+          url: serverUrl,
+          env: { ARGOCD_TOKEN: decryptedToken },
+          enabled,
+          autoConnect: enabled,
+        } as Partial<import("@shared/types").McpServerConfig>);
       } else {
         // Create new MCP server row
-        const inserted = await db
-          .insert(mcpServers)
-          .values({
-            name: "argocd",
-            transport: "sse",
-            url: serverUrl,
-            env: { ARGOCD_TOKEN: decryptedToken },
-            enabled,
-            autoConnect: enabled,
-            toolCount: 0,
-          })
-          .returning({ id: mcpServers.id });
-        mcpServerId = inserted[0]?.id ?? null;
+        const inserted = await storage.createMcpServer({
+          name: "argocd",
+          transport: "sse",
+          url: serverUrl,
+          env: { ARGOCD_TOKEN: decryptedToken },
+          enabled,
+          autoConnect: enabled,
+          toolCount: 0,
+        });
+        mcpServerId = inserted.id;
       }
 
       // Upsert argocd_config row
-      await db
-        .insert(argoCdConfig)
-        .values({
-          id: 1,
-          serverUrl,
-          tokenEnc,
-          verifySsl,
-          enabled,
-          mcpServerId,
-          healthStatus: "unknown",
-          healthError: null,
-          updatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target: argoCdConfig.id,
-          set: {
-            serverUrl,
-            tokenEnc,
-            verifySsl,
-            enabled,
-            mcpServerId,
-            updatedAt: now,
-          },
-        });
+      await storage.saveArgoCdConfig({
+        id: 1,
+        serverUrl,
+        tokenEnc,
+        verifySsl,
+        enabled,
+        mcpServerId,
+        healthStatus: "unknown",
+        healthError: null,
+      } as Parameters<typeof storage.saveArgoCdConfig>[0]);
 
       // Attempt to connect/disconnect based on enabled flag
       let healthStatus: string = "unknown";
       let healthError: string | null = null;
 
       if (enabled && mcpServerId !== null) {
-        const mcpRows = await db.select().from(mcpServers).where(eq(mcpServers.id, mcpServerId));
-        const mcpRow = mcpRows[0];
+        const mcpRow = await storage.getMcpServer(mcpServerId);
         if (mcpRow) {
           try {
             await mcpClientManager.connect(mcpRow as import("@shared/types").McpServerConfig);
             healthStatus = "connected";
-            await db
-              .update(mcpServers)
-              .set({ toolCount: mcpClientManager.getTools("argocd").length, lastConnectedAt: new Date() })
-              .where(eq(mcpServers.id, mcpServerId));
+            await storage.updateMcpServer(mcpServerId, {
+              toolCount: mcpClientManager.getTools("argocd").length,
+              lastConnectedAt: new Date(),
+            } as Partial<import("@shared/types").McpServerConfig>);
           } catch (connectErr) {
             healthStatus = "error";
             healthError = (connectErr as Error).message;
@@ -230,13 +206,15 @@ export function registerArgoCdSettingsRoutes(router: Router): void {
       }
 
       // Update health status
-      await db
-        .update(argoCdConfig)
-        .set({ healthStatus: healthStatus as "connected" | "error" | "unknown", healthError, lastHealthCheckAt: new Date() })
-        .where(eq(argoCdConfig.id, 1));
+      await storage.saveArgoCdConfig({
+        id: 1,
+        healthStatus,
+        healthError,
+        lastHealthCheckAt: new Date(),
+      } as Parameters<typeof storage.saveArgoCdConfig>[0]);
 
-      const updatedRows = await db.select().from(argoCdConfig).where(eq(argoCdConfig.id, 1));
-      return res.json(buildPublicConfig(updatedRows[0] ?? null, false));
+      const updatedRow = await storage.getArgoCdConfig();
+      return res.json(buildPublicConfig(updatedRow, false));
     } catch (e) {
       return res.status(500).json({ error: (e as Error).message });
     }
@@ -245,8 +223,7 @@ export function registerArgoCdSettingsRoutes(router: Router): void {
   /** DELETE /api/settings/argocd */
   router.delete("/api/settings/argocd", async (_req, res) => {
     try {
-      const rows = await db.select().from(argoCdConfig).where(eq(argoCdConfig.id, 1));
-      const row = rows[0];
+      const row = await storage.getArgoCdConfig();
       if (!row) return res.status(204).end();
 
       // Disconnect MCP
@@ -254,11 +231,11 @@ export function registerArgoCdSettingsRoutes(router: Router): void {
 
       // Delete MCP server row if we own it
       if (row.mcpServerId !== null) {
-        await db.delete(mcpServers).where(eq(mcpServers.id, row.mcpServerId));
+        await storage.deleteMcpServer(row.mcpServerId);
       }
 
       // Delete config row
-      await db.delete(argoCdConfig).where(eq(argoCdConfig.id, 1));
+      await storage.deleteArgoCdConfig();
 
       return res.status(204).end();
     } catch (e) {
@@ -287,7 +264,7 @@ export function registerArgoCdSettingsRoutes(router: Router): void {
             toolCount: 0,
           });
         } catch {
-          // ignore — test result will reflect failure
+          // ignore -- test result will reflect failure
         }
       }
 

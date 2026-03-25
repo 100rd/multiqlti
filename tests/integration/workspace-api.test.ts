@@ -44,49 +44,53 @@ function makeId() {
   return `ws-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-// ── Mock the db module ────────────────────────────────────────────────────────
+// ── Mock IStorage for workspace CRUD (Bug #128 refactor) ─────────────────────
+
+const mockStorage = {
+  getWorkspaces: () => Promise.resolve([...workspaceStore]),
+  getWorkspace: (id: string) => {
+    const ws = workspaceStore.find((w) => w.id === id);
+    return Promise.resolve(ws ?? null);
+  },
+  createWorkspace: (data: Record<string, unknown>) => {
+    const ws: WorkspaceRow = {
+      id: (data.id as string) ?? makeId(),
+      name: (data.name as string) ?? "test",
+      type: (data.type as "local" | "remote") ?? "local",
+      path: (data.path as string) ?? "/tmp/test",
+      branch: (data.branch as string) ?? "main",
+      status: (data.status as "active" | "syncing" | "error") ?? "active",
+      lastSyncAt: null,
+      createdAt: new Date(),
+      ownerId: (data.ownerId as string) ?? null,
+      indexStatus: (data.indexStatus as "idle" | "indexing" | "ready" | "error") ?? "idle",
+    };
+    workspaceStore.push(ws);
+    return Promise.resolve(ws);
+  },
+  updateWorkspace: (id: string, updates: Partial<WorkspaceRow>) => {
+    const idx = workspaceStore.findIndex((w) => w.id === id);
+    if (idx >= 0) {
+      workspaceStore[idx] = { ...workspaceStore[idx], ...updates };
+      return Promise.resolve(workspaceStore[idx]);
+    }
+    return Promise.reject(new Error("Workspace not found"));
+  },
+  deleteWorkspace: (id: string) => {
+    workspaceStore = workspaceStore.filter((w) => w.id !== id);
+    return Promise.resolve();
+  },
+} as unknown;
+
+// ── Mock the db module (still needed for symbol queries / indexer) ────────────
 
 vi.mock("../../server/db.js", () => ({
   db: {
     select: () => ({
       from: () => ({
-        orderBy: () => Promise.resolve([...workspaceStore]),
-        where: (_cond: unknown) => {
-          void _cond;
-          // Simplified: return all workspaces. Routes destructure first element.
-          // Tests that need a found workspace seed workspaceStore in beforeEach.
-          return Promise.resolve([...workspaceStore]);
-        },
+        orderBy: () => Promise.resolve([]),
+        where: () => Promise.resolve([]),
       }),
-    }),
-    insert: () => ({
-      values: (data: Record<string, unknown>) => ({
-        returning: () => {
-          const ws: WorkspaceRow = {
-            id: (data.id as string) ?? makeId(),
-            name: (data.name as string) ?? "test",
-            type: (data.type as "local" | "remote") ?? "local",
-            path: (data.path as string) ?? "/tmp/test",
-            branch: (data.branch as string) ?? "main",
-            status: (data.status as "active" | "syncing" | "error") ?? "active",
-            lastSyncAt: null,
-            createdAt: new Date(),
-          };
-          workspaceStore.push(ws);
-          return Promise.resolve([ws]);
-        },
-      }),
-    }),
-    update: () => ({
-      set: () => ({
-        where: () => Promise.resolve(),
-      }),
-    }),
-    delete: () => ({
-      where: () => {
-        workspaceStore = workspaceStore.slice(1); // remove first
-        return Promise.resolve();
-      },
     }),
   },
 }));
@@ -202,6 +206,8 @@ describe("Workspace API", () => {
     registerWorkspaceRoutes(
       appInstance as unknown as import("express").Router,
       mockGateway as import("../../server/gateway/index.js").Gateway,
+      undefined,
+      mockStorage as import("../../server/storage.js").IStorage,
     );
 
     app = appInstance;
