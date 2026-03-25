@@ -21,6 +21,7 @@ import { ManagerAgent } from "../pipeline/manager-agent";
 import type { ManagerConfig } from "@shared/types";
 import type { Tracer } from "../tracing/tracer";
 import { exportTrace } from "../tracing/otlp-exporter";
+import { isQueueEnabled, StageQueueProducer, getRedisConnection } from "../queue/index.js";
 
 interface ApprovalHandle {
   resolve: (approved: boolean) => void;
@@ -41,6 +42,7 @@ export class PipelineController {
   private managerAgent?: ManagerAgent;
   private tracer?: Tracer;
   private remoteAgentManager?: RemoteAgentManager;
+  private stageQueueProducer?: StageQueueProducer;
 
   constructor(
     private storage: IStorage,
@@ -71,6 +73,15 @@ export class PipelineController {
     this.tracer = tracer;
     this.remoteAgentManager = remoteAgentManager;
     this.dagExecutor = new DAGExecutor(storage, wsManager);
+
+    // Initialize Redis-backed stage queue when feature flag is enabled
+    if (isQueueEnabled()) {
+      const conn = getRedisConnection();
+      if (conn) {
+        this.stageQueueProducer = new StageQueueProducer(conn);
+        console.log("[pipeline-controller] Worker queue enabled — stages will be dispatched to Redis/BullMQ");
+      }
+    }
   }
 
   async startRun(pipelineId: string, input: string, variables?: Record<string, string>, triggeredBy?: string): Promise<PipelineRun> {
@@ -586,6 +597,40 @@ export class PipelineController {
         // Pass execution strategy (undefined = single, handled in BaseTeam)
         // Swarm takes priority over parallel; falls back to single-agent if neither enabled
         let result: TeamResult;
+
+        // ─── Queue Dispatch (optional) ──────────────────────────────────────
+        // When the worker queue feature flag is enabled, dispatch the stage to
+        // a BullMQ job instead of executing in-process. The worker will pick
+        // it up and process it asynchronously.
+        if (this.stageQueueProducer && !resolvedStage.remoteAgent) {
+          const inputStr = typeof stageInput === "string"
+            ? stageInput
+            : (stageInput as Record<string, unknown>).taskDescription as string ?? JSON.stringify(stageInput);
+
+          const jobId = await this.stageQueueProducer.enqueueStage({
+            runId: run.id,
+            stageIndex: i,
+            stageConfig: resolvedStage as unknown as Record<string, unknown>,
+            input: inputStr,
+          });
+
+          this.broadcast(run.id, {
+            type: "stage:queued",
+            runId: run.id,
+            stageExecutionId: stageExec.id,
+            payload: { stageIndex: i, jobId },
+            timestamp: new Date().toISOString(),
+          } as unknown as WsEvent);
+
+          // Mark stage as queued and continue — the worker will update status
+          await this.storage.updateStageExecution(stageExec.id, {
+            status: "running",
+          });
+
+          previousOutputs.push({ queued: true, jobId });
+          fullContext.push({ teamId: stage.teamId, output: { queued: true, jobId }, stageIndex: i });
+          continue;
+        }
 
 
         if (resolvedStage.remoteAgent) {
