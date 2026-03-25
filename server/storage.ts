@@ -40,6 +40,10 @@ import {
   type InsertSkillTeam,
   type ModelSkillBinding,
   type InsertModelSkillBinding,
+  type ArgoCdConfigRow,
+  type InsertArgoCdConfig,
+  type WorkspaceRow,
+  type InsertWorkspace,
 } from "@shared/schema";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType } from "@shared/types";
 import { randomUUID } from "crypto";
@@ -260,6 +264,18 @@ export interface IStorage {
   createModelSkillBinding(data: InsertModelSkillBinding): Promise<ModelSkillBinding>;
   deleteModelSkillBinding(modelId: string, skillId: string): Promise<void>;
   resolveSkillsForModel(modelId: string): Promise<Skill[]>;
+
+  // ArgoCD Config
+  getArgoCdConfig(): Promise<ArgoCdConfigRow | null>;
+  saveArgoCdConfig(config: Partial<InsertArgoCdConfig> & { id?: number }): Promise<ArgoCdConfigRow>;
+  deleteArgoCdConfig(): Promise<void>;
+
+  // Workspaces
+  getWorkspaces(): Promise<WorkspaceRow[]>;
+  getWorkspace(id: string): Promise<WorkspaceRow | null>;
+  createWorkspace(data: InsertWorkspace & { id?: string }): Promise<WorkspaceRow>;
+  updateWorkspace(id: string, updates: Partial<WorkspaceRow>): Promise<WorkspaceRow>;
+  deleteWorkspace(id: string): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -1564,6 +1580,92 @@ export class MemStorage implements IStorage {
     return result;
   }
 
+
+  // ─── ArgoCD Config ────────────────────────────────────────────────────────
+
+  private argoCdConfigRow: ArgoCdConfigRow | null = null;
+
+  async getArgoCdConfig(): Promise<ArgoCdConfigRow | null> {
+    return this.argoCdConfigRow;
+  }
+
+  async saveArgoCdConfig(config: Partial<InsertArgoCdConfig> & { id?: number }): Promise<ArgoCdConfigRow> {
+    const now = new Date();
+    if (this.argoCdConfigRow) {
+      // Update existing
+      this.argoCdConfigRow = {
+        ...this.argoCdConfigRow,
+        ...config,
+        updatedAt: now,
+      } as ArgoCdConfigRow;
+    } else {
+      // Create new
+      this.argoCdConfigRow = {
+        id: config.id ?? 1,
+        serverUrl: config.serverUrl ?? null,
+        tokenEnc: config.tokenEnc ?? null,
+        verifySsl: config.verifySsl ?? true,
+        enabled: config.enabled ?? false,
+        mcpServerId: config.mcpServerId ?? null,
+        lastHealthCheckAt: null,
+        healthStatus: "unknown",
+        healthError: null,
+        createdAt: now,
+        updatedAt: now,
+        ...config,
+      } as ArgoCdConfigRow;
+    }
+    return this.argoCdConfigRow;
+  }
+
+  async deleteArgoCdConfig(): Promise<void> {
+    this.argoCdConfigRow = null;
+  }
+
+  // ─── Workspaces ───────────────────────────────────────────────────────────
+
+  private workspacesMap: Map<string, WorkspaceRow> = new Map();
+
+  async getWorkspaces(): Promise<WorkspaceRow[]> {
+    return Array.from(this.workspacesMap.values()).sort(
+      (a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0),
+    );
+  }
+
+  async getWorkspace(id: string): Promise<WorkspaceRow | null> {
+    return this.workspacesMap.get(id) ?? null;
+  }
+
+  async createWorkspace(data: InsertWorkspace & { id?: string }): Promise<WorkspaceRow> {
+    const id = data.id ?? randomUUID();
+    const now = new Date();
+    const row: WorkspaceRow = {
+      id,
+      name: data.name,
+      type: data.type as "local" | "remote",
+      path: data.path,
+      branch: data.branch ?? "main",
+      status: (data.status ?? "active") as "active" | "syncing" | "error",
+      lastSyncAt: data.lastSyncAt ?? null,
+      createdAt: now,
+      ownerId: data.ownerId ?? null,
+      indexStatus: (data.indexStatus ?? "idle") as "idle" | "indexing" | "ready" | "error",
+    };
+    this.workspacesMap.set(id, row);
+    return row;
+  }
+
+  async updateWorkspace(id: string, updates: Partial<WorkspaceRow>): Promise<WorkspaceRow> {
+    const existing = this.workspacesMap.get(id);
+    if (!existing) throw new Error(`Workspace not found: ${id}`);
+    const updated = { ...existing, ...updates };
+    this.workspacesMap.set(id, updated);
+    return updated;
+  }
+
+  async deleteWorkspace(id: string): Promise<void> {
+    this.workspacesMap.delete(id);
+  }
 }
 
 export const storage: IStorage = configLoader.get().database.url

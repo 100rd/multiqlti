@@ -16,6 +16,8 @@ import {
   triggers,
   managerIterations,
   traces,
+  argoCdConfig,
+  workspaces,
   type UserRow, type InsertUser,
   type Model, type InsertModel,
   type Pipeline, type InsertPipeline,
@@ -48,6 +50,10 @@ import {
   type InsertTrackerConnection,
   type ModelSkillBinding,
   type InsertModelSkillBinding,
+  type ArgoCdConfigRow,
+  type InsertArgoCdConfig,
+  type WorkspaceRow,
+  type InsertWorkspace,
 } from "@shared/schema";
 import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion } from "@shared/types";
 
@@ -1167,4 +1173,90 @@ export class PgStorage implements IStorage {
     return rows.map((r) => r.skill);
   }
 
+
+  // ─── ArgoCD Config ────────────────────────────────────────────────────────
+
+  async getArgoCdConfig(): Promise<ArgoCdConfigRow | null> {
+    const [row] = await db.select().from(argoCdConfig).where(eq(argoCdConfig.id, 1));
+    return row ?? null;
+  }
+
+  async saveArgoCdConfig(config: Partial<InsertArgoCdConfig> & { id?: number }): Promise<ArgoCdConfigRow> {
+    const now = new Date();
+    const existing = await this.getArgoCdConfig();
+
+    if (existing) {
+      // Update existing row
+      const updates: Record<string, unknown> = { updatedAt: now };
+      if (config.serverUrl !== undefined) updates.serverUrl = config.serverUrl;
+      if (config.tokenEnc !== undefined) updates.tokenEnc = config.tokenEnc;
+      if (config.verifySsl !== undefined) updates.verifySsl = config.verifySsl;
+      if (config.enabled !== undefined) updates.enabled = config.enabled;
+      if (config.mcpServerId !== undefined) updates.mcpServerId = config.mcpServerId;
+      if ((config as Record<string, unknown>).healthStatus !== undefined) updates.healthStatus = (config as Record<string, unknown>).healthStatus;
+      if ((config as Record<string, unknown>).healthError !== undefined) updates.healthError = (config as Record<string, unknown>).healthError;
+      if ((config as Record<string, unknown>).lastHealthCheckAt !== undefined) updates.lastHealthCheckAt = (config as Record<string, unknown>).lastHealthCheckAt;
+
+      const [row] = await db
+        .update(argoCdConfig)
+        .set(updates)
+        .where(eq(argoCdConfig.id, 1))
+        .returning();
+      return row;
+    } else {
+      // Insert new row
+      const [row] = await db
+        .insert(argoCdConfig)
+        .values({
+          id: config.id ?? 1,
+          serverUrl: config.serverUrl ?? null,
+          tokenEnc: config.tokenEnc ?? null,
+          verifySsl: config.verifySsl ?? true,
+          enabled: config.enabled ?? false,
+          mcpServerId: config.mcpServerId ?? null,
+          healthStatus: ((config as Record<string, unknown>).healthStatus as string) ?? "unknown",
+          healthError: ((config as Record<string, unknown>).healthError as string) ?? null,
+          updatedAt: now,
+        } as typeof argoCdConfig.$inferInsert)
+        .returning();
+      return row;
+    }
+  }
+
+  async deleteArgoCdConfig(): Promise<void> {
+    await db.delete(argoCdConfig).where(eq(argoCdConfig.id, 1));
+  }
+
+  // ─── Workspaces ───────────────────────────────────────────────────────────
+
+  async getWorkspaces(): Promise<WorkspaceRow[]> {
+    return db.select().from(workspaces).orderBy(asc(workspaces.createdAt));
+  }
+
+  async getWorkspace(id: string): Promise<WorkspaceRow | null> {
+    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, id));
+    return row ?? null;
+  }
+
+  async createWorkspace(data: InsertWorkspace & { id?: string }): Promise<WorkspaceRow> {
+    const [row] = await db
+      .insert(workspaces)
+      .values(data as typeof workspaces.$inferInsert)
+      .returning();
+    return row;
+  }
+
+  async updateWorkspace(id: string, updates: Partial<WorkspaceRow>): Promise<WorkspaceRow> {
+    const [row] = await db
+      .update(workspaces)
+      .set(updates)
+      .where(eq(workspaces.id, id))
+      .returning();
+    if (!row) throw new Error(`Workspace not found: ${id}`);
+    return row;
+  }
+
+  async deleteWorkspace(id: string): Promise<void> {
+    await db.delete(workspaces).where(eq(workspaces.id, id));
+  }
 }

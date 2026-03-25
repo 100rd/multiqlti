@@ -122,7 +122,7 @@ export async function registerRoutes(
   registerStatsRoutes(app, storage);
   registerMemoryRoutes(app, storage);
   registerToolRoutes(app, storage);
-  registerWorkspaceRoutes(app, gateway, wsManager);
+  registerWorkspaceRoutes(app, gateway, wsManager, storage);
   registerSandboxRoutes(app as unknown as Router);
   registerSettingsRoutes(app as unknown as Router, gateway);
   registerMaintenanceRoutes(app as unknown as Router);
@@ -133,7 +133,7 @@ export async function registerRoutes(
   registerDelegationRoutes(app, storage);
   registerDAGRoutes(app, storage);
   registerTraceRoutes(app, storage);
-  registerArgoCdSettingsRoutes(app as unknown as Router);
+  registerArgoCdSettingsRoutes(app as unknown as Router, storage);
   registerLibraryRoutes(app as unknown as Router);
   registerLmStudioRoutes(app as unknown as Router, storage, gateway);
 

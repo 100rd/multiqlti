@@ -78,43 +78,42 @@ const mockSymbolRows = [
   },
 ];
 
+// DB mock is only needed for workspace_symbols queries (buildUsageCountMap).
+// Workspace CRUD now goes through IStorage (Bug #128).
 vi.mock("../../server/db.js", () => ({
   db: {
     select: () => ({
       from: () => ({
-        orderBy: () => Promise.resolve([...workspaceStore.values()]),
-        where: (cond: unknown) => {
-          void cond;
-          // Return all symbols (filter handled in tests via mockSymbolRows)
-          return Promise.resolve([...workspaceStore.values()]);
-        },
+        orderBy: () => Promise.resolve([]),
+        where: () => Promise.resolve([]),
       }),
-    }),
-    insert: () => ({
-      values: (data: Record<string, unknown>) => ({
-        returning: () => {
-          const id = (data.id as string) ?? `ws-${Date.now()}`;
-          const ws = makeWorkspace(id, (data.ownerId as string) ?? null, "idle");
-          workspaceStore.set(id, ws);
-          return Promise.resolve([ws]);
-        },
-        onConflictDoUpdate: () => Promise.resolve(),
-      }),
-    }),
-    update: () => ({
-      set: (data: Record<string, unknown>) => ({
-        where: (cond: unknown) => {
-          void cond;
-          void data;
-          return Promise.resolve();
-        },
-      }),
-    }),
-    delete: () => ({
-      where: () => Promise.resolve(),
     }),
   },
 }));
+
+// ── Mock IStorage for workspace CRUD (Bug #128) ─────────────────────────────
+
+const mockStorage = {
+  getWorkspaces: () => Promise.resolve([...workspaceStore.values()]),
+  getWorkspace: (id: string) => Promise.resolve(workspaceStore.get(id) ?? null),
+  createWorkspace: (data: Record<string, unknown>) => {
+    const id = (data.id as string) ?? `ws-new-${Date.now()}`;
+    const ws = makeWorkspace(id, (data.ownerId as string) ?? null, "idle");
+    workspaceStore.set(id, ws);
+    return Promise.resolve(ws);
+  },
+  updateWorkspace: (id: string, updates: Partial<WorkspaceRow>) => {
+    const existing = workspaceStore.get(id);
+    if (!existing) return Promise.reject(new Error("Workspace not found"));
+    const updated = { ...existing, ...updates };
+    workspaceStore.set(id, updated);
+    return Promise.resolve(updated);
+  },
+  deleteWorkspace: (id: string) => {
+    workspaceStore.delete(id);
+    return Promise.resolve();
+  },
+} as unknown;
 
 // ─── Mock WorkspaceManager ────────────────────────────────────────────────────
 
@@ -222,67 +221,7 @@ vi.mock("../../server/workspace/dependency-graph.js", () => ({
 
 // ─── App Setup ────────────────────────────────────────────────────────────────
 
-// We need a custom db mock that returns the right workspace for each test.
-// Override the db.select().from().where() to resolve based on workspaceId.
-
-// Patch the db mock to resolve workspaces by ID
-const { db } = await import("../../server/db.js");
-
-// Intercept select to return workspace by ID
-function setupDbMock() {
-  vi.spyOn(db, "select").mockImplementation(() => ({
-    from: () => ({
-      orderBy: () => Promise.resolve([...workspaceStore.values()]),
-      where: (cond: unknown) => {
-        void cond;
-        // Return all (routes destructure first element — so returning the right one matters)
-        // For simplicity, tests will set up the expected workspace to be first in array.
-        return Promise.resolve([...workspaceStore.values()]);
-      },
-    }),
-    selectDistinct: () => ({
-      from: () => ({
-        where: () => Promise.resolve([]),
-      }),
-    }),
-  }) as ReturnType<typeof db.select>);
-}
-
-// Better approach: use a real lookup function in the db mock
-function makeDbWithLookup() {
-  return {
-    select: () => ({
-      from: (table: unknown) => ({
-        orderBy: () => Promise.resolve([...workspaceStore.values()]),
-        where: (cond: unknown) => {
-          void table;
-          void cond;
-          // Always return full store — routes take first element
-          return Promise.resolve([...workspaceStore.values()]);
-        },
-      }),
-    }),
-    insert: () => ({
-      values: (data: Record<string, unknown>) => ({
-        returning: () => {
-          const id = (data.id as string) ?? `ws-new-${Date.now()}`;
-          const ws = makeWorkspace(id, data.ownerId as string ?? null, "idle");
-          workspaceStore.set(id, ws);
-          return Promise.resolve([ws]);
-        },
-        onConflictDoUpdate: () => Promise.resolve(),
-      }),
-    }),
-    update: () => ({
-      set: () => ({
-        where: () => Promise.resolve(),
-      }),
-    }),
-    delete: () => ({
-      where: () => Promise.resolve(),
-    }),
-  };
-}
+// No setupDbMock needed -- workspace CRUD goes through mockStorage (Bug #128)
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -302,35 +241,16 @@ async function makeApp(): Promise<Express> {
   // Build a minimal gateway mock
   const gatewayMock = { } as unknown as InstanceType<typeof Gateway>;
 
-  registerWorkspaceRoutes(app, gatewayMock);
+  registerWorkspaceRoutes(
+    app,
+    gatewayMock,
+    undefined,
+    mockStorage as import("../../server/storage.js").IStorage,
+  );
   return app;
 }
 
-// ─── Override db mock to do proper workspace lookup by ID ─────────────────────
-
-// We need the db mock to return the right workspace when filtered by ID.
-// Since vitest hoists mocks but we need dynamic behavior, we use a stateful mock.
-
-let currentLookupId: string | null = null;
-const dbMockModule = await import("../../server/db.js");
-
-function mockDbForWorkspaceId(id: string) {
-  currentLookupId = id;
-  vi.spyOn(dbMockModule.db, "select").mockReturnValue({
-    from: () => ({
-      orderBy: () => Promise.resolve([...workspaceStore.values()]),
-      where: () => {
-        const ws = workspaceStore.get(id);
-        return Promise.resolve(ws ? [ws] : []);
-      },
-    }),
-    selectDistinct: () => ({
-      from: () => ({
-        where: () => Promise.resolve([]),
-      }),
-    }),
-  } as ReturnType<typeof dbMockModule.db.select>);
-}
+// mockDbForWorkspaceId no longer needed -- routes use storage.getWorkspace(id)
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -343,14 +263,12 @@ describe("Phase 6.9 workspace index API", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    currentLookupId = null;
   });
 
   // ── GET /dependency-graph ──────────────────────────────────────────────────
 
   describe("GET /api/workspaces/:id/dependency-graph", () => {
     it("200 with valid DependencyGraphResponse when workspace is ready", async () => {
-      mockDbForWorkspaceId(READY_WS_ID);
       const res = await request(app).get(`/api/workspaces/${READY_WS_ID}/dependency-graph`);
       expect(res.status).toBe(200);
       expect(res.body).toHaveProperty("nodes");
@@ -358,26 +276,22 @@ describe("Phase 6.9 workspace index API", () => {
     });
 
     it("403 when workspace has null ownerId (IDOR prevention)", async () => {
-      mockDbForWorkspaceId(UNOWNED_WS_ID);
       const res = await request(app).get(`/api/workspaces/${UNOWNED_WS_ID}/dependency-graph`);
       expect(res.status).toBe(403);
       expect(res.body.error).toMatch(/ownership not established/i);
     });
 
     it("403 when different user owns workspace", async () => {
-      mockDbForWorkspaceId(OTHER_OWNED_WS_ID);
       const res = await request(app).get(`/api/workspaces/${OTHER_OWNED_WS_ID}/dependency-graph`);
       expect(res.status).toBe(403);
     });
 
     it("404 when workspace ID doesn't exist", async () => {
-      mockDbForWorkspaceId(NONEXISTENT_WS_ID);
       const res = await request(app).get(`/api/workspaces/${NONEXISTENT_WS_ID}/dependency-graph`);
       expect(res.status).toBe(404);
     });
 
     it("409 when workspace indexStatus is idle", async () => {
-      mockDbForWorkspaceId(IDLE_WS_ID);
       const res = await request(app).get(`/api/workspaces/${IDLE_WS_ID}/dependency-graph`);
       expect(res.status).toBe(409);
       expect(res.body).toHaveProperty("indexStatus");
@@ -388,7 +302,6 @@ describe("Phase 6.9 workspace index API", () => {
 
   describe("GET /api/workspaces/:id/symbols/:name/references", () => {
     it("200 with RefResult array for known symbol", async () => {
-      mockDbForWorkspaceId(READY_WS_ID);
       const res = await request(app).get(
         `/api/workspaces/${READY_WS_ID}/symbols/calculateTotal/references`,
       );
@@ -399,7 +312,6 @@ describe("Phase 6.9 workspace index API", () => {
     });
 
     it("200 with empty array for unknown symbol", async () => {
-      mockDbForWorkspaceId(READY_WS_ID);
       mockFindReferences.mockResolvedValueOnce([]);
       const res = await request(app).get(
         `/api/workspaces/${READY_WS_ID}/symbols/unknownSymbol/references`,
@@ -409,7 +321,6 @@ describe("Phase 6.9 workspace index API", () => {
     });
 
     it("403 for null ownerId workspace", async () => {
-      mockDbForWorkspaceId(UNOWNED_WS_ID);
       const res = await request(app).get(
         `/api/workspaces/${UNOWNED_WS_ID}/symbols/foo/references`,
       );
@@ -417,7 +328,6 @@ describe("Phase 6.9 workspace index API", () => {
     });
 
     it("404 for nonexistent workspace", async () => {
-      mockDbForWorkspaceId(NONEXISTENT_WS_ID);
       const res = await request(app).get(
         `/api/workspaces/${NONEXISTENT_WS_ID}/symbols/foo/references`,
       );
@@ -429,7 +339,6 @@ describe("Phase 6.9 workspace index API", () => {
 
   describe("GET /api/workspaces/:id/symbols/:name/definition", () => {
     it("200 with definition for known symbol", async () => {
-      mockDbForWorkspaceId(READY_WS_ID);
       const res = await request(app).get(
         `/api/workspaces/${READY_WS_ID}/symbols/calculateTotal/definition`,
       );
@@ -439,7 +348,6 @@ describe("Phase 6.9 workspace index API", () => {
     });
 
     it("200 with definition: null for unknown symbol", async () => {
-      mockDbForWorkspaceId(READY_WS_ID);
       mockFindDefinition.mockResolvedValueOnce(null);
       const res = await request(app).get(
         `/api/workspaces/${READY_WS_ID}/symbols/ghost/definition`,
@@ -449,7 +357,6 @@ describe("Phase 6.9 workspace index API", () => {
     });
 
     it("403 for null ownerId workspace", async () => {
-      mockDbForWorkspaceId(UNOWNED_WS_ID);
       const res = await request(app).get(
         `/api/workspaces/${UNOWNED_WS_ID}/symbols/foo/definition`,
       );
@@ -457,7 +364,6 @@ describe("Phase 6.9 workspace index API", () => {
     });
 
     it("404 for nonexistent workspace", async () => {
-      mockDbForWorkspaceId(NONEXISTENT_WS_ID);
       const res = await request(app).get(
         `/api/workspaces/${NONEXISTENT_WS_ID}/symbols/foo/definition`,
       );
@@ -469,7 +375,6 @@ describe("Phase 6.9 workspace index API", () => {
 
   describe("GET /api/workspaces/:id/symbols", () => {
     it("200 with results when workspace indexed", async () => {
-      mockDbForWorkspaceId(READY_WS_ID);
       const res = await request(app).get(
         `/api/workspaces/${READY_WS_ID}/symbols?q=calc`,
       );
@@ -480,7 +385,6 @@ describe("Phase 6.9 workspace index API", () => {
     });
 
     it("409 when workspace not indexed", async () => {
-      mockDbForWorkspaceId(IDLE_WS_ID);
       const res = await request(app).get(
         `/api/workspaces/${IDLE_WS_ID}/symbols?q=calc`,
       );
@@ -488,7 +392,6 @@ describe("Phase 6.9 workspace index API", () => {
     });
 
     it("400 when q param is missing", async () => {
-      mockDbForWorkspaceId(READY_WS_ID);
       const res = await request(app).get(
         `/api/workspaces/${READY_WS_ID}/symbols`,
       );
@@ -496,7 +399,6 @@ describe("Phase 6.9 workspace index API", () => {
     });
 
     it("400 when kind filter is invalid", async () => {
-      mockDbForWorkspaceId(READY_WS_ID);
       const res = await request(app).get(
         `/api/workspaces/${READY_WS_ID}/symbols?q=foo&kind=invalid_kind`,
       );
@@ -504,7 +406,6 @@ describe("Phase 6.9 workspace index API", () => {
     });
 
     it("403 for null ownerId workspace", async () => {
-      mockDbForWorkspaceId(UNOWNED_WS_ID);
       const res = await request(app).get(
         `/api/workspaces/${UNOWNED_WS_ID}/symbols?q=foo`,
       );
@@ -516,7 +417,6 @@ describe("Phase 6.9 workspace index API", () => {
 
   describe("POST /api/workspaces/:id/index", () => {
     it("202 and sets indexStatus to indexing", async () => {
-      mockDbForWorkspaceId(READY_WS_ID);
       const res = await request(app).post(`/api/workspaces/${READY_WS_ID}/index`);
       expect(res.status).toBe(202);
       expect(res.body).toHaveProperty("message", "Indexing started");
@@ -524,20 +424,17 @@ describe("Phase 6.9 workspace index API", () => {
     });
 
     it("409 when already indexing", async () => {
-      mockDbForWorkspaceId(INDEXING_WS_ID);
       const res = await request(app).post(`/api/workspaces/${INDEXING_WS_ID}/index`);
       expect(res.status).toBe(409);
       expect(res.body.error).toMatch(/already in progress/i);
     });
 
     it("403 for null ownerId workspace", async () => {
-      mockDbForWorkspaceId(UNOWNED_WS_ID);
       const res = await request(app).post(`/api/workspaces/${UNOWNED_WS_ID}/index`);
       expect(res.status).toBe(403);
     });
 
     it("404 for nonexistent workspace", async () => {
-      mockDbForWorkspaceId(NONEXISTENT_WS_ID);
       const res = await request(app).post(`/api/workspaces/${NONEXISTENT_WS_ID}/index`);
       expect(res.status).toBe(404);
     });
@@ -547,27 +444,23 @@ describe("Phase 6.9 workspace index API", () => {
 
   describe("POST /api/workspaces/:id/claim", () => {
     it("200 when claiming an unowned workspace", async () => {
-      mockDbForWorkspaceId(UNOWNED_WS_ID);
       const res = await request(app).post(`/api/workspaces/${UNOWNED_WS_ID}/claim`);
       expect(res.status).toBe(200);
       expect(res.body.message).toMatch(/claimed/i);
     });
 
     it("200 when workspace already owned by the same user", async () => {
-      mockDbForWorkspaceId(READY_WS_ID);
       const res = await request(app).post(`/api/workspaces/${READY_WS_ID}/claim`);
       expect(res.status).toBe(200);
       expect(res.body.message).toMatch(/already owned/i);
     });
 
     it("409 when workspace is owned by a different user", async () => {
-      mockDbForWorkspaceId(OTHER_OWNED_WS_ID);
       const res = await request(app).post(`/api/workspaces/${OTHER_OWNED_WS_ID}/claim`);
       expect(res.status).toBe(409);
     });
 
     it("404 for nonexistent workspace", async () => {
-      mockDbForWorkspaceId(NONEXISTENT_WS_ID);
       const res = await request(app).post(`/api/workspaces/${NONEXISTENT_WS_ID}/claim`);
       expect(res.status).toBe(404);
     });
