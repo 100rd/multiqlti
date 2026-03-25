@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { pool } from "../db";
 import { configLoader } from "../config/loader";
 import { authService } from "../auth/service";
+import { getFederationManager } from "../index";
 
 /**
  * GET /api/health
@@ -20,15 +21,16 @@ import { authService } from "../auth/service";
  *     vllm:   { status: "ok" | "unreachable" | "disabled" },
  *     ollama: { status: "ok" | "unreachable" | "disabled" },
  *   },
+ *   federation: { peerCount: number },
  * }
  *
  * HTTP status codes:
- *   200 — ok or degraded (app is running, some deps may be unavailable)
- *   503 — unhealthy (DB is down; app cannot serve requests)
+ *   200 -- ok or degraded (app is running, some deps may be unavailable)
+ *   503 -- unhealthy (DB is down; app cannot serve requests)
  */
 export function registerHealthRoutes(app: Express): void {
   app.get("/api/health", async (req, res) => {
-    // Check if caller is authenticated (optional — unauthenticated gets minimal response)
+    // Check if caller is authenticated (optional -- unauthenticated gets minimal response)
     let isAuthenticated = false;
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith("Bearer ")) {
@@ -36,11 +38,11 @@ export function registerHealthRoutes(app: Express): void {
         await authService.validateToken(authHeader.slice(7));
         isAuthenticated = true;
       } catch {
-        // Not authenticated — serve minimal response
+        // Not authenticated -- serve minimal response
       }
     }
 
-    // ── 1. Database check ───────────────────────────────────────────────────
+    // -- 1. Database check --
     let dbStatus: { status: "ok" | "error"; latencyMs?: number; error?: string } = {
       status: "error",
     };
@@ -57,7 +59,7 @@ export function registerHealthRoutes(app: Express): void {
       };
     }
 
-    // ── 2. Provider checks (best-effort, 3 s timeout, non-blocking) ─────────
+    // -- 2. Provider checks (best-effort, 3 s timeout, non-blocking) --
     const config = configLoader.get();
     const vllmEndpoint = config.providers.vllm.endpoint;
     const ollamaEndpoint = config.providers.ollama.endpoint;
@@ -86,10 +88,10 @@ export function registerHealthRoutes(app: Express): void {
       checkUrl(lmstudioEndpoint, "/v1/models"),
     ]);
 
-    // ── 3. Overall status ───────────────────────────────────────────────────
-    // unhealthy  → DB is down; app cannot serve requests
-    // degraded   → DB is ok but ollama (core local provider) is unreachable
-    // ok         → DB and ollama are reachable (vllm/lmstudio are optional)
+    // -- 3. Overall status --
+    // unhealthy  -> DB is down; app cannot serve requests
+    // degraded   -> DB is ok but ollama (core local provider) is unreachable
+    // ok         -> DB and ollama are reachable (vllm/lmstudio are optional)
     const overallStatus =
       dbStatus.status === "error"
         ? "unhealthy"
@@ -100,10 +102,16 @@ export function registerHealthRoutes(app: Express): void {
     const statusCode = overallStatus === "unhealthy" ? 503 : 200;
 
     if (!isAuthenticated) {
-      // Minimal response for unauthenticated callers — no internal topology
+      // Minimal response for unauthenticated callers -- no internal topology
       res.status(statusCode).json({ status: overallStatus });
       return;
     }
+
+    // -- 4. Federation peer count --
+    const fm = getFederationManager();
+    const federationInfo = {
+      peerCount: fm ? fm.getPeers().length : 0,
+    };
 
     // Full response for authenticated users
     const body = {
@@ -116,6 +124,7 @@ export function registerHealthRoutes(app: Express): void {
         ollama: { status: ollamaStatus },
         lmstudio: { status: lmstudioStatus },
       },
+      federation: federationInfo,
     };
 
     res.status(statusCode).json(body);

@@ -9,6 +9,7 @@ import { registerRoutes } from "./routes";
 import { runMigrations } from "./db";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { FederationManager } from "./federation/index";
 
 const app = express();
 app.disable("x-powered-by");
@@ -67,6 +68,14 @@ app.use((req, res, next) => {
   next();
 });
 
+// Federation manager instance — started only when FEDERATION_ENABLED=true
+let federationManager: FederationManager | null = null;
+
+/** Accessor for other modules (e.g. health route) to read peer count. */
+export function getFederationManager(): FederationManager | null {
+  return federationManager;
+}
+
 (async () => {
   // Reject API requests with path traversal sequences
   app.use("/api", (req: Request, res: Response, next: NextFunction) => {
@@ -95,7 +104,7 @@ app.use((req, res, next) => {
     return res.status(status).json({ message });
   });
 
-  // Catch-all for unmatched /api/* routes — return JSON 404 instead of SPA HTML
+  // Catch-all for unmatched /api/* routes -- return JSON 404 instead of SPA HTML
   app.all("/api/{*path}", (_req: Request, res: Response) => {
     res.status(404).json({ error: "Not Found" });
   });
@@ -108,6 +117,20 @@ app.use((req, res, next) => {
   } else {
     const { setupVite } = await import("./vite");
     await setupVite(httpServer, app);
+  }
+
+  // Start federation if enabled
+  if (config.federation.enabled) {
+    federationManager = new FederationManager({
+      enabled: config.federation.enabled,
+      instanceId: config.federation.instanceId,
+      instanceName: config.federation.instanceName,
+      clusterSecret: config.federation.clusterSecret,
+      listenPort: config.federation.listenPort,
+      peers: config.federation.peers,
+    });
+    await federationManager.start();
+    log(`federation started on port ${config.federation.listenPort} (instance: ${config.federation.instanceId})`, "federation");
   }
 
   // Serve both the API and the client on the configured port.

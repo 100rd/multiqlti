@@ -38,15 +38,22 @@ function deepMerge(
 
 /**
  * Parse a string value from an environment variable into the appropriate type.
- * Booleans: "true"/"1" → true, anything else → false.
+ * Booleans: "true"/"1" -> true, anything else -> false.
  * Numbers: parsed via Number(); NaN is rejected.
+ * CSV: split on comma, trim whitespace, filter empty strings.
  */
-function parseEnvValue(value: string, kind: "string" | "number" | "boolean"): unknown {
+function parseEnvValue(value: string, kind: "string" | "number" | "boolean" | "csv"): unknown {
   if (kind === "boolean") return value === "true" || value === "1";
   if (kind === "number") {
     const n = Number(value);
     if (Number.isNaN(n)) return undefined;
     return n;
+  }
+  if (kind === "csv") {
+    return value
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
   }
   return value;
 }
@@ -54,17 +61,17 @@ function parseEnvValue(value: string, kind: "string" | "number" | "boolean"): un
 type EnvMapping = {
   envKey: string;
   configPath: string[];
-  kind: "string" | "number" | "boolean";
+  kind: "string" | "number" | "boolean" | "csv";
 };
 
 /**
- * Full environment variable → config key mapping.
+ * Full environment variable -> config key mapping.
  * MULTI_* prefix takes highest priority; legacy names are aliases.
  * Later entries in this list overwrite earlier ones, so MULTI_* keys
  * must come after their legacy aliases.
  */
 const ENV_MAPPINGS: EnvMapping[] = [
-  // Legacy aliases (lower priority — applied first)
+  // Legacy aliases (lower priority -- applied first)
   { envKey: "NODE_ENV",         configPath: ["server", "nodeEnv"],                     kind: "string"  },
   { envKey: "PORT",             configPath: ["server", "port"],                         kind: "number"  },
   { envKey: "DATABASE_URL",     configPath: ["database", "url"],                        kind: "string"  },
@@ -79,7 +86,15 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { envKey: "SANDBOX_ENABLED",  configPath: ["features", "sandbox", "enabled"],         kind: "boolean" },
   { envKey: "ENCRYPTION_KEY",   configPath: ["encryption", "key"],                      kind: "string"  },
 
-  // MULTI_* prefixed keys (highest priority — applied after legacy)
+  // Federation (legacy aliases)
+  { envKey: "FEDERATION_ENABLED",        configPath: ["federation", "enabled"],        kind: "boolean" },
+  { envKey: "FEDERATION_INSTANCE_ID",    configPath: ["federation", "instanceId"],     kind: "string"  },
+  { envKey: "FEDERATION_INSTANCE_NAME",  configPath: ["federation", "instanceName"],   kind: "string"  },
+  { envKey: "FEDERATION_CLUSTER_SECRET", configPath: ["federation", "clusterSecret"],  kind: "string"  },
+  { envKey: "FEDERATION_PORT",           configPath: ["federation", "listenPort"],     kind: "number"  },
+  { envKey: "FEDERATION_PEERS",          configPath: ["federation", "peers"],          kind: "csv"     },
+
+  // MULTI_* prefixed keys (highest priority -- applied after legacy)
   { envKey: "MULTI_SERVER_PORT",                     configPath: ["server", "port"],                              kind: "number"  },
   { envKey: "MULTI_DATABASE_URL",                    configPath: ["database", "url"],                             kind: "string"  },
   { envKey: "MULTI_AUTH_JWT_SECRET",                 configPath: ["auth", "jwtSecret"],                           kind: "string"  },
@@ -92,6 +107,12 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { envKey: "MULTI_PROVIDERS_TAVILY_API_KEY",        configPath: ["providers", "tavily", "apiKey"],               kind: "string"  },
   { envKey: "MULTI_FEATURES_SANDBOX_ENABLED",        configPath: ["features", "sandbox", "enabled"],              kind: "boolean" },
   { envKey: "MULTI_ENCRYPTION_KEY",                  configPath: ["encryption", "key"],                           kind: "string"  },
+  { envKey: "MULTI_FEDERATION_ENABLED",              configPath: ["federation", "enabled"],                       kind: "boolean" },
+  { envKey: "MULTI_FEDERATION_INSTANCE_ID",          configPath: ["federation", "instanceId"],                    kind: "string"  },
+  { envKey: "MULTI_FEDERATION_INSTANCE_NAME",        configPath: ["federation", "instanceName"],                  kind: "string"  },
+  { envKey: "MULTI_FEDERATION_CLUSTER_SECRET",       configPath: ["federation", "clusterSecret"],                 kind: "string"  },
+  { envKey: "MULTI_FEDERATION_PORT",                 configPath: ["federation", "listenPort"],                    kind: "number"  },
+  { envKey: "MULTI_FEDERATION_PEERS",                configPath: ["federation", "peers"],                         kind: "csv"     },
 ];
 
 /**
@@ -260,7 +281,7 @@ class ConfigLoader {
       if (platformVal === undefined) {
         entries.push({ path, platformValue: undefined, projectValue: projectVal, changeType: "new" });
       } else if (platformVal === projectVal) {
-        // unchanged — omit from diff
+        // unchanged -- omit from diff
       } else {
         entries.push({ path, platformValue: platformVal, projectValue: projectVal, changeType: "override" });
       }

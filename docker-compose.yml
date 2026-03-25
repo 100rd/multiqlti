@@ -1,11 +1,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# multiqlti docker-compose — production-ready
+# multiqlti docker-compose -- production-ready
 #
 # Profiles:
-#   full        — multiqlti + postgres + vllm (GPU) + ollama + caddy
-#   cloud-only  — multiqlti + postgres + caddy (cloud AI providers only)
-#   dev         — multiqlti + postgres + ollama + caddy (CPU-friendly, no GPU)
-#   monitoring  — add Loki + Grafana + Prometheus on top of any profile
+#   full        -- multiqlti + postgres + vllm (GPU) + ollama + caddy
+#   cloud-only  -- multiqlti + postgres + caddy (cloud AI providers only)
+#   dev         -- multiqlti + postgres + ollama + caddy (CPU-friendly, no GPU)
+#   monitoring  -- add Loki + Grafana + Prometheus on top of any profile
 #
 # Quick start:
 #   cp .env.example .env          # fill in your secrets
@@ -40,7 +40,7 @@ services:
       start_period: 10s
     restart: unless-stopped
     mem_limit: 512m
-    # Postgres port is NOT exposed to the host — use docker exec or override file
+    # Postgres port is NOT exposed to the host -- use docker exec or override file
     # to expose it temporarily for maintenance.
 
   # ── DB Backup (cron) ────────────────────────────────────────────────────────
@@ -92,9 +92,10 @@ services:
   multiqlti:
     build: .
     profiles: [full, cloud-only, dev]
-    # No host ports — traffic arrives through Caddy only
+    # No host ports -- traffic arrives through Caddy only
     expose:
       - "5000"
+      - "${FEDERATION_PORT:-5001}"
     environment:
       NODE_ENV: production
       PORT: 5000
@@ -107,6 +108,12 @@ services:
       SANDBOX_DEFAULT_TIMEOUT: ${SANDBOX_DEFAULT_TIMEOUT:-120}
       REDIS_URL: "${REDIS_URL:-redis://redis:6379}"
       MULTI_FEATURES_WORKER_QUEUE: "${MULTI_FEATURES_WORKER_QUEUE:-false}"
+      FEDERATION_ENABLED: "${FEDERATION_ENABLED:-false}"
+      FEDERATION_INSTANCE_ID: "${FEDERATION_INSTANCE_ID:-}"
+      FEDERATION_INSTANCE_NAME: "${FEDERATION_INSTANCE_NAME:-}"
+      FEDERATION_CLUSTER_SECRET: "${FEDERATION_CLUSTER_SECRET:-}"
+      FEDERATION_PORT: "${FEDERATION_PORT:-5001}"
+      FEDERATION_PEERS: "${FEDERATION_PEERS:-}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - workspace_data:/app/data/workspaces
@@ -163,7 +170,7 @@ services:
   vllm:
     image: vllm/vllm-openai:latest
     profiles: [full]
-    # No host ports — only reachable via internal network
+    # No host ports -- only reachable via internal network
     volumes:
       - vllm_cache:/root/.cache/huggingface
     deploy:
@@ -197,7 +204,7 @@ services:
   ollama:
     image: ollama/ollama:latest
     profiles: [full, dev]
-    # No host ports — only reachable via internal network
+    # No host ports -- only reachable via internal network
     volumes:
       - ollama_data:/root/.ollama
     networks:
