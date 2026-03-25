@@ -44,8 +44,9 @@ import {
   type InsertArgoCdConfig,
   type WorkspaceRow,
   type InsertWorkspace,
+  type SharedSessionRow,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput } from "@shared/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
 import { configLoader } from "./config/loader";
@@ -276,6 +277,14 @@ export interface IStorage {
   createWorkspace(data: InsertWorkspace & { id?: string }): Promise<WorkspaceRow>;
   updateWorkspace(id: string, updates: Partial<WorkspaceRow>): Promise<WorkspaceRow>;
   deleteWorkspace(id: string): Promise<void>;
+
+  // Shared Sessions (Federation, issue #224)
+  getSharedSession(id: string): Promise<SharedSession | null>;
+  getSharedSessionByToken(token: string): Promise<SharedSession | null>;
+  getSharedSessionsByRunId(runId: string): Promise<SharedSession[]>;
+  createSharedSession(input: CreateSharedSessionInput): Promise<SharedSession>;
+  deactivateSharedSession(id: string): Promise<void>;
+  listActiveSharedSessions(): Promise<SharedSession[]>;
 }
 
 export class MemStorage implements IStorage {
@@ -1665,6 +1674,57 @@ export class MemStorage implements IStorage {
 
   async deleteWorkspace(id: string): Promise<void> {
     this.workspacesMap.delete(id);
+  }
+
+  // ─── Shared Sessions (Federation, issue #224) ─────────────────────────────
+
+  private sharedSessionsMap: Map<string, SharedSession> = new Map();
+
+  async getSharedSession(id: string): Promise<SharedSession | null> {
+    return this.sharedSessionsMap.get(id) ?? null;
+  }
+
+  async getSharedSessionByToken(token: string): Promise<SharedSession | null> {
+    for (const session of this.sharedSessionsMap.values()) {
+      if (session.shareToken === token) return session;
+    }
+    return null;
+  }
+
+  async getSharedSessionsByRunId(runId: string): Promise<SharedSession[]> {
+    return Array.from(this.sharedSessionsMap.values()).filter(
+      (s) => s.runId === runId && s.isActive,
+    );
+  }
+
+  async createSharedSession(input: CreateSharedSessionInput): Promise<SharedSession> {
+    const id = randomUUID();
+    const session: SharedSession = {
+      id,
+      runId: input.runId,
+      shareToken: input.shareToken,
+      ownerInstanceId: input.ownerInstanceId,
+      createdBy: input.createdBy,
+      expiresAt: input.expiresAt ?? null,
+      isActive: true,
+      createdAt: new Date(),
+    };
+    this.sharedSessionsMap.set(id, session);
+    return session;
+  }
+
+  async deactivateSharedSession(id: string): Promise<void> {
+    const session = this.sharedSessionsMap.get(id);
+    if (session) {
+      this.sharedSessionsMap.set(id, { ...session, isActive: false });
+    }
+  }
+
+  async listActiveSharedSessions(): Promise<SharedSession[]> {
+    const now = new Date();
+    return Array.from(this.sharedSessionsMap.values()).filter(
+      (s) => s.isActive && (!s.expiresAt || s.expiresAt > now),
+    );
   }
 }
 

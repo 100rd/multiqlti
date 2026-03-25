@@ -57,6 +57,13 @@
       "when": 1742860800000,
       "tag": "0010_skill_market",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1743033600000,
+      "tag": "0011_shared_sessions",
+      "breakpoints": true
     }
   ]
 }

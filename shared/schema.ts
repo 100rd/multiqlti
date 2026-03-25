@@ -1091,3 +1091,21 @@ export const skillInstallLog = pgTable("skill_install_log", {
 
 export const insertSkillRegistrySourceSchema = createInsertSchema(skillRegistrySources);
 export const insertSkillInstallLogSchema = createInsertSchema(skillInstallLog);
+
+// ── Federation: Shared Sessions (issue #224) ────────────────────────────────
+
+export const sharedSessions = pgTable("shared_sessions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  runId: varchar("run_id").notNull(),
+  shareToken: varchar("share_token").notNull().unique(),
+  ownerInstanceId: text("owner_instance_id").notNull(),
+  createdBy: text("created_by").notNull(),
+  expiresAt: timestamp("expires_at"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertSharedSessionSchema = createInsertSchema(sharedSessions);
+
+export type InsertSharedSession = z.infer<typeof insertSharedSessionSchema>;
+export type SharedSessionRow = typeof sharedSessions.$inferSelect;
