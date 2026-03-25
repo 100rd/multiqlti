@@ -151,7 +151,7 @@ function AddChannelForm({ onClose }: { onClose: () => void }) {
           </Button>
         </div>
         {create.isError && (
-          <p className="text-xs text-destructive">{(create.error as Error).message}</p>
+          <p className="text-xs text-destructive">{create.error instanceof Error ? create.error.message : "Failed to create channel"}</p>
         )}
       </CardContent>
     </Card>

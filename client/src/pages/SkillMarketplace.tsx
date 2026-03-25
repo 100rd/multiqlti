@@ -51,8 +51,8 @@ async function fetchMarketplace(
     headers: buildAuthHeaders(),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: res.statusText })) as { message?: string };
-    throw new Error(err.message ?? res.statusText);
+    const err = await res.json().catch(() => ({})) as Record<string, unknown>;
+    throw new Error((err.error ?? err.message ?? res.statusText) as string);
   }
   return res.json() as Promise<MarketplaceResponse>;
 }
@@ -66,8 +66,8 @@ async function forkSkill(skillId: string): Promise<Record<string, unknown>> {
     },
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: res.statusText })) as { message?: string };
-    throw new Error(err.message ?? res.statusText);
+    const err = await res.json().catch(() => ({})) as Record<string, unknown>;
+    throw new Error((err.error ?? err.message ?? res.statusText) as string);
   }
   return res.json() as Promise<Record<string, unknown>>;
 }
@@ -81,8 +81,8 @@ async function rollbackSkill(skillId: string, version: string): Promise<Record<s
     },
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: res.statusText })) as { message?: string };
-    throw new Error(err.message ?? res.statusText);
+    const err = await res.json().catch(() => ({})) as Record<string, unknown>;
+    throw new Error((err.error ?? err.message ?? res.statusText) as string);
   }
   return res.json() as Promise<Record<string, unknown>>;
 }
