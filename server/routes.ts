@@ -59,6 +59,9 @@ import { registerSkillMarketRoutes } from "./routes/skill-market";
 import { RegistryManager } from "./skill-market/registry-manager";
 import { McpRegistryAdapter } from "./skill-market/adapters/mcp-registry-adapter";
 import { SkillUpdateChecker } from "./skill-market/update-checker";
+import { registerFederationRoutes } from "./routes/federation";
+import { SessionSharingService } from "./federation/session-sharing";
+import { getFederationManager } from "./index";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -110,6 +113,7 @@ export async function registerRoutes(
   app.use("/api/tracker-connections", requireAuth);
   app.use("/api/remote-agents", requireAuth);
   app.use("/api/skill-market", requireAuth);
+  app.use("/api/federation", requireAuth);
 
   // Register route implementations
   registerModelRoutes(app, storage);
@@ -232,6 +236,19 @@ export async function registerRoutes(
       res.status(503).json({ error: "Trigger subsystem is disabled (TRIGGER_SECRET_KEY not configured)", disabled: true });
     });
   }
+
+  // Federation Session Sharing (issue #224)
+  let sessionSharing: SessionSharingService | null = null;
+  const fm = getFederationManager();
+  if (fm && fm.isEnabled()) {
+    try {
+      sessionSharing = new SessionSharingService(fm, storage, fm.getPeers().length > 0 ? "local" : "primary");
+      log("[federation] Session sharing service initialized", "federation");
+    } catch (e) {
+      log(`[federation] Session sharing disabled: ${(e as Error).message}`, "federation");
+    }
+  }
+  registerFederationRoutes(app as unknown as Router, sessionSharing, fm);
 
   // Graceful shutdown
   httpServer.on("close", async () => {

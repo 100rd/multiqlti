@@ -54,8 +54,10 @@ import {
   type InsertArgoCdConfig,
   type WorkspaceRow,
   type InsertWorkspace,
+  sharedSessions,
+  type SharedSessionRow,
 } from "@shared/schema";
-import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion } from "@shared/types";
+import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput } from "@shared/types";
 
 export class PgStorage implements IStorage {
 
@@ -1258,5 +1260,71 @@ export class PgStorage implements IStorage {
 
   async deleteWorkspace(id: string): Promise<void> {
     await db.delete(workspaces).where(eq(workspaces.id, id));
+  }
+
+  // ─── Shared Sessions (Federation, issue #224) ─────────────────────────────
+
+  private rowToSharedSession(row: SharedSessionRow): SharedSession {
+    return {
+      id: row.id,
+      runId: row.runId,
+      shareToken: row.shareToken,
+      ownerInstanceId: row.ownerInstanceId,
+      createdBy: row.createdBy,
+      expiresAt: row.expiresAt ?? null,
+      isActive: row.isActive,
+      createdAt: row.createdAt,
+    };
+  }
+
+  async getSharedSession(id: string): Promise<SharedSession | null> {
+    const [row] = await db.select().from(sharedSessions).where(eq(sharedSessions.id, id));
+    return row ? this.rowToSharedSession(row) : null;
+  }
+
+  async getSharedSessionByToken(token: string): Promise<SharedSession | null> {
+    const [row] = await db.select().from(sharedSessions).where(eq(sharedSessions.shareToken, token));
+    return row ? this.rowToSharedSession(row) : null;
+  }
+
+  async getSharedSessionsByRunId(runId: string): Promise<SharedSession[]> {
+    const rows = await db
+      .select()
+      .from(sharedSessions)
+      .where(and(eq(sharedSessions.runId, runId), eq(sharedSessions.isActive, true)));
+    return rows.map((r) => this.rowToSharedSession(r));
+  }
+
+  async createSharedSession(input: CreateSharedSessionInput): Promise<SharedSession> {
+    const [row] = await db
+      .insert(sharedSessions)
+      .values({
+        runId: input.runId,
+        shareToken: input.shareToken,
+        ownerInstanceId: input.ownerInstanceId,
+        createdBy: input.createdBy,
+        expiresAt: input.expiresAt ?? null,
+      } as typeof sharedSessions.$inferInsert)
+      .returning();
+    return this.rowToSharedSession(row);
+  }
+
+  async deactivateSharedSession(id: string): Promise<void> {
+    await db
+      .update(sharedSessions)
+      .set({ isActive: false })
+      .where(eq(sharedSessions.id, id));
+  }
+
+  async listActiveSharedSessions(): Promise<SharedSession[]> {
+    const rows = await db
+      .select()
+      .from(sharedSessions)
+      .where(eq(sharedSessions.isActive, true))
+      .orderBy(desc(sharedSessions.createdAt));
+    const now = new Date();
+    return rows
+      .filter((r) => !r.expiresAt || r.expiresAt > now)
+      .map((r) => this.rowToSharedSession(r));
   }
 }

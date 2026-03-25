@@ -1729,3 +1729,24 @@ export interface SkillInstallLogEntry {
   userId?: string | null;
   createdAt: Date;
 }
+
+// ── Federation: Shared Sessions (issue #224) ────────────────────────────────
+
+export interface SharedSession {
+  id: string;
+  runId: string;
+  shareToken: string;
+  ownerInstanceId: string;
+  createdBy: string;
+  expiresAt?: Date | null;
+  isActive: boolean;
+  createdAt: Date;
+}
+
+export interface CreateSharedSessionInput {
+  runId: string;
+  shareToken: string;
+  ownerInstanceId: string;
+  createdBy: string;
+  expiresAt?: Date | null;
+}
