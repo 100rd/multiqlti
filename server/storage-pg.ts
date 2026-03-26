@@ -842,21 +842,25 @@ export class PgStorage implements IStorage {
     }
 
     const rows = await db
-      .select()
+      .select({
+        skill: skills,
+        authorName: users.name,
+      })
       .from(skills)
+      .leftJoin(users, eq(skills.createdBy, users.id))
       .where(whereClause)
       .orderBy(orderBy)
       .limit(filters.limit)
       .offset(filters.offset);
 
-    const mapped: MarketplaceSkill[] = rows.map((s) => ({
+    const mapped: MarketplaceSkill[] = rows.map(({ skill: s, authorName }) => ({
       id: s.id,
       name: s.name,
       description: s.description,
       teamId: s.teamId,
       tags: s.tags as string[],
       version: s.version,
-      author: s.createdBy,
+      author: authorName ?? s.createdBy,
       usageCount: s.usageCount,
       sharing: s.sharing as 'private' | 'team' | 'public',
       modelPreference: s.modelPreference,
