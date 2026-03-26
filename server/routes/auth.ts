@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { z } from "zod";
-import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+import rateLimit from "express-rate-limit";
 import { authService } from "../auth/service";
 import { requireAuth, requireRole } from "../auth/middleware";
 import { USER_ROLES } from "@shared/schema";
@@ -11,7 +11,7 @@ const loginLimiter = rateLimit({
   message: { error: "Too many login attempts, please try again later" },
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => ipKeyGenerator(req.ip ?? "unknown"),
+  keyGenerator: (req) => req.ip ?? "unknown",
 });
 
 const registerSchema = z.object({

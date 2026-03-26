@@ -73,35 +73,11 @@ jobs:
           PORT=3099 JWT_SECRET=test-secret-minimum-32-characters-long \
           SANDBOX_ENABLED=true \
           NODE_ENV=development npx tsx server/index.ts &
-          # Wait for server to be ready using public health endpoint
-          for i in $(seq 1 15); do
-            if curl -sf http://localhost:3099/api/health > /dev/null 2>&1; then
-              echo "Server ready after ${i}s"
-              break
-            fi
-            sleep 1
-          done
-          curl -f http://localhost:3099/api/health
-      - name: Register test user and get token
-        run: |
-          # Register a test user
-          curl -sf -X POST http://localhost:3099/api/auth/register \
-            -H "Content-Type: application/json" \
-            -d '{"email":"ci@test.local","name":"CI Bot","password":"ci-test-password-1234"}' \
-            > /dev/null
-          # Login to get JWT token
-          TOKEN=$(curl -sf -X POST http://localhost:3099/api/auth/login \
-            -H "Content-Type: application/json" \
-            -d '{"email":"ci@test.local","password":"ci-test-password-1234"}' \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
-          echo "TOKEN=${TOKEN}" >> "$GITHUB_ENV"
-          # Verify sandbox status with auth
-          curl -sf http://localhost:3099/api/sandbox/status \
-            -H "Authorization: Bearer ${TOKEN}"
+          sleep 5
+          curl -f http://localhost:3099/api/sandbox/status
       - name: Run sandbox integration test
         run: |
           curl -s -X POST http://localhost:3099/api/sandbox/test \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${TOKEN}" \
             -d '{"image":"node:20-alpine","code":"console.log(\"sandbox ok\")"}' \
             | python3 -c "import sys,json; d=json.load(sys.stdin); assert not d.get('timedOut'), 'timed out'; print('Sandbox test: PASS')"
