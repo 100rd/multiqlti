@@ -329,8 +329,10 @@ export const memories = pgTable("memories", {
   updatedAt: timestamp("updated_at").defaultNow(),
   expiresAt: timestamp("expires_at"),
   createdByRunId: integer("created_by_run_id"),
+  published: boolean("published").notNull().default(false),
 }, (table) => ({
   scopeKeyUnique: unique().on(table.scope, table.scopeId, table.key),
+  publishedIdx: index("memories_published_idx").on(table.published).where(sql`published = true`),
 }));
 
 export type MemoryRow = typeof memories.$inferSelect;
