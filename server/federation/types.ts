@@ -1,3 +1,8 @@
+export interface FederationEncryptionConfig {
+  enabled: boolean;
+  rotationIntervalHours: number;
+}
+
 export interface FederationConfig {
   enabled: boolean;
   instanceId: string;
@@ -5,6 +10,7 @@ export interface FederationConfig {
   clusterSecret: string;
   listenPort: number;
   peers: string[]; // static peer URLs
+  encryption?: FederationEncryptionConfig;
 }
 
 export interface PeerInfo {
