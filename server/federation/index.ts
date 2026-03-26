@@ -65,4 +65,6 @@ export class FederationManager {
 
 export { FederationTransport } from "./transport.js";
 export { FederationDiscovery } from "./discovery.js";
+export { FederationEncryption } from "./encryption.js";
 export type { FederationConfig, FederationMessage, PeerInfo } from "./types.js";
+export type { EncryptedPayload } from "./encryption.js";

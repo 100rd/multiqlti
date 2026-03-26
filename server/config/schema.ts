@@ -46,6 +46,10 @@ export const ConfigSchema = z.object({
     clusterSecret: z.string().default(""),
     listenPort: z.number().int().min(1).max(65535).default(5001),
     peers: z.array(z.string()).default([]),
+    encryption: z.object({
+      enabled: z.boolean().default(false),
+      rotationIntervalHours: z.number().int().min(0).max(720).default(24),
+    }).default({}),
   }).default({}),
   encryption: z.object({
     key: z.string().min(32).optional(),

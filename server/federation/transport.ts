@@ -7,19 +7,41 @@ import type {
   PeerInfo,
 } from "./types.js";
 import { signMessage, verifyMessage, signEnvelope, verifyEnvelope } from "./auth.js";
+import { FederationEncryption, isEncryptedPayload } from "./encryption.js";
+
+/** Handshake payload sent in hello / hello-ack messages. */
+interface HandshakePayload {
+  instanceName: string;
+  publicKey?: string;
+}
+
+/** Payload for key:rotate messages. */
+interface KeyRotatePayload {
+  publicKey: string;
+  generation: number;
+}
 
 /**
  * WebSocket-based federation transport.
  *
  * Handles both inbound (server) and outbound (client) connections to peer
  * instances. All messages are HMAC-signed and verified before processing.
+ * When encryption is enabled, payloads are E2E encrypted with AES-256-GCM
+ * using per-peer keys derived from ECDH key exchange.
  */
 export class FederationTransport {
   private wss: WebSocketServer | null = null;
   private peers = new Map<string, { ws: WebSocket; info: PeerInfo }>();
   private handlers = new Map<string, FederationMessageHandler[]>();
+  private encryption: FederationEncryption | null = null;
+  private rotationTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private config: FederationConfig) {}
+  constructor(private config: FederationConfig) {
+    if (config.encryption?.enabled) {
+      this.encryption = new FederationEncryption(config.clusterSecret);
+      this.startKeyRotation();
+    }
+  }
 
   /** Start listening for incoming peer connections. */
   startServer(): void {
@@ -33,14 +55,13 @@ export class FederationTransport {
       const ws = new WebSocket(endpoint);
 
       ws.on("open", () => {
-        // Send hello handshake
         const timestamp = Date.now();
         const hmac = signMessage(this.config.clusterSecret, this.config.instanceId, timestamp);
         const hello: FederationMessage = {
           type: "hello",
           from: this.config.instanceId,
           correlationId: crypto.randomUUID(),
-          payload: { instanceName: this.config.instanceName },
+          payload: this.buildHandshakePayload(),
           hmac,
           timestamp,
         };
@@ -57,15 +78,22 @@ export class FederationTransport {
             return;
           }
 
-          // Regular message — verify envelope HMAC
           if (!verifyEnvelope(this.config.clusterSecret, msg)) {
             return;
           }
 
           const peer = this.findPeerByInstanceId(msg.from);
+          if (!peer) return;
+          peer.info.lastMessageAt = new Date();
+
+          if (msg.type === "key:rotate") {
+            this.handleKeyRotate(msg, peer.info);
+            return;
+          }
+
+          const decrypted = this.decryptIncoming(msg);
           if (peer) {
-            peer.info.lastMessageAt = new Date();
-            this.dispatch(msg, peer.info);
+            this.dispatch(decrypted, peer.info);
           }
         } catch {
           // Ignore unparseable messages
@@ -77,14 +105,7 @@ export class FederationTransport {
       });
 
       ws.on("close", () => {
-        // Find and remove peer associated with this ws
-        for (const [id, entry] of this.peers) {
-          if (entry.ws === ws) {
-            entry.info.status = "disconnected";
-            this.peers.delete(id);
-            break;
-          }
-        }
+        this.removePeerByWs(ws);
       });
     });
   }
@@ -97,26 +118,12 @@ export class FederationTransport {
     msg: Omit<FederationMessage, "hmac" | "from" | "timestamp">,
   ): void {
     const timestamp = Date.now();
-    const envelope: Omit<FederationMessage, "hmac"> = {
-      ...msg,
-      from: this.config.instanceId,
-      timestamp,
-    };
-    const hmac = signEnvelope(this.config.clusterSecret, envelope);
-    const full: FederationMessage = { ...envelope, hmac };
-    const serialized = JSON.stringify(full);
 
     if (msg.to) {
-      const peer = this.peers.get(msg.to);
-      if (peer && peer.ws.readyState === WebSocket.OPEN) {
-        peer.ws.send(serialized);
-      }
+      this.sendToPeer(msg, timestamp, msg.to);
     } else {
-      // Broadcast
-      for (const [, peer] of this.peers) {
-        if (peer.ws.readyState === WebSocket.OPEN) {
-          peer.ws.send(serialized);
-        }
+      for (const [peerId] of this.peers) {
+        this.sendToPeer(msg, timestamp, peerId);
       }
     }
   }
@@ -133,8 +140,23 @@ export class FederationTransport {
     return Array.from(this.peers.values()).map((entry) => ({ ...entry.info }));
   }
 
+  /** Check if encryption is active and has a key for the given peer. */
+  hasEncryptionForPeer(peerId: string): boolean {
+    return this.encryption?.hasPeerKey(peerId) ?? false;
+  }
+
+  /** Visible for testing only — returns encryption instance. */
+  _getEncryption(): FederationEncryption | null {
+    return this.encryption;
+  }
+
   /** Gracefully shut down all connections and the server. */
   async close(): Promise<void> {
+    if (this.rotationTimer) {
+      clearInterval(this.rotationTimer);
+      this.rotationTimer = null;
+    }
+
     for (const [, entry] of this.peers) {
       entry.ws.close();
     }
@@ -148,7 +170,18 @@ export class FederationTransport {
     }
   }
 
-  // ── Private helpers ──────────────────────────────────────────────────────
+  // -- Private helpers --------------------------------------------------------
+
+  /** Build the handshake payload, including public key if encryption is on. */
+  private buildHandshakePayload(): HandshakePayload {
+    const payload: HandshakePayload = {
+      instanceName: this.config.instanceName,
+    };
+    if (this.encryption) {
+      payload.publicKey = this.encryption.getPublicKey();
+    }
+    return payload;
+  }
 
   /** Handle an inbound WebSocket connection (server side). */
   private handleConnection(ws: WebSocket): void {
@@ -161,29 +194,28 @@ export class FederationTransport {
           return;
         }
 
-        // Regular message — verify envelope HMAC
         if (!verifyEnvelope(this.config.clusterSecret, msg)) {
           return;
         }
 
         const peer = this.findPeerByInstanceId(msg.from);
-        if (peer) {
-          peer.info.lastMessageAt = new Date();
-          this.dispatch(msg, peer.info);
+        if (!peer) return;
+        peer.info.lastMessageAt = new Date();
+
+        if (msg.type === "key:rotate") {
+          this.handleKeyRotate(msg, peer.info);
+          return;
         }
+
+        const decrypted = this.decryptIncoming(msg);
+        this.dispatch(decrypted, peer.info);
       } catch {
         // Ignore unparseable messages
       }
     });
 
     ws.on("close", () => {
-      for (const [id, entry] of this.peers) {
-        if (entry.ws === ws) {
-          entry.info.status = "disconnected";
-          this.peers.delete(id);
-          break;
-        }
-      }
+      this.removePeerByWs(ws);
     });
   }
 
@@ -201,18 +233,13 @@ export class FederationTransport {
       return;
     }
 
-    const now = new Date();
-    const payload = msg.payload as { instanceName?: string } | undefined;
-    const info: PeerInfo = {
-      instanceId: msg.from,
-      instanceName: payload?.instanceName ?? msg.from,
-      endpoint: "",
-      connectedAt: now,
-      lastMessageAt: now,
-      status: "connected",
-    };
+    const payload = msg.payload as HandshakePayload | undefined;
+    this.registerPeer(ws, msg.from, payload, "");
 
-    this.peers.set(msg.from, { ws, info });
+    // Derive shared encryption key if both sides support it
+    if (this.encryption && payload?.publicKey) {
+      this.encryption.deriveSharedKey(msg.from, payload.publicKey);
+    }
 
     // Send hello-ack back
     const timestamp = Date.now();
@@ -221,7 +248,7 @@ export class FederationTransport {
       type: "hello-ack",
       from: this.config.instanceId,
       correlationId: msg.correlationId,
-      payload: { instanceName: this.config.instanceName },
+      payload: this.buildHandshakePayload(),
       hmac,
       timestamp,
     };
@@ -246,18 +273,95 @@ export class FederationTransport {
       return;
     }
 
+    const payload = msg.payload as HandshakePayload | undefined;
+    this.registerPeer(ws, msg.from, payload, endpoint);
+
+    // Derive shared encryption key if both sides support it
+    if (this.encryption && payload?.publicKey) {
+      this.encryption.deriveSharedKey(msg.from, payload.publicKey);
+    }
+  }
+
+  /** Handle key rotation message from an authenticated, registered peer. */
+  private handleKeyRotate(msg: FederationMessage, peer: PeerInfo): void {
+    if (!this.encryption) return;
+    // Only accept key rotation from the peer whose connection we verified
+    if (msg.from !== peer.instanceId) return;
+    const payload = msg.payload as KeyRotatePayload | undefined;
+    if (!payload?.publicKey) return;
+    this.encryption.deriveSharedKey(msg.from, payload.publicKey);
+  }
+
+  /** Register a peer after successful handshake. */
+  private registerPeer(
+    ws: WebSocket,
+    instanceId: string,
+    payload: HandshakePayload | undefined,
+    endpoint: string,
+  ): void {
     const now = new Date();
-    const payload = msg.payload as { instanceName?: string } | undefined;
     const info: PeerInfo = {
-      instanceId: msg.from,
-      instanceName: payload?.instanceName ?? msg.from,
+      instanceId,
+      instanceName: payload?.instanceName ?? instanceId,
       endpoint,
       connectedAt: now,
       lastMessageAt: now,
       status: "connected",
     };
+    this.peers.set(instanceId, { ws, info });
+  }
 
-    this.peers.set(msg.from, { ws, info });
+  /** Send a message to a single peer, encrypting if possible. */
+  private sendToPeer(
+    msg: Omit<FederationMessage, "hmac" | "from" | "timestamp">,
+    timestamp: number,
+    peerId: string,
+  ): void {
+    const peer = this.peers.get(peerId);
+    if (!peer || peer.ws.readyState !== WebSocket.OPEN) return;
+
+    const encryptedPayload = this.encryptOutgoing(peerId, msg.payload);
+    const envelope: Omit<FederationMessage, "hmac"> = {
+      ...msg,
+      payload: encryptedPayload,
+      from: this.config.instanceId,
+      timestamp,
+    };
+    const hmac = signEnvelope(this.config.clusterSecret, envelope);
+    const full: FederationMessage = { ...envelope, hmac };
+    peer.ws.send(JSON.stringify(full));
+  }
+
+  /** Encrypt payload for a peer if encryption is available. */
+  private encryptOutgoing(peerId: string, payload: unknown): unknown {
+    if (!this.encryption) return payload;
+    if (!this.encryption.hasPeerKey(peerId)) {
+      console.warn(`[federation] WARNING: sending plaintext to peer ${peerId} — no encryption key established`);
+      return payload;
+    }
+    return this.encryption.encrypt(peerId, payload);
+  }
+
+  /** Decrypt incoming payload if it is encrypted. */
+  private decryptIncoming(msg: FederationMessage): FederationMessage {
+    if (!isEncryptedPayload(msg.payload)) return msg;
+    if (!this.encryption) return msg;
+    const decrypted = this.encryption.decrypt(msg.from, msg.payload);
+    return { ...msg, payload: decrypted };
+  }
+
+  /** Remove a peer entry by WebSocket reference. */
+  private removePeerByWs(ws: WebSocket): void {
+    for (const [id, entry] of this.peers) {
+      if (entry.ws === ws) {
+        entry.info.status = "disconnected";
+        this.peers.delete(id);
+        if (this.encryption) {
+          this.encryption.removePeer(id);
+        }
+        break;
+      }
+    }
   }
 
   /** Find a peer entry by instance ID. */
@@ -280,6 +384,46 @@ export class FederationTransport {
       } catch {
         // Handler errors are swallowed to prevent one bad handler
         // from breaking all message processing.
+      }
+    }
+  }
+
+  /** Start automatic key rotation if configured. */
+  private startKeyRotation(): void {
+    const hours = this.config.encryption?.rotationIntervalHours ?? 0;
+    if (hours <= 0 || !this.encryption) return;
+
+    const ms = hours * 60 * 60 * 1000;
+    this.rotationTimer = setInterval(() => {
+      this.performKeyRotation();
+    }, ms);
+  }
+
+  /** Rotate keys and broadcast new public key to all peers. */
+  private performKeyRotation(): void {
+    if (!this.encryption) return;
+    const newPublicKey = this.encryption.rotateKeys();
+    const payload: KeyRotatePayload = {
+      publicKey: newPublicKey,
+      generation: this.encryption.getGeneration(),
+    };
+
+    // Broadcast key rotation to all peers via raw send (no encryption on this message)
+    const timestamp = Date.now();
+    const envelope: Omit<FederationMessage, "hmac"> = {
+      type: "key:rotate",
+      from: this.config.instanceId,
+      correlationId: crypto.randomUUID(),
+      payload,
+      timestamp,
+    };
+    const hmac = signEnvelope(this.config.clusterSecret, envelope);
+    const full: FederationMessage = { ...envelope, hmac };
+    const serialized = JSON.stringify(full);
+
+    for (const [, peer] of this.peers) {
+      if (peer.ws.readyState === WebSocket.OPEN) {
+        peer.ws.send(serialized);
       }
     }
   }
