@@ -170,6 +170,7 @@ export interface IStorage {
   deleteMemory(id: number): Promise<void>;
   decayMemories(excludeRunId: number, decayAmount: number): Promise<number>;
   deleteStaleMemories(threshold: number): Promise<number>;
+  updateMemoryPublished(id: number, published: boolean): Promise<Memory | null>;
 
   // MCP Servers
   getMcpServers(): Promise<McpServerConfig[]>;
@@ -859,6 +860,7 @@ export class MemStorage implements IStorage {
       updatedAt: now,
       expiresAt: insert.expiresAt ?? null,
       createdByRunId: insert.createdByRunId ?? null,
+      published: insert.published ?? false,
     };
     this.memoriesMap.set(id, memory);
     return memory;
@@ -889,6 +891,14 @@ export class MemStorage implements IStorage {
       }
     }
     return count;
+  }
+
+  async updateMemoryPublished(id: number, published: boolean): Promise<Memory | null> {
+    const m = this.memoriesMap.get(id);
+    if (!m) return null;
+    const updated = { ...m, published, updatedAt: new Date() };
+    this.memoriesMap.set(id, updated);
+    return updated;
   }
 
   // ─── MCP Servers ───────────────────────────────

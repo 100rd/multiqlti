@@ -44,7 +44,8 @@ export type RunStatus =
   | "completed"
   | "failed"
   | "cancelled"
-  | "rejected";
+  | "rejected"
+  | "handed_off";
 
 export type StageStatus =
   | "pending"
@@ -315,7 +316,16 @@ export type WsEventType =
   // ─── Task Trace Events ──────────────────────────────────────────────────────
   | "trace:span:started"
   | "trace:span:completed"
-  | "trace:span:failed";
+  | "trace:span:failed"
+  // ─── Federation Handoff & Approval Events ────────────────────────────────
+  | "federation:handoff:sent"
+  | "federation:handoff:received"
+  | "federation:handoff:accepted"
+  | "federation:user_joined"
+  | "federation:user_left"
+  | "approval:requested"
+  | "approval:vote_received"
+  | "approval:resolved";
 
 export interface WsEvent {
   type: WsEventType;
@@ -626,6 +636,7 @@ export interface Memory {
   updatedAt: Date | null;
   expiresAt: Date | null;
   createdByRunId: number | null;
+  published: boolean;
 }
 
 export interface InsertMemory {
@@ -639,6 +650,7 @@ export interface InsertMemory {
   tags?: string[];
   expiresAt?: Date | null;
   createdByRunId?: number | null;
+  published?: boolean;
 }
 
 export interface TeamMemoryHint {
@@ -1007,7 +1019,8 @@ export type DelegationStatus =
   | "completed"
   | "failed"
   | "timeout"
-  | "rejected";
+  | "rejected"
+  | "handed_off";
 
 export interface DelegationRequest {
   fromStage: TeamId;
@@ -1749,4 +1762,41 @@ export interface CreateSharedSessionInput {
   ownerInstanceId: string;
   createdBy: string;
   expiresAt?: Date | null;
+}
+
+// ── Federation: Async Handoff (issue #226) ───────────────────────────────────
+
+export interface HandoffBundle {
+  run: Record<string, unknown>;
+  pipeline: Record<string, unknown>;
+  stages: Record<string, unknown>[];
+  chatHistory: Record<string, unknown>[];
+  memories: Record<string, unknown>[];
+  llmRequests: Record<string, unknown>[];
+  notes: string;
+}
+
+export interface ApprovalVote {
+  userId: string;
+  instanceId: string;
+  vote: "approve" | "reject";
+  reason?: string;
+  timestamp: number;
+}
+
+export type ConflictResolutionMethod = "unanimous" | "arbitration" | "escalation";
+
+export interface ConflictResolution {
+  method: ConflictResolutionMethod;
+  votes: ApprovalVote[];
+  verdict?: "approve" | "reject";
+  reasoning?: string;
+}
+
+// ── Federation: Presence (issue #226) ────────────────────────────────────────
+
+export interface PresenceEntry {
+  userId: string;
+  instanceId: string;
+  lastHeartbeat: number;
 }

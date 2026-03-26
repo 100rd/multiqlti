@@ -480,6 +480,7 @@ export class PgStorage implements IStorage {
       updatedAt: row.updatedAt ?? null,
       expiresAt: row.expiresAt ?? null,
       createdByRunId: row.createdByRunId ?? null,
+      published: row.published ?? false,
     };
   }
 
@@ -529,6 +530,7 @@ export class PgStorage implements IStorage {
         tags: insert.tags ?? [],
         expiresAt: insert.expiresAt ?? null,
         createdByRunId: insert.createdByRunId ?? null,
+        published: insert.published ?? false,
       })
       .onConflictDoUpdate({
         target: [memories.scope, memories.scopeId, memories.key],
@@ -570,6 +572,15 @@ export class PgStorage implements IStorage {
       .where(lt(memories.confidence, threshold))
       .returning({ id: memories.id });
     return result.length;
+  }
+
+  async updateMemoryPublished(id: number, published: boolean): Promise<Memory | null> {
+    const [row] = await db
+      .update(memories)
+      .set({ published, updatedAt: new Date() })
+      .where(eq(memories.id, id))
+      .returning();
+    return row ? this.rowToMemory(row) : null;
   }
 
   // ─── MCP Servers ────────────────────────────────────

@@ -61,6 +61,8 @@ import { McpRegistryAdapter } from "./skill-market/adapters/mcp-registry-adapter
 import { SkillUpdateChecker } from "./skill-market/update-checker";
 import { registerFederationRoutes } from "./routes/federation";
 import { SessionSharingService } from "./federation/session-sharing";
+import { MemoryFederationService } from "./federation/memory-federation";
+import { PipelineSyncService } from "./federation/pipeline-sync";
 import { getFederationManager } from "./index";
 
 export async function registerRoutes(
@@ -237,18 +239,33 @@ export async function registerRoutes(
     });
   }
 
-  // Federation Session Sharing (issue #224)
+  // Federation services (issues #224 + #225)
   let sessionSharing: SessionSharingService | null = null;
+  let memoryFederation: MemoryFederationService | null = null;
+  let pipelineSync: PipelineSyncService | null = null;
   const fm = getFederationManager();
   if (fm && fm.isEnabled()) {
+    const instanceId = fm.getPeers().length > 0 ? "local" : "primary";
     try {
-      sessionSharing = new SessionSharingService(fm, storage, fm.getPeers().length > 0 ? "local" : "primary");
+      sessionSharing = new SessionSharingService(fm, storage, instanceId);
       log("[federation] Session sharing service initialized", "federation");
     } catch (e) {
       log(`[federation] Session sharing disabled: ${(e as Error).message}`, "federation");
     }
+    try {
+      memoryFederation = new MemoryFederationService(fm, storage, instanceId, instanceId);
+      log("[federation] Memory federation service initialized", "federation");
+    } catch (e) {
+      log(`[federation] Memory federation disabled: ${(e as Error).message}`, "federation");
+    }
+    try {
+      pipelineSync = new PipelineSyncService(fm, storage, instanceId);
+      log("[federation] Pipeline sync service initialized", "federation");
+    } catch (e) {
+      log(`[federation] Pipeline sync disabled: ${(e as Error).message}`, "federation");
+    }
   }
-  registerFederationRoutes(app as unknown as Router, sessionSharing, fm);
+  registerFederationRoutes(app as unknown as Router, sessionSharing, fm, memoryFederation, pipelineSync, storage);
 
   // Graceful shutdown
   httpServer.on("close", async () => {
