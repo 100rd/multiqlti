@@ -122,7 +122,10 @@ class AuthService {
     return authStorage.deactivateUser(id);
   }
 
-  private async buildSession(user: User): Promise<AuthSession> {
+  /**
+   * Build a JWT session for a user. Used by both password login and OAuth login.
+   */
+  async buildSession(user: User): Promise<AuthSession> {
     const { jwtSecret, sessionTtlDays } = configLoader.get().auth;
     if (!jwtSecret) throw new Error("[auth] JWT_SECRET is not configured");
     const sessionMs = sessionTtlDays * 24 * 60 * 60 * 1000;

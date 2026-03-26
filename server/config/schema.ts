@@ -15,6 +15,23 @@ export const ConfigSchema = z.object({
     jwtSecret: z.string().min(32).optional(),
     sessionTtlDays: z.number().int().min(1).max(365).default(7),
     bcryptRounds: z.number().int().min(10).max(14).default(12),
+    oauth: z.object({
+      github: z.object({
+        enabled: z.boolean().default(false),
+        clientId: z.string().optional(),
+        clientSecret: z.string().optional(),
+        allowedOrgs: z.array(z.string()).default([]),
+      }).default({}),
+      gitlab: z.object({
+        enabled: z.boolean().default(false),
+        clientId: z.string().optional(),
+        clientSecret: z.string().optional(),
+        baseUrl: z.string().default("https://gitlab.com"),
+        allowedGroups: z.array(z.string()).default([]),
+      }).default({}),
+      autoRegister: z.boolean().default(true),
+      defaultRole: z.enum(["user", "maintainer", "admin"]).default("user"),
+    }).default({}),
   }).default({}),
   providers: z.object({
     anthropic: z.object({ apiKey: z.string().optional() }).default({}),

@@ -7,6 +7,7 @@ export type TaskComplexity = "trivial" | "standard" | "complex";
 // ─── Auth Types ───────────────────────────────────────────────────────────────
 
 export type UserRole = "user" | "maintainer" | "admin";
+export type OAuthProvider = "github" | "gitlab";
 
 export interface User {
   id: string;
@@ -14,6 +15,9 @@ export interface User {
   name: string;
   isActive: boolean;
   role: UserRole;
+  oauthProvider?: OAuthProvider | null;
+  oauthId?: string | null;
+  avatarUrl?: string | null;
   lastLoginAt: Date | null;
   createdAt: Date;
 }

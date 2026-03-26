@@ -1,4 +1,4 @@
-import type { User, UserRole } from "@shared/types";
+import type { User, UserRole, OAuthProvider } from "@shared/types";
 import type { InsertUser } from "@shared/schema";
 
 // ─── Interface ────────────────────────────────────────────────────────────────
@@ -11,13 +11,17 @@ export interface IAuthStorage {
   getUserById(id: string): Promise<User | undefined>;
   getAllUsers(): Promise<User[]>;
 
+  // OAuth queries
+  getUserByOAuth(provider: OAuthProvider, oauthId: string): Promise<User | undefined>;
+
   // User mutations
   updateUser(
     id: string,
-    updates: { name?: string; email?: string; passwordHash?: string; lastLoginAt?: Date },
+    updates: { name?: string; email?: string; passwordHash?: string; lastLoginAt?: Date; avatarUrl?: string },
   ): Promise<User>;
   updateUserRole(id: string, role: UserRole): Promise<User>;
   deactivateUser(id: string): Promise<User>;
+  linkOAuth(userId: string, provider: OAuthProvider, oauthId: string, avatarUrl?: string): Promise<User>;
 
   // Password hash retrieval (kept separate from User to avoid leaking it)
   getPasswordHashByEmail(email: string): Promise<string | undefined>;
@@ -33,7 +37,7 @@ export interface IAuthStorage {
 // ─── In-memory implementation (no DATABASE_URL) ───────────────────────────────
 
 interface StoredUser extends User {
-  passwordHash: string;
+  passwordHash: string | null;
 }
 
 interface StoredSession {
@@ -46,6 +50,7 @@ interface StoredSession {
 export class MemAuthStorage implements IAuthStorage {
   private usersById = new Map<string, StoredUser>();
   private usersByEmail = new Map<string, StoredUser>();
+  private usersByOAuth = new Map<string, StoredUser>(); // key = "provider:oauthId"
   private sessions = new Map<string, StoredSession>();
 
   async hasUsers(): Promise<boolean> {
@@ -56,20 +61,32 @@ export class MemAuthStorage implements IAuthStorage {
     if (this.usersByEmail.has(data.email)) {
       throw new Error("duplicate key value violates unique constraint users_email_unique");
     }
+    if (data.oauthProvider && data.oauthId) {
+      const oauthKey = `${data.oauthProvider}:${data.oauthId}`;
+      if (this.usersByOAuth.has(oauthKey)) {
+        throw new Error("duplicate key value violates unique constraint users_oauth_provider_id");
+      }
+    }
     const id = crypto.randomUUID();
     const now = new Date();
     const stored: StoredUser = {
       id,
       email: data.email,
       name: data.name,
-      passwordHash: data.passwordHash,
+      passwordHash: data.passwordHash ?? null,
       isActive: data.isActive ?? true,
       role: (data.role as UserRole | undefined) ?? "user",
+      oauthProvider: (data.oauthProvider as OAuthProvider | undefined) ?? null,
+      oauthId: data.oauthId ?? null,
+      avatarUrl: data.avatarUrl ?? null,
       lastLoginAt: null,
       createdAt: now,
     };
     this.usersById.set(id, stored);
     this.usersByEmail.set(data.email, stored);
+    if (stored.oauthProvider && stored.oauthId) {
+      this.usersByOAuth.set(`${stored.oauthProvider}:${stored.oauthId}`, stored);
+    }
     return this.toUser(stored);
   }
 
@@ -83,13 +100,18 @@ export class MemAuthStorage implements IAuthStorage {
     return stored ? this.toUser(stored) : undefined;
   }
 
+  async getUserByOAuth(provider: OAuthProvider, oauthId: string): Promise<User | undefined> {
+    const stored = this.usersByOAuth.get(`${provider}:${oauthId}`);
+    return stored ? this.toUser(stored) : undefined;
+  }
+
   async getAllUsers(): Promise<User[]> {
     return Array.from(this.usersById.values()).map((s) => this.toUser(s));
   }
 
   async updateUser(
     id: string,
-    updates: { name?: string; email?: string; passwordHash?: string; lastLoginAt?: Date },
+    updates: { name?: string; email?: string; passwordHash?: string; lastLoginAt?: Date; avatarUrl?: string },
   ): Promise<User> {
     const stored = this.usersById.get(id);
     if (!stored) throw new Error("User not found");
@@ -105,6 +127,7 @@ export class MemAuthStorage implements IAuthStorage {
     if (updates.name !== undefined) stored.name = updates.name;
     if (updates.passwordHash !== undefined) stored.passwordHash = updates.passwordHash;
     if (updates.lastLoginAt !== undefined) stored.lastLoginAt = updates.lastLoginAt;
+    if (updates.avatarUrl !== undefined) stored.avatarUrl = updates.avatarUrl;
 
     return this.toUser(stored);
   }
@@ -124,8 +147,31 @@ export class MemAuthStorage implements IAuthStorage {
     return this.toUser(stored);
   }
 
+  async linkOAuth(
+    userId: string,
+    provider: OAuthProvider,
+    oauthId: string,
+    avatarUrl?: string,
+  ): Promise<User> {
+    const stored = this.usersById.get(userId);
+    if (!stored) throw new Error("User not found");
+    const oauthKey = `${provider}:${oauthId}`;
+    if (this.usersByOAuth.has(oauthKey)) {
+      throw new Error("duplicate key value violates unique constraint users_oauth_provider_id");
+    }
+    // Remove old OAuth mapping if switching
+    if (stored.oauthProvider && stored.oauthId) {
+      this.usersByOAuth.delete(`${stored.oauthProvider}:${stored.oauthId}`);
+    }
+    stored.oauthProvider = provider;
+    stored.oauthId = oauthId;
+    if (avatarUrl !== undefined) stored.avatarUrl = avatarUrl;
+    this.usersByOAuth.set(oauthKey, stored);
+    return this.toUser(stored);
+  }
+
   async getPasswordHashByEmail(email: string): Promise<string | undefined> {
-    return this.usersByEmail.get(email)?.passwordHash;
+    return this.usersByEmail.get(email)?.passwordHash ?? undefined;
   }
 
   async createSession(
@@ -173,6 +219,9 @@ export class MemAuthStorage implements IAuthStorage {
       name: s.name,
       isActive: s.isActive,
       role: s.role,
+      oauthProvider: s.oauthProvider,
+      oauthId: s.oauthId,
+      avatarUrl: s.avatarUrl,
       lastLoginAt: s.lastLoginAt,
       createdAt: s.createdAt,
     };
@@ -213,6 +262,17 @@ export class PgAuthStorage implements IAuthStorage {
     return row ? this.rowToUser(row) : undefined;
   }
 
+  async getUserByOAuth(provider: OAuthProvider, oauthId: string): Promise<User | undefined> {
+    const { db } = await import("../db");
+    const { users } = await import("@shared/schema");
+    const { eq, and } = await import("drizzle-orm");
+    const [row] = await db
+      .select()
+      .from(users)
+      .where(and(eq(users.oauthProvider, provider), eq(users.oauthId, oauthId)));
+    return row ? this.rowToUser(row) : undefined;
+  }
+
   async getAllUsers(): Promise<User[]> {
     const { db } = await import("../db");
     const { users } = await import("@shared/schema");
@@ -222,7 +282,7 @@ export class PgAuthStorage implements IAuthStorage {
 
   async updateUser(
     id: string,
-    updates: { name?: string; email?: string; passwordHash?: string; lastLoginAt?: Date },
+    updates: { name?: string; email?: string; passwordHash?: string; lastLoginAt?: Date; avatarUrl?: string },
   ): Promise<User> {
     const { db } = await import("../db");
     const { users } = await import("@shared/schema");
@@ -232,6 +292,7 @@ export class PgAuthStorage implements IAuthStorage {
     if (updates.email !== undefined) setValues.email = updates.email;
     if (updates.passwordHash !== undefined) setValues.passwordHash = updates.passwordHash;
     if (updates.lastLoginAt !== undefined) setValues.lastLoginAt = updates.lastLoginAt;
+    if (updates.avatarUrl !== undefined) setValues.avatarUrl = updates.avatarUrl;
     const [updated] = await db.update(users).set(setValues).where(eq(users.id, id)).returning();
     if (!updated) throw new Error("User not found");
     return this.rowToUser(updated);
@@ -264,12 +325,36 @@ export class PgAuthStorage implements IAuthStorage {
     return this.rowToUser(updated);
   }
 
+  async linkOAuth(
+    userId: string,
+    provider: OAuthProvider,
+    oauthId: string,
+    avatarUrl?: string,
+  ): Promise<User> {
+    const { db } = await import("../db");
+    const { users } = await import("@shared/schema");
+    const { eq } = await import("drizzle-orm");
+    const setValues: Record<string, unknown> = {
+      oauthProvider: provider,
+      oauthId,
+      updatedAt: new Date(),
+    };
+    if (avatarUrl !== undefined) setValues.avatarUrl = avatarUrl;
+    const [updated] = await db
+      .update(users)
+      .set(setValues)
+      .where(eq(users.id, userId))
+      .returning();
+    if (!updated) throw new Error("User not found");
+    return this.rowToUser(updated);
+  }
+
   async getPasswordHashByEmail(email: string): Promise<string | undefined> {
     const { db } = await import("../db");
     const { users } = await import("@shared/schema");
     const { eq } = await import("drizzle-orm");
     const [row] = await db.select().from(users).where(eq(users.email, email));
-    return row?.passwordHash;
+    return row?.passwordHash ?? undefined;
   }
 
   async createSession(
@@ -321,6 +406,9 @@ export class PgAuthStorage implements IAuthStorage {
     name: string;
     isActive: boolean;
     role: UserRole;
+    oauthProvider: string | null;
+    oauthId: string | null;
+    avatarUrl: string | null;
     lastLoginAt: Date | null;
     createdAt: Date;
   }): User {
@@ -330,6 +418,9 @@ export class PgAuthStorage implements IAuthStorage {
       name: row.name,
       isActive: row.isActive,
       role: row.role,
+      oauthProvider: row.oauthProvider as OAuthProvider | null,
+      oauthId: row.oauthId,
+      avatarUrl: row.avatarUrl,
       lastLoginAt: row.lastLoginAt,
       createdAt: row.createdAt,
     };

@@ -4,6 +4,19 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { authService } from "../auth/service";
 import { requireAuth, requireRole } from "../auth/middleware";
 import { USER_ROLES } from "@shared/schema";
+import {
+  isGithubEnabled,
+  isGitlabEnabled,
+  getEnabledProviders,
+  generateState,
+  validateAndConsumeState,
+  getGithubAuthUrl,
+  getGitlabAuthUrl,
+  getGithubProfile,
+  getGitlabProfile,
+  authenticateOAuth,
+  OAuthError,
+} from "../auth/oauth";
 
 const loginLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -41,6 +54,11 @@ const adminUpdateUserSchema = z.object({
   email: z.string().email().optional(),
   role: z.enum(USER_ROLES).optional(),
   isActive: z.boolean().optional(),
+});
+
+const oauthCallbackSchema = z.object({
+  code: z.string().min(1),
+  state: z.string().min(1),
 });
 
 export function registerAuthRoutes(app: Express): void {
@@ -276,4 +294,118 @@ export function registerAuthRoutes(app: Express): void {
       throw err;
     }
   });
+
+  // ─── OAuth Routes ──────────────────────────────────────────────────────────
+
+  // Public: list enabled OAuth providers
+  app.get("/api/auth/oauth/providers", (_req, res) => {
+    res.json({ providers: getEnabledProviders() });
+  });
+
+  // Public: initiate GitHub OAuth flow
+  app.get("/api/auth/oauth/github", (_req, res) => {
+    if (!isGithubEnabled()) {
+      res.status(404).json({ error: "GitHub OAuth is not configured" });
+      return;
+    }
+    const state = generateState();
+    const url = getGithubAuthUrl(state);
+    res.redirect(url);
+  });
+
+  // Public: GitHub OAuth callback
+  app.get("/api/auth/oauth/github/callback", async (req, res) => {
+    if (!isGithubEnabled()) {
+      res.status(404).json({ error: "GitHub OAuth is not configured" });
+      return;
+    }
+
+    const parsed = oauthCallbackSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Missing or invalid code/state parameters" });
+      return;
+    }
+
+    const { code, state } = parsed.data;
+
+    if (!validateAndConsumeState(state)) {
+      res.status(400).json({ error: "Invalid or expired state parameter" });
+      return;
+    }
+
+    try {
+      const profile = await getGithubProfile(code);
+      const session = await authenticateOAuth(profile);
+      redirectWithToken(res, session.token);
+    } catch (err) {
+      handleOAuthError(res, err);
+    }
+  });
+
+  // Public: initiate GitLab OAuth flow
+  app.get("/api/auth/oauth/gitlab", (_req, res) => {
+    if (!isGitlabEnabled()) {
+      res.status(404).json({ error: "GitLab OAuth is not configured" });
+      return;
+    }
+    const state = generateState();
+    const url = getGitlabAuthUrl(state);
+    res.redirect(url);
+  });
+
+  // Public: GitLab OAuth callback
+  app.get("/api/auth/oauth/gitlab/callback", async (req, res) => {
+    if (!isGitlabEnabled()) {
+      res.status(404).json({ error: "GitLab OAuth is not configured" });
+      return;
+    }
+
+    const parsed = oauthCallbackSchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Missing or invalid code/state parameters" });
+      return;
+    }
+
+    const { code, state } = parsed.data;
+
+    if (!validateAndConsumeState(state)) {
+      res.status(400).json({ error: "Invalid or expired state parameter" });
+      return;
+    }
+
+    try {
+      const profile = await getGitlabProfile(code);
+      const session = await authenticateOAuth(profile);
+      redirectWithToken(res, session.token);
+    } catch (err) {
+      handleOAuthError(res, err);
+    }
+  });
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function redirectWithToken(res: { redirect(url: string): void }, token: string): void {
+  // Use URL fragment (#) not query param (?) — fragments are never sent in Referer headers,
+  // not logged by proxies, and not stored in server access logs.
+  res.redirect(`/#token=${encodeURIComponent(token)}`);
+}
+
+function handleOAuthError(
+  res: { status(code: number): { json(body: unknown): void } },
+  err: unknown,
+): void {
+  if (err instanceof OAuthError) {
+    const statusMap: Record<string, number> = {
+      ORG_DENIED: 403,
+      ACCOUNT_DISABLED: 403,
+      REGISTRATION_DISABLED: 403,
+    };
+    const status = statusMap[err.code] ?? 400;
+    res.status(status).json({ error: err.message, code: err.code });
+    return;
+  }
+  // Log unexpected errors but don't leak details
+  console.error("[oauth] Unexpected error:", err);
+  res.status(500).json({ error: "OAuth authentication failed" });
 }
