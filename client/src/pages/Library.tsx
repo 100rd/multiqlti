@@ -13,6 +13,8 @@ import {
   Search,
   X,
   BookOpen,
+  Pencil,
+  Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -35,6 +37,23 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   const token = getAuthToken();
   const res = await fetch(url, {
     method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error ?? `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+async function putJson<T>(url: string, body: unknown): Promise<T> {
+  const token = getAuthToken();
+  const res = await fetch(url, {
+    method: "PUT",
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -315,15 +334,98 @@ function ChannelCard({
 
 function ItemCard({ item }: { item: LibraryItem }) {
   const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState(item.title);
+  const [editSummary, setEditSummary] = useState(item.summary ?? "");
+  const [editTags, setEditTags] = useState(item.tags.join(", "));
 
   const remove = useMutation({
     mutationFn: () => deleteApi(`/api/library/items/${item.id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["library-items"] }),
   });
 
+  const update = useMutation({
+    mutationFn: (data: { title?: string; summary?: string; tags?: string[] }) =>
+      putJson(`/api/library/items/${item.id}`, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["library-items"] });
+      setEditing(false);
+    },
+  });
+
+  const handleSave = () => {
+    const changes: Record<string, unknown> = {};
+    if (editTitle.trim() !== item.title) changes.title = editTitle.trim();
+    if (editSummary.trim() !== (item.summary ?? "")) changes.summary = editSummary.trim() || null;
+    const newTags = editTags.split(",").map((t) => t.trim()).filter(Boolean);
+    if (JSON.stringify(newTags) !== JSON.stringify(item.tags)) changes.tags = newTags;
+    if (Object.keys(changes).length > 0) {
+      update.mutate(changes as { title?: string; summary?: string; tags?: string[] });
+    } else {
+      setEditing(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setEditTitle(item.title);
+    setEditSummary(item.summary ?? "");
+    setEditTags(item.tags.join(", "));
+    setEditing(false);
+  };
+
   const date = item.publishedAt
     ? new Date(item.publishedAt).toLocaleDateString()
     : new Date(item.createdAt).toLocaleDateString();
+
+  if (editing) {
+    return (
+      <Card className="border-primary/30">
+        <CardContent className="p-4 space-y-3">
+          <div>
+            <label className="block text-[10px] font-medium text-muted-foreground mb-1">Title</label>
+            <input
+              className="w-full border border-border rounded-md px-3 py-1.5 bg-background text-sm"
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] font-medium text-muted-foreground mb-1">Summary</label>
+            <textarea
+              className="w-full border border-border rounded-md px-3 py-1.5 bg-background text-xs resize-none"
+              rows={2}
+              value={editSummary}
+              onChange={(e) => setEditSummary(e.target.value)}
+              placeholder="Brief summary..."
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] font-medium text-muted-foreground mb-1">Tags (comma-separated)</label>
+            <input
+              className="w-full border border-border rounded-md px-3 py-1.5 bg-background text-xs"
+              value={editTags}
+              onChange={(e) => setEditTags(e.target.value)}
+              placeholder="tag1, tag2"
+            />
+          </div>
+          <div className="flex gap-2 justify-end">
+            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={handleCancel}>
+              Cancel
+            </Button>
+            <Button size="sm" className="h-7 text-xs" onClick={handleSave} disabled={!editTitle.trim() || update.isPending}>
+              {update.isPending ? "Saving..." : "Save"}
+            </Button>
+          </div>
+          {update.isError && (
+            <p className="text-xs text-destructive">
+              {update.error instanceof Error ? update.error.message : "Update failed"}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card className="border-border hover:border-primary/20 transition-colors">
@@ -344,15 +446,26 @@ function ItemCard({ item }: { item: LibraryItem }) {
               <p className="text-sm font-medium">{item.title}</p>
             )}
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive shrink-0"
-            onClick={() => remove.mutate()}
-            title="Delete item"
-          >
-            <Trash2 className="h-3 w-3" />
-          </Button>
+          <div className="flex items-center gap-0.5 shrink-0">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 w-6 p-0 text-muted-foreground hover:text-primary"
+              onClick={() => setEditing(true)}
+              title="Edit item"
+            >
+              <Pencil className="h-3 w-3" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+              onClick={() => remove.mutate()}
+              title="Delete item"
+            >
+              <Trash2 className="h-3 w-3" />
+            </Button>
+          </div>
         </div>
 
         {item.summary && (
