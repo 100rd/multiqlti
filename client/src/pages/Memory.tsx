@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Brain, Search, Plus, Trash2, ChevronDown, ChevronUp, X } from "lucide-react";
+import { Brain, Search, Plus, Trash2, ChevronDown, ChevronUp, X, Pencil, Check } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -171,12 +171,33 @@ function AddMemoryForm({ onDone }: AddMemoryFormProps) {
 interface MemoryCardProps {
   memory: Memory;
   onDelete: (id: number) => void;
+  onUpdate: (id: number, data: { content?: string; confidence?: number }) => void;
+  isUpdating: boolean;
 }
 
-function MemoryCard({ memory, onDelete }: MemoryCardProps) {
+function MemoryCard({ memory, onDelete, onUpdate, isUpdating }: MemoryCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editContent, setEditContent] = useState(memory.content);
+  const [editConfidence, setEditConfidence] = useState(memory.confidence);
   const PREVIEW_LEN = 120;
   const isLong = memory.content.length > PREVIEW_LEN;
+
+  const handleSave = () => {
+    const changes: { content?: string; confidence?: number } = {};
+    if (editContent.trim() !== memory.content) changes.content = editContent.trim();
+    if (editConfidence !== memory.confidence) changes.confidence = editConfidence;
+    if (Object.keys(changes).length > 0) {
+      onUpdate(memory.id, changes);
+    }
+    setEditing(false);
+  };
+
+  const handleCancel = () => {
+    setEditContent(memory.content);
+    setEditConfidence(memory.confidence);
+    setEditing(false);
+  };
 
   return (
     <div className="border border-border rounded-lg p-3 bg-card space-y-2 hover:border-primary/30 transition-colors">
@@ -189,29 +210,93 @@ function MemoryCard({ memory, onDelete }: MemoryCardProps) {
             </Badge>
             <Badge variant="outline" className="text-[10px]">{memory.scope}</Badge>
           </div>
-          <p className="text-xs text-muted-foreground mt-1">
-            {expanded || !isLong
-              ? memory.content
-              : memory.content.slice(0, PREVIEW_LEN) + "..."}
-          </p>
+          {editing ? (
+            <textarea
+              className="w-full mt-1 text-xs rounded-md border border-input bg-background px-2 py-1.5 resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+              rows={3}
+              value={editContent}
+              onChange={(e) => setEditContent(e.target.value)}
+              autoFocus
+            />
+          ) : (
+            <p className="text-xs text-muted-foreground mt-1">
+              {expanded || !isLong
+                ? memory.content
+                : memory.content.slice(0, PREVIEW_LEN) + "..."}
+            </p>
+          )}
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6 text-muted-foreground hover:text-destructive shrink-0"
-          onClick={() => onDelete(memory.id)}
-        >
-          <X className="h-3 w-3" />
-        </Button>
+        <div className="flex items-center gap-0.5 shrink-0">
+          {editing ? (
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-primary"
+                onClick={handleSave}
+                disabled={isUpdating}
+              >
+                <Check className="h-3 w-3" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-muted-foreground"
+                onClick={handleCancel}
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-muted-foreground hover:text-primary"
+                onClick={() => setEditing(true)}
+              >
+                <Pencil className="h-3 w-3" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                onClick={() => onDelete(memory.id)}
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
-      <ConfidenceBar value={memory.confidence} />
+      {editing ? (
+        <div className="space-y-1">
+          <label className="text-[10px] text-muted-foreground">Confidence</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={editConfidence}
+              onChange={(e) => setEditConfidence(parseFloat(e.target.value))}
+              className="flex-1 h-1.5 accent-primary"
+            />
+            <span className="text-[10px] text-muted-foreground w-8 text-right">
+              {(editConfidence * 100).toFixed(0)}%
+            </span>
+          </div>
+        </div>
+      ) : (
+        <ConfidenceBar value={memory.confidence} />
+      )}
 
       <div className="flex items-center justify-between">
         <span className="text-[10px] text-muted-foreground">
           {memory.source ?? "unknown"} · {timeAgo(memory.updatedAt)}
         </span>
-        {isLong && (
+        {isLong && !editing && (
           <button
             className="text-[10px] text-primary hover:underline flex items-center gap-0.5"
             onClick={() => setExpanded(!expanded)}
@@ -249,6 +334,13 @@ export default function Memory() {
   const deleteMemory = useMutation({
     mutationFn: async (id: number) => {
       await apiRequest("DELETE", `/api/memories/${id}`);
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["/api/memories"] }),
+  });
+
+  const updateMemory = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: { content?: string; confidence?: number } }) => {
+      await apiRequest("PUT", `/api/memories/${id}`, data);
     },
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["/api/memories"] }),
   });
@@ -379,6 +471,8 @@ export default function Memory() {
                   key={m.id}
                   memory={m}
                   onDelete={(id) => deleteMemory.mutate(id)}
+                  onUpdate={(id, data) => updateMemory.mutate({ id, data })}
+                  isUpdating={updateMemory.isPending}
                 />
               ))}
             </div>
