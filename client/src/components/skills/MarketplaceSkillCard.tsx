@@ -110,7 +110,7 @@ export const MarketplaceSkillCard = memo(function MarketplaceSkillCard({
               {skill.name}
             </CardTitle>
             <p className="text-[10px] text-muted-foreground mt-0.5">
-              by {skill.author} &middot; v{skill.version}
+              by {skill.author === "system" ? "system" : skill.author.length > 20 ? skill.author.slice(0, 8) : skill.author} &middot; v{skill.version}
             </p>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -134,11 +134,9 @@ export const MarketplaceSkillCard = memo(function MarketplaceSkillCard({
       </CardHeader>
 
       <CardContent className="pt-0 flex flex-col gap-3 flex-1">
-        {skill.description && (
-          <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">
-            {skill.description}
-          </p>
-        )}
+        <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">
+          {skill.description || "No description provided."}
+        </p>
 
         {/* Tags */}
         {skill.tags.length > 0 && (

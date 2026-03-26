@@ -42,8 +42,8 @@ async function fetchVersions(skillId: string): Promise<VersionsResponse> {
 
   const res = await fetch(`/api/skills/${skillId}/versions?limit=50`, { headers });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: res.statusText })) as { message?: string };
-    throw new Error(err.message ?? res.statusText);
+    const err = await res.json().catch(() => ({})) as Record<string, unknown>;
+    throw new Error((err.error ?? err.message ?? res.statusText) as string);
   }
   return res.json() as Promise<VersionsResponse>;
 }
