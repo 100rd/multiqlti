@@ -1784,6 +1784,18 @@ export interface SkillInstallLogEntry {
   createdAt: Date;
 }
 
+// ── Federation: Share Permissions (issue #232) ───────────────────────────────
+
+export type ShareRole = "owner" | "collaborator" | "viewer";
+
+export interface SharePermissions {
+  role: ShareRole;
+  allowedStages: string[] | null;
+  canChat: boolean;
+  canVote: boolean;
+  canViewMemories: boolean;
+}
+
 // ── Federation: Shared Sessions (issue #224) ────────────────────────────────
 
 export interface SharedSession {
@@ -1795,6 +1807,7 @@ export interface SharedSession {
   expiresAt?: Date | null;
   isActive: boolean;
   createdAt: Date;
+  permissions?: SharePermissions;
 }
 
 export interface CreateSharedSessionInput {
@@ -1803,6 +1816,11 @@ export interface CreateSharedSessionInput {
   ownerInstanceId: string;
   createdBy: string;
   expiresAt?: Date | null;
+  role?: ShareRole;
+  allowedStages?: string[] | null;
+  canChat?: boolean;
+  canVote?: boolean;
+  canViewMemories?: boolean;
 }
 
 // ── Federation: Async Handoff (issue #226) ───────────────────────────────────

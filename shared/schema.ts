@@ -66,6 +66,11 @@ export const sessions = pgTable("sessions", {
   token: text("token").notNull().unique(),
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
+  role: text("role").notNull().default("collaborator"),
+  allowedStages: jsonb("allowed_stages"),
+  canChat: boolean("can_chat").notNull().default(true),
+  canVote: boolean("can_vote").notNull().default(true),
+  canViewMemories: boolean("can_view_memories").notNull().default(true),
 });
 
 export type SessionRow = typeof sessions.$inferSelect;

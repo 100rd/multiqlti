@@ -57,7 +57,7 @@ import {
   sharedSessions,
   type SharedSessionRow,
 } from "@shared/schema";
-import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput } from "@shared/types";
+import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole } from "@shared/types";
 
 export class PgStorage implements IStorage {
 
@@ -1280,6 +1280,9 @@ export class PgStorage implements IStorage {
   // ─── Shared Sessions (Federation, issue #224) ─────────────────────────────
 
   private rowToSharedSession(row: SharedSessionRow): SharedSession {
+    const r = row as Record<string, unknown>;
+    const role = (r.role as string) ?? "collaborator";
+    const rawStages = r.allowedStages;
     return {
       id: row.id,
       runId: row.runId,
@@ -1289,6 +1292,13 @@ export class PgStorage implements IStorage {
       expiresAt: row.expiresAt ?? null,
       isActive: row.isActive,
       createdAt: row.createdAt,
+      permissions: {
+        role: role as ShareRole,
+        allowedStages: Array.isArray(rawStages) ? rawStages as string[] : null,
+        canChat: (r.canChat as boolean) ?? true,
+        canVote: (r.canVote as boolean) ?? true,
+        canViewMemories: (r.canViewMemories as boolean) ?? true,
+      },
     };
   }
 
@@ -1319,6 +1329,11 @@ export class PgStorage implements IStorage {
         ownerInstanceId: input.ownerInstanceId,
         createdBy: input.createdBy,
         expiresAt: input.expiresAt ?? null,
+        role: input.role ?? "collaborator",
+        allowedStages: input.allowedStages ?? null,
+        canChat: input.canChat ?? (input.role !== "viewer"),
+        canVote: input.canVote ?? (input.role !== "viewer"),
+        canViewMemories: input.canViewMemories ?? true,
       } as typeof sharedSessions.$inferInsert)
       .returning();
     return this.rowToSharedSession(row);
@@ -1342,4 +1357,27 @@ export class PgStorage implements IStorage {
       .filter((r) => !r.expiresAt || r.expiresAt > now)
       .map((r) => this.rowToSharedSession(r));
   }
+  async updateSessionPermissions(
+    id: string,
+    permissions: { role?: string; allowedStages?: string[] | null; canChat?: boolean; canVote?: boolean; canViewMemories?: boolean },
+  ): Promise<SharedSession | null> {
+    const updates: Record<string, unknown> = {};
+    if (permissions.role !== undefined) updates.role = permissions.role;
+    if (permissions.allowedStages !== undefined) updates.allowedStages = permissions.allowedStages;
+    if (permissions.canChat !== undefined) updates.canChat = permissions.canChat;
+    if (permissions.canVote !== undefined) updates.canVote = permissions.canVote;
+    if (permissions.canViewMemories !== undefined) updates.canViewMemories = permissions.canViewMemories;
+
+    if (Object.keys(updates).length === 0) {
+      return this.getSharedSession(id);
+    }
+
+    const [row] = await db
+      .update(sharedSessions)
+      .set(updates)
+      .where(eq(sharedSessions.id, id))
+      .returning();
+    return row ? this.rowToSharedSession(row) : null;
+  }
+
 }

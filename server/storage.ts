@@ -46,7 +46,7 @@ import {
   type InsertWorkspace,
   type SharedSessionRow,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole } from "@shared/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
 import { configLoader } from "./config/loader";
@@ -286,6 +286,10 @@ export interface IStorage {
   createSharedSession(input: CreateSharedSessionInput): Promise<SharedSession>;
   deactivateSharedSession(id: string): Promise<void>;
   listActiveSharedSessions(): Promise<SharedSession[]>;
+  updateSessionPermissions(
+    id: string,
+    permissions: { role?: string; allowedStages?: string[] | null; canChat?: boolean; canVote?: boolean; canViewMemories?: boolean },
+  ): Promise<SharedSession | null>;
 }
 
 export class MemStorage implements IStorage {
@@ -1712,6 +1716,7 @@ export class MemStorage implements IStorage {
 
   async createSharedSession(input: CreateSharedSessionInput): Promise<SharedSession> {
     const id = randomUUID();
+    const role = (input.role ?? "collaborator") as ShareRole;
     const session: SharedSession = {
       id,
       runId: input.runId,
@@ -1721,6 +1726,13 @@ export class MemStorage implements IStorage {
       expiresAt: input.expiresAt ?? null,
       isActive: true,
       createdAt: new Date(),
+      permissions: {
+        role,
+        allowedStages: input.allowedStages ?? null,
+        canChat: input.canChat ?? (role !== "viewer"),
+        canVote: input.canVote ?? (role !== "viewer"),
+        canViewMemories: input.canViewMemories ?? true,
+      },
     };
     this.sharedSessionsMap.set(id, session);
     return session;
@@ -1739,6 +1751,34 @@ export class MemStorage implements IStorage {
       (s) => s.isActive && (!s.expiresAt || s.expiresAt > now),
     );
   }
+  async updateSessionPermissions(
+    id: string,
+    permissions: { role?: string; allowedStages?: string[] | null; canChat?: boolean; canVote?: boolean; canViewMemories?: boolean },
+  ): Promise<SharedSession | null> {
+    const session = this.sharedSessionsMap.get(id);
+    if (!session) return null;
+
+    const current = session.permissions ?? {
+      role: "collaborator" as ShareRole,
+      allowedStages: null,
+      canChat: true,
+      canVote: true,
+      canViewMemories: true,
+    };
+    const updated: SharedSession = {
+      ...session,
+      permissions: {
+        role: (permissions.role as ShareRole) ?? current.role,
+        allowedStages: permissions.allowedStages !== undefined ? permissions.allowedStages : current.allowedStages,
+        canChat: permissions.canChat ?? current.canChat,
+        canVote: permissions.canVote ?? current.canVote,
+        canViewMemories: permissions.canViewMemories ?? current.canViewMemories,
+      },
+    };
+    this.sharedSessionsMap.set(id, updated);
+    return updated;
+  }
+
 }
 
 export const storage: IStorage = configLoader.get().database.url
