@@ -10,6 +10,7 @@ import { runMigrations } from "./db";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { FederationManager } from "./federation/index";
+import { setFederationManager, getFederationManager } from "./federation/manager-state";
 
 const app = express();
 app.disable("x-powered-by");
@@ -68,13 +69,8 @@ app.use((req, res, next) => {
   next();
 });
 
-// Federation manager instance — started only when FEDERATION_ENABLED=true
-let federationManager: FederationManager | null = null;
-
-/** Accessor for other modules (e.g. health route) to read peer count. */
-export function getFederationManager(): FederationManager | null {
-  return federationManager;
-}
+// Re-export getFederationManager for backward compatibility with any external consumers.
+export { getFederationManager };
 
 (async () => {
   // Reject API requests with path traversal sequences
@@ -121,14 +117,16 @@ export function getFederationManager(): FederationManager | null {
 
   // Start federation if enabled
   if (config.federation.enabled) {
-    federationManager = new FederationManager({
+    const federationManager = new FederationManager({
       enabled: config.federation.enabled,
       instanceId: config.federation.instanceId,
       instanceName: config.federation.instanceName,
       clusterSecret: config.federation.clusterSecret,
       listenPort: config.federation.listenPort,
       peers: config.federation.peers,
+      encryption: config.federation.encryption,
     });
+    setFederationManager(federationManager);
     await federationManager.start();
     log(`federation started on port ${config.federation.listenPort} (instance: ${config.federation.instanceId})`, "federation");
   }

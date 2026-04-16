@@ -1,6 +1,6 @@
 import type { ToolHandler } from "../registry";
 import { storage } from "../../storage";
-import { getFederationManager } from "../../index";
+import { getFederationManager } from "../../federation/manager-state";
 import { MemoryFederationService } from "../../federation/memory-federation";
 import type { FederatedMemoryResult } from "../../federation/memory-federation";
 

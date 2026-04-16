@@ -14,8 +14,12 @@ export const STAGE_MERGE_DEFAULTS: Record<TeamId, "concatenate" | "review"> = {
 };
 
 function resolveStrategy(strategy: MergeStrategy, teamId: string): "concatenate" | "review" {
-  if (strategy !== "auto") return strategy;
-  return STAGE_MERGE_DEFAULTS[teamId as TeamId] ?? "review";
+  if (strategy === "auto") {
+    return STAGE_MERGE_DEFAULTS[teamId as TeamId] ?? "review";
+  }
+  // "llm_merge" and "vote" are LLM-based strategies — use review merge
+  if (strategy === "concatenate") return "concatenate";
+  return "review";
 }
 
 function concatenateResults(results: SubTaskResult[]): string {

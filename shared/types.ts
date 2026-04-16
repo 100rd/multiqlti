@@ -7,6 +7,7 @@ export type TaskComplexity = "trivial" | "standard" | "complex";
 // ─── Auth Types ───────────────────────────────────────────────────────────────
 
 export type UserRole = "user" | "maintainer" | "admin";
+export type OAuthProvider = "github" | "gitlab";
 
 export interface User {
   id: string;
@@ -14,6 +15,9 @@ export interface User {
   name: string;
   isActive: boolean;
   role: UserRole;
+  oauthProvider?: OAuthProvider | null;
+  oauthId?: string | null;
+  avatarUrl?: string | null;
   lastLoginAt: Date | null;
   createdAt: Date;
 }
@@ -859,7 +863,7 @@ export interface Recommendation {
 
 // ─── Parallel Split Execution Types (Phase 3.8) ───────────────────────────────
 
-export type MergeStrategy = "concatenate" | "review" | "auto";
+export type MergeStrategy = "concatenate" | "llm_merge" | "vote" | "review" | "auto";
 
 // ─── Sharding Types (Phase 6.12) ────────────────────────────────────────────
 
@@ -899,12 +903,49 @@ export interface ParallelConfig {
   maxTokensPerSubtask?: number;
   /** Cost-gate configuration; warn or block before expensive splits */
   costThreshold?: CostThresholdConfig;
+  /** How subtasks are split (used by Splitter). */
+  splitStrategy?: string;
+  /** Capability-based model routing for subtasks. */
+  capabilityRouting?: {
+    enabled: boolean;
+    availableModels: string[];
+  };
 }
+
+/** Cost tier classification for a model (used in parallel capability routing). */
+export type CostTier = "low" | "medium" | "high";
 
 export interface ModelParallelCapabilities {
   maxConcurrentAgents: number;
   supportedMergeStrategies: MergeStrategy[];
   recommendedForSplitting: boolean;
+  /** Rate limit in requests per minute. */
+  rateLimit?: number;
+  /** Cost classification for subtask model selection. */
+  costTier?: CostTier;
+  /** Strengths for capability-based routing (e.g. "reasoning", "code"). */
+  strengths?: string[];
+  /** Whether the model supports agentic multi-step execution. */
+  agenticCapability?: boolean;
+  /** Maximum context window in tokens. */
+  contextWindow?: number;
+}
+
+// ─── Rate Limiter Types ─────────────────────────────────────────────────────
+
+/** Action to take when parallel execution hits a rate or cost limit. */
+export type RateLimitFallback = "abort" | "warn" | "queue";
+
+/** Global guardrails applied to all parallel pipeline splits. */
+export interface ParallelGuardrails {
+  /** Maximum concurrent subtask agents per model slug. */
+  maxConcurrentPerModel: number;
+  /** Minimum cooldown in ms between successive requests to the same model. */
+  cooldownBetweenRequests: number;
+  /** Maximum USD cost allowed for a single split execution. */
+  maxTotalCostPerSplit: number;
+  /** What to do when a limit is hit. */
+  onLimitHit: RateLimitFallback;
 }
 
 export interface SubTask {
@@ -1799,4 +1840,40 @@ export interface PresenceEntry {
   userId: string;
   instanceId: string;
   lastHeartbeat: number;
+}
+
+// ── Federation: Cross-Instance Delegation (issue #233) ───────────────────────
+
+/** Policy controlling which peers/stages can be delegated and at what concurrency. */
+export interface CrossDelegationPolicy {
+  enabled: boolean;
+  /** Max concurrent outstanding delegations from this instance. */
+  maxConcurrent: number;
+  /** Timeout in seconds for a single delegation. */
+  timeoutSeconds: number;
+  /** Allowed peer instance IDs; null = allow all. */
+  allowedPeers: string[] | null;
+  /** Allowed stage team IDs; null = allow all. */
+  allowedStages: string[] | null;
+}
+
+/** Payload sent to a peer when delegating a stage. */
+export interface CrossDelegationRequest {
+  id: string;
+  runId: string;
+  stageIndex: number;
+  stage: PipelineStageConfig;
+  input: string;
+  variables: Record<string, string>;
+  fromInstanceId: string;
+}
+
+/** Result returned by a peer after executing a delegated stage. */
+export interface CrossDelegationResult {
+  delegationId: string;
+  status: "completed" | "failed" | "timeout";
+  output: string;
+  tokensUsed: number;
+  executionMs: number;
+  error?: string;
 }

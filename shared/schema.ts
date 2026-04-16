@@ -21,23 +21,37 @@ import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerTyp
 export const USER_ROLES = ["user", "maintainer", "admin"] as const;
 export type UserRole = typeof USER_ROLES[number];
 
+export const OAUTH_PROVIDERS = ["github", "gitlab"] as const;
+export type OAuthProvider = typeof OAUTH_PROVIDERS[number];
+
 // ─── Users ──────────────────────────────────────────
 
 export const users = pgTable("users", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   email: text("email").notNull().unique(),
   name: text("name").notNull(),
-  passwordHash: text("password_hash").notNull(),
+  passwordHash: text("password_hash"),
   isActive: boolean("is_active").notNull().default(true),
   role: text("role").notNull().default("user").$type<UserRole>(),
+  oauthProvider: text("oauth_provider").$type<OAuthProvider>(),
+  oauthId: text("oauth_id"),
+  avatarUrl: text("avatar_url"),
   lastLoginAt: timestamp("last_login_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
-});
+}, (table) => [
+  unique("users_oauth_provider_id").on(table.oauthProvider, table.oauthId),
+]);
 
 export const insertUserSchema = createInsertSchema(users)
   .omit({ id: true, createdAt: true, updatedAt: true })
-  .extend({ role: z.enum(USER_ROLES).optional() });
+  .extend({
+    role: z.enum(USER_ROLES).optional(),
+    passwordHash: z.string().nullable().optional(),
+    oauthProvider: z.enum(OAUTH_PROVIDERS).nullable().optional(),
+    oauthId: z.string().nullable().optional(),
+    avatarUrl: z.string().nullable().optional(),
+  });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type UserRow = typeof users.$inferSelect;
