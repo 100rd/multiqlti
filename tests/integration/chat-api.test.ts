@@ -68,9 +68,14 @@ async function createAuthenticatedApp() {
 
   const storage = new MemStorage();
 
-  // Stub gateway: complete returns a fixed response, stream yields one chunk
+  // Stub gateway: complete/completeWithTools return fixed responses, stream yields one chunk
   const stubGateway = {
     complete: async () => ({ content: "Test response", tokensUsed: 10 }),
+    completeWithTools: async () => ({
+      content: "Test response",
+      tokensUsed: 10,
+      toolCallLog: [],
+    }),
     stream: async function* () {
       yield "chunk";
     },
@@ -108,6 +113,11 @@ async function createUnauthenticatedApp() {
 
   const stubGateway = {
     complete: async () => ({ content: "ok", tokensUsed: 1 }),
+    completeWithTools: async () => ({
+      content: "ok",
+      tokensUsed: 1,
+      toolCallLog: [],
+    }),
     stream: async function* () {
       yield "chunk";
     },

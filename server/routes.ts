@@ -63,7 +63,7 @@ import { registerFederationRoutes } from "./routes/federation";
 import { SessionSharingService } from "./federation/session-sharing";
 import { MemoryFederationService } from "./federation/memory-federation";
 import { PipelineSyncService } from "./federation/pipeline-sync";
-import { getFederationManager } from "./index";
+import { getFederationManager } from "./federation/manager-state";
 
 export async function registerRoutes(
   httpServer: Server,

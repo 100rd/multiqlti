@@ -25,11 +25,12 @@ function createChatApp() {
   const app = express();
   app.use(express.json());
 
-  // Stub gateway and wsManager — chat routes call gateway.complete / stream
+  // Stub gateway and wsManager — chat routes call gateway.completeWithTools / stream
   // but our validation tests short-circuit before that via 400 responses.
   // For the "valid body passes through" tests we need them to resolve.
   const stubGateway = {
     complete: async () => ({ content: "ok", tokensUsed: 1 }),
+    completeWithTools: async () => ({ content: "ok", tokensUsed: 1, toolCallLog: [] }),
     stream: async function* () { yield "chunk"; },
   };
   const stubWsManager = { broadcastToRun: () => {} };

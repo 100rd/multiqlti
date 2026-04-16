@@ -14,6 +14,7 @@ import { Merger } from "./merger";
 import { truncateToTokenBudget } from "./token-budget";
 import { estimateCostUsd } from "@shared/constants";
 import { pickCheapestModelSlug } from "./model-tier-router";
+import type { ModelCapabilityRegistry } from "./model-capability-registry";
 
 export interface ParallelStageResult {
   output: Record<string, unknown>;
@@ -38,15 +39,43 @@ function stageInputToString(input: Record<string, unknown>): string {
   return JSON.stringify(input);
 }
 
+/**
+ * Infer required strengths from a subtask's title and description.
+ * Used when capabilityRouting is enabled without explicit strength requirements.
+ */
+function inferSubtaskStrengths(subtask: SubTask): string[] {
+  const text = `${subtask.title} ${subtask.description}`.toLowerCase();
+  const strengths: string[] = [];
+
+  if (/\b(implement|code|function|write|build|create|develop|program)\b/.test(text)) {
+    strengths.push("code");
+  }
+  if (/\b(analyz|reason|architect|complex|design|evaluat|assess|review)\b/.test(text)) {
+    strengths.push("reasoning");
+  }
+  if (/\b(test|debug|fix|verify|validate|check)\b/.test(text)) {
+    strengths.push("review");
+  }
+
+  return strengths;
+}
+
 export class ParallelExecutor {
   private gateway: Gateway;
   private teamRegistry: TeamRegistry;
   private wsManager: WsManager;
+  private capabilityRegistry: ModelCapabilityRegistry | null;
 
-  constructor(gateway: Gateway, teamRegistry: TeamRegistry, wsManager: WsManager) {
+  constructor(
+    gateway: Gateway,
+    teamRegistry: TeamRegistry,
+    wsManager: WsManager,
+    capabilityRegistry?: ModelCapabilityRegistry,
+  ) {
     this.gateway = gateway;
     this.teamRegistry = teamRegistry;
     this.wsManager = wsManager;
+    this.capabilityRegistry = capabilityRegistry ?? null;
   }
 
   async executeParallel(
@@ -139,6 +168,39 @@ export class ParallelExecutor {
   }
 
   /**
+   * Resolve the model slug for a subtask.
+   * Priority: suggestedModel > capabilityRouting > cheapest model fallback.
+   */
+  private resolveSubtaskModel(
+    subtask: SubTask,
+    stageModelSlug: string,
+    capabilityRouting?: { enabled: boolean; availableModels: string[] },
+  ): string {
+    // Explicit suggestion from splitter always wins
+    if (subtask.suggestedModel) {
+      return subtask.suggestedModel;
+    }
+
+    // Capability-based routing when enabled and models are available
+    if (
+      capabilityRouting?.enabled &&
+      this.capabilityRegistry &&
+      capabilityRouting.availableModels.length > 0
+    ) {
+      const complexity = subtask.estimatedComplexity ?? "medium";
+      const strengths = inferSubtaskStrengths(subtask);
+      const selected = this.capabilityRegistry.selectModelForSubtask(
+        capabilityRouting.availableModels,
+        complexity,
+        strengths,
+      );
+      if (selected) return selected;
+    }
+
+    return pickCheapestModelSlug(stageModelSlug, stageModelSlug);
+  }
+
+  /**
    * Run all subtasks in parallel with per-subtask token-budget truncation and
    * cumulative cost enforcement.  When the cumulative cost limit is exceeded,
    * remaining subtasks that haven't started yet receive an abort signal via a
@@ -214,10 +276,13 @@ export class ParallelExecutor {
     stageId: string,
     maxTokensPerSubtask: number | undefined,
   ): Promise<SubTaskResult> {
-    // ── Model-tier routing: use cheap model for chunks ────────────────────────
+    // ── Model routing: capability-based or cheapest-model fallback ───────────
     const primaryModel = stage.modelSlug ?? "mock";
-    const cheapModel = pickCheapestModelSlug(primaryModel, primaryModel);
-    const modelSlug = subtask.suggestedModel ?? cheapModel;
+    const modelSlug = this.resolveSubtaskModel(
+      subtask,
+      primaryModel,
+      stage.parallel?.capabilityRouting,
+    );
 
     this.broadcastSubtaskStarted(context.runId, stageId, subtask.id, modelSlug);
 

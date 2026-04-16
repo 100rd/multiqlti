@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { pool } from "../db";
 import { configLoader } from "../config/loader";
 import { authService } from "../auth/service";
-import { getFederationManager } from "../index";
+import { getFederationManager } from "../federation/manager-state";
 
 /**
  * GET /api/health
