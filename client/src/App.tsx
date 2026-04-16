@@ -24,6 +24,7 @@ import Statistics from "@/pages/Statistics";
 import Memory from "@/pages/Memory";
 import WorkspaceList from "@/pages/WorkspaceList";
 import Workspace from "@/pages/Workspace";
+import Connections from "@/pages/Connections";
 import Login from "@/pages/Login";
 import UserManagement from "@/pages/UserManagement";
 import ProfileSettings from "@/pages/ProfileSettings";
@@ -88,6 +89,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/workspaces" component={() => (
           <ErrorBoundary><WorkspaceList /></ErrorBoundary>
+        )} />
+        <Route path="/workspaces/:id/connections" component={() => (
+          <ErrorBoundary><Connections /></ErrorBoundary>
         )} />
         <Route path="/workspaces/:id" component={() => (
           <ErrorBoundary><Workspace /></ErrorBoundary>

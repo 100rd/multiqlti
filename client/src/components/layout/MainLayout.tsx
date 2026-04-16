@@ -20,6 +20,7 @@ import {
   ShoppingBag,
   ListChecks,
   BookOpen,
+  Plug,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -42,6 +43,10 @@ export default function MainLayout({ children }: MainLayoutProps) {
   const pendingCount = Array.isArray(pendingQuestions) ? pendingQuestions.length : 0;
   const { user, logout } = useAuth();
 
+  // Detect if we're inside a workspace so we can show the connections sub-item
+  const workspaceMatch = location.match(/^\/workspaces\/([^/]+)/);
+  const currentWorkspaceId = workspaceMatch ? workspaceMatch[1] : null;
+
   const navItems = [
     { icon: LayoutDashboard, label: "Dashboard", href: "/" },
     { icon: MessageSquare, label: "Chat & Models", href: "/chat" },
@@ -54,6 +59,17 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: ListChecks, label: "Task Groups", href: "/task-groups" },
     { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
+    // Show "Connections" sub-item when inside a workspace
+    ...(currentWorkspaceId
+      ? [
+          {
+            icon: Plug,
+            label: "Connections",
+            href: `/workspaces/${currentWorkspaceId}/connections`,
+            indent: true,
+          },
+        ]
+      : []),
     { icon: Sparkles, label: "Skills", href: "/skills" },
     { icon: Store, label: "Marketplace", href: "/skills/marketplace" },
     { icon: ShoppingBag, label: "Skill Market", href: "/skills/market" },
@@ -90,6 +106,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
 
           <nav className="p-4 space-y-1">
             {navItems.map((item) => {
+              const indent = "indent" in item && item.indent;
               const isActive =
                 item.href === "/skills"
                   ? location === "/skills"
@@ -100,13 +117,14 @@ export default function MainLayout({ children }: MainLayoutProps) {
                 <Link key={item.href} href={item.href}>
                   <div className={cn(
                     "flex items-center gap-3 px-3 py-2 rounded-md transition-colors cursor-pointer text-sm font-medium",
+                    indent && "pl-8",
                     isActive
                       ? "bg-primary text-primary-foreground"
                       : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                   )}>
                     <Icon className="h-4 w-4" />
                     <span className="flex-1">{item.label}</span>
-                    {item.badge && (
+                    {"badge" in item && item.badge && (
                       <span className="ml-auto bg-amber-500 text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center">
                         {item.badge}
                       </span>
