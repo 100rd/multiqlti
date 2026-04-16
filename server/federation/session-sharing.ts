@@ -2,7 +2,8 @@ import crypto from "crypto";
 import type { FederationManager } from "./index.js";
 import type { FederationMessage, PeerInfo } from "./types.js";
 import type { IStorage } from "../storage.js";
-import type { SharedSession, HandoffBundle, PresenceEntry } from "@shared/types";
+import type { SharedSession, HandoffBundle, PresenceEntry, ShareRole } from "@shared/types";
+import { filterEvent } from "./permissions.js";
 
 const PRESENCE_TIMEOUT_MS = 10_000;
 const MAX_PENDING_HANDOFFS = 50;
@@ -28,6 +29,9 @@ const MAX_PRESENCE_SESSIONS = 500;
 export class SessionSharingService {
   /** runId -> Set<instanceId> of subscribing peers */
   private subscribers = new Map<string, Set<string>>();
+
+  /** runId -> Map<instanceId, SharedSession> for permission-aware forwarding */
+  private subscriberSessions = new Map<string, Map<string, SharedSession>>();
 
   /** Offers received from remote peers (shareToken -> offer payload) */
   private remoteOffers = new Map<
@@ -78,6 +82,13 @@ export class SessionSharingService {
     runId: string,
     userId: string,
     expiresIn?: number,
+    permissionOverrides?: {
+      role?: ShareRole;
+      allowedStages?: string[] | null;
+      canChat?: boolean;
+      canVote?: boolean;
+      canViewMemories?: boolean;
+    },
   ): Promise<SharedSession> {
     const shareToken = crypto.randomBytes(24).toString("hex");
     const session = await this.storage.createSharedSession({
@@ -86,6 +97,11 @@ export class SessionSharingService {
       ownerInstanceId: this.instanceId,
       createdBy: userId,
       expiresAt: expiresIn ? new Date(Date.now() + expiresIn) : null,
+      role: permissionOverrides?.role,
+      allowedStages: permissionOverrides?.allowedStages,
+      canChat: permissionOverrides?.canChat,
+      canVote: permissionOverrides?.canVote,
+      canViewMemories: permissionOverrides?.canViewMemories,
     });
 
     this.federation.send("session:offer", {
@@ -117,7 +133,14 @@ export class SessionSharingService {
     const subs = this.subscribers.get(runId);
     if (!subs || subs.size === 0) return;
 
+    const sessions = this.subscriberSessions.get(runId);
+
     for (const peerInstanceId of subs) {
+      const session = sessions?.get(peerInstanceId);
+      if (session) {
+        const filtered = filterEvent(session, event as Record<string, unknown>);
+        if (!filtered) continue;
+      }
       this.federation.send("session:event", { runId, event }, peerInstanceId);
     }
   }
@@ -129,7 +152,24 @@ export class SessionSharingService {
 
     if (session) {
       this.subscribers.delete(session.runId);
+      this.subscriberSessions.delete(session.runId);
     }
+  }
+
+  /** Update permissions for a session (owner only). */
+  async updatePermissions(
+    sessionId: string,
+    requesterId: string,
+    permissions: { role?: string; allowedStages?: string[] | null; canChat?: boolean; canVote?: boolean; canViewMemories?: boolean },
+  ): Promise<SharedSession> {
+    const session = await this.storage.getSharedSession(sessionId);
+    if (!session) throw new Error("Session not found");
+    if (session.createdBy !== requesterId) {
+      throw new Error("Only the session owner can update permissions");
+    }
+    const updated = await this.storage.updateSessionPermissions(sessionId, permissions);
+    if (!updated) throw new Error("Failed to update permissions");
+    return updated;
   }
 
   /** List all active shared sessions visible to this instance. */
@@ -355,6 +395,13 @@ export class SessionSharingService {
       this.subscribers.set(session.runId, subs);
     }
     subs.add(peer.instanceId);
+
+    let sessMap = this.subscriberSessions.get(session.runId);
+    if (!sessMap) {
+      sessMap = new Map();
+      this.subscriberSessions.set(session.runId, sessMap);
+    }
+    sessMap.set(peer.instanceId, session);
   }
 
   private async handleUnsubscribe(
@@ -370,6 +417,14 @@ export class SessionSharingService {
       subs.delete(peer.instanceId);
       if (subs.size === 0) {
         this.subscribers.delete(session.runId);
+      }
+    }
+
+    const sessMap = this.subscriberSessions.get(session.runId);
+    if (sessMap) {
+      sessMap.delete(peer.instanceId);
+      if (sessMap.size === 0) {
+        this.subscriberSessions.delete(session.runId);
       }
     }
   }

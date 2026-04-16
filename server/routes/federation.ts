@@ -1,5 +1,5 @@
 /**
- * Federation Routes -- issues #224 + #225 + #226
+ * Federation Routes -- issues #224 + #225 + #226 + #233
  *
  * Session Sharing (issue #224):
  *   POST   /api/federation/sessions/share      -- share a run
@@ -27,6 +27,13 @@
  *   GET    /api/federation/sessions/:id/presence   -- get session presence
  *   POST   /api/federation/sessions/:id/presence   -- record presence heartbeat
  *
+ * Cross-Instance Delegation (issue #233):
+ *   POST   /api/federation/delegation/request     -- delegate a stage to peer
+ *   GET    /api/federation/delegation/active       -- list active delegations
+ *   GET    /api/federation/delegation/:id          -- get delegation status
+ *   DELETE /api/federation/delegation/:id          -- cancel delegation
+ *   GET    /api/federation/delegation/policy       -- get delegation policy
+ *
  * All routes require authentication (covered by upstream requireAuth middleware).
  * Returns 503 when federation is not enabled.
  */
@@ -36,6 +43,7 @@ import type { SessionSharingService } from "../federation/session-sharing";
 import type { MemoryFederationService, FederatedMemoryResult } from "../federation/memory-federation";
 import type { PipelineSyncService } from "../federation/pipeline-sync";
 import type { FederationManager } from "../federation/index";
+import type { CrossInstanceDelegationService } from "../federation/delegation";
 import type { IStorage } from "../storage";
 
 // ─── Validation schemas ───────────────────────────────────────────────────────
@@ -75,6 +83,24 @@ const HandoffAcceptSchema = z.object({
   bundleToken: z.string().min(1),
 });
 
+const DelegationRequestSchema = z.object({
+  runId: z.string().min(1),
+  stageIndex: z.number().int().min(0),
+  targetPeerId: z.string().min(1),
+  stage: z.object({
+    teamId: z.string().min(1),
+    modelSlug: z.string().min(1),
+    enabled: z.boolean(),
+    systemPromptOverride: z.string().optional(),
+    temperature: z.number().optional(),
+    maxTokens: z.number().optional(),
+    approvalRequired: z.boolean().optional(),
+  }).passthrough(),
+  input: z.string(),
+  variables: z.record(z.string()).default({}),
+  timeoutMs: z.number().int().positive().optional(),
+});
+
 
 // ─── Route registration ───────────────────────────────────────────────────────
 
@@ -85,6 +111,7 @@ export function registerFederationRoutes(
   memoryFederation?: MemoryFederationService | null,
   pipelineSync?: PipelineSyncService | null,
   storage?: IStorage | null,
+  crossDelegation?: CrossInstanceDelegationService | null,
 ): void {
   const federationDisabledResponse = (res: Response) =>
     res.status(503).json({
@@ -387,5 +414,77 @@ export function registerFederationRoutes(
       }
       return res.status(500).json({ error: message });
     }
+  });
+
+  // ─── Cross-Instance Delegation (issue #233) ───────────────────────────────
+
+  // POST /api/federation/delegation/request -- delegate a stage to a peer
+  app.post("/api/federation/delegation/request", async (req: Request, res: Response) => {
+    if (!crossDelegation) return federationDisabledResponse(res);
+
+    const parsed = DelegationRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request", issues: parsed.error.flatten() });
+    }
+
+    try {
+      const { runId, stageIndex, targetPeerId, stage, input, variables, timeoutMs } = parsed.data;
+      const result = await crossDelegation.delegateAndWait(
+        runId,
+        stageIndex,
+        targetPeerId,
+        stage as import("@shared/types").PipelineStageConfig,
+        input,
+        variables,
+        timeoutMs,
+      );
+      return res.status(200).json(result);
+    } catch (err) {
+      const message = (err as Error).message;
+      if (message.startsWith("Delegation denied:")) {
+        return res.status(403).json({ error: message });
+      }
+      if (message.includes("max concurrent limit")) {
+        return res.status(429).json({ error: message });
+      }
+      return res.status(500).json({ error: message });
+    }
+  });
+
+  // GET /api/federation/delegation/active -- list active delegations
+  app.get("/api/federation/delegation/active", (_req: Request, res: Response) => {
+    if (!crossDelegation) return federationDisabledResponse(res);
+    return res.json(crossDelegation.getActiveDelegations());
+  });
+
+  // GET /api/federation/delegation/policy -- get delegation policy
+  app.get("/api/federation/delegation/policy", (_req: Request, res: Response) => {
+    if (!crossDelegation) return federationDisabledResponse(res);
+    return res.json(crossDelegation.getPolicy());
+  });
+
+  // GET /api/federation/delegation/:id -- get delegation status
+  app.get("/api/federation/delegation/:id", (_req: Request, res: Response) => {
+    if (!crossDelegation) return federationDisabledResponse(res);
+
+    const delegationId = String(_req.params.id);
+    const active = crossDelegation.getActiveDelegations();
+    const found = active.find((d) => d.delegationId === delegationId);
+    if (!found) {
+      return res.status(404).json({ error: "Delegation not found or already completed" });
+    }
+    return res.json(found);
+  });
+
+  // DELETE /api/federation/delegation/:id -- cancel delegation
+  app.delete("/api/federation/delegation/:id", (_req: Request, res: Response) => {
+    if (!crossDelegation) return federationDisabledResponse(res);
+
+    const delegationId = String(_req.params.id);
+    const cancelled = crossDelegation.cancelDelegation(delegationId);
+    if (!cancelled) {
+      return res.status(404).json({ error: "Delegation not found or already completed" });
+    }
+    return res.status(200).json({ cancelled: true, delegationId });
   });
 }
