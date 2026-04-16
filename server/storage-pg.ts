@@ -56,8 +56,12 @@ import {
   type InsertWorkspace,
   sharedSessions,
   type SharedSessionRow,
+  workspaceConnections,
+  type WorkspaceConnectionRow,
 } from "@shared/schema";
-import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole } from "@shared/types";
+import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput } from "@shared/types";
+
+import { encrypt, decrypt } from "./crypto";
 
 export class PgStorage implements IStorage {
 
@@ -1378,6 +1382,100 @@ export class PgStorage implements IStorage {
       .where(eq(sharedSessions.id, id))
       .returning();
     return row ? this.rowToSharedSession(row) : null;
+  }
+
+  // ─── Workspace Connections (issue #266) ──────────────────────────────────
+
+  /** Convert a DB row to the public WorkspaceConnection shape (no secrets). */
+  private rowToWorkspaceConnection(row: WorkspaceConnectionRow): WorkspaceConnection {
+    return {
+      id: row.id,
+      workspaceId: row.workspaceId,
+      type: row.type as WorkspaceConnection["type"],
+      name: row.name,
+      config: (row.configJson ?? {}) as Record<string, unknown>,
+      hasSecrets: row.secretsEncrypted !== null,
+      status: row.status as WorkspaceConnection["status"],
+      lastTestedAt: row.lastTestedAt,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      createdBy: row.createdBy,
+    };
+  }
+
+  async getWorkspaceConnections(workspaceId: string): Promise<WorkspaceConnection[]> {
+    const rows = await db
+      .select()
+      .from(workspaceConnections)
+      .where(eq(workspaceConnections.workspaceId, workspaceId))
+      .orderBy(asc(workspaceConnections.createdAt));
+    return rows.map((r) => this.rowToWorkspaceConnection(r));
+  }
+
+  async getWorkspaceConnection(id: string): Promise<WorkspaceConnection | null> {
+    const [row] = await db
+      .select()
+      .from(workspaceConnections)
+      .where(eq(workspaceConnections.id, id));
+    return row ? this.rowToWorkspaceConnection(row) : null;
+  }
+
+  async createWorkspaceConnection(input: CreateWorkspaceConnectionInput): Promise<WorkspaceConnection> {
+    const secretsEncrypted = input.secrets && Object.keys(input.secrets).length > 0
+      ? encrypt(JSON.stringify(input.secrets))
+      : null;
+
+    const [row] = await db
+      .insert(workspaceConnections)
+      .values({
+        workspaceId: input.workspaceId,
+        type: input.type,
+        name: input.name,
+        configJson: input.config,
+        secretsEncrypted,
+        status: "active",
+        createdBy: input.createdBy ?? null,
+      } as typeof workspaceConnections.$inferInsert)
+      .returning();
+    return this.rowToWorkspaceConnection(row);
+  }
+
+  async updateWorkspaceConnection(
+    id: string,
+    updates: UpdateWorkspaceConnectionInput,
+  ): Promise<WorkspaceConnection> {
+    const patch: Record<string, unknown> = { updatedAt: new Date() };
+
+    if (updates.name !== undefined) patch.name = updates.name;
+    if (updates.config !== undefined) patch.configJson = updates.config;
+    if (updates.status !== undefined) patch.status = updates.status;
+    if (updates.lastTestedAt !== undefined) patch.lastTestedAt = updates.lastTestedAt;
+
+    if (updates.secrets !== undefined) {
+      if (updates.secrets === null) {
+        patch.secretsEncrypted = null;
+      } else if (Object.keys(updates.secrets).length > 0) {
+        patch.secretsEncrypted = encrypt(JSON.stringify(updates.secrets));
+      }
+    }
+
+    const [row] = await db
+      .update(workspaceConnections)
+      .set(patch)
+      .where(eq(workspaceConnections.id, id))
+      .returning();
+
+    if (!row) throw new Error(`WorkspaceConnection not found: ${id}`);
+    return this.rowToWorkspaceConnection(row);
+  }
+
+  async deleteWorkspaceConnection(id: string): Promise<void> {
+    await db.delete(workspaceConnections).where(eq(workspaceConnections.id, id));
+  }
+
+  async testWorkspaceConnection(id: string): Promise<WorkspaceConnection> {
+    // Marks last_tested_at; actual connectivity test is caller's responsibility.
+    return this.updateWorkspaceConnection(id, { lastTestedAt: new Date() });
   }
 
 }

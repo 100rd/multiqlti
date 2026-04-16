@@ -1895,3 +1895,59 @@ export interface CrossDelegationResult {
   executionMs: number;
   error?: string;
 }
+
+// ── External Connections (issue #266) ─────────────────────────────────────────
+
+export const CONNECTION_TYPES = [
+  "gitlab",
+  "github",
+  "kubernetes",
+  "aws",
+  "jira",
+  "grafana",
+  "generic_mcp",
+] as const;
+
+export type ConnectionType = typeof CONNECTION_TYPES[number];
+
+export const CONNECTION_STATUSES = ["active", "inactive", "error"] as const;
+export type ConnectionStatus = typeof CONNECTION_STATUSES[number];
+
+/** Public shape of a workspace connection — secrets are NEVER included. */
+export interface WorkspaceConnection {
+  id: string;
+  workspaceId: string;
+  type: ConnectionType;
+  name: string;
+  /** Non-secret configuration (URLs, usernames, project keys, etc.) */
+  config: Record<string, unknown>;
+  /** Whether the connection has encrypted secrets stored (boolean flag only — no plaintext). */
+  hasSecrets: boolean;
+  status: ConnectionStatus;
+  lastTestedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  createdBy: string | null;
+}
+
+/** Input for creating a workspace connection. */
+export interface CreateWorkspaceConnectionInput {
+  workspaceId: string;
+  type: ConnectionType;
+  name: string;
+  /** Non-secret configuration JSON — validated by per-type Zod schema. */
+  config: Record<string, unknown>;
+  /** Plaintext secrets — immediately encrypted, never stored raw. */
+  secrets?: Record<string, string>;
+  createdBy?: string | null;
+}
+
+/** Input for updating a workspace connection. */
+export interface UpdateWorkspaceConnectionInput {
+  name?: string;
+  config?: Record<string, unknown>;
+  /** Plaintext secrets — immediately encrypted, never stored raw. null = remove secrets. */
+  secrets?: Record<string, string> | null;
+  status?: ConnectionStatus;
+  lastTestedAt?: Date | null;
+}
