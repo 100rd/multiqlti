@@ -45,8 +45,10 @@ import {
   type WorkspaceRow,
   type InsertWorkspace,
   type SharedSessionRow,
+  type WorkspaceConnectionRow,
+  type InsertWorkspaceConnection,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput } from "@shared/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
 import { configLoader } from "./config/loader";
@@ -290,6 +292,14 @@ export interface IStorage {
     id: string,
     permissions: { role?: string; allowedStages?: string[] | null; canChat?: boolean; canVote?: boolean; canViewMemories?: boolean },
   ): Promise<SharedSession | null>;
+
+  // Workspace Connections (issue #266)
+  getWorkspaceConnections(workspaceId: string): Promise<WorkspaceConnection[]>;
+  getWorkspaceConnection(id: string): Promise<WorkspaceConnection | null>;
+  createWorkspaceConnection(input: CreateWorkspaceConnectionInput): Promise<WorkspaceConnection>;
+  updateWorkspaceConnection(id: string, updates: UpdateWorkspaceConnectionInput): Promise<WorkspaceConnection>;
+  deleteWorkspaceConnection(id: string): Promise<void>;
+  testWorkspaceConnection(id: string): Promise<WorkspaceConnection>;
 }
 
 export class MemStorage implements IStorage {
@@ -1778,6 +1788,76 @@ export class MemStorage implements IStorage {
     this.sharedSessionsMap.set(id, updated);
     return updated;
   }
+
+  // ─── Workspace Connections (issue #266) ──────────────────────────────────
+
+  private workspaceConnectionsMap: Map<string, WorkspaceConnection> = new Map();
+
+  async getWorkspaceConnections(workspaceId: string): Promise<WorkspaceConnection[]> {
+    return Array.from(this.workspaceConnectionsMap.values())
+      .filter((c) => c.workspaceId === workspaceId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  }
+
+  async getWorkspaceConnection(id: string): Promise<WorkspaceConnection | null> {
+    return this.workspaceConnectionsMap.get(id) ?? null;
+  }
+
+  async createWorkspaceConnection(input: CreateWorkspaceConnectionInput): Promise<WorkspaceConnection> {
+    const id = randomUUID();
+    const now = new Date();
+    const conn: WorkspaceConnection = {
+      id,
+      workspaceId: input.workspaceId,
+      type: input.type,
+      name: input.name,
+      config: input.config,
+      hasSecrets: !!(input.secrets && Object.keys(input.secrets).length > 0),
+      status: "active",
+      lastTestedAt: null,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: input.createdBy ?? null,
+    };
+    this.workspaceConnectionsMap.set(id, conn);
+    return conn;
+  }
+
+  async updateWorkspaceConnection(
+    id: string,
+    updates: UpdateWorkspaceConnectionInput,
+  ): Promise<WorkspaceConnection> {
+    const existing = this.workspaceConnectionsMap.get(id);
+    if (!existing) throw new Error(`WorkspaceConnection not found: ${id}`);
+    const updated: WorkspaceConnection = {
+      ...existing,
+      ...(updates.name !== undefined && { name: updates.name }),
+      ...(updates.config !== undefined && { config: updates.config }),
+      ...(updates.secrets !== undefined && { hasSecrets: updates.secrets !== null && Object.keys(updates.secrets).length > 0 }),
+      ...(updates.status !== undefined && { status: updates.status }),
+      ...(updates.lastTestedAt !== undefined && { lastTestedAt: updates.lastTestedAt }),
+      updatedAt: new Date(),
+    };
+    this.workspaceConnectionsMap.set(id, updated);
+    return updated;
+  }
+
+  async deleteWorkspaceConnection(id: string): Promise<void> {
+    this.workspaceConnectionsMap.delete(id);
+  }
+
+  async testWorkspaceConnection(id: string): Promise<WorkspaceConnection> {
+    const existing = this.workspaceConnectionsMap.get(id);
+    if (!existing) throw new Error(`WorkspaceConnection not found: ${id}`);
+    const updated: WorkspaceConnection = {
+      ...existing,
+      lastTestedAt: new Date(),
+      updatedAt: new Date(),
+    };
+    this.workspaceConnectionsMap.set(id, updated);
+    return updated;
+  }
+
 
 }
 

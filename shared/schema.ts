@@ -1130,3 +1130,138 @@ export const insertSharedSessionSchema = createInsertSchema(sharedSessions);
 
 export type InsertSharedSession = z.infer<typeof insertSharedSessionSchema>;
 export type SharedSessionRow = typeof sharedSessions.$inferSelect;
+
+// ── Workspace Connections (issue #266) ───────────────────────────────────────
+
+export const CONNECTION_TYPES = [
+  "gitlab",
+  "github",
+  "kubernetes",
+  "aws",
+  "jira",
+  "grafana",
+  "generic_mcp",
+] as const;
+
+export const CONNECTION_STATUSES = ["active", "inactive", "error"] as const;
+
+export const workspaceConnections = pgTable(
+  "workspace_connections",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    workspaceId: varchar("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    type: text("type")
+      .notNull()
+      .$type<typeof CONNECTION_TYPES[number]>(),
+    name: text("name").notNull(),
+    /** Non-secret config (URL, project key, region, etc.) stored in plaintext. */
+    configJson: jsonb("config_json")
+      .notNull()
+      .default(sql`'{}'::jsonb`)
+      .$type<Record<string, unknown>>(),
+    /** AES-GCM encrypted JSON blob of secret key/values. Null when no secrets. */
+    secretsEncrypted: text("secrets_encrypted"),
+    status: text("status")
+      .notNull()
+      .default("active")
+      .$type<typeof CONNECTION_STATUSES[number]>(),
+    lastTestedAt: timestamp("last_tested_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+  },
+  (table) => ({
+    workspaceIdIdx: index("workspace_connections_workspace_id_idx").on(table.workspaceId),
+    workspaceTypeIdx: index("workspace_connections_workspace_type_idx").on(
+      table.workspaceId,
+      table.type,
+    ),
+  }),
+);
+
+export const insertWorkspaceConnectionSchema = createInsertSchema(workspaceConnections).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  secretsEncrypted: true, // never accepted from external input
+});
+
+export type InsertWorkspaceConnection = z.infer<typeof insertWorkspaceConnectionSchema>;
+export type WorkspaceConnectionRow = typeof workspaceConnections.$inferSelect;
+
+// ── Per-type config Zod schemas (issue #266) ─────────────────────────────────
+
+export const GitLabConnectionConfigSchema = z.object({
+  host: z.string().url().default("https://gitlab.com"),
+  projectId: z.string().optional(),
+  groupPath: z.string().optional(),
+  apiVersion: z.literal("v4").default("v4"),
+});
+
+export const GitHubConnectionConfigSchema = z.object({
+  host: z.string().url().default("https://api.github.com"),
+  owner: z.string().min(1),
+  repo: z.string().optional(),
+  appId: z.string().optional(),
+});
+
+export const KubernetesConnectionConfigSchema = z.object({
+  server: z.string().url(),
+  namespace: z.string().default("default"),
+  insecureSkipTlsVerify: z.boolean().default(false),
+});
+
+export const AwsConnectionConfigSchema = z.object({
+  region: z.string().min(1),
+  accountId: z.string().optional(),
+  roleArn: z.string().optional(),
+});
+
+export const JiraConnectionConfigSchema = z.object({
+  host: z.string().url(),
+  email: z.string().email().optional(),
+  projectKey: z.string().optional(),
+});
+
+export const GrafanaConnectionConfigSchema = z.object({
+  host: z.string().url(),
+  orgId: z.number().int().positive().default(1),
+});
+
+export const GenericMcpConnectionConfigSchema = z.object({
+  endpoint: z.string().url(),
+  transport: z.enum(["stdio", "sse", "streamable-http"]).default("sse"),
+  description: z.string().optional(),
+});
+
+export type GitLabConnectionConfig = z.infer<typeof GitLabConnectionConfigSchema>;
+export type GitHubConnectionConfig = z.infer<typeof GitHubConnectionConfigSchema>;
+export type KubernetesConnectionConfig = z.infer<typeof KubernetesConnectionConfigSchema>;
+export type AwsConnectionConfig = z.infer<typeof AwsConnectionConfigSchema>;
+export type JiraConnectionConfig = z.infer<typeof JiraConnectionConfigSchema>;
+export type GrafanaConnectionConfig = z.infer<typeof GrafanaConnectionConfigSchema>;
+export type GenericMcpConnectionConfig = z.infer<typeof GenericMcpConnectionConfigSchema>;
+
+/** Validate config JSON for a given connection type. Returns parsed data or throws ZodError. */
+export function validateConnectionConfig(
+  type: typeof CONNECTION_TYPES[number],
+  config: unknown,
+): Record<string, unknown> {
+  switch (type) {
+    case "gitlab":    return GitLabConnectionConfigSchema.parse(config) as Record<string, unknown>;
+    case "github":    return GitHubConnectionConfigSchema.parse(config) as Record<string, unknown>;
+    case "kubernetes": return KubernetesConnectionConfigSchema.parse(config) as Record<string, unknown>;
+    case "aws":       return AwsConnectionConfigSchema.parse(config) as Record<string, unknown>;
+    case "jira":      return JiraConnectionConfigSchema.parse(config) as Record<string, unknown>;
+    case "grafana":   return GrafanaConnectionConfigSchema.parse(config) as Record<string, unknown>;
+    case "generic_mcp": return GenericMcpConnectionConfigSchema.parse(config) as Record<string, unknown>;
+    default: {
+      const _exhaustive: never = type;
+      throw new Error(`Unknown connection type: ${_exhaustive}`);
+    }
+  }
+}
