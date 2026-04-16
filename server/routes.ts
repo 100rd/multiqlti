@@ -60,6 +60,7 @@ import { RegistryManager } from "./skill-market/registry-manager";
 import { McpRegistryAdapter } from "./skill-market/adapters/mcp-registry-adapter";
 import { SkillUpdateChecker } from "./skill-market/update-checker";
 import { registerFederationRoutes } from "./routes/federation";
+import { registerConnectionRoutes } from "./routes/connections";
 import { SessionSharingService } from "./federation/session-sharing";
 import { MemoryFederationService } from "./federation/memory-federation";
 import { PipelineSyncService } from "./federation/pipeline-sync";
@@ -129,6 +130,7 @@ export async function registerRoutes(
   registerMemoryRoutes(app, storage);
   registerToolRoutes(app, storage);
   registerWorkspaceRoutes(app, gateway, wsManager, storage);
+  registerConnectionRoutes(app, storage);
   registerSandboxRoutes(app as unknown as Router);
   registerSettingsRoutes(app as unknown as Router, gateway);
   registerMaintenanceRoutes(app as unknown as Router);
