@@ -329,7 +329,12 @@ export type WsEventType =
   | "federation:user_left"
   | "approval:requested"
   | "approval:vote_received"
-  | "approval:resolved";
+  | "approval:resolved"
+  // ─── A2A Inter-stage Messaging Events (issue #269) ──────────────────────────
+  | "stage:a2a:clarify"
+  | "stage:a2a:answer"
+  | "stage:a2a:timeout"
+  | "stage:connection:blocked";
 
 export interface WsEvent {
   type: WsEventType;
@@ -487,6 +492,11 @@ export interface PipelineStageConfig {
   skillId?: string;
   delegationEnabled?: boolean; // default false; stage must opt-in to receive delegate fn
   remoteAgent?: RemoteAgentStageConfig;
+  /**
+   * Explicit allow-list of workspace connection IDs this stage may invoke.
+   * Default: empty array (deny-all). Must opt-in per connection.
+   */
+  allowedConnections?: string[];
 }
 
 export interface StageOutput {
@@ -1138,6 +1148,8 @@ export interface DAGStage {
   position: { x: number; y: number };
   label?: string;
   remoteAgent?: RemoteAgentStageConfig;
+  /** See PipelineStageConfig.allowedConnections */
+  allowedConnections?: string[];
 }
 
 export interface PipelineDAG {
@@ -1950,4 +1962,48 @@ export interface UpdateWorkspaceConnectionInput {
   secrets?: Record<string, string> | null;
   status?: ConnectionStatus;
   lastTestedAt?: Date | null;
+}
+
+// ─── A2A Inter-stage Messaging Types (issue #269) ────────────────────────────
+
+/** Sent by a stage to ask another stage a question during a pipeline run. */
+export interface StageA2AClarifyMessage {
+  id: string;
+  runId: string;
+  fromStageId: string;
+  targetStageId: string;
+  question: string;
+  /** References to context items (e.g. output keys) the question relates to. */
+  contextRefs: string[];
+  sentAt: number;    // epoch ms
+  timeoutMs: number;
+}
+
+/** Response from a target stage to a clarify message. */
+export interface StageA2AAnswerMessage {
+  clarifyId: string;
+  runId: string;
+  fromStageId: string;
+  targetStageId: string;
+  answer: string;
+  answeredAt: number;  // epoch ms
+}
+
+/** A2A conversation thread entry for trace UI display. */
+export interface A2AThreadEntry {
+  id: string;
+  type: "clarify" | "answer" | "timeout";
+  fromStageId: string;
+  targetStageId: string;
+  content: string;
+  timestamp: number;  // epoch ms
+}
+
+/** Structured error emitted when a stage tries to use a disallowed connection. */
+export interface ConnectionBlockedError {
+  code: "CONNECTION_BLOCKED";
+  connectionId: string;
+  stageId: string;
+  runId: string;
+  message: string;
 }
