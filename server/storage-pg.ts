@@ -68,8 +68,12 @@ import {
   type InsertBudget,
   type UpdateBudget,
   workspaceSettings,
+  sessionConflicts,
+  decisionLog,
+  type SessionConflictRow,
+  type DecisionLogRow,
 } from "@shared/schema";
-import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput } from "@shared/types";
+import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome } from "@shared/types";
 
 import { encrypt, decrypt } from "./crypto";
 
@@ -1729,6 +1733,126 @@ export class PgStorage implements IStorage {
           set: { value: value as Record<string, unknown>, updatedAt: new Date() },
         });
     }
+  }
+
+  // ── Conflict Resolution (issue #229) ──────────────────────────────────────
+
+  private rowToSessionConflict(row: SessionConflictRow): SessionConflict {
+    return {
+      id: row.id,
+      sessionId: row.sessionId,
+      raisedBy: row.raisedBy,
+      raisedByInstance: row.raisedByInstance,
+      question: row.question,
+      context: row.context ?? undefined,
+      strategy: row.strategy as SessionConflict["strategy"],
+      status: row.status as SessionConflict["status"],
+      proposals: (row.proposals as SessionConflict["proposals"]) ?? [],
+      votes: (row.votes as SessionConflict["votes"]) ?? [],
+      quorumThreshold: row.quorumThreshold,
+      timeoutMs: row.timeoutMs,
+      judgement: row.judgement as SessionConflict["judgement"] ?? undefined,
+      experimentResults: row.experimentResults as SessionConflict["experimentResults"] ?? undefined,
+      outcome: row.outcome as SessionConflict["outcome"] ?? undefined,
+      createdAt: row.createdAt.getTime(),
+      updatedAt: row.updatedAt.getTime(),
+    };
+  }
+
+  private rowToDecisionLogEntry(row: DecisionLogRow): DecisionLogEntry {
+    return {
+      id: row.id,
+      sessionId: row.sessionId,
+      conflictId: row.conflictId,
+      question: row.question,
+      strategy: row.strategy as DecisionLogEntry["strategy"],
+      outcome: row.outcome as DecisionLogEntry["outcome"],
+      participantCount: row.participantCount,
+      proposalCount: row.proposalCount,
+      durationMs: row.durationMs,
+      recordedAt: row.recordedAt.getTime(),
+    };
+  }
+
+  async saveConflict(conflict: SessionConflict): Promise<void> {
+    await db
+      .insert(sessionConflicts)
+      .values({
+        id: conflict.id,
+        sessionId: conflict.sessionId,
+        raisedBy: conflict.raisedBy,
+        raisedByInstance: conflict.raisedByInstance,
+        question: conflict.question,
+        context: conflict.context ?? null,
+        strategy: conflict.strategy,
+        status: conflict.status,
+        proposals: conflict.proposals as unknown as typeof sessionConflicts.$inferInsert["proposals"],
+        votes: conflict.votes as unknown as typeof sessionConflicts.$inferInsert["votes"],
+        quorumThreshold: conflict.quorumThreshold,
+        timeoutMs: conflict.timeoutMs,
+        judgement: conflict.judgement as unknown as typeof sessionConflicts.$inferInsert["judgement"] ?? null,
+        experimentResults: conflict.experimentResults as unknown as typeof sessionConflicts.$inferInsert["experimentResults"] ?? null,
+        outcome: conflict.outcome as unknown as typeof sessionConflicts.$inferInsert["outcome"] ?? null,
+        createdAt: new Date(conflict.createdAt),
+        updatedAt: new Date(conflict.updatedAt),
+      } as typeof sessionConflicts.$inferInsert)
+      .onConflictDoUpdate({
+        target: sessionConflicts.id,
+        set: {
+          status: conflict.status,
+          proposals: conflict.proposals as unknown as typeof sessionConflicts.$inferInsert["proposals"],
+          votes: conflict.votes as unknown as typeof sessionConflicts.$inferInsert["votes"],
+          judgement: conflict.judgement as unknown as typeof sessionConflicts.$inferInsert["judgement"] ?? null,
+          experimentResults: conflict.experimentResults as unknown as typeof sessionConflicts.$inferInsert["experimentResults"] ?? null,
+          outcome: conflict.outcome as unknown as typeof sessionConflicts.$inferInsert["outcome"] ?? null,
+          updatedAt: new Date(conflict.updatedAt),
+        },
+      });
+  }
+
+  async getConflict(conflictId: string): Promise<SessionConflict | null> {
+    const [row] = await db
+      .select()
+      .from(sessionConflicts)
+      .where(eq(sessionConflicts.id, conflictId));
+    return row ? this.rowToSessionConflict(row) : null;
+  }
+
+  async getSessionConflicts(sessionId: string): Promise<SessionConflict[]> {
+    const rows = await db
+      .select()
+      .from(sessionConflicts)
+      .where(eq(sessionConflicts.sessionId, sessionId))
+      .orderBy(desc(sessionConflicts.createdAt));
+    return rows.map((r) => this.rowToSessionConflict(r));
+  }
+
+  async appendDecisionLog(entry: DecisionLogEntry): Promise<void> {
+    await db.insert(decisionLog).values({
+      id: entry.id,
+      sessionId: entry.sessionId,
+      conflictId: entry.conflictId,
+      question: entry.question,
+      strategy: entry.strategy,
+      outcome: entry.outcome as unknown as typeof decisionLog.$inferInsert["outcome"],
+      participantCount: entry.participantCount,
+      proposalCount: entry.proposalCount,
+      durationMs: entry.durationMs,
+      recordedAt: new Date(entry.recordedAt),
+    } as typeof decisionLog.$inferInsert);
+  }
+
+  async getDecisionLog(sessionId?: string): Promise<DecisionLogEntry[]> {
+    const query = db
+      .select()
+      .from(decisionLog)
+      .orderBy(desc(decisionLog.recordedAt));
+
+    const rows = sessionId
+      ? await query.where(eq(decisionLog.sessionId, sessionId))
+      : await query;
+
+    return rows.map((r) => this.rowToDecisionLogEntry(r));
   }
 
 }

@@ -2698,3 +2698,123 @@ export interface WorkspaceTracesQuery {
   /** Filter to a specific pipeline run ID. */
   runId?: string;
 }
+
+// ── Federation: Subjective Conflict Resolution (issue #229) ──────────────────
+
+/** Strategy used to resolve a subjective dispute in a shared session. */
+export type SubjectiveResolutionStrategy =
+  | "structured_debate"
+  | "quorum_vote"
+  | "parallel_experiment"
+  | "defer_to_owner";
+
+/** Current lifecycle state of a conflict. */
+export type ConflictStatus =
+  | "open"
+  | "debate_in_progress"
+  | "voting_in_progress"
+  | "experiment_in_progress"
+  | "resolved"
+  | "expired";
+
+/** A single option submitted to a quorum vote or debate. */
+export interface ConflictProposal {
+  id: string;
+  authorId: string;
+  instanceId: string;
+  title: string;
+  description: string;
+  arguments?: string;
+  submittedAt: number;
+}
+
+/** A participant's vote on a specific proposal. */
+export interface ConflictVote {
+  participantId: string;
+  instanceId: string;
+  proposalId: string;
+  anonymous: boolean;
+  submittedAt: number;
+}
+
+/** Result of a debate round: the LLM judge's evaluation. */
+export interface DebateJudgement {
+  judgeModelSlug: string;
+  winner?: string;
+  reasoning: string;
+  confidence: number;
+  evaluatedAt: number;
+}
+
+/** Outcome of a parallel experiment branch. */
+export interface ExperimentBranchResult {
+  proposalId: string;
+  runId: string;
+  status: "pending" | "completed" | "failed";
+  outcome?: string;
+  completedAt?: number;
+}
+
+/** Final outcome of a conflict resolution process. */
+export interface ResolutionOutcome {
+  strategy: SubjectiveResolutionStrategy;
+  winningProposalId?: string;
+  reasoning: string;
+  decidedBy: "quorum" | "judge" | "owner" | "timeout";
+  decidedAt: number;
+}
+
+/** A subjective conflict in a shared session. */
+export interface SessionConflict {
+  id: string;
+  sessionId: string;
+  raisedBy: string;
+  raisedByInstance: string;
+  question: string;
+  context?: string;
+  strategy: SubjectiveResolutionStrategy;
+  status: ConflictStatus;
+  proposals: ConflictProposal[];
+  votes: ConflictVote[];
+  quorumThreshold: number;
+  timeoutMs: number;
+  judgement?: DebateJudgement;
+  experimentResults?: ExperimentBranchResult[];
+  outcome?: ResolutionOutcome;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Input for raising a new conflict. */
+export interface RaiseConflictInput {
+  sessionId: string;
+  raisedBy: string;
+  raisedByInstance: string;
+  question: string;
+  context?: string;
+  strategy: SubjectiveResolutionStrategy;
+  quorumThreshold?: number;
+  timeoutMs?: number;
+}
+
+/** Input for casting a vote on a conflict. */
+export interface CastConflictVoteInput {
+  participantId: string;
+  instanceId: string;
+  proposalId: string;
+  anonymous?: boolean;
+}
+
+/** A decision log entry (append-only). */
+export interface DecisionLogEntry {
+  id: string;
+  sessionId: string;
+  conflictId: string;
+  question: string;
+  strategy: SubjectiveResolutionStrategy;
+  outcome: ResolutionOutcome;
+  participantCount: number;
+  proposalCount: number;
+  durationMs: number;
+  recordedAt: number;
+}
