@@ -21,6 +21,7 @@ import type { Gateway } from "../gateway/index.js";
 import { configLoader } from "../config/loader.js";
 import type { ProjectConfigResponse } from "@shared/types";
 import type { WsManager } from "../ws/manager.js";
+import { getOrCreateIncrementalIndexer, getIncrementalIndexer } from "../workspace/incremental-indexer.js";
 
 // --- Validation schemas ------------------------------------------------------
 
@@ -774,6 +775,69 @@ export function registerWorkspaceRoutes(router: Router, gateway: Gateway, wsMana
     } catch (err) {
       res.status(500).json({ error: sanitizeError(err) });
     }
+  });
+
+  // -- Issue #284: Incremental Reindex -----------------------------------------
+
+  /**
+   * POST /api/workspaces/:id/reindex
+   * Triggers a full rebuild of the incremental index for this workspace.
+   * Returns immediately; progress via WebSocket workspace:full_rebuild_complete.
+   */
+  router.post("/api/workspaces/:id/reindex", async (req, res) => {
+    const params = WorkspaceIdParamsSchema.safeParse(req.params);
+    if (!params.success) return res.status(400).json({ error: params.error.message });
+
+    const userId = req.user!.id;
+    const row = await getOwnedWorkspace(params.data.id, userId, res, storageRef);
+    if (!row) return;
+
+    if (isIndexThrottled(row.id)) {
+      return res.status(429).json({ error: "Reindex throttled: please wait 5 minutes between triggers" });
+    }
+
+    const workspaceRoot = row.type === "local" ? row.path : `data/workspaces/${row.id}`;
+    const inc = getOrCreateIncrementalIndexer(row, workspaceRoot, broadcastWsEvent);
+
+    recordIndex(row.id);
+
+    // Fire and forget
+    inc.triggerFullRebuild().catch(() => undefined);
+
+    res.status(202).json({
+      message: "Reindex started",
+      workspaceId: row.id,
+    });
+  });
+
+  // -- Issue #284: Index Metrics -----------------------------------------------
+
+  /**
+   * GET /api/workspaces/:id/index-metrics
+   * Returns current incremental indexer metrics for this workspace.
+   */
+  router.get("/api/workspaces/:id/index-metrics", async (req, res) => {
+    const params = WorkspaceIdParamsSchema.safeParse(req.params);
+    if (!params.success) return res.status(400).json({ error: params.error.message });
+
+    const userId = req.user!.id;
+    const row = await getOwnedWorkspace(params.data.id, userId, res, storageRef);
+    if (!row) return;
+
+    const inc = getIncrementalIndexer(row.id);
+    if (!inc) {
+      return res.json({
+        workspaceId: row.id,
+        active: false,
+        metrics: null,
+      });
+    }
+
+    res.json({
+      workspaceId: row.id,
+      active: inc.isActive,
+      metrics: inc.metrics.snapshot(),
+    });
   });
 }
 
