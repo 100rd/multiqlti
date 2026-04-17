@@ -59,7 +59,7 @@ import { registerSkillMarketRoutes } from "./routes/skill-market";
 import { RegistryManager } from "./skill-market/registry-manager";
 import { McpRegistryAdapter } from "./skill-market/adapters/mcp-registry-adapter";
 import { SkillUpdateChecker } from "./skill-market/update-checker";
-import { registerFederationRoutes } from "./routes/federation";
+import { registerFederationRoutes, registerCRDTRoutes } from "./routes/federation";
 import { registerConnectionRoutes } from "./routes/connections";
 import { registerConnectionsYamlRoutes } from "./routes/connections-yaml";
 import { registerInventoryRoutes } from "./routes/inventory";
@@ -69,6 +69,7 @@ import { registerWorkspaceToolRoutes } from "./routes/workspace-tools";
 import { registerMcpRoutes } from "./routes/mcp";
 import { registerKnowledgeRoutes } from "./routes/knowledge";
 import { SessionSharingService } from "./federation/session-sharing";
+import { ConflictResolutionService } from "./federation/conflict-resolution";
 import { MemoryFederationService } from "./federation/memory-federation";
 import { PipelineSyncService } from "./federation/pipeline-sync";
 import { getFederationManager } from "./federation/manager-state";
@@ -145,6 +146,7 @@ export async function registerRoutes(
   registerCostRoutes(app, storage);
   registerWorkspaceToolRoutes(app, storage);
   registerMcpRoutes(app as unknown as Router, storage, controller);
+  registerKnowledgeRoutes(app as unknown as Router);  // Bug #309: was imported but not called
   registerSandboxRoutes(app as unknown as Router);
   registerSettingsRoutes(app as unknown as Router, gateway);
   registerMaintenanceRoutes(app as unknown as Router);
@@ -206,6 +208,7 @@ export async function registerRoutes(
 
   // Phase 6.3 — Trigger subsystem
   let triggerService: TriggerService | null = null;
+  let webhookRoutesRegistered = false;
   let cronScheduler: CronScheduler | null = null;
   let fileWatcherService: FileWatcherService | null = null;
 
@@ -226,6 +229,7 @@ export async function registerRoutes(
     // VETO-1 fix: pass storage as third argument so routes can look up pipeline ownership
     registerTriggerRoutes(app, triggerService, storage);
     registerWebhookRoutes(app, storage, triggerService, fireTrigger);
+    webhookRoutesRegistered = true;
 
     cronScheduler = new CronScheduler({
       getEnabledTriggersByType: (type) => storage.getEnabledTriggersByType(type),
@@ -255,6 +259,15 @@ export async function registerRoutes(
     });
   }
 
+  // Bug #311: Register webhook routes after trigger subsystem setup.
+  // /api/github-events does not require TRIGGER_SECRET_KEY so must always be mounted.
+  // When trigger subsystem is disabled, registerWebhookRoutes stubs are still needed
+  // to avoid 404 on /api/github-events. Register with a no-op fireTrigger callback.
+  if (!webhookRoutesRegistered) {
+    const noOpFire = async () => { /* triggers disabled */ };
+    registerWebhookRoutes(app, storage, {} as TriggerService, noOpFire);
+  }
+
   // Federation services (issues #224 + #225)
   let sessionSharing: SessionSharingService | null = null;
   let memoryFederation: MemoryFederationService | null = null;
@@ -281,7 +294,12 @@ export async function registerRoutes(
       log(`[federation] Pipeline sync disabled: ${(e as Error).message}`, "federation");
     }
   }
-  registerFederationRoutes(app as unknown as Router, sessionSharing, fm, memoryFederation, pipelineSync, storage);
+  // Bug #312: ConflictResolutionService works without federation (manages in-memory state).
+  // Always initialize so that session validation runs before the service-availability check.
+  const conflictResolution = new ConflictResolutionService(null);
+  registerFederationRoutes(app as unknown as Router, sessionSharing, fm, memoryFederation, pipelineSync, storage, undefined, conflictResolution);
+  // Bug #310: Register CRDT routes — returns 503 gracefully when crdtPeerSync is null.
+  registerCRDTRoutes(app as unknown as Router, null);
 
   // Graceful shutdown
   httpServer.on("close", async () => {
