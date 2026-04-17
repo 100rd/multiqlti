@@ -20,6 +20,73 @@ import type { ToolDefinition, ToolCall } from "../../../shared/types.js";
 import { ToolRegistry } from "../../../server/tools/registry.js";
 import type { ToolHandler } from "../../../server/tools/registry.js";
 
+// ─── Top-level mocks for transitive DB/config dependencies ───────────────────
+// The toolRegistry singleton imports memory-search → vector-store → db.
+// These mocks prevent the config-loader crash on module initialization.
+
+vi.mock("../../../server/storage.js", () => ({
+  storage: {
+    getLlmRequests: vi.fn().mockResolvedValue({ rows: [], total: 0 }),
+    searchMemories: vi.fn().mockResolvedValue([]),
+  },
+}));
+
+vi.mock("../../../server/config/loader.js", () => ({
+  configLoader: {
+    get: vi.fn().mockReturnValue({ providers: { tavily: undefined } }),
+  },
+}));
+
+vi.mock("../../../server/db.js", () => ({
+  db: {
+    insert: vi.fn(),
+    delete: vi.fn(),
+    select: vi.fn(),
+    update: vi.fn(),
+    $client: { query: vi.fn() },
+  },
+  pool: {},
+}));
+
+vi.mock("../../../server/federation/manager-state.js", () => ({
+  getFederationManager: vi.fn().mockReturnValue(null),
+}));
+
+vi.mock("../../../server/federation/memory-federation.js", () => ({
+  MemoryFederationService: vi.fn(),
+}));
+
+vi.mock("../../../server/memory/vector-store.js", () => ({
+  VectorStore: class MockVectorStore {
+    async search() { return []; }
+    async getEmbeddingConfig() { return null; }
+    async insertChunk() { return {}; }
+    async insertChunks() { return []; }
+    async deleteBySource() { return 0; }
+    async deleteByWorkspace() { return 0; }
+    async countChunks() { return 0; }
+    async listSources() { return []; }
+    async upsertEmbeddingConfig() { return {}; }
+  },
+  vectorStore: {
+    search: vi.fn().mockResolvedValue([]),
+    getEmbeddingConfig: vi.fn().mockResolvedValue(null),
+  },
+}));
+
+vi.mock("../../../server/memory/embeddings.js", () => ({
+  EmbeddingProviderFactory: {
+    create: vi.fn().mockReturnValue({
+      embed: vi.fn().mockResolvedValue([0.1, 0.2, 0.3]),
+    }),
+  },
+  DEFAULT_EMBEDDING_CONFIG: {
+    provider: "ollama",
+    model: "nomic-embed-text",
+    dimensions: 768,
+  },
+}));
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function makeHandler(
@@ -299,19 +366,6 @@ describe("ToolRegistry — tool definition shape", () => {
 
 describe("toolRegistry singleton — builtin tool registration", () => {
   it("getAvailableTools() returns a non-empty array", async () => {
-    // Mock storage and config to avoid import-side-effects from the builtins
-    vi.mock("../../../server/storage.js", () => ({
-      storage: {
-        getLlmRequests: vi.fn().mockResolvedValue({ rows: [], total: 0 }),
-        searchMemories: vi.fn().mockResolvedValue([]),
-      },
-    }));
-    vi.mock("../../../server/config/loader.js", () => ({
-      configLoader: {
-        get: vi.fn().mockReturnValue({ providers: { tavily: undefined } }),
-      },
-    }));
-
     const { toolRegistry } = await import("../../../server/tools/index.js");
 
     const tools = toolRegistry.getAvailableTools();
