@@ -22,6 +22,7 @@ import {
   BookOpen,
   Plug,
   Network,
+  GitBranchPlus,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -60,7 +61,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: ListChecks, label: "Task Groups", href: "/task-groups" },
     { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
-    // Show "Connections" and "Inventory" sub-items when inside a workspace
+    // Show "Connections", "Inventory", and "Traces" sub-items when inside a workspace
     ...(currentWorkspaceId
       ? [
           {
@@ -73,6 +74,12 @@ export default function MainLayout({ children }: MainLayoutProps) {
             icon: Network,
             label: "Inventory",
             href: `/workspaces/${currentWorkspaceId}/inventory`,
+            indent: true,
+          },
+          {
+            icon: GitBranchPlus,
+            label: "LLM Traces",
+            href: `/workspaces/${currentWorkspaceId}/traces`,
             indent: true,
           },
         ]
