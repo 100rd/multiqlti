@@ -65,6 +65,7 @@ import { registerConnectionsYamlRoutes } from "./routes/connections-yaml";
 import { registerInventoryRoutes } from "./routes/inventory";
 import { registerWorkspaceTraceRoutes } from "./routes/workspace-traces";
 import { registerCostRoutes } from "./routes/costs";
+import { registerWorkspaceToolRoutes } from "./routes/workspace-tools";
 import { registerMcpRoutes } from "./routes/mcp";
 import { SessionSharingService } from "./federation/session-sharing";
 import { MemoryFederationService } from "./federation/memory-federation";
@@ -140,6 +141,7 @@ export async function registerRoutes(
   registerInventoryRoutes(app, storage);
   registerWorkspaceTraceRoutes(app, storage);
   registerCostRoutes(app, storage);
+  registerWorkspaceToolRoutes(app, storage);
   registerMcpRoutes(app as unknown as Router, storage, controller);
   registerSandboxRoutes(app as unknown as Router);
   registerSettingsRoutes(app as unknown as Router, gateway);
