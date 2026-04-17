@@ -2354,3 +2354,69 @@ export interface McpConnectionSummary {
 
 /** Result from query_connection_usage MCP tool. */
 export type McpConnectionUsage = ConnectionUsageMetrics;
+
+// ── Inventory & Dependency Graph (issue #275) ─────────────────────────────────
+
+/** Node types present in the workspace dependency graph. */
+export type InventoryNodeType = "connection" | "pipeline" | "stage" | "skill" | "model";
+
+/** A node in the workspace dependency graph. */
+export interface InventoryNode {
+  id: string;
+  type: InventoryNodeType;
+  label: string;
+  /** Node-type-specific metadata. */
+  metadata: Record<string, unknown>;
+  /** True when the node has had no activity in the last 30 days. */
+  isOrphan?: boolean;
+}
+
+/** An edge in the workspace dependency graph. */
+export interface InventoryEdge {
+  /** ID of the source node. */
+  source: string;
+  /** ID of the target node. */
+  target: string;
+  /**
+   * Relationship label:
+   * - "contains"  — pipeline → stage
+   * - "uses"      — stage → connection | skill | model
+   */
+  relation: "contains" | "uses";
+}
+
+/** Full inventory graph returned by GET /api/workspaces/:id/inventory. */
+export interface InventoryGraph {
+  nodes: InventoryNode[];
+  edges: InventoryEdge[];
+}
+
+/** A pipeline or stage that depends on a given connection. */
+export interface ConnectionDependent {
+  kind: "pipeline" | "stage";
+  /** Pipeline ID. */
+  pipelineId: string;
+  /** Pipeline name. */
+  pipelineName: string;
+  /** Stage index within the pipeline (undefined for pipeline-level entries). */
+  stageIndex?: number;
+  /** Stage teamId (undefined for pipeline-level entries). */
+  stageTeamId?: string;
+}
+
+/** Response from GET /api/workspaces/:id/connections/:cid/dependents */
+export interface ConnectionDependentsResponse {
+  connectionId: string;
+  dependents: ConnectionDependent[];
+}
+
+/** Response from GET /api/workspaces/:id/inventory/orphans */
+export interface InventoryOrphansResponse {
+  nodes: InventoryNode[];
+}
+
+/** Body for DELETE /api/workspaces/:id/connections/:cid with dependents override. */
+export interface DeleteConnectionWithOverrideBody {
+  /** Must be true to force-delete a connection that has dependents. */
+  force?: boolean;
+}
