@@ -242,6 +242,58 @@ export interface SandboxResult {
   command: string;
 }
 
+// ─── Sandbox Hardening Types (#281) ─────────────────────────────────────────
+
+/** Which OCI runtime to use for a sandbox container. */
+export type SandboxRuntime = "runsc" | "runc";
+
+/** A host:port egress allow-list entry. */
+export interface EgressAllowEntry {
+  /** Hostname or IP address. */
+  host: string;
+  /** Port number (1–65535). */
+  port: number;
+  /** Transport protocol. Default: tcp. */
+  protocol?: "tcp" | "udp";
+}
+
+/** Resource quota applied to a sandbox namespace (Docker + K8s). */
+export interface SandboxResourceQuota {
+  /** CPU limit in Kubernetes notation (e.g. "500m", "2"). */
+  limitCpu?: string;
+  /** Memory limit in Kubernetes notation (e.g. "256Mi", "1Gi"). */
+  limitMemory?: string;
+  /** Maximum number of pods (K8s namespace only). */
+  maxPods?: number;
+}
+
+/**
+ * Extended sandbox hardening configuration.
+ * Merged into SandboxConfig when present; defaults applied for omitted fields.
+ */
+export interface SandboxHardeningConfig {
+  /**
+   * Preferred OCI runtime.
+   * "runsc" = gVisor (use when available); "runc" = standard runc.
+   * Default: "runsc" with automatic fallback to "runc" + warning.
+   */
+  runtime?: SandboxRuntime;
+  /** Egress allow-list. Default: empty (deny all egress). */
+  egressAllowList?: EgressAllowEntry[];
+  /** Resource quota overrides. */
+  resourceQuota?: SandboxResourceQuota;
+  /**
+   * When true, apply AppArmor profile that restricts writes to /tmp/sandbox.
+   * Ignored when runtime is "runsc" (gVisor enforces at kernel level).
+   */
+  applyAppArmor?: boolean;
+  /**
+   * When true, apply a scoped seccomp profile (denies clone3/ptrace/reboot).
+   * Default: true.
+   */
+  applySeccomp?: boolean;
+}
+
 // ─── WS Event Types ──────────────────────────────────────────────────────────
 
 export type WsEventType =

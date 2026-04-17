@@ -1,11 +1,17 @@
 import Docker from "dockerode";
 import { spawn } from "child_process";
-import { mkdirSync, writeFileSync, rmSync } from "fs";
+import { mkdirSync, writeFileSync, rmSync, writeFile } from "fs";
 import { dirname, join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
-import type { SandboxConfig, SandboxFile, SandboxResult } from "@shared/types";
+import type { SandboxConfig, SandboxFile, SandboxResult, SandboxHardeningConfig } from "@shared/types";
 import { SANDBOX_DEFAULTS } from "@shared/constants";
+import { selectRuntime, RUNTIME_RUNSC } from "./runtime";
+import { generateSeccompProfile } from "./seccomp";
+import { validateEgressAllowList } from "./network-policy";
+import { promisify } from "util";
+
+const writeFileAsync = promisify(writeFile);
 
 export class SandboxExecutor {
   private docker: Docker;
@@ -27,6 +33,7 @@ export class SandboxExecutor {
     config: SandboxConfig,
     files: SandboxFile[],
     onOutput?: (stream: "stdout" | "stderr", data: string) => void,
+    hardening?: SandboxHardeningConfig,
   ): Promise<SandboxResult> {
     if (!(await this.isAvailable())) {
       throw new Error(
@@ -40,7 +47,7 @@ export class SandboxExecutor {
     try {
       this.writeFiles(tmpDir, files);
       await this.ensureImage(config.image);
-      return await this.runContainer(tmpDir, config, onOutput);
+      return await this.runContainer(tmpDir, config, onOutput, hardening);
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -70,12 +77,28 @@ export class SandboxExecutor {
     }
   }
 
-  private buildDockerArgs(config: SandboxConfig, tmpDir: string): string[] {
+  private async buildDockerArgs(
+    config: SandboxConfig,
+    tmpDir: string,
+    hardening?: SandboxHardeningConfig,
+  ): Promise<string[]> {
     const memory = config.memoryLimit ?? SANDBOX_DEFAULTS.memoryLimit;
     const cpus = String(config.cpuLimit ?? SANDBOX_DEFAULTS.cpuLimit);
-    const network = config.networkEnabled ? "bridge" : "none";
     const workdir = config.workdir ?? SANDBOX_DEFAULTS.workdir;
     const name = `multiqlti-${randomUUID().slice(0, 8)}`;
+
+    // ── Runtime selection ─────────────────────────────────────────────────────
+    const runtimeInfo = await selectRuntime(this.docker, hardening?.runtime);
+    const egressAllowList = hardening?.egressAllowList ?? [];
+    const normalisedEgress = validateEgressAllowList(egressAllowList);
+    const hasEgress = normalisedEgress.length > 0;
+
+    // ── Network ───────────────────────────────────────────────────────────────
+    // Default-deny: use "none" when no egress allow-list is declared.
+    // When allow-list entries are present, a bridge network is used and
+    // iptables rules would be applied by a privileged sidecar (not implemented
+    // here — this keeps the Docker args correct for both scenarios).
+    const network = hasEgress ? "bridge" : "none";
 
     const args = [
       "run",
@@ -85,11 +108,37 @@ export class SandboxExecutor {
       `--cpus=${cpus}`,
       `--network=${network}`,
       `--workdir=${workdir}`,
-      `-v`, `${tmpDir}:${workdir}:rw`,
+      "-v", `${tmpDir}:${workdir}:rw`,
       "--security-opt=no-new-privileges",
       "--cap-drop=ALL",
     ];
 
+    // ── gVisor runtime ────────────────────────────────────────────────────────
+    // runsc provides kernel-level isolation; skip AppArmor/seccomp since gVisor
+    // enforces its own stricter syscall filtering.
+    if (runtimeInfo.name === RUNTIME_RUNSC) {
+      args.push(`--runtime=${RUNTIME_RUNSC}`);
+    } else {
+      // ── Seccomp (runc only) ───────────────────────────────────────────────
+      const applySeccomp = hardening?.applySeccomp !== false;
+      if (applySeccomp) {
+        const seccompJson = generateSeccompProfile({
+          allowNetworkSyscalls: hasEgress,
+        });
+        // Write seccomp profile to a temp file Docker can read
+        const seccompPath = join(tmpDir, ".seccomp.json");
+        writeFileSync(seccompPath, seccompJson, "utf-8");
+        args.push(`--security-opt=seccomp=${seccompPath}`);
+      }
+
+      // ── AppArmor (runc only, Linux host only) ─────────────────────────────
+      const applyAppArmor = hardening?.applyAppArmor === true;
+      if (applyAppArmor) {
+        args.push(`--security-opt=apparmor=multiqlti-sandbox`);
+      }
+    }
+
+    // ── Environment variables ─────────────────────────────────────────────────
     if (config.env) {
       for (const [key, val] of Object.entries(config.env)) {
         args.push("-e", `${key}=${val}`);
@@ -108,62 +157,77 @@ export class SandboxExecutor {
     tmpDir: string,
     config: SandboxConfig,
     onOutput?: (stream: "stdout" | "stderr", data: string) => void,
+    hardening?: SandboxHardeningConfig,
   ): Promise<SandboxResult> {
     const timeout = (config.timeout ?? SANDBOX_DEFAULTS.timeout) * 1000;
-    const args = this.buildDockerArgs(config, tmpDir);
     const startMs = Date.now();
 
-    return new Promise((resolve) => {
-      let stdout = "";
-      let stderr = "";
-      let timedOut = false;
+    return new Promise((resolve, reject) => {
+      this.buildDockerArgs(config, tmpDir, hardening)
+        .then((args) => {
+          let stdout = "";
+          let stderr = "";
+          let timedOut = false;
 
-      const proc = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
+          const proc = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
 
-      const timer = setTimeout(() => {
-        timedOut = true;
-        proc.kill("SIGKILL");
-      }, timeout);
+          const timer = setTimeout(() => {
+            timedOut = true;
+            proc.kill("SIGKILL");
+          }, timeout);
 
-      proc.stdout.on("data", (chunk: Buffer) => {
-        const text = chunk.toString("utf-8");
-        stdout += text;
-        onOutput?.("stdout", text);
-      });
+          proc.stdout.on("data", (chunk: Buffer) => {
+            const text = chunk.toString("utf-8");
+            stdout += text;
+            onOutput?.("stdout", text);
+          });
 
-      proc.stderr.on("data", (chunk: Buffer) => {
-        const text = chunk.toString("utf-8");
-        stderr += text;
-        onOutput?.("stderr", text);
-      });
+          proc.stderr.on("data", (chunk: Buffer) => {
+            const text = chunk.toString("utf-8");
+            stderr += text;
+            onOutput?.("stderr", text);
+          });
 
-      proc.on("close", (code) => {
-        clearTimeout(timer);
-        resolve({
-          exitCode: code ?? 1,
-          stdout,
-          stderr,
-          durationMs: Date.now() - startMs,
-          timedOut,
-          artifacts: [],
-          image: config.image,
-          command: config.command,
+          proc.on("close", (code) => {
+            clearTimeout(timer);
+            resolve({
+              exitCode: code ?? 1,
+              stdout,
+              stderr,
+              durationMs: Date.now() - startMs,
+              timedOut,
+              artifacts: [],
+              image: config.image,
+              command: config.command,
+            });
+          });
+
+          proc.on("error", (err) => {
+            clearTimeout(timer);
+            resolve({
+              exitCode: 1,
+              stdout,
+              stderr: stderr + `\nProcess error: ${err.message}`,
+              durationMs: Date.now() - startMs,
+              timedOut,
+              artifacts: [],
+              image: config.image,
+              command: config.command,
+            });
+          });
+        })
+        .catch((err: unknown) => {
+          resolve({
+            exitCode: 1,
+            stdout: "",
+            stderr: `Failed to build docker args: ${err instanceof Error ? err.message : String(err)}`,
+            durationMs: Date.now() - startMs,
+            timedOut: false,
+            artifacts: [],
+            image: config.image,
+            command: config.command,
+          });
         });
-      });
-
-      proc.on("error", (err) => {
-        clearTimeout(timer);
-        resolve({
-          exitCode: 1,
-          stdout,
-          stderr: stderr + `\nProcess error: ${err.message}`,
-          durationMs: Date.now() - startMs,
-          timedOut,
-          artifacts: [],
-          image: config.image,
-          command: config.command,
-        });
-      });
     });
   }
 }
