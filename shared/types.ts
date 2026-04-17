@@ -136,11 +136,123 @@ export interface CandidateConfig {
   temperature?: number;
 }
 
+// ─── Dynamic Consensus Threshold Types (#285) ────────────────────────────────
+
+/** A task signal emitted by a pipeline stage or present in pipeline input. */
+export interface TaskSignal {
+  /** Signal key (e.g. "signal:high_risk", "signal:low_stakes", or a tag). */
+  key: string;
+  /** Where this signal came from. */
+  source: "tag" | "risk_level" | "upstream_stage";
+  /** Optional scalar payload (e.g. the risk_level string). */
+  value?: string;
+}
+
+/** Container for all signals accumulated during a pipeline run. */
+export interface TaskSignalBag {
+  signals: TaskSignal[];
+}
+
+/** Maps a signal key to a threshold value. */
+export interface SignalThresholdRule {
+  signal: string;
+  threshold: number;
+}
+
+/** Fixed (legacy) threshold — always uses `value`. */
+export interface StaticThresholdConfig {
+  mode: "static";
+  /** Threshold value in [0, 1]. */
+  value: number;
+}
+
+/**
+ * Task-signal-based threshold — finds the first matching rule;
+ * falls back to `default` when no rule matches.
+ */
+export interface TaskSignalThresholdConfig {
+  mode: "task_signal";
+  rules: SignalThresholdRule[];
+  /** Threshold used when no rule matches. */
+  default: number;
+}
+
+/**
+ * Confidence-based threshold — adjusts the base threshold up/down
+ * based on aggregated candidate confidence within [floor, ceiling].
+ *
+ * Formula: effective = clamp(base - (conf - 0.5) * sensitivity, floor, ceiling)
+ *   conf=1 → threshold decreases (easier to pass)
+ *   conf=0 → threshold increases (harder to pass)
+ */
+export interface ConfidenceThresholdConfig {
+  mode: "confidence";
+  /** Starting point before confidence adjustment. */
+  base: number;
+  /** Minimum allowed effective threshold. */
+  floor: number;
+  /** Maximum allowed effective threshold. */
+  ceiling: number;
+  /**
+   * How strongly confidence shifts the threshold.
+   * Default: 0.2.  At sensitivity=0.2 and conf=1.0, threshold drops by 0.1.
+   */
+  sensitivity?: number;
+}
+
+export type VotingThresholdConfig =
+  | StaticThresholdConfig
+  | TaskSignalThresholdConfig
+  | ConfidenceThresholdConfig;
+
+// ─── Fallback Configuration (#285) ───────────────────────────────────────────
+
+export type VotingFallbackStrategy = "escalate" | "abort" | "partial";
+export type VotingFallbackOutcome = "escalated" | "partial";
+
+export interface VotingFallbackConfig {
+  strategy: VotingFallbackStrategy;
+  /**
+   * Model slug used when strategy="escalate".
+   * Defaults to "claude-opus-4".
+   */
+  escalationModelSlug?: string;
+}
+
+// ─── Candidate Confidence Score (#285) ───────────────────────────────────────
+
+export type ConfidenceSource = "provider" | "self_eval" | "heuristic";
+
+export interface CandidateConfidenceScore {
+  modelSlug: string;
+  /** Confidence score in [0, 1]. */
+  score: number;
+  source: ConfidenceSource;
+}
+
+// ─── Updated VotingStrategy ───────────────────────────────────────────────────
+
 export interface VotingStrategy {
   type: "voting";
   candidates: CandidateConfig[];
+  /** Legacy fixed threshold.  Used when `thresholdConfig` is absent. */
   threshold: number;
   validationMode: "text_similarity" | "test_execution";
+  /**
+   * Dynamic threshold configuration (#285).
+   * When present, overrides the legacy `threshold` field.
+   */
+  thresholdConfig?: VotingThresholdConfig;
+  /**
+   * Fallback behaviour when the threshold is not met (#285).
+   * Default: { strategy: "partial" }.
+   */
+  fallback?: VotingFallbackConfig;
+  /**
+   * Task-signal bag propagated from pipeline input and upstream stages (#285).
+   * Populated at runtime by the executor; not set by users in config.
+   */
+  signals?: TaskSignalBag;
 }
 
 export type ExecutionStrategy =
@@ -193,6 +305,19 @@ export interface VotingDetails {
   candidates: Array<{ modelSlug: string; content: string; passed: boolean }>;
   winnerIndex: number;
   agreement: number;
+  // ─── Observability fields added by issue #285 ─────────────────────────────
+  /** The resolved threshold actually used for this run. */
+  thresholdUsed?: number;
+  /** Threshold resolution mode that was active. */
+  thresholdMode?: "static" | "task_signal" | "confidence";
+  /** Per-candidate confidence scores. */
+  confidenceScores?: CandidateConfidenceScore[];
+  /** Aggregated confidence across all candidates (0–1). */
+  aggregatedConfidence?: number;
+  /** What happened when threshold was not met (absent when threshold was met). */
+  fallbackOutcome?: VotingFallbackOutcome;
+  /** Model slug used during escalation (present only when fallbackOutcome="escalated"). */
+  escalationModelSlug?: string;
 }
 
 export interface StrategyResult {

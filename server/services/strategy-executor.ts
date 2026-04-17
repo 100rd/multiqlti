@@ -18,6 +18,9 @@ import {
   preferCrossProviderOrder,
   type ParticipantWithProvider,
 } from "./provider-diversity";
+import { resolveThreshold } from "../pipeline/voting/threshold-resolver.js";
+import { scoreAllCandidates, aggregateConfidence } from "../pipeline/voting/confidence-scorer.js";
+import { handleFallback, VotingThresholdNotMetError } from "../pipeline/voting/fallback-handler.js";
 
 export interface StrategyContext {
   runId: string;
@@ -332,7 +335,7 @@ export class StrategyExecutor {
   ): Promise<StrategyResult> {
     validateVotingStrategy(strategy);
 
-    // Run all candidates in parallel
+    // ── Run all candidates in parallel ──────────────────────────────────────
     const candidatePromises = strategy.candidates.map((c) =>
       this.gateway.complete({
         modelSlug: c.modelSlug,
@@ -343,21 +346,43 @@ export class StrategyExecutor {
     );
 
     const candidateResults = await Promise.all(candidatePromises);
-    const totalTokens = candidateResults.reduce((sum, r) => sum + r.tokensUsed, 0);
+    let totalTokens = candidateResults.reduce((sum, r) => sum + r.tokensUsed, 0);
 
+    // ── Confidence scoring (#285) ────────────────────────────────────────────
+    const confidenceScores = scoreAllCandidates(
+      candidateResults.map((r, i) => ({
+        modelSlug: strategy.candidates[i].modelSlug,
+        content: r.content,
+      })),
+    );
+    const aggregatedConfidence = aggregateConfidence(confidenceScores);
+
+    // ── Resolve effective threshold (#285) ────────────────────────────────────
+    const thresholdConfig = strategy.thresholdConfig;
+    let thresholdUsed: number;
+    let thresholdMode: "static" | "task_signal" | "confidence";
+
+    if (thresholdConfig) {
+      thresholdUsed = resolveThreshold(thresholdConfig, strategy.signals, aggregatedConfidence);
+      thresholdMode = thresholdConfig.mode;
+    } else {
+      // Legacy path — use fixed threshold
+      thresholdUsed = strategy.threshold;
+      thresholdMode = "static";
+    }
+
+    // ── Compute similarity scores ────────────────────────────────────────────
     const contents = candidateResults.map((r) => r.content);
     const scores = computeSimilarityScores(contents);
 
     const passedIndices = scores
       .map((score, idx) => ({ score, idx }))
-      .filter(({ score }) => score >= strategy.threshold)
+      .filter(({ score }) => score >= thresholdUsed)
       .map(({ idx }) => idx);
 
     // Winner: first passing candidate; fallback to highest-scored
-    const winnerIndex = passedIndices.length > 0
-      ? passedIndices[0]
-      : scores.indexOf(Math.max(...scores));
-
+    const bestIndex = scores.indexOf(Math.max(...scores));
+    const winnerIndex = passedIndices.length > 0 ? passedIndices[0] : bestIndex;
     const agreement = scores[winnerIndex] ?? 0;
 
     const candidateDetails = candidateResults.map((r, i) => ({
@@ -370,19 +395,61 @@ export class StrategyExecutor {
       this.wsManager.broadcastToRun(context.runId, {
         type: "strategy:voting:candidate",
         runId: context.runId,
-        payload: { stageId: context.stageId, modelSlug: c.modelSlug, index: idx, passed: c.passed },
+        payload: {
+          stageId: context.stageId,
+          modelSlug: c.modelSlug,
+          index: idx,
+          passed: c.passed,
+          confidenceScore: confidenceScores[idx]?.score,
+        },
         timestamp: new Date().toISOString(),
       });
     });
+
+    // ── Handle threshold-not-met with configured fallback (#285) ─────────────
+    let finalContent: string;
+    let fallbackOutcome: import("@shared/types").VotingFallbackOutcome | undefined;
+    let escalationModelSlug: string | undefined;
+
+    if (passedIndices.length === 0 && strategy.fallback) {
+      const fallbackResult = await handleFallback(
+        strategy.fallback,
+        {
+          basePrompt,
+          candidates: candidateResults.map((r, i) => ({
+            modelSlug: strategy.candidates[i].modelSlug,
+            content: r.content,
+            score: scores[i] ?? 0,
+          })),
+          bestCandidateIndex: bestIndex,
+          threshold: thresholdUsed,
+          bestAgreement: scores[bestIndex] ?? 0,
+          maxTokens: context.maxTokens,
+        },
+        this.gateway,
+      );
+      totalTokens += fallbackResult.tokensUsed;
+      finalContent = fallbackResult.content;
+      fallbackOutcome = fallbackResult.outcome;
+      escalationModelSlug = fallbackResult.escalationModelSlug;
+    } else {
+      finalContent = candidateResults[winnerIndex].content;
+    }
 
     const details: VotingDetails = {
       candidates: candidateDetails,
       winnerIndex,
       agreement,
+      thresholdUsed,
+      thresholdMode,
+      confidenceScores,
+      aggregatedConfidence,
+      ...(fallbackOutcome !== undefined && { fallbackOutcome }),
+      ...(escalationModelSlug !== undefined && { escalationModelSlug }),
     };
 
     return {
-      finalContent: candidateResults[winnerIndex].content,
+      finalContent,
       strategy: "voting",
       details,
       totalTokensUsed: totalTokens,
@@ -412,7 +479,10 @@ function validateDebateStrategy(s: DebateStrategy): void {
 function validateVotingStrategy(s: VotingStrategy): void {
   if (s.candidates.length < 2) throw new Error("Voting requires at least 2 candidates");
   if (s.candidates.length > 7) throw new Error("Voting supports at most 7 candidates");
-  if (s.threshold < 0.5 || s.threshold > 1.0) throw new Error("Threshold must be between 0.5 and 1.0");
+  // Only enforce legacy threshold bounds when dynamic config is absent
+  if (!s.thresholdConfig && (s.threshold < 0.5 || s.threshold > 1.0)) {
+    throw new Error("Threshold must be between 0.5 and 1.0");
+  }
 }
 
 /**
