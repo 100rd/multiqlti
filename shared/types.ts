@@ -2818,3 +2818,110 @@ export interface DecisionLogEntry {
   durationMs: number;
   recordedAt: number;
 }
+
+// ─── CRDT Types (issue #230) ──────────────────────────────────────────────────
+
+/** Sync mode for a shared session's collaborative state. */
+export type CollabSyncMode = "single_writer" | "crdt_p2p";
+
+/** Vector clock snapshot — maps nodeId to its logical counter. */
+export interface VectorClockSnapshot {
+  clocks: Record<string, number>;
+}
+
+/** Serialized G-Counter state. */
+export interface GCounterSnapshot {
+  type: "g-counter";
+  counters: Record<string, number>;
+}
+
+/** Serialized PN-Counter state. */
+export interface PNCounterSnapshot {
+  type: "pn-counter";
+  positive: GCounterSnapshot;
+  negative: GCounterSnapshot;
+}
+
+/** Serialized LWW-Register state. */
+export interface LWWRegisterSnapshot<T> {
+  type: "lww-register";
+  value: T | null;
+  timestamp: number;
+  nodeId: string;
+}
+
+/** Serialized OR-Set state. */
+export interface ORSetSnapshot<T> {
+  type: "or-set";
+  /** Serialized element → list of live add-tags. */
+  entries: Record<string, string[]>;
+  tombstones: string[];
+}
+
+/** Serialized LWW-Map state. */
+export interface LWWMapSnapshot<V> {
+  type: "lww-map";
+  entries: Record<string, LWWRegisterSnapshot<V>>;
+}
+
+/** Full serialized CRDT document for a shared session. */
+export interface CRDTDocumentSnapshot {
+  sessionId: string;
+  nodeId: string;
+  participants: ORSetSnapshot<string>;
+  stageOutputs: LWWMapSnapshot<string>;
+  stageStatuses: LWWMapSnapshot<string>;
+  votes: GCounterSnapshot;
+  tags: ORSetSnapshot<string>;
+  metadata: LWWRegisterSnapshot<Record<string, unknown>>;
+  vectorClock: VectorClockSnapshot;
+}
+
+/** Human-readable snapshot of resolved CRDT document values. */
+export interface CRDTDocumentValue {
+  participants: string[];
+  stageOutputs: Record<string, string | null>;
+  stageStatuses: Record<string, string | null>;
+  votes: number;
+  tags: string[];
+  metadata: Record<string, unknown> | null;
+  vectorClock: VectorClockSnapshot;
+}
+
+/** A CRDT delta sent from one peer to another. */
+export interface CRDTDeltaMessage {
+  sessionId: string;
+  fromNodeId: string;
+  senderClock: VectorClockSnapshot;
+  sinceRecipientClock: VectorClockSnapshot | null;
+  state: CRDTDocumentSnapshot;
+}
+
+/** Response from GET /api/sessions/:id/crdt-state */
+export interface CRDTStateResponse {
+  sessionId: string;
+  syncMode: CollabSyncMode;
+  state: CRDTDocumentSnapshot;
+  value: CRDTDocumentValue;
+}
+
+/** Request body for POST /api/sessions/:id/crdt-merge */
+export interface CRDTMergeRequest {
+  state: CRDTDocumentSnapshot;
+}
+
+/** Response from POST /api/sessions/:id/crdt-merge */
+export interface CRDTMergeResponse {
+  merged: boolean;
+  state: CRDTDocumentSnapshot;
+  value: CRDTDocumentValue;
+}
+
+/** Entry in GET /api/sessions/:id/crdt-peers response */
+export interface CRDTPeerEntry {
+  peerId: string;
+  clock: VectorClockSnapshot | undefined;
+}
+
+/** Response from GET /api/sessions/:id/crdt-peers */
+export type CRDTPeersResponse = CRDTPeerEntry[];
