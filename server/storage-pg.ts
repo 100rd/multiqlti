@@ -57,9 +57,11 @@ import {
   sharedSessions,
   type SharedSessionRow,
   workspaceConnections,
+  mcpToolCalls,
   type WorkspaceConnectionRow,
+  type McpToolCallRow,
 } from "@shared/schema";
-import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput } from "@shared/types";
+import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput } from "@shared/types";
 
 import { encrypt, decrypt } from "./crypto";
 
@@ -1476,6 +1478,111 @@ export class PgStorage implements IStorage {
   async testWorkspaceConnection(id: string): Promise<WorkspaceConnection> {
     // Marks last_tested_at; actual connectivity test is caller's responsibility.
     return this.updateWorkspaceConnection(id, { lastTestedAt: new Date() });
+  }
+
+  // ─── MCP Tool Call Audit Log (issue #271) ────────────────────────────────
+
+  async recordMcpToolCall(input: RecordMcpToolCallInput): Promise<McpToolCall> {
+    const [row] = await db
+      .insert(mcpToolCalls)
+      .values({
+        pipelineRunId: input.pipelineRunId ?? null,
+        stageId: input.stageId ?? null,
+        connectionId: input.connectionId,
+        toolName: input.toolName,
+        argsJson: input.argsJson,
+        resultJson: input.resultJson ?? null,
+        error: input.error ?? null,
+        durationMs: input.durationMs,
+        startedAt: input.startedAt ?? new Date(),
+      } as typeof mcpToolCalls.$inferInsert)
+      .returning();
+    return this.rowToMcpToolCall(row);
+  }
+
+  async getMcpToolCallsByConnection(
+    connectionId: string,
+    fromDate: Date,
+    toDate: Date,
+    limit = 10_000,
+  ): Promise<McpToolCall[]> {
+    const rows = await db
+      .select()
+      .from(mcpToolCalls)
+      .where(
+        and(
+          eq(mcpToolCalls.connectionId, connectionId),
+          gte(mcpToolCalls.startedAt, fromDate),
+          lte(mcpToolCalls.startedAt, toDate),
+        ),
+      )
+      .orderBy(asc(mcpToolCalls.startedAt))
+      .limit(limit);
+    return rows.map((r) => this.rowToMcpToolCall(r));
+  }
+
+  async getConnectionUsageMetrics(connectionId: string): Promise<ConnectionUsageMetrics> {
+    const now = new Date();
+    const d30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const d7 = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    const all30 = await this.getMcpToolCallsByConnection(connectionId, d30, now);
+    const all7 = all30.filter((r) => r.startedAt >= d7);
+
+    // Calls per day (30d)
+    const dayMap = new Map<string, number>();
+    for (const r of all30) {
+      const day = r.startedAt.toISOString().slice(0, 10);
+      dayMap.set(day, (dayMap.get(day) ?? 0) + 1);
+    }
+    const callsPerDay = Array.from(dayMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, count]) => ({ date, count }));
+
+    // Top tools
+    const toolMap = new Map<string, number>();
+    for (const r of all30) {
+      toolMap.set(r.toolName, (toolMap.get(r.toolName) ?? 0) + 1);
+    }
+    const topTools = Array.from(toolMap.entries())
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 10)
+      .map(([toolName, count]) => ({ toolName, count }));
+
+    // Error rate (7d)
+    const errorRate7d =
+      all7.length === 0 ? 0 : all7.filter((r) => r.error !== null).length / all7.length;
+
+    // P95 latency (30d)
+    const durations = all30.map((r) => r.durationMs).sort((a, b) => a - b);
+    const p95LatencyMs =
+      durations.length === 0
+        ? 0
+        : durations[Math.floor(durations.length * 0.95)] ?? durations[durations.length - 1];
+
+    return {
+      connectionId,
+      callsPerDay,
+      topTools,
+      errorRate7d,
+      p95LatencyMs,
+      isOrphan: all30.length === 0,
+    };
+  }
+
+  private rowToMcpToolCall(row: McpToolCallRow): McpToolCall {
+    return {
+      id: row.id,
+      pipelineRunId: row.pipelineRunId ?? null,
+      stageId: row.stageId ?? null,
+      connectionId: row.connectionId,
+      toolName: row.toolName,
+      argsJson: (row.argsJson ?? {}) as Record<string, unknown>,
+      resultJson: row.resultJson ?? null,
+      error: row.error ?? null,
+      durationMs: row.durationMs,
+      startedAt: row.startedAt,
+    };
   }
 
 }

@@ -4,19 +4,40 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { ToolDefinition, McpServerConfig, ConnectionType } from "@shared/types";
 import { toolRegistry } from "./index";
 import { BuiltinMcpServerRegistry } from "../mcp-servers/registry";
+import { recordToolCall } from "./audit";
+import type { IStorage } from "../storage";
 
 interface McpConnection {
   client: Client;
   tools: ToolDefinition[];
   error?: string;
+  /** Workspace connection ID, if this server was registered via a workspace connection. */
+  connectionId?: string;
+  /** Connection type (e.g. "github", "kubernetes"). */
+  connectionType?: string;
+}
+
+/** Context passed to callTool for tracing / audit. */
+export interface McpCallContext {
+  pipelineRunId?: string | null;
+  stageId?: string | null;
+  traceId?: string;
+  parentSpanId?: string;
 }
 
 export class McpClientManager {
   private connections: Map<string, McpConnection> = new Map();
   private builtinRegistry: BuiltinMcpServerRegistry;
+  private storage?: IStorage;
 
-  constructor(builtinRegistry?: BuiltinMcpServerRegistry) {
+  constructor(builtinRegistry?: BuiltinMcpServerRegistry, storage?: IStorage) {
     this.builtinRegistry = builtinRegistry ?? new BuiltinMcpServerRegistry(toolRegistry);
+    this.storage = storage;
+  }
+
+  /** Inject the storage instance after construction (avoids circular deps). */
+  setStorage(storage: IStorage): void {
+    this.storage = storage;
   }
 
   // ── Built-in MCP server integration ────────────────────────────────────────
@@ -123,7 +144,7 @@ export class McpClientManager {
       });
     }
 
-    this.connections.set(config.name, { client, tools: toolDefs });
+    this.connections.set(config.name, { client, tools: toolDefs, connectionId: config.connectionId, connectionType: config.connectionType });
     console.log(`[mcp-client] Connected to "${config.name}" — ${toolDefs.length} tool(s) registered`);
   }
 
@@ -157,24 +178,59 @@ export class McpClientManager {
     return all;
   }
 
-  async callTool(serverName: string, toolName: string, args: Record<string, unknown>): Promise<string> {
+  async callTool(
+    serverName: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    ctx?: McpCallContext,
+  ): Promise<string> {
     const conn = this.connections.get(serverName);
     if (!conn) {
       throw new Error(`Not connected to MCP server "${serverName}"`);
     }
 
-    const result = await conn.client.callTool({ name: toolName, arguments: args });
+    const startedAt = new Date();
+    const startMs = Date.now();
+    let resultText = "";
+    let callError: string | null = null;
 
-    // Extract text content from result
-    const content = result.content ?? [];
-    if (Array.isArray(content)) {
-      const textParts = content
-        .filter((block): block is { type: "text"; text: string } => block.type === "text")
-        .map((block) => block.text);
-      return textParts.join("\n") || JSON.stringify(result);
+    try {
+      const result = await conn.client.callTool({ name: toolName, arguments: args });
+
+      // Extract text content from result
+      const content = result.content ?? [];
+      if (Array.isArray(content)) {
+        const textParts = content
+          .filter((block): block is { type: "text"; text: string } => block.type === "text")
+          .map((block) => block.text);
+        resultText = textParts.join("\n") || JSON.stringify(result);
+      } else {
+        resultText = String(result);
+      }
+    } catch (err) {
+      callError = err instanceof Error ? err.message : String(err);
+      throw err;
+    } finally {
+      const durationMs = Date.now() - startMs;
+      if (this.storage && conn.connectionId) {
+        void recordToolCall(this.storage, {
+          pipelineRunId: ctx?.pipelineRunId ?? null,
+          stageId: ctx?.stageId ?? null,
+          connectionId: conn.connectionId,
+          connectionType: conn.connectionType,
+          toolName: `${serverName}__${toolName}`,
+          args,
+          result: resultText || undefined,
+          error: callError,
+          durationMs,
+          startedAt,
+          traceId: ctx?.traceId,
+          parentSpanId: ctx?.parentSpanId,
+        });
+      }
     }
 
-    return String(result);
+    return resultText;
   }
 
   getStatus(): Record<string, { connected: boolean; toolCount: number; error?: string }> {

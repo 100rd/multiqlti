@@ -312,6 +312,38 @@ export function registerConnectionRoutes(app: Express, storage: IStorage): void 
       }
     },
   );
+
+  // ── GET /api/workspaces/:id/connections/:cid/usage ─────────────────────────
+  // Usage metrics for a connection: calls/day (30d), top tools, error rate (7d),
+  // P95 latency, and orphan detection.
+  // Accessible by admin and maintainer.
+
+  app.get(
+    "/api/workspaces/:id/connections/:cid/usage",
+    requireRole("maintainer", "admin"),
+    async (req: Request, res: Response) => {
+      const params = ConnectionParamsSchema.safeParse(req.params);
+      if (!params.success) {
+        return res.status(400).json({ error: params.error.message });
+      }
+
+      try {
+        const connection = await storage.getWorkspaceConnection(params.data.cid);
+        if (!connection) {
+          return res.status(404).json({ error: "Connection not found" });
+        }
+        if (connection.workspaceId !== params.data.id) {
+          return res.status(404).json({ error: "Connection not found" });
+        }
+
+        const metrics = await storage.getConnectionUsageMetrics(params.data.cid);
+        return res.json(metrics);
+      } catch (err) {
+        log(`[connections] Failed to get usage metrics: ${err instanceof Error ? err.message : err}`, "connections");
+        return res.status(500).json({ error: "Failed to get usage metrics" });
+      }
+    },
+  );
 }
 
 // ─── Connectivity check ───────────────────────────────────────────────────────
