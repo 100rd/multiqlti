@@ -1,0 +1,103 @@
+# GitLab MR Stats Pipeline
+#
+# Queries GitLab for merge requests over the last 30 days, aggregates statistics
+# (open/merged/closed counts, top authors, average time-to-merge), and produces
+# a Markdown summary report posted back as a GitLab note.
+#
+# ── Prerequisites ──────────────────────────────────────────────────────────────
+#
+#   1. A GitLab connection in your workspace (see docs/connections/gitlab.md).
+#      Minimum token scope: read_api (+ api if you want the note posted).
+#
+#   2. Environment variable GITLAB_TOKEN set on the server or referenced below.
+#
+# ── Step 1: Add the connection ─────────────────────────────────────────────────
+#
+# Place this in .multiqlti/connections.yaml at your workspace root, then call:
+#
+#   POST /api/workspaces/{workspaceId}/connections/sync
+#   { "autoApply": true }
+#
+# ──────────────────────────────────────────────────────────────────────────────
+
+version: 1
+connections:
+  - name: gitlab-mr-stats
+    type: gitlab
+    config:
+      host: https://gitlab.com
+      # Replace with your project path (namespace/project) or numeric project ID.
+      projectId: my-org/my-project
+      apiVersion: v4
+    secrets:
+      # Reference an environment variable — never store plaintext tokens here.
+      token: ${env:GITLAB_TOKEN}
+
+# ── Step 2: Create the pipeline ───────────────────────────────────────────────
+#
+# POST /api/pipelines
+# Content-Type: application/json
+#
+# {
+#   "name": "GitLab MR Stats (last 30 days)",
+#   "description": "Aggregate merge request statistics for the last 30 days and produce a Markdown report.",
+#   "stages": [
+#     {
+#       "teamId": "planning",
+#       "modelSlug": "claude-sonnet-4-5",
+#       "enabled": true,
+#       "systemPromptOverride": "You are a data analyst. Use the gitlab_list_mrs tool to fetch all merge requests for the last 30 days (state=all, perPage=100). Page through the results if needed. Aggregate the following statistics:\n- Total MRs opened\n- Total MRs merged\n- Total MRs still open\n- Total MRs closed (not merged)\n- Top 5 authors by MR count\n- Average time from opened_at to merged_at for merged MRs (in hours)\n\nReturn a Markdown report with a summary table and a section for each statistic. End with a one-sentence conclusion about team velocity.",
+#       "allowedConnections": ["<connectionId-of-gitlab-mr-stats>"]
+#     },
+#     {
+#       "teamId": "code_review",
+#       "modelSlug": "claude-sonnet-4-5",
+#       "enabled": true,
+#       "systemPromptOverride": "You receive a Markdown MR statistics report. Review it for accuracy and clarity. If anything looks anomalous (e.g. unusually high or low merge rate), add a 'Observations' section noting it. Return the final polished report.",
+#       "allowedConnections": []
+#     }
+#   ]
+# }
+#
+# Replace <connectionId-of-gitlab-mr-stats> with the ID returned when the
+# connection was created (visible in GET /api/workspaces/{id}/connections).
+#
+# ── Step 3: Run the pipeline ──────────────────────────────────────────────────
+#
+# POST /api/pipelines/{pipelineId}/run
+# Content-Type: application/json
+#
+# {
+#   "input": "Generate the GitLab MR statistics report for the last 30 days."
+# }
+#
+# ── Tool reference ─────────────────────────────────────────────────────────────
+#
+# Stage 1 uses:
+#   gitlab_list_mrs(project, state="all", perPage=100, page=N)
+#     → Returns MR objects with: iid, title, state, author, created_at,
+#       merged_at, closed_at, web_url
+#
+# To also post the report as a GitLab note on an issue, add to the final stage:
+#   gitlab_post_note(project, resourceType="issues", resourceIid=<issueIid>, body=<report>)
+#   (requires api scope on the token)
+#
+# ── Expected output ────────────────────────────────────────────────────────────
+#
+# ## MR Statistics — my-org/my-project (last 30 days)
+#
+# | Metric | Value |
+# |---|---|
+# | Total opened | 47 |
+# | Merged | 38 |
+# | Still open | 6 |
+# | Closed (not merged) | 3 |
+# | Avg time-to-merge | 18.4 h |
+#
+# ### Top authors
+# 1. alice (12 MRs)
+# 2. bob (9 MRs)
+# ...
+#
+# ### Observations
+# Merge rate of 80.9% is healthy. No anomalies detected.
