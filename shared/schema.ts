@@ -1405,7 +1405,7 @@ export const budgets = pgTable(
     limitUsd: real("limit_usd").notNull(),
     hard: boolean("hard").notNull().default(false),
     /** Percentage thresholds for alert notifications, e.g. [50, 80, 100]. */
-    notifyAtPct: jsonb("notify_at_pct").notNull().default(sql`'[]'::jsonb`).$type<number[]>(),
+    notifyAtPct: integer("notify_at_pct").array().notNull().default(sql`'{}'`),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
