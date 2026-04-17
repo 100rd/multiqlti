@@ -1425,3 +1425,25 @@ export const updateBudgetSchema = insertBudgetSchema.partial().omit({ workspaceI
 export type InsertBudget = z.infer<typeof insertBudgetSchema>;
 export type UpdateBudget = z.infer<typeof updateBudgetSchema>;
 export type BudgetRow = typeof budgets.$inferSelect;
+
+
+// ─── Workspace Settings (issue #280) ─────────────────────────────────────────
+// Generic key-value settings per workspace (JSONB values).
+// Currently used to persist custom tool/skill source configurations.
+
+export const workspaceSettings = pgTable(
+  "workspace_settings",
+  {
+    workspaceId: varchar("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    value: jsonb("value").notNull().default(sql`'{}'::jsonb`),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("workspace_settings_workspace_idx").on(table.workspaceId),
+  ],
+);
+
+export type WorkspaceSettingsRow = typeof workspaceSettings.$inferSelect;

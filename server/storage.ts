@@ -54,6 +54,7 @@ import {
   type BudgetRow,
   type InsertBudget,
   type UpdateBudget,
+  type WorkspaceSettingsRow,
 } from "@shared/schema";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput } from "@shared/types";
 import { randomUUID } from "crypto";
@@ -338,6 +339,10 @@ export interface IStorage {
   createBudget(input: InsertBudget): Promise<BudgetRow>;
   updateBudget(id: string, updates: UpdateBudget): Promise<BudgetRow>;
   deleteBudget(id: string): Promise<void>;
+
+  // Workspace Settings (issue #280)
+  getWorkspaceSettings(workspaceId: string): Promise<Record<string, unknown> | null>;
+  upsertWorkspaceSettings(workspaceId: string, patch: Record<string, unknown>): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -357,6 +362,7 @@ export class MemStorage implements IStorage {
   private delegationsMap: Map<string, DelegationRequestRow>;
   private managerIterationsMap: Map<string, ManagerIterationRow> = new Map();
   private specializationProfilesMap: Map<string, SpecializationProfileRow>;
+  private workspaceSettingsMap: Map<string, Record<string, unknown>> = new Map();
 
   constructor() {
     this.usersMap = new Map();
@@ -2070,6 +2076,14 @@ export class MemStorage implements IStorage {
     this.budgetsMap.delete(id);
   }
 
+  async getWorkspaceSettings(workspaceId: string): Promise<Record<string, unknown> | null> {
+    return this.workspaceSettingsMap.get(workspaceId) ?? null;
+  }
+
+  async upsertWorkspaceSettings(workspaceId: string, patch: Record<string, unknown>): Promise<void> {
+    const existing = this.workspaceSettingsMap.get(workspaceId) ?? {};
+    this.workspaceSettingsMap.set(workspaceId, { ...existing, ...patch });
+  }
 
 }
 

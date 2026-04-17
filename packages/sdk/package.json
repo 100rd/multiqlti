@@ -1,0 +1,21 @@
+{
+  "name": "@multiqlti/sdk",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "description": "SDK for authoring custom agents, tools, and skills for the multiqlti platform",
+  "keywords": ["multiqlti", "sdk", "tools", "skills", "agents"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "zod": "^3.0.0"
+  }
+}

@@ -67,6 +67,7 @@ import {
   type BudgetRow,
   type InsertBudget,
   type UpdateBudget,
+  workspaceSettings,
 } from "@shared/schema";
 import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput } from "@shared/types";
 
@@ -1702,6 +1703,32 @@ export class PgStorage implements IStorage {
 
   async deleteBudget(id: string): Promise<void> {
     await db.delete(budgets).where(eq(budgets.id, id));
+  }
+
+  async getWorkspaceSettings(workspaceId: string): Promise<Record<string, unknown> | null> {
+    const rows = await db
+      .select()
+      .from(workspaceSettings)
+      .where(eq(workspaceSettings.workspaceId, workspaceId));
+    if (rows.length === 0) return null;
+    // Merge all key-value rows into a single object
+    const result: Record<string, unknown> = {};
+    for (const row of rows) {
+      result[row.key] = row.value;
+    }
+    return result;
+  }
+
+  async upsertWorkspaceSettings(workspaceId: string, patch: Record<string, unknown>): Promise<void> {
+    for (const [key, value] of Object.entries(patch)) {
+      await db
+        .insert(workspaceSettings)
+        .values({ workspaceId, key, value: value as Record<string, unknown>, updatedAt: new Date() })
+        .onConflictDoUpdate({
+          target: [workspaceSettings.workspaceId, workspaceSettings.key],
+          set: { value: value as Record<string, unknown>, updatedAt: new Date() },
+        });
+    }
   }
 
 }

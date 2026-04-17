@@ -6,6 +6,8 @@ import { memorySearchHandler } from "./builtin/memory-search";
 import { codeSearchHandler } from "./builtin/code-search";
 import { fileReadHandler } from "./builtin/file-read";
 import { platformTools } from "./builtin/platform/index";
+import { WorkspaceToolRegistry } from "./workspace-registry";
+import { DEFAULT_SANDBOX_LIMITS } from "./sandbox-vm";
 
 // Singleton tool registry shared across the server process
 export const toolRegistry = new ToolRegistry();
@@ -23,5 +25,18 @@ for (const tool of platformTools) {
   toolRegistry.register(tool);
 }
 
+// Singleton workspace-scoped registry — wraps the global registry with
+// per-workspace custom tool overlays loaded by the DynamicToolLoader.
+export const workspaceToolRegistry = new WorkspaceToolRegistry(
+  toolRegistry,
+  DEFAULT_SANDBOX_LIMITS,
+);
+
 export { ToolRegistry } from "./registry";
 export type { ToolHandler } from "./registry";
+export { WorkspaceToolRegistry } from "./workspace-registry";
+// DynamicToolLoader is NOT re-exported here because it imports execFile from
+// child_process, which would break integration tests with partial mocks.
+// Import it directly from "./loader" when needed.
+export { DEFAULT_SANDBOX_LIMITS } from "./sandbox-vm";
+export type { SandboxLimits } from "./sandbox-vm";
