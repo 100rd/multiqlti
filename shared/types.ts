@@ -2064,3 +2064,153 @@ export interface RecordMcpToolCallInput {
   durationMs: number;
   startedAt?: Date;
 }
+
+// ── E2E Kubernetes Stage Types (issue #272) ───────────────────────────────────
+
+/**
+ * Resource quota limits for an ephemeral namespace.
+ * All values follow Kubernetes resource notation (e.g. "2", "500m" for CPU;
+ * "2Gi", "512Mi" for memory).
+ */
+export interface EphemeralNamespaceQuota {
+  /** CPU limit for the entire namespace (default "2"). */
+  limitCpu?: string;
+  /** Memory limit for the entire namespace (default "2Gi"). */
+  limitMemory?: string;
+  /** Maximum pod count for the entire namespace (default 10). */
+  maxPods?: number;
+}
+
+/**
+ * Readiness check configuration.
+ * Checks are performed in order: deployment rollout → endpoints → custom command.
+ * Any single check failure aborts the stage.
+ */
+export interface ReadinessConfig {
+  /** Kubernetes Deployment name to wait for (kubectl rollout status). */
+  deploymentName?: string;
+  /** Service name whose Endpoints must have at least one ready address. */
+  serviceName?: string;
+  /** Arbitrary command to run in a short-lived pod; exit 0 = ready. */
+  command?: string[];
+  /** Image to use when running `command`. Defaults to `testImage`. */
+  commandImage?: string;
+  /** Maximum milliseconds to wait for any single check (default 120_000). */
+  timeoutMs?: number;
+  /** Polling interval for endpoint checks (default 3_000). */
+  pollIntervalMs?: number;
+}
+
+/**
+ * Minimal pod spec subset used for security guardrail validation.
+ * Mirrors the subset of the Kubernetes PodSpec we inspect; additional fields
+ * are passed through untouched.
+ */
+export interface EphemeralPodSpec {
+  hostNetwork?: boolean;
+  volumes?: Array<{
+    name?: string;
+    hostPath?: unknown;
+    [key: string]: unknown;
+  }>;
+  containers?: Array<{
+    name?: string;
+    securityContext?: { privileged?: boolean; [key: string]: unknown };
+    [key: string]: unknown;
+  }>;
+  initContainers?: Array<{
+    name?: string;
+    securityContext?: { privileged?: boolean; [key: string]: unknown };
+    [key: string]: unknown;
+  }>;
+}
+
+/**
+ * Configuration for the `e2e_kubernetes` pipeline stage type.
+ */
+export interface E2eKubernetesStageConfig {
+  /** Docker image reference to deploy (e.g. "registry/app:sha256-..."). */
+  imageRef: string;
+  /**
+   * Helm chart reference. Can be:
+   *   - A repo/chart reference (e.g. "stable/nginx")
+   *   - A local chart path (e.g. "./helm/my-chart")
+   * Default: "stable/nginx" (generic bundled chart).
+   */
+  helmChart?: string;
+  /** Helm release name. Defaults to "mq-<runId-prefix>". */
+  releaseName?: string;
+  /** Optional Helm values as a YAML string. */
+  helmValues?: string;
+  /**
+   * TTL in hours for failed-run namespaces. The janitor uses this value.
+   * Default: 4 hours.
+   */
+  ttlHours?: number;
+  /**
+   * When true (default), the namespace is deleted immediately after a
+   * successful test run. When false, the namespace is preserved until the
+   * TTL expires.
+   */
+  deleteOnSuccess?: boolean;
+  /**
+   * Image used to run the test command in the test pod.
+   * Must be a valid, pullable Docker image reference.
+   */
+  testImage: string;
+  /**
+   * Command and arguments to execute in the test pod.
+   * Exit code 0 = test passed; any other exit code = test failed.
+   */
+  testCommand: string[];
+  /** Readiness checks to perform before running the test command. */
+  readiness?: ReadinessConfig;
+  /** Namespace resource quota overrides. */
+  resourceQuota?: EphemeralNamespaceQuota;
+  /**
+   * CIDR blocks that should be allowed in the egress NetworkPolicy.
+   * Default: empty (deny all egress).
+   */
+  allowedEgressHosts?: string[];
+  /**
+   * Optional pod spec for the test pod — used for guardrail validation.
+   * Privileged containers, hostNetwork, and hostPath volumes are denied.
+   */
+  testPodSpec?: EphemeralPodSpec;
+  /** Timeout in ms for the Helm deploy (default 120_000). */
+  helmTimeoutMs?: number;
+  /** Timeout in ms for the test pod execution (default 60_000). */
+  testTimeoutMs?: number;
+}
+
+/**
+ * Artifacts collected during the e2e_kubernetes stage run.
+ */
+export interface E2eKubernetesArtifacts {
+  /** Combined test stdout + stderr from the test pod. */
+  testLogs: string;
+  /** Rendered Helm manifest (from `helm get manifest`). */
+  helmManifest: string;
+  /** Pod events for the namespace — populated on failure for diagnostics. */
+  podEvents?: string;
+}
+
+/**
+ * Result returned by the e2e_kubernetes stage after completion.
+ */
+export interface E2eKubernetesResult {
+  /** Fully qualified namespace that was created (e.g. "mq-run-abc123"). */
+  namespace: string;
+  /** True when the test command exited with code 0. */
+  success: boolean;
+  /** Raw exit code from the test command (-1 if not reached). */
+  testExitCode: number;
+  /** Standard output from the test pod. */
+  testStdout: string;
+  /** Standard error from the test pod. */
+  testStderr: string;
+  /** Collected artifacts for storage/display. */
+  artifacts: E2eKubernetesArtifacts;
+  /** TTL used for the namespace (hours). */
+  ttlHours: number;
+}
