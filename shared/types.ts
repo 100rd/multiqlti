@@ -2472,3 +2472,50 @@ export interface ConnectionsSyncRequest {
   /** Include deletions for DB connections absent from YAML. Default: false. */
   includeDeletes?: boolean;
 }
+
+// ─── LLM Tracing Types (issue #278) ───────────────────────────────────────────
+
+/** Exporter backend type for workspace-level LLM tracing. */
+export type LlmTracingExporter = "langfuse" | "phoenix" | "otlp" | "none";
+
+/** Per-workspace LLM tracing configuration stored in workspace settings. */
+export interface WorkspaceLlmTracingConfig {
+  /** Which exporter to use for this workspace.  Default: "none". */
+  exporter: LlmTracingExporter;
+  /** Whether to store prompt/response text in spans. Default: false (redacted). */
+  storePrompts: boolean;
+  /** Whether to store tool call arguments/results. Default: false (redacted). */
+  storeToolData: boolean;
+  /** Langfuse base URL — required when exporter is "langfuse". */
+  langfuseBaseUrl?: string;
+  /** Phoenix base URL — required when exporter is "phoenix". */
+  phoenixBaseUrl?: string;
+  /** Generic OTLP endpoint — used when exporter is "otlp". */
+  otlpEndpoint?: string;
+}
+
+/** Summary row returned in the workspace trace list. */
+export interface WorkspaceTraceSummary {
+  traceId: string;
+  runId: string;
+  spanCount: number;
+  startTime: number;     // epoch ms of the earliest span
+  endTime: number;       // epoch ms of the latest span
+  totalTokens: number;   // sum of llm.token_count.total across all LLM spans
+  costUsd: number;       // sum of llm.cost_usd across all LLM spans
+  provider: string;      // predominant provider (most common llm.provider value)
+  model: string;         // predominant model (most common llm.model value)
+}
+
+/** Full trace returned at GET /workspaces/:id/traces/:run_id. */
+export interface WorkspaceTraceDetail extends WorkspaceTraceSummary {
+  spans: TraceSpan[];
+}
+
+/** Query params for GET /workspaces/:id/traces. */
+export interface WorkspaceTracesQuery {
+  limit?: number;
+  offset?: number;
+  /** Filter to a specific pipeline run ID. */
+  runId?: string;
+}

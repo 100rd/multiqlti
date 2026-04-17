@@ -38,6 +38,7 @@ import TaskGroupPage from "@/pages/TaskGroup";
 import Library from "@/pages/Library";
 import CreateTaskGroup from "@/pages/CreateTaskGroup";
 import TaskGroupTrace from "@/pages/TaskGroupTrace";
+import { WorkspaceTracesPage, WorkspaceTraceDetailPage } from "@/pages/WorkspaceTraces";
 
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
@@ -93,6 +94,12 @@ function ProtectedRouter() {
         )} />
         <Route path="/workspaces/:id/connections" component={() => (
           <ErrorBoundary><Connections /></ErrorBoundary>
+        )} />
+        <Route path="/workspaces/:id/traces/:run_id" component={() => (
+          <ErrorBoundary><WorkspaceTraceDetailPage /></ErrorBoundary>
+        )} />
+        <Route path="/workspaces/:id/traces" component={() => (
+          <ErrorBoundary><WorkspaceTracesPage /></ErrorBoundary>
         )} />
         <Route path="/workspaces/:id/inventory" component={() => (
           <ErrorBoundary><Inventory /></ErrorBoundary>
