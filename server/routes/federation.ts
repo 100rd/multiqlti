@@ -1,5 +1,5 @@
 /**
- * Federation Routes -- issues #224 + #225 + #226 + #233
+ * Federation Routes -- issues #224 + #225 + #226 + #233 + #230
  *
  * Session Sharing (issue #224):
  *   POST   /api/federation/sessions/share      -- share a run
@@ -34,6 +34,13 @@
  *   DELETE /api/federation/delegation/:id          -- cancel delegation
  *   GET    /api/federation/delegation/policy       -- get delegation policy
  *
+
+ * CRDT P2P Collaboration (issue #230):
+ *   GET    /api/sessions/:id/crdt-state       -- current CRDT document state
+ *   POST   /api/sessions/:id/crdt-merge       -- receive remote CRDT state and merge
+ *   GET    /api/sessions/:id/crdt-peers       -- list peers and their vector clock versions
+ *   POST   /api/sessions/:id/crdt-mode        -- set sync mode (single_writer | crdt_p2p)
+ *
  * All routes require authentication (covered by upstream requireAuth middleware).
  * Returns 503 when federation is not enabled.
  */
@@ -46,6 +53,7 @@ import type { FederationManager } from "../federation/index";
 import type { CrossInstanceDelegationService } from "../federation/delegation";
 import type { IStorage } from "../storage";
 import type { ConflictResolutionService } from "../federation/conflict-resolution";
+import type { CRDTPeerSyncService } from "../federation/crdt/peer-sync";
 
 // ─── Validation schemas ───────────────────────────────────────────────────────
 
@@ -157,6 +165,7 @@ export function registerFederationRoutes(
   storage?: IStorage | null,
   crossDelegation?: CrossInstanceDelegationService | null,
   conflictResolution?: ConflictResolutionService | null,
+  crdtPeerSync?: CRDTPeerSyncService | null,
 ): void {
   const federationDisabledResponse = (res: Response) =>
     res.status(503).json({
@@ -735,5 +744,146 @@ export function registerFederationRoutes(
 
     const log = conflictResolution.getSessionDecisionLog(String(_req.params.id));
     return res.json(log);
+  });
+}
+
+// ─── CRDT P2P Collaboration Routes (issue #230) ───────────────────────────────
+
+// Validation schema for mode changes
+const SetCRDTModeSchema = z.object({
+  mode: z.enum(["single_writer", "crdt_p2p"]),
+});
+
+// Validation schema for merging incoming CRDT state
+const CRDTMergeSchema = z.object({
+  state: z.object({
+    sessionId: z.string().min(1),
+    nodeId: z.string().min(1),
+    participants: z.object({
+      type: z.literal("or-set"),
+      entries: z.record(z.array(z.string())),
+      tombstones: z.array(z.string()),
+    }),
+    stageOutputs: z.object({
+      type: z.literal("lww-map"),
+      entries: z.record(z.unknown()),
+    }),
+    stageStatuses: z.object({
+      type: z.literal("lww-map"),
+      entries: z.record(z.unknown()),
+    }),
+    votes: z.object({
+      type: z.literal("g-counter"),
+      counters: z.record(z.number()),
+    }),
+    tags: z.object({
+      type: z.literal("or-set"),
+      entries: z.record(z.array(z.string())),
+      tombstones: z.array(z.string()),
+    }),
+    metadata: z.object({
+      type: z.literal("lww-register"),
+      value: z.unknown(),
+      timestamp: z.number(),
+      nodeId: z.string(),
+    }),
+    vectorClock: z.object({
+      clocks: z.record(z.number()),
+    }),
+  }),
+});
+
+export function registerCRDTRoutes(
+  app: Router,
+  crdtPeerSync: CRDTPeerSyncService | null,
+): void {
+  const notAvailable = (res: Response) =>
+    res.status(503).json({ error: "CRDT peer sync service not available" });
+
+  // GET /api/sessions/:id/crdt-state — current CRDT document state
+  app.get("/api/sessions/:id/crdt-state", (req: Request, res: Response) => {
+    if (!crdtPeerSync) return notAvailable(res);
+
+    const sessionId = String(req.params.id);
+    const mode = crdtPeerSync.getSyncMode(sessionId);
+
+    if (mode !== "crdt_p2p") {
+      return res.json({
+        sessionId,
+        syncMode: mode,
+        state: null,
+        value: null,
+      });
+    }
+
+    const doc = crdtPeerSync.getOrCreateDocument(sessionId);
+    if (!doc) return notAvailable(res);
+
+    return res.json({
+      sessionId,
+      syncMode: mode,
+      state: doc.toState(),
+      value: doc.snapshot(),
+    });
+  });
+
+  // POST /api/sessions/:id/crdt-merge — receive remote CRDT state and merge
+  app.post("/api/sessions/:id/crdt-merge", (req: Request, res: Response) => {
+    if (!crdtPeerSync) return notAvailable(res);
+
+    const sessionId = String(req.params.id);
+    const parsed = CRDTMergeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid CRDT state", issues: parsed.error.flatten() });
+    }
+
+    const mode = crdtPeerSync.getSyncMode(sessionId);
+    if (mode !== "crdt_p2p") {
+      return res.status(409).json({
+        error: "Session is in single_writer mode; CRDT merge not applicable",
+        syncMode: mode,
+      });
+    }
+
+    const doc = crdtPeerSync.getOrCreateDocument(sessionId);
+    if (!doc) return notAvailable(res);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    doc.merge(parsed.data.state as any);
+
+    return res.json({
+      merged: true,
+      state: doc.toState(),
+      value: doc.snapshot(),
+    });
+  });
+
+  // GET /api/sessions/:id/crdt-peers — list peers and their vector clock versions
+  app.get("/api/sessions/:id/crdt-peers", (req: Request, res: Response) => {
+    if (!crdtPeerSync) return notAvailable(res);
+
+    const sessionId = String(req.params.id);
+    const peers = crdtPeerSync.getPeerVersions(sessionId);
+    return res.json(peers);
+  });
+
+  // POST /api/sessions/:id/crdt-mode — set sync mode
+  app.post("/api/sessions/:id/crdt-mode", (req: Request, res: Response) => {
+    if (!crdtPeerSync) return notAvailable(res);
+
+    const sessionId = String(req.params.id);
+    const parsed = SetCRDTModeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid mode", issues: parsed.error.flatten() });
+    }
+
+    crdtPeerSync.setSyncMode(sessionId, parsed.data.mode);
+    const doc = crdtPeerSync.getDocument(sessionId);
+
+    return res.json({
+      sessionId,
+      syncMode: parsed.data.mode,
+      state: doc ? doc.toState() : null,
+    });
   });
 }
