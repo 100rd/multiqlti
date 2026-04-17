@@ -1265,3 +1265,50 @@ export function validateConnectionConfig(
     }
   }
 }
+
+// ── MCP Tool Calls Audit Log (issue #271) ─────────────────────────────────────
+// Records every MCP tool invocation with redacted args/results for audit,
+// usage metrics, and OTel trace observability. Retention: 90 days default.
+
+export const mcpToolCalls = pgTable(
+  "mcp_tool_calls",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    /** Nullable — tool calls may occur outside a pipeline run context. */
+    pipelineRunId: varchar("pipeline_run_id"),
+    /** DAG stage ID within the run, if applicable. */
+    stageId: text("stage_id"),
+    /** Workspace connection that owns this tool. */
+    connectionId: varchar("connection_id").notNull(),
+    /** Fully-qualified tool name (e.g. "github__github_list_prs"). */
+    toolName: text("tool_name").notNull(),
+    /** Redacted copy of the input args — no secrets. */
+    argsJson: jsonb("args_json").notNull().default(sql`'{}'::jsonb`),
+    /** Redacted copy of the result — no secrets. Null on error. */
+    resultJson: jsonb("result_json"),
+    /** Error message (generic) when the call failed. */
+    error: text("error"),
+    /** Wall-clock duration in milliseconds. */
+    durationMs: integer("duration_ms").notNull().default(0),
+    startedAt: timestamp("started_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    connectionIdIdx: index("mcp_tool_calls_connection_id_idx").on(table.connectionId),
+    pipelineRunIdIdx: index("mcp_tool_calls_pipeline_run_id_idx").on(table.pipelineRunId),
+    startedAtIdx: index("mcp_tool_calls_started_at_idx").on(table.startedAt),
+    connectionStartedIdx: index("mcp_tool_calls_connection_started_idx").on(
+      table.connectionId,
+      table.startedAt,
+    ),
+  }),
+);
+
+export const insertMcpToolCallSchema = createInsertSchema(mcpToolCalls).omit({
+  id: true,
+  startedAt: true,
+});
+
+export type InsertMcpToolCall = z.infer<typeof insertMcpToolCallSchema>;
+export type McpToolCallRow = typeof mcpToolCalls.$inferSelect;

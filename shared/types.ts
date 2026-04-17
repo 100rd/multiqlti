@@ -467,6 +467,10 @@ export interface McpServerConfig {
   toolCount: number;
   lastConnectedAt?: Date | null;
   createdAt?: Date | null;
+  /** Workspace connection ID — set when this MCP server represents a workspace connection. */
+  connectionId?: string;
+  /** Connection type string (e.g. "github", "kubernetes"). */
+  connectionType?: string;
 }
 
 // ─── Pipeline Stage Config ────────────────────────────────────────────────────
@@ -2006,4 +2010,57 @@ export interface ConnectionBlockedError {
   stageId: string;
   runId: string;
   message: string;
+}
+
+// ── MCP Tool Call Audit + Usage Metrics (issue #271) ─────────────────────────
+
+/** Public shape of a recorded MCP tool call — args/result are already redacted. */
+export interface McpToolCall {
+  id: string;
+  pipelineRunId: string | null;
+  stageId: string | null;
+  connectionId: string;
+  toolName: string;
+  /** Redacted copy of call arguments. */
+  argsJson: Record<string, unknown>;
+  /** Redacted copy of the result. Null on error. */
+  resultJson: unknown | null;
+  /** Generic error description. Null on success. */
+  error: string | null;
+  durationMs: number;
+  startedAt: Date;
+}
+
+/** One data-point in the calls-per-day time series. */
+export interface McpToolCallsPerDay {
+  date: string;   // ISO date "YYYY-MM-DD"
+  count: number;
+}
+
+/** Aggregate usage stats for a single workspace connection. */
+export interface ConnectionUsageMetrics {
+  connectionId: string;
+  /** Calls per calendar day for the last 30 days. */
+  callsPerDay: McpToolCallsPerDay[];
+  /** Top N tools ranked by invocation count. */
+  topTools: Array<{ toolName: string; count: number }>;
+  /** Error rate (0–1) over the last 7 days. */
+  errorRate7d: number;
+  /** P95 latency in milliseconds across all calls in the last 30 days. */
+  p95LatencyMs: number;
+  /** True when the connection had zero calls in the last 30 days. */
+  isOrphan: boolean;
+}
+
+/** Input for recording a tool call. */
+export interface RecordMcpToolCallInput {
+  pipelineRunId?: string | null;
+  stageId?: string | null;
+  connectionId: string;
+  toolName: string;
+  argsJson: Record<string, unknown>;
+  resultJson?: unknown | null;
+  error?: string | null;
+  durationMs: number;
+  startedAt?: Date;
 }

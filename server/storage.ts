@@ -47,8 +47,10 @@ import {
   type SharedSessionRow,
   type WorkspaceConnectionRow,
   type InsertWorkspaceConnection,
+  type McpToolCallRow,
+  type InsertMcpToolCall,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput } from "@shared/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
 import { configLoader } from "./config/loader";
@@ -300,6 +302,16 @@ export interface IStorage {
   updateWorkspaceConnection(id: string, updates: UpdateWorkspaceConnectionInput): Promise<WorkspaceConnection>;
   deleteWorkspaceConnection(id: string): Promise<void>;
   testWorkspaceConnection(id: string): Promise<WorkspaceConnection>;
+
+  // MCP Tool Call Audit Log (issue #271)
+  recordMcpToolCall(input: RecordMcpToolCallInput): Promise<McpToolCall>;
+  getMcpToolCallsByConnection(
+    connectionId: string,
+    fromDate: Date,
+    toDate: Date,
+    limit?: number,
+  ): Promise<McpToolCall[]>;
+  getConnectionUsageMetrics(connectionId: string): Promise<ConnectionUsageMetrics>;
 }
 
 export class MemStorage implements IStorage {
@@ -1856,6 +1868,94 @@ export class MemStorage implements IStorage {
     };
     this.workspaceConnectionsMap.set(id, updated);
     return updated;
+  }
+
+  // ─── MCP Tool Call Audit Log (issue #271) ────────────────────────────────
+
+  private mcpToolCallsMap: Map<string, McpToolCall> = new Map();
+
+  async recordMcpToolCall(input: RecordMcpToolCallInput): Promise<McpToolCall> {
+    const id = randomUUID();
+    const record: McpToolCall = {
+      id,
+      pipelineRunId: input.pipelineRunId ?? null,
+      stageId: input.stageId ?? null,
+      connectionId: input.connectionId,
+      toolName: input.toolName,
+      argsJson: input.argsJson,
+      resultJson: input.resultJson ?? null,
+      error: input.error ?? null,
+      durationMs: input.durationMs,
+      startedAt: input.startedAt ?? new Date(),
+    };
+    this.mcpToolCallsMap.set(id, record);
+    return record;
+  }
+
+  async getMcpToolCallsByConnection(
+    connectionId: string,
+    fromDate: Date,
+    toDate: Date,
+    limit = 10_000,
+  ): Promise<McpToolCall[]> {
+    return Array.from(this.mcpToolCallsMap.values())
+      .filter(
+        (r) =>
+          r.connectionId === connectionId &&
+          r.startedAt >= fromDate &&
+          r.startedAt <= toDate,
+      )
+      .sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime())
+      .slice(0, limit);
+  }
+
+  async getConnectionUsageMetrics(connectionId: string): Promise<ConnectionUsageMetrics> {
+    const now = new Date();
+    const d30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const d7 = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    const all30 = await this.getMcpToolCallsByConnection(connectionId, d30, now);
+    const all7 = all30.filter((r) => r.startedAt >= d7);
+
+    // Calls per day
+    const dayMap = new Map<string, number>();
+    for (const r of all30) {
+      const day = r.startedAt.toISOString().slice(0, 10);
+      dayMap.set(day, (dayMap.get(day) ?? 0) + 1);
+    }
+    const callsPerDay = Array.from(dayMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, count]) => ({ date, count }));
+
+    // Top tools
+    const toolMap = new Map<string, number>();
+    for (const r of all30) {
+      toolMap.set(r.toolName, (toolMap.get(r.toolName) ?? 0) + 1);
+    }
+    const topTools = Array.from(toolMap.entries())
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 10)
+      .map(([toolName, count]) => ({ toolName, count }));
+
+    // Error rate 7d
+    const errorRate7d =
+      all7.length === 0 ? 0 : all7.filter((r) => r.error !== null).length / all7.length;
+
+    // P95 latency
+    const durations = all30.map((r) => r.durationMs).sort((a, b) => a - b);
+    const p95LatencyMs =
+      durations.length === 0
+        ? 0
+        : durations[Math.floor(durations.length * 0.95)] ?? durations[durations.length - 1];
+
+    return {
+      connectionId,
+      callsPerDay,
+      topTools,
+      errorRate7d,
+      p95LatencyMs,
+      isOrphan: all30.length === 0,
+    };
   }
 
 
