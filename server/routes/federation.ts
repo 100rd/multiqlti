@@ -45,6 +45,7 @@ import type { PipelineSyncService } from "../federation/pipeline-sync";
 import type { FederationManager } from "../federation/index";
 import type { CrossInstanceDelegationService } from "../federation/delegation";
 import type { IStorage } from "../storage";
+import type { ConflictResolutionService } from "../federation/conflict-resolution";
 
 // ─── Validation schemas ───────────────────────────────────────────────────────
 
@@ -101,6 +102,49 @@ const DelegationRequestSchema = z.object({
   timeoutMs: z.number().int().positive().optional(),
 });
 
+const VALID_STRATEGIES = [
+  "structured_debate",
+  "quorum_vote",
+  "parallel_experiment",
+  "defer_to_owner",
+] as const;
+
+const RaiseConflictSchema = z.object({
+  question: z.string().min(1).max(2000),
+  context: z.string().max(5000).optional(),
+  strategy: z.enum(VALID_STRATEGIES),
+  quorumThreshold: z.number().min(0.5).max(1.0).optional(),
+  timeoutMs: z.number().int().min(5000).max(3_600_000).optional(),
+});
+
+const AddProposalSchema = z.object({
+  authorId: z.string().min(1),
+  instanceId: z.string().min(1),
+  title: z.string().min(1).max(255),
+  description: z.string().min(1).max(5000),
+  arguments: z.string().max(5000).optional(),
+});
+
+const CastConflictVoteSchema = z.object({
+  participantId: z.string().min(1),
+  instanceId: z.string().min(1),
+  proposalId: z.string().min(1),
+  anonymous: z.boolean().optional(),
+});
+
+const ForceResolveSchema = z.object({
+  winningProposalId: z.string().optional(),
+  reasoning: z.string().min(1).max(2000),
+  decidedBy: z.enum(["quorum", "judge", "owner", "timeout"]).optional(),
+});
+
+const UpdateExperimentBranchSchema = z.object({
+  proposalId: z.string().min(1),
+  runId: z.string().min(1),
+  status: z.enum(["pending", "completed", "failed"]),
+  outcome: z.string().max(5000).optional(),
+});
+
 
 // ─── Route registration ───────────────────────────────────────────────────────
 
@@ -112,6 +156,7 @@ export function registerFederationRoutes(
   pipelineSync?: PipelineSyncService | null,
   storage?: IStorage | null,
   crossDelegation?: CrossInstanceDelegationService | null,
+  conflictResolution?: ConflictResolutionService | null,
 ): void {
   const federationDisabledResponse = (res: Response) =>
     res.status(503).json({
@@ -486,5 +531,209 @@ export function registerFederationRoutes(
       return res.status(404).json({ error: "Delegation not found or already completed" });
     }
     return res.status(200).json({ cancelled: true, delegationId });
+  });
+
+  // ─── Conflict Resolution (issue #229) ────────────────────────────────────────
+
+  // POST /api/sessions/:id/conflicts -- raise a conflict
+  app.post("/api/sessions/:id/conflicts", async (req: Request, res: Response) => {
+    if (!conflictResolution) {
+      return res.status(503).json({ error: "Conflict resolution service not available" });
+    }
+
+    const parsed = RaiseConflictSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request", issues: parsed.error.flatten() });
+    }
+
+    const user = (req as unknown as { user?: { id?: string } }).user;
+    if (!user?.id) {
+      return res.status(401).json({ error: "Authenticated user required" });
+    }
+
+    try {
+      const { conflictId } = await conflictResolution.raiseConflict({
+        sessionId: String(req.params.id),
+        raisedBy: user.id,
+        raisedByInstance: "local",
+        question: parsed.data.question,
+        context: parsed.data.context,
+        strategy: parsed.data.strategy,
+        quorumThreshold: parsed.data.quorumThreshold,
+        timeoutMs: parsed.data.timeoutMs,
+      });
+
+      const conflict = conflictResolution.getConflict(conflictId);
+      return res.status(201).json(conflict);
+    } catch (err) {
+      return res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // GET /api/sessions/:id/conflicts -- list conflicts for a session
+  app.get("/api/sessions/:id/conflicts", (_req: Request, res: Response) => {
+    if (!conflictResolution) {
+      return res.status(503).json({ error: "Conflict resolution service not available" });
+    }
+
+    const conflicts = conflictResolution.getSessionConflicts(String(_req.params.id));
+    return res.json(conflicts);
+  });
+
+  // POST /api/sessions/:id/conflicts/:cid/proposals -- add a proposal
+  app.post("/api/sessions/:id/conflicts/:cid/proposals", async (req: Request, res: Response) => {
+    if (!conflictResolution) {
+      return res.status(503).json({ error: "Conflict resolution service not available" });
+    }
+
+    const parsed = AddProposalSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request", issues: parsed.error.flatten() });
+    }
+
+    try {
+      const conflict = await conflictResolution.addProposal(
+        String(req.params.cid),
+        {
+          authorId: parsed.data.authorId,
+          instanceId: parsed.data.instanceId,
+          title: parsed.data.title,
+          description: parsed.data.description,
+          arguments: parsed.data.arguments,
+        },
+      );
+      return res.status(201).json(conflict);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.includes("not found") || msg.includes("already resolved") || msg.includes("already expired")) {
+        return res.status(404).json({ error: msg });
+      }
+      return res.status(400).json({ error: msg });
+    }
+  });
+
+  // POST /api/sessions/:id/conflicts/:cid/vote -- cast a vote
+  app.post("/api/sessions/:id/conflicts/:cid/vote", async (req: Request, res: Response) => {
+    if (!conflictResolution) {
+      return res.status(503).json({ error: "Conflict resolution service not available" });
+    }
+
+    const parsed = CastConflictVoteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request", issues: parsed.error.flatten() });
+    }
+
+    try {
+      const conflict = await conflictResolution.castVote(
+        String(req.params.cid),
+        {
+          participantId: parsed.data.participantId,
+          instanceId: parsed.data.instanceId,
+          proposalId: parsed.data.proposalId,
+          anonymous: parsed.data.anonymous,
+        },
+      );
+      return res.json(conflict);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.includes("already voted")) {
+        return res.status(409).json({ error: msg });
+      }
+      if (msg.includes("not found")) {
+        return res.status(404).json({ error: msg });
+      }
+      return res.status(400).json({ error: msg });
+    }
+  });
+
+  // POST /api/sessions/:id/conflicts/:cid/resolve -- force-resolve a conflict
+  app.post("/api/sessions/:id/conflicts/:cid/resolve", async (req: Request, res: Response) => {
+    if (!conflictResolution) {
+      return res.status(503).json({ error: "Conflict resolution service not available" });
+    }
+
+    const parsed = ForceResolveSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request", issues: parsed.error.flatten() });
+    }
+
+    try {
+      const conflict = await conflictResolution.forceResolve(
+        String(req.params.cid),
+        parsed.data.winningProposalId,
+        parsed.data.reasoning,
+        parsed.data.decidedBy,
+      );
+      return res.json(conflict);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.includes("not found") || msg.includes("already")) {
+        return res.status(404).json({ error: msg });
+      }
+      return res.status(400).json({ error: msg });
+    }
+  });
+
+  // POST /api/sessions/:id/conflicts/:cid/judge -- run LLM debate judge
+  app.post("/api/sessions/:id/conflicts/:cid/judge", async (req: Request, res: Response) => {
+    if (!conflictResolution) {
+      return res.status(503).json({ error: "Conflict resolution service not available" });
+    }
+
+    try {
+      const judgement = await conflictResolution.runDebateJudge(String(req.params.cid));
+      return res.json(judgement);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.includes("not found") || msg.includes("already")) {
+        return res.status(404).json({ error: msg });
+      }
+      if (msg.includes("No LLM gateway")) {
+        return res.status(503).json({ error: msg });
+      }
+      return res.status(400).json({ error: msg });
+    }
+  });
+
+  // POST /api/sessions/:id/conflicts/:cid/experiment -- update an experiment branch
+  app.post("/api/sessions/:id/conflicts/:cid/experiment", async (req: Request, res: Response) => {
+    if (!conflictResolution) {
+      return res.status(503).json({ error: "Conflict resolution service not available" });
+    }
+
+    const parsed = UpdateExperimentBranchSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request", issues: parsed.error.flatten() });
+    }
+
+    try {
+      const conflict = await conflictResolution.updateExperimentBranch(
+        String(req.params.cid),
+        {
+          proposalId: parsed.data.proposalId,
+          runId: parsed.data.runId,
+          status: parsed.data.status,
+          outcome: parsed.data.outcome,
+          completedAt: parsed.data.status !== "pending" ? Date.now() : undefined,
+        },
+      );
+      return res.json(conflict);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.includes("not found") || msg.includes("already")) {
+        return res.status(404).json({ error: msg });
+      }
+      return res.status(400).json({ error: msg });
+    }
+  });
+
+  // GET /api/sessions/:id/decision-log -- get decision log for a session
+  app.get("/api/sessions/:id/decision-log", (_req: Request, res: Response) => {
+    if (!conflictResolution) {
+      return res.status(503).json({ error: "Conflict resolution service not available" });
+    }
+
+    const log = conflictResolution.getSessionDecisionLog(String(_req.params.id));
+    return res.json(log);
   });
 }

@@ -1514,3 +1514,81 @@ export const embeddingProviderConfig = pgTable(
 );
 
 export type EmbeddingProviderConfigRow = typeof embeddingProviderConfig.$inferSelect;
+
+// ── Federation: Subjective Conflict Resolution (issue #229) ──────────────────
+
+export const CONFLICT_STRATEGIES = [
+  "structured_debate",
+  "quorum_vote",
+  "parallel_experiment",
+  "defer_to_owner",
+] as const;
+
+export const CONFLICT_STATUSES = [
+  "open",
+  "debate_in_progress",
+  "voting_in_progress",
+  "experiment_in_progress",
+  "resolved",
+  "expired",
+] as const;
+
+/**
+ * Active/open conflict records (mutable during dispute lifecycle).
+ * Proposals, votes, and ephemeral state are stored as JSONB for flexibility.
+ */
+export const sessionConflicts = pgTable(
+  "session_conflicts",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    sessionId: varchar("session_id").notNull(),
+    raisedBy: text("raised_by").notNull(),
+    raisedByInstance: text("raised_by_instance").notNull(),
+    question: text("question").notNull(),
+    context: text("context"),
+    strategy: text("strategy").notNull().$type<typeof CONFLICT_STRATEGIES[number]>(),
+    status: text("status").notNull().default("open").$type<typeof CONFLICT_STATUSES[number]>(),
+    proposals: jsonb("proposals").notNull().default(sql`'[]'::jsonb`),
+    votes: jsonb("votes").notNull().default(sql`'[]'::jsonb`),
+    quorumThreshold: real("quorum_threshold").notNull().default(0.67),
+    timeoutMs: integer("timeout_ms").notNull().default(300_000),
+    judgement: jsonb("judgement"),
+    experimentResults: jsonb("experiment_results"),
+    outcome: jsonb("outcome"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("session_conflicts_session_idx").on(table.sessionId),
+    index("session_conflicts_status_idx").on(table.status),
+  ],
+);
+
+export type SessionConflictRow = typeof sessionConflicts.$inferSelect;
+
+/**
+ * Decision log (append-only).
+ * Written once when a conflict resolves; never updated.
+ */
+export const decisionLog = pgTable(
+  "decision_log",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    sessionId: varchar("session_id").notNull(),
+    conflictId: varchar("conflict_id").notNull(),
+    question: text("question").notNull(),
+    strategy: text("strategy").notNull().$type<typeof CONFLICT_STRATEGIES[number]>(),
+    outcome: jsonb("outcome").notNull(),
+    participantCount: integer("participant_count").notNull().default(0),
+    proposalCount: integer("proposal_count").notNull().default(0),
+    durationMs: integer("duration_ms").notNull().default(0),
+    recordedAt: timestamp("recorded_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("decision_log_session_idx").on(table.sessionId),
+    index("decision_log_conflict_idx").on(table.conflictId),
+    index("decision_log_recorded_at_idx").on(table.recordedAt),
+  ],
+);
+
+export type DecisionLogRow = typeof decisionLog.$inferSelect;

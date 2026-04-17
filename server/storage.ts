@@ -56,7 +56,7 @@ import {
   type UpdateBudget,
   type WorkspaceSettingsRow,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome } from "@shared/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
 import { configLoader } from "./config/loader";
@@ -343,6 +343,13 @@ export interface IStorage {
   // Workspace Settings (issue #280)
   getWorkspaceSettings(workspaceId: string): Promise<Record<string, unknown> | null>;
   upsertWorkspaceSettings(workspaceId: string, patch: Record<string, unknown>): Promise<void>;
+
+  // Conflict Resolution (issue #229)
+  saveConflict(conflict: SessionConflict): Promise<void>;
+  getConflict(conflictId: string): Promise<SessionConflict | null>;
+  getSessionConflicts(sessionId: string): Promise<SessionConflict[]>;
+  appendDecisionLog(entry: DecisionLogEntry): Promise<void>;
+  getDecisionLog(sessionId?: string): Promise<DecisionLogEntry[]>;
 }
 
 export class MemStorage implements IStorage {
@@ -2083,6 +2090,36 @@ export class MemStorage implements IStorage {
   async upsertWorkspaceSettings(workspaceId: string, patch: Record<string, unknown>): Promise<void> {
     const existing = this.workspaceSettingsMap.get(workspaceId) ?? {};
     this.workspaceSettingsMap.set(workspaceId, { ...existing, ...patch });
+  }
+
+  // ── Conflict Resolution (issue #229) ────────────────────────────────────────
+
+  private conflictsMap: Map<string, SessionConflict> = new Map();
+  private decisionLogEntries: DecisionLogEntry[] = [];
+
+  async saveConflict(conflict: SessionConflict): Promise<void> {
+    this.conflictsMap.set(conflict.id, { ...conflict });
+  }
+
+  async getConflict(conflictId: string): Promise<SessionConflict | null> {
+    return this.conflictsMap.get(conflictId) ?? null;
+  }
+
+  async getSessionConflicts(sessionId: string): Promise<SessionConflict[]> {
+    return Array.from(this.conflictsMap.values()).filter(
+      (c) => c.sessionId === sessionId,
+    );
+  }
+
+  async appendDecisionLog(entry: DecisionLogEntry): Promise<void> {
+    this.decisionLogEntries.push({ ...entry });
+  }
+
+  async getDecisionLog(sessionId?: string): Promise<DecisionLogEntry[]> {
+    if (sessionId) {
+      return this.decisionLogEntries.filter((e) => e.sessionId === sessionId);
+    }
+    return [...this.decisionLogEntries];
   }
 
 }
