@@ -1,8 +1,9 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import type { ToolDefinition, McpServerConfig } from "@shared/types";
+import type { ToolDefinition, McpServerConfig, ConnectionType } from "@shared/types";
 import { toolRegistry } from "./index";
+import { BuiltinMcpServerRegistry } from "../mcp-servers/registry";
 
 interface McpConnection {
   client: Client;
@@ -12,6 +13,59 @@ interface McpConnection {
 
 export class McpClientManager {
   private connections: Map<string, McpConnection> = new Map();
+  private builtinRegistry: BuiltinMcpServerRegistry;
+
+  constructor(builtinRegistry?: BuiltinMcpServerRegistry) {
+    this.builtinRegistry = builtinRegistry ?? new BuiltinMcpServerRegistry(toolRegistry);
+  }
+
+  // ── Built-in MCP server integration ────────────────────────────────────────
+
+  /**
+   * Spawn a built-in MCP server for a workspace connection.
+   * Called when a connection is created or enabled.
+   *
+   * @param connectionType — e.g. "kubernetes", "github", "gitlab", "generic_mcp"
+   * @param connectionId   — unique connection ID from the workspace connection record
+   * @param config         — non-secret config JSON
+   * @param secrets        — decrypted secrets (MUST NOT be stored after this call)
+   * @param allowDestructive — whether destructive tools are enabled
+   */
+  async spawnBuiltinServer(
+    connectionType: ConnectionType | string,
+    connectionId: string,
+    config: Record<string, unknown>,
+    secrets: Record<string, string>,
+    allowDestructive = false,
+  ): Promise<void> {
+    if (!this.builtinRegistry.hasFactory(connectionType)) {
+      return; // No built-in server for this type — skip silently
+    }
+    await this.builtinRegistry.spawn(
+      connectionType,
+      connectionId,
+      config,
+      secrets,
+      allowDestructive,
+    );
+    const toolNames = this.builtinRegistry.getRegisteredToolNames(connectionId);
+    console.log(
+      `[mcp-client] Built-in server spawned for connection "${connectionId}" ` +
+      `(type: ${connectionType}) — ${toolNames.length} tool(s) registered`,
+    );
+  }
+
+  /**
+   * Terminate the built-in MCP server for a workspace connection.
+   * Called when a connection is deleted or disabled.
+   */
+  async terminateBuiltinServer(connectionId: string): Promise<void> {
+    if (!this.builtinRegistry.isActive(connectionId)) return;
+    await this.builtinRegistry.terminate(connectionId);
+    console.log(`[mcp-client] Built-in server terminated for connection "${connectionId}"`);
+  }
+
+  // ── External MCP server management ─────────────────────────────────────────
 
   async connect(config: McpServerConfig): Promise<void> {
     // Disconnect existing connection for this server if any
@@ -133,6 +187,11 @@ export class McpClientManager {
       };
     }
     return status;
+  }
+
+  /** Returns the underlying built-in server registry for inspection in tests. */
+  getBuiltinRegistry(): BuiltinMcpServerRegistry {
+    return this.builtinRegistry;
   }
 }
 
