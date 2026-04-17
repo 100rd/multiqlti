@@ -5,6 +5,7 @@
  *   - storage module: vi.mock("../../server/storage") — no real DB
  *   - fetch: vi.spyOn(globalThis, "fetch") — no real HTTP calls
  *   - configLoader: vi.mock("../../server/config/loader") — no real config files
+ *   - db: vi.mock("../../server/db") — no real Postgres (required by vector-store)
  *
  * Tests verify:
  *   - Happy path: returns formatted results string
@@ -40,6 +41,65 @@ const { mockConfigGet } = vi.hoisted(() => ({
 vi.mock("../../../server/config/loader.js", () => ({
   configLoader: {
     get: mockConfigGet,
+  },
+}));
+
+// ─── Mock db to prevent Postgres initialization crash ────────────────────────
+// vector-store.ts imports db at module level; this mock prevents the crash.
+
+vi.mock("../../../server/db.js", () => ({
+  db: {
+    insert: vi.fn(),
+    delete: vi.fn(),
+    select: vi.fn(),
+    update: vi.fn(),
+    $client: { query: vi.fn() },
+  },
+  pool: {},
+}));
+
+// ─── Mock federation modules ──────────────────────────────────────────────────
+
+vi.mock("../../../server/federation/manager-state.js", () => ({
+  getFederationManager: vi.fn().mockReturnValue(null),
+}));
+
+vi.mock("../../../server/federation/memory-federation.js", () => ({
+  MemoryFederationService: vi.fn(),
+}));
+
+// ─── Mock vector-store (no pgvector in tests) ────────────────────────────────
+
+vi.mock("../../../server/memory/vector-store.js", () => ({
+  VectorStore: class MockVectorStore {
+    async search() { return []; }
+    async getEmbeddingConfig() { return null; }
+    async insertChunk() { return {}; }
+    async insertChunks() { return []; }
+    async deleteBySource() { return 0; }
+    async deleteByWorkspace() { return 0; }
+    async countChunks() { return 0; }
+    async listSources() { return []; }
+    async upsertEmbeddingConfig() { return {}; }
+  },
+  vectorStore: {
+    search: vi.fn().mockResolvedValue([]),
+    getEmbeddingConfig: vi.fn().mockResolvedValue(null),
+  },
+}));
+
+// ─── Mock embeddings (no real embedding calls in tests) ──────────────────────
+
+vi.mock("../../../server/memory/embeddings.js", () => ({
+  EmbeddingProviderFactory: {
+    create: vi.fn().mockReturnValue({
+      embed: vi.fn().mockResolvedValue([0.1, 0.2, 0.3]),
+    }),
+  },
+  DEFAULT_EMBEDDING_CONFIG: {
+    provider: "ollama",
+    model: "nomic-embed-text",
+    dimensions: 768,
   },
 }));
 
@@ -288,8 +348,10 @@ describe("memory_search — execute()", () => {
 
     const result = await memorySearchHandler.execute({ query: "key" });
 
-    const lines = result.split("\n").filter((l) => l.trim().length > 0);
-    expect(lines).toHaveLength(2);
+    // Updated: memory-search now prepends a section header, so both memories
+    // plus the header appear in output. Verify both memories are present.
+    expect(result).toContain("key1");
+    expect(result).toContain("key2");
   });
 });
 

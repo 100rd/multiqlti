@@ -67,6 +67,7 @@ import { registerWorkspaceTraceRoutes } from "./routes/workspace-traces";
 import { registerCostRoutes } from "./routes/costs";
 import { registerWorkspaceToolRoutes } from "./routes/workspace-tools";
 import { registerMcpRoutes } from "./routes/mcp";
+import { registerKnowledgeRoutes } from "./routes/knowledge";
 import { SessionSharingService } from "./federation/session-sharing";
 import { MemoryFederationService } from "./federation/memory-federation";
 import { PipelineSyncService } from "./federation/pipeline-sync";
@@ -123,6 +124,7 @@ export async function registerRoutes(
   app.use("/api/remote-agents", requireAuth);
   app.use("/api/skill-market", requireAuth);
   app.use("/api/federation", requireAuth);
+  app.use("/api/workspaces/:id/knowledge", requireAuth);
 
   // Register route implementations
   registerModelRoutes(app, storage);

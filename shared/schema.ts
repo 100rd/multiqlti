@@ -12,6 +12,7 @@ import {
   unique,
   index,
 } from "drizzle-orm/pg-core";
+import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider } from "./types.js";
@@ -1447,3 +1448,69 @@ export const workspaceSettings = pgTable(
 );
 
 export type WorkspaceSettingsRow = typeof workspaceSettings.$inferSelect;
+
+// ─── Memory Chunks (issue #282 — hybrid RAG / pgvector) ───────────────────────
+// Stores embedded text chunks for semantic search via pgvector ANN.
+// Dimensions default to 1536 (OpenAI/Voyage); Ollama nomic-embed-text uses 768.
+// The actual model dimension is stored in metadata.dim.
+
+export const CHUNK_SOURCE_TYPES = ["code", "pipeline_run", "document", "memory_entry"] as const;
+export type ChunkSourceType = typeof CHUNK_SOURCE_TYPES[number];
+
+export const memoryChunks = pgTable(
+  "memory_chunks",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    workspaceId: varchar("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    sourceType: text("source_type").notNull().$type<ChunkSourceType>(),
+    sourceId: text("source_id").notNull(),
+    chunkText: text("chunk_text").notNull(),
+    /** Vector embedding; nullable until embedding job completes. */
+    embedding: vector("embedding", { dimensions: 1536 }),
+    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    ts: timestamp("ts").notNull().defaultNow(),
+  },
+  (table) => [
+    index("memory_chunks_workspace_source_idx").on(table.workspaceId, table.sourceType, table.sourceId),
+    index("memory_chunks_ts_idx").on(table.workspaceId, table.ts),
+  ],
+);
+
+export const insertMemoryChunkSchema = createInsertSchema(memoryChunks).omit({
+  id: true,
+  ts: true,
+}).extend({
+  sourceType: z.enum(CHUNK_SOURCE_TYPES),
+  embedding: z.array(z.number()).nullable().optional(),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+export type InsertMemoryChunk = z.infer<typeof insertMemoryChunkSchema>;
+export type MemoryChunkRow = typeof memoryChunks.$inferSelect;
+
+// ─── Embedding Provider Config (issue #282) ───────────────────────────────────
+// Per-workspace embedding provider selection and configuration.
+
+export const EMBEDDING_PROVIDERS = ["ollama", "openai", "voyage", "jina"] as const;
+export type EmbeddingProviderName = typeof EMBEDDING_PROVIDERS[number];
+
+export const embeddingProviderConfig = pgTable(
+  "embedding_provider_config",
+  {
+    workspaceId: varchar("workspace_id")
+      .notNull()
+      .primaryKey()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull().default("ollama").$type<EmbeddingProviderName>(),
+    model: text("model").notNull().default("nomic-embed-text"),
+    dimensions: integer("dimensions").notNull().default(768),
+    config: jsonb("config").notNull().default(sql`'{}'::jsonb`),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+);
+
+export type EmbeddingProviderConfigRow = typeof embeddingProviderConfig.$inferSelect;
