@@ -49,6 +49,11 @@ import {
   type InsertWorkspaceConnection,
   type McpToolCallRow,
   type InsertMcpToolCall,
+  type InsertCostLedger,
+  type CostLedgerRow,
+  type BudgetRow,
+  type InsertBudget,
+  type UpdateBudget,
 } from "@shared/schema";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput } from "@shared/types";
 import { randomUUID } from "crypto";
@@ -312,6 +317,27 @@ export interface IStorage {
     limit?: number,
   ): Promise<McpToolCall[]>;
   getConnectionUsageMetrics(connectionId: string): Promise<ConnectionUsageMetrics>;
+
+  // Cost Ledger + Budgets (issue #279)
+  appendCostLedger(input: InsertCostLedger): Promise<CostLedgerRow>;
+  getCostLedgerRows(params: {
+    workspaceId: string;
+    provider?: string;
+    from: Date;
+    to: Date;
+    limit?: number;
+  }): Promise<CostLedgerRow[]>;
+  getCostLedgerSum(params: {
+    workspaceId: string;
+    provider?: string;
+    from: Date;
+    to: Date;
+  }): Promise<number>;
+  getBudgetsByWorkspace(workspaceId: string): Promise<BudgetRow[]>;
+  getBudget(id: string): Promise<BudgetRow | null>;
+  createBudget(input: InsertBudget): Promise<BudgetRow>;
+  updateBudget(id: string, updates: UpdateBudget): Promise<BudgetRow>;
+  deleteBudget(id: string): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -1956,6 +1982,92 @@ export class MemStorage implements IStorage {
       p95LatencyMs,
       isOrphan: all30.length === 0,
     };
+  }
+
+  // ── Cost Ledger + Budgets (issue #279) — MemStorage stubs ────────────────
+
+  private costLedgerMap: Map<string, CostLedgerRow> = new Map();
+  private budgetsMap: Map<string, BudgetRow> = new Map();
+
+  async appendCostLedger(input: InsertCostLedger): Promise<CostLedgerRow> {
+    const row: CostLedgerRow = {
+      id: randomUUID(),
+      workspaceId: input.workspaceId,
+      provider: input.provider,
+      model: input.model,
+      pipelineRunId: input.pipelineRunId ?? null,
+      stageId: input.stageId ?? null,
+      promptTokens: input.promptTokens ?? 0,
+      completionTokens: input.completionTokens ?? 0,
+      costUsd: input.costUsd ?? 0,
+      ts: new Date(),
+    };
+    this.costLedgerMap.set(row.id, row);
+    return row;
+  }
+
+  async getCostLedgerRows(params: {
+    workspaceId: string;
+    provider?: string;
+    from: Date;
+    to: Date;
+    limit?: number;
+  }): Promise<CostLedgerRow[]> {
+    const rows = Array.from(this.costLedgerMap.values()).filter(
+      (r) =>
+        r.workspaceId === params.workspaceId &&
+        r.ts >= params.from &&
+        r.ts <= params.to &&
+        (params.provider === undefined || r.provider === params.provider),
+    );
+    return params.limit ? rows.slice(0, params.limit) : rows;
+  }
+
+  async getCostLedgerSum(params: {
+    workspaceId: string;
+    provider?: string;
+    from: Date;
+    to: Date;
+  }): Promise<number> {
+    const rows = await this.getCostLedgerRows(params);
+    return rows.reduce((sum, r) => sum + r.costUsd, 0);
+  }
+
+  async getBudgetsByWorkspace(workspaceId: string): Promise<BudgetRow[]> {
+    return Array.from(this.budgetsMap.values()).filter((b) => b.workspaceId === workspaceId);
+  }
+
+  async getBudget(id: string): Promise<BudgetRow | null> {
+    return this.budgetsMap.get(id) ?? null;
+  }
+
+  async createBudget(input: InsertBudget): Promise<BudgetRow> {
+    const now = new Date();
+    const row: BudgetRow = {
+      id: randomUUID(),
+      workspaceId: input.workspaceId,
+      provider: input.provider ?? null,
+      period: input.period ?? "month",
+      limitUsd: input.limitUsd,
+      hard: input.hard ?? false,
+      notifyAtPct: input.notifyAtPct ?? [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.budgetsMap.set(row.id, row);
+    return row;
+  }
+
+  async updateBudget(id: string, updates: UpdateBudget): Promise<BudgetRow> {
+    const existing = this.budgetsMap.get(id);
+    if (!existing) throw new Error(`Budget ${id} not found`);
+    const updated: BudgetRow = { ...existing, ...updates, updatedAt: new Date() };
+    this.budgetsMap.set(id, updated);
+    return updated;
+  }
+
+  async deleteBudget(id: string): Promise<void> {
+    this.budgetsMap.delete(id);
   }
 
 

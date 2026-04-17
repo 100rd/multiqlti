@@ -23,6 +23,7 @@ import {
   Plug,
   Network,
   GitBranchPlus,
+  DollarSign,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -80,6 +81,12 @@ export default function MainLayout({ children }: MainLayoutProps) {
             icon: GitBranchPlus,
             label: "LLM Traces",
             href: `/workspaces/${currentWorkspaceId}/traces`,
+            indent: true,
+          },
+          {
+            icon: DollarSign,
+            label: "Cost Reports",
+            href: `/workspaces/${currentWorkspaceId}/costs`,
             indent: true,
           },
         ]

@@ -11,6 +11,7 @@ import { LmStudioProvider } from "./providers/lmstudio";
 import { AnonymizerService } from "../privacy/anonymizer";
 import { estimateCostUsd } from "@shared/constants";
 import { configLoader } from "../config/loader";
+import { CostService } from "../services/cost-service";
 
 export interface GatewayPrivacyOptions {
   privacy?: PrivacySettings;
@@ -21,6 +22,10 @@ export interface GatewayLoggingOptions {
   runId?: string;
   stageExecutionId?: string;
   teamId?: string;
+  /** Workspace context for cost ledger recording and budget checks. */
+  workspaceId?: string;
+  /** Stage identifier for ledger granularity. */
+  stageId?: string;
 }
 
 type CloudProviderKey = "anthropic" | "google" | "xai";
@@ -29,8 +34,10 @@ export class Gateway {
   private registry: Map<string, ILLMProvider>;
   private mockProvider: MockProvider;
   private anonymizer: AnonymizerService;
+  private costService: CostService;
 
   constructor(private storage: IStorage) {
+    this.costService = new CostService(storage);
     this.registry = new Map();
     this.mockProvider = new MockProvider();
     this.anonymizer = new AnonymizerService();
@@ -214,6 +221,28 @@ export class Gateway {
       })) as unknown as ProviderMessage[];
     }
 
+    // ── Budget pre-call check ──────────────────────────────────────────────
+    if (loggingOptions?.workspaceId) {
+      const budgetCheck = await this.costService.checkBudget({
+        workspaceId: loggingOptions.workspaceId,
+        provider: providerKey,
+        model: request.modelSlug,
+        estimatedPromptTokens: request.messages.reduce(
+          (sum, m) => sum + Math.ceil((m.content as string).length / 4),
+          0,
+        ),
+        estimatedCompletionTokens: request.maxTokens ?? 500,
+      });
+
+      if (budgetCheck.warning) {
+        console.warn("[gateway] Budget check:", budgetCheck.warning);
+      }
+
+      if (!budgetCheck.allowed) {
+        throw new Error(`[budget-exceeded] ${budgetCheck.warning}`);
+      }
+    }
+
     const start = Date.now();
     let result: { content: string; tokensUsed: number };
     try {
@@ -255,6 +284,20 @@ export class Gateway {
       latencyMs,
       status: 'success',
     });
+
+    // ── Cost ledger recording ────────────────────────────────────────────────
+    if (loggingOptions?.workspaceId) {
+      // Fire-and-forget: fail-closed semantics are inside recordCost
+      void this.costService.recordCost({
+        workspaceId: loggingOptions.workspaceId,
+        provider: providerKey,
+        model: request.modelSlug,
+        pipelineRunId: loggingOptions.runId ?? null,
+        stageId: loggingOptions.stageId ?? null,
+        promptTokens: 0,        // real token counts not available at this level
+        completionTokens: result.tokensUsed,
+      });
+    }
 
     return {
       content,
