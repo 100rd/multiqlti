@@ -2214,3 +2214,143 @@ export interface E2eKubernetesResult {
   /** TTL used for the namespace (hours). */
   ttlHours: number;
 }
+
+// ── MCP Client Token Types (issue #274) ──────────────────────────────────────
+
+/**
+ * Token type for external MCP clients — distinct from user session tokens.
+ * Stored in its own table; validated by McpTokenValidator.
+ */
+export const MCP_CLIENT_TOKEN_TYPE = "mcp_client" as const;
+
+/** Allowed tools a token may call. "*" means all tools. */
+export type McpToolAllowList = string[] | ["*"];
+
+/** Scopes that limit which workspaces a token can access. */
+export interface McpTokenScope {
+  /** Workspace IDs this token may access. Empty array = no access. */
+  workspaceIds: string[];
+  /**
+   * Tool names this token may call. Use ["*"] to allow all.
+   * Specific names must match the tool names exposed by the MCP server.
+   */
+  allowedTools: McpToolAllowList;
+  /** Maximum number of concurrent pipeline runs triggered via this token. */
+  maxRunConcurrency: number;
+}
+
+/** Public shape of an MCP client token (tokenHash never exposed). */
+export interface McpClientToken {
+  id: string;
+  workspaceId: string;
+  name: string;
+  /** The last 8 characters of the raw token (for identification only). */
+  tokenSuffix: string;
+  scope: McpTokenScope;
+  createdAt: Date;
+  expiresAt: Date | null;
+  lastUsedAt: Date | null;
+  isRevoked: boolean;
+}
+
+/** Input for creating an MCP client token. */
+export interface CreateMcpClientTokenInput {
+  workspaceId: string;
+  name: string;
+  scope: McpTokenScope;
+  expiresAt?: Date | null;
+}
+
+/** Result returned when creating a token — plaintext shown once, then gone. */
+export interface CreateMcpClientTokenResult {
+  token: McpClientToken;
+  /** The full raw token. Show once to user; not persisted. */
+  rawToken: string;
+}
+
+/**
+ * Audit log entry for an inbound MCP tool call from an external client.
+ * This extends the existing McpToolCall with MCP-client-specific fields.
+ */
+export interface McpInboundToolCall {
+  id: string;
+  /** The MCP client token ID that authenticated this call. */
+  mcpClientTokenId: string;
+  workspaceId: string;
+  toolName: string;
+  /** Redacted copy of call arguments (no secrets). */
+  argsJson: Record<string, unknown>;
+  /** Redacted copy of the result. Null on error. */
+  resultJson: unknown | null;
+  error: string | null;
+  durationMs: number;
+  startedAt: Date;
+}
+
+/** Summary metadata for a workspace as returned by list_workspaces MCP tool. */
+export interface McpWorkspaceSummary {
+  id: string;
+  name: string;
+  type: "local" | "remote";
+  status: "active" | "syncing" | "error";
+  createdAt: Date;
+}
+
+/** Summary metadata for a pipeline as returned by list_pipelines MCP tool. */
+export interface McpPipelineSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  stageCount: number;
+  isTemplate: boolean;
+  createdAt: Date | null;
+}
+
+/** Result from run_pipeline MCP tool. */
+export interface McpRunPipelineResult {
+  runId: string;
+  status: RunStatus;
+  startedAt: Date | null;
+}
+
+/** Result from get_run MCP tool. */
+export interface McpRunDetails {
+  id: string;
+  pipelineId: string;
+  status: RunStatus;
+  input: string;
+  output: unknown | null;
+  currentStageIndex: number;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  /** Stage execution summaries for trace events. */
+  stages: Array<{
+    id: string;
+    teamId: string;
+    status: StageStatus;
+    startedAt: Date | null;
+    completedAt: Date | null;
+  }>;
+}
+
+/** Result from cancel_run MCP tool. */
+export interface McpCancelRunResult {
+  runId: string;
+  cancelled: boolean;
+}
+
+/** Connection metadata (no secrets) as returned by list_connections MCP tool. */
+export interface McpConnectionSummary {
+  id: string;
+  workspaceId: string;
+  type: ConnectionType;
+  name: string;
+  /** True if the connection has stored secrets — but secrets are NEVER returned. */
+  hasSecrets: boolean;
+  status: ConnectionStatus;
+  lastTestedAt: Date | null;
+  createdAt: Date;
+}
+
+/** Result from query_connection_usage MCP tool. */
+export type McpConnectionUsage = ConnectionUsageMetrics;
