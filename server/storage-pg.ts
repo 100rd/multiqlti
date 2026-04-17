@@ -60,6 +60,13 @@ import {
   mcpToolCalls,
   type WorkspaceConnectionRow,
   type McpToolCallRow,
+  costLedger,
+  budgets,
+  type InsertCostLedger,
+  type CostLedgerRow,
+  type BudgetRow,
+  type InsertBudget,
+  type UpdateBudget,
 } from "@shared/schema";
 import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput } from "@shared/types";
 
@@ -1583,6 +1590,118 @@ export class PgStorage implements IStorage {
       durationMs: row.durationMs,
       startedAt: row.startedAt,
     };
+  }
+
+  // ── Cost Ledger + Budgets (issue #279) ──────────────────────────────────────
+
+  async appendCostLedger(input: InsertCostLedger): Promise<CostLedgerRow> {
+    const [row] = await db
+      .insert(costLedger)
+      .values({
+        workspaceId: input.workspaceId,
+        provider: input.provider,
+        model: input.model,
+        pipelineRunId: input.pipelineRunId ?? null,
+        stageId: input.stageId ?? null,
+        promptTokens: input.promptTokens ?? 0,
+        completionTokens: input.completionTokens ?? 0,
+        costUsd: input.costUsd ?? 0,
+      } as typeof costLedger.$inferInsert)
+      .returning();
+    return row;
+  }
+
+  async getCostLedgerRows(params: {
+    workspaceId: string;
+    provider?: string;
+    from: Date;
+    to: Date;
+    limit?: number;
+  }): Promise<CostLedgerRow[]> {
+    const conditions = [
+      eq(costLedger.workspaceId, params.workspaceId),
+      gte(costLedger.ts, params.from),
+      lte(costLedger.ts, params.to),
+    ];
+    if (params.provider !== undefined) {
+      conditions.push(eq(costLedger.provider, params.provider));
+    }
+
+    const q = db
+      .select()
+      .from(costLedger)
+      .where(and(...conditions))
+      .orderBy(asc(costLedger.ts));
+
+    if (params.limit !== undefined) {
+      return q.limit(params.limit);
+    }
+    return q;
+  }
+
+  async getCostLedgerSum(params: {
+    workspaceId: string;
+    provider?: string;
+    from: Date;
+    to: Date;
+  }): Promise<number> {
+    const conditions = [
+      eq(costLedger.workspaceId, params.workspaceId),
+      gte(costLedger.ts, params.from),
+      lte(costLedger.ts, params.to),
+    ];
+    if (params.provider !== undefined) {
+      conditions.push(eq(costLedger.provider, params.provider));
+    }
+
+    const [result] = await db
+      .select({ total: drizzleSql<number>`COALESCE(SUM(${costLedger.costUsd}), 0)` })
+      .from(costLedger)
+      .where(and(...conditions));
+
+    return result?.total ?? 0;
+  }
+
+  async getBudgetsByWorkspace(workspaceId: string): Promise<BudgetRow[]> {
+    return db
+      .select()
+      .from(budgets)
+      .where(eq(budgets.workspaceId, workspaceId))
+      .orderBy(asc(budgets.createdAt));
+  }
+
+  async getBudget(id: string): Promise<BudgetRow | null> {
+    const [row] = await db.select().from(budgets).where(eq(budgets.id, id));
+    return row ?? null;
+  }
+
+  async createBudget(input: InsertBudget): Promise<BudgetRow> {
+    const [row] = await db
+      .insert(budgets)
+      .values({
+        workspaceId: input.workspaceId,
+        provider: input.provider ?? null,
+        period: input.period ?? "month",
+        limitUsd: input.limitUsd,
+        hard: input.hard ?? false,
+        notifyAtPct: input.notifyAtPct ?? [],
+      } as typeof budgets.$inferInsert)
+      .returning();
+    return row;
+  }
+
+  async updateBudget(id: string, updates: UpdateBudget): Promise<BudgetRow> {
+    const [row] = await db
+      .update(budgets)
+      .set({ ...updates, updatedAt: new Date() } as Partial<typeof budgets.$inferInsert>)
+      .where(eq(budgets.id, id))
+      .returning();
+    if (!row) throw new Error(`Budget ${id} not found`);
+    return row;
+  }
+
+  async deleteBudget(id: string): Promise<void> {
+    await db.delete(budgets).where(eq(budgets.id, id));
   }
 
 }

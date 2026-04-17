@@ -1351,3 +1351,77 @@ export const ConnectionsYamlFileSchema = z.object({
 
 export type YamlConnectionEntry = z.infer<typeof YamlConnectionEntrySchema>;
 export type ConnectionsYamlFile = z.infer<typeof ConnectionsYamlFileSchema>;
+
+// ── Cost Ledger + Budgets (issue #279) ────────────────────────────────────────
+//
+// cost_ledger: append-only record of every billed LLM call per workspace.
+// budgets:     configurable spending limits per workspace × provider × period.
+
+export const BUDGET_PERIODS = ["day", "week", "month"] as const;
+export type BudgetPeriod = typeof BUDGET_PERIODS[number];
+
+export const costLedger = pgTable(
+  "cost_ledger",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    workspaceId: varchar("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    pipelineRunId: varchar("pipeline_run_id"),
+    stageId: text("stage_id"),
+    promptTokens: integer("prompt_tokens").notNull().default(0),
+    completionTokens: integer("completion_tokens").notNull().default(0),
+    costUsd: real("cost_usd").notNull().default(0),
+    ts: timestamp("ts").notNull().defaultNow(),
+  },
+  (table) => [
+    index("cost_ledger_workspace_ts_idx").on(table.workspaceId, table.ts),
+    index("cost_ledger_workspace_provider_idx").on(table.workspaceId, table.provider),
+    index("cost_ledger_run_idx").on(table.pipelineRunId),
+  ],
+);
+
+export const insertCostLedgerSchema = createInsertSchema(costLedger).omit({
+  id: true,
+  ts: true,
+});
+
+export type InsertCostLedger = z.infer<typeof insertCostLedgerSchema>;
+export type CostLedgerRow = typeof costLedger.$inferSelect;
+
+export const budgets = pgTable(
+  "budgets",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    workspaceId: varchar("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
+    /** NULL means "applies to all providers". */
+    provider: text("provider"),
+    period: text("period").notNull().default("month").$type<BudgetPeriod>(),
+    limitUsd: real("limit_usd").notNull(),
+    hard: boolean("hard").notNull().default(false),
+    /** Percentage thresholds for alert notifications, e.g. [50, 80, 100]. */
+    notifyAtPct: jsonb("notify_at_pct").notNull().default(sql`'[]'::jsonb`).$type<number[]>(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("budgets_workspace_id_idx").on(table.workspaceId),
+  ],
+);
+
+export const insertBudgetSchema = createInsertSchema(budgets)
+  .omit({ id: true, createdAt: true, updatedAt: true })
+  .extend({
+    period: z.enum(BUDGET_PERIODS).default("month"),
+    notifyAtPct: z.array(z.number().int().min(0).max(100)).default([]),
+  });
+
+export const updateBudgetSchema = insertBudgetSchema.partial().omit({ workspaceId: true });
+
+export type InsertBudget = z.infer<typeof insertBudgetSchema>;
+export type UpdateBudget = z.infer<typeof updateBudgetSchema>;
+export type BudgetRow = typeof budgets.$inferSelect;
