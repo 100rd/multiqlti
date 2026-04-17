@@ -358,6 +358,8 @@ export type WsEventType =
   | "workspace:index_progress"
   | "workspace:index_complete"
   | "workspace:index_error"
+  | "workspace:incremental_flush"
+  | "workspace:full_rebuild_complete"
   // ─── Task Orchestrator Events ───────────────────────────────────────────────
   | "task:created"
   | "task:ready"
