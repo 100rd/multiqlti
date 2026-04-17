@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://multiqlti.io/config-sync/schemas/config-entity.json
+# Example: preferences entity — global scope
+kind: preferences
+apiVersion: "1.0.0"
+scope: global
+ui:
+  theme: dark
+  layout: default
+  featureFlags:
+    enableBetaDAGEditor: true
+    showCostEstimates: true
+    enableParallelExecution: false
+extra:
+  defaultTokenBudget: 50000
+  auditLogRetentionDays: 90
+
+---
+# Example: preferences entity — user scope
+kind: preferences
+apiVersion: "1.0.0"
+scope: user
+userId: "usr_abc123"
+ui:
+  theme: light
+  layout: compact
+  featureFlags:
+    enableBetaDAGEditor: false
+extra: {}

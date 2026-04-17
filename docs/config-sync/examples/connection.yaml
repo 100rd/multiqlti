@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://multiqlti.io/config-sync/schemas/config-entity.json
+# Example: connection entity (no secrets — those go in .secret / provider-key)
+kind: connection
+apiVersion: "1.0.0"
+name: github-main
+type: github
+workspaceRef: my-workspace
+status: active
+config:
+  host: "https://api.github.com"
+  owner: "my-org"
+  repo: "my-repo"
+
+---
+kind: connection
+apiVersion: "1.0.0"
+name: production-k8s
+type: kubernetes
+workspaceRef: my-workspace
+status: active
+config:
+  server: "https://k8s.example.com:6443"
+  namespace: production
+  insecureSkipTlsVerify: false
+
+---
+kind: connection
+apiVersion: "1.0.0"
+name: aws-prod
+type: aws
+workspaceRef: my-workspace
+status: active
+config:
+  region: us-east-1
+  accountId: "123456789012"
+  roleArn: "arn:aws:iam::123456789012:role/MultiqltiRole"

@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://multiqlti.io/config-sync/schemas/config-entity.json
+# Example: provider-key entity
+# The actual key material is NEVER stored here. Use a reference expression.
+kind: provider-key
+apiVersion: "1.0.0"
+provider: anthropic
+secretRef: "${env:ANTHROPIC_API_KEY}"
+description: "Production Anthropic key for Claude models"
+enabled: true
+
+---
+kind: provider-key
+apiVersion: "1.0.0"
+provider: google
+secretRef: "${vault:secret/multiqlti/google-ai-key}"
+description: "Gemini API key stored in HashiCorp Vault"
+enabled: true
+
+---
+kind: provider-key
+apiVersion: "1.0.0"
+provider: openai
+secretRef: "${file:./secrets/openai.key}"
+description: "OpenAI key read from an encrypted file at deploy time"
+enabled: false
