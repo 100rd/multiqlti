@@ -1,0 +1,138 @@
+# Kubernetes Smoke Test Pipeline
+#
+# Builds a Docker image, deploys it to an ephemeral Kubernetes namespace,
+# runs a smoke test (HTTP health check via port-forward), tears down the
+# namespace, and posts a pass/fail summary.
+#
+# ── Prerequisites ──────────────────────────────────────────────────────────────
+#
+#   1. A Kubernetes connection with allowDestructive=true (for tear-down).
+#      See docs/connections/kubernetes.md.
+#
+#   2. A generic_mcp (Docker-Run) connection for building the image.
+#      See docs/connections/generic-mcp.md.
+#
+#   3. kubectl and helm installed on the server host.
+#
+#   4. The target k8s namespace must be short-lived / dedicated to this test.
+#      NEVER use a shared or production namespace.
+#
+# ── Step 1: Add the connections ───────────────────────────────────────────────
+#
+# Place this in .multiqlti/connections.yaml at your workspace root, then call:
+#
+#   POST /api/workspaces/{workspaceId}/connections/sync
+#   { "autoApply": true }
+#
+# ──────────────────────────────────────────────────────────────────────────────
+
+version: 1
+connections:
+  - name: k8s-smoke-cluster
+    type: kubernetes
+    config:
+      # Kubernetes API server URL.
+      server: https://k8s.example.com:6443
+      # Dedicated ephemeral namespace — isolated from other workloads.
+      namespace: smoke-test
+      insecureSkipTlsVerify: false
+    secrets:
+      # Absolute path to a kubeconfig file on the server host.
+      kubeconfigPath: ${env:KUBECONFIG_PATH}
+
+  - name: docker-build-sandbox
+    type: generic_mcp
+    config:
+      # endpoint is required by the schema even for docker-run connections.
+      endpoint: https://placeholder.internal/not-used
+      # Resource caps for the build container.
+      memoryLimit: "1g"
+      cpuLimit: 1
+      networkEnabled: true
+      timeout: 120
+    secrets: {}
+
+# ── Step 2: Create the pipeline ───────────────────────────────────────────────
+#
+# POST /api/pipelines
+# Content-Type: application/json
+#
+# {
+#   "name": "K8s Smoke Test",
+#   "description": "Build Docker image, deploy to ephemeral k8s namespace, run smoke test, tear down.",
+#   "stages": [
+#     {
+#       "teamId": "planning",
+#       "modelSlug": "claude-sonnet-4-5",
+#       "enabled": true,
+#       "systemPromptOverride": "You are a DevOps engineer. Build a minimal Docker image using the docker_run tool:\n- image: docker:24-dind (or use the project's Dockerfile content passed as input)\n- Use the 'files' argument to write a simple Dockerfile if none is provided\n- Run: docker build -t smoke-test-image:latest .\nIf the build succeeds, return the image name 'smoke-test-image:latest'. If it fails, return the build errors.",
+#       "allowedConnections": ["<connectionId-of-docker-build-sandbox>"]
+#     },
+#     {
+#       "teamId": "development",
+#       "modelSlug": "claude-sonnet-4-5",
+#       "enabled": true,
+#       "systemPromptOverride": "You are a Kubernetes operator. The previous stage produced an image name. Deploy it to the smoke-test namespace:\n1. Use k8s_deploy_manifest to apply a Deployment + Service manifest for the image.\n   - Deployment: 1 replica, image from previous stage, port 8080.\n   - Service: ClusterIP, port 8080 → targetPort 8080.\n2. Wait for the pod to be ready by calling k8s_get_logs on the pod after ~10 seconds.\n3. Call k8s_port_forward_check(podName=<pod>, targetPort=8080, healthPath='/health') to verify the service responds.\n4. Return the pod name and health check result.",
+#       "allowedConnections": ["<connectionId-of-k8s-smoke-cluster>"]
+#     },
+#     {
+#       "teamId": "testing",
+#       "modelSlug": "claude-sonnet-4-5",
+#       "enabled": true,
+#       "systemPromptOverride": "You are a QA engineer. The previous stage returned a health check result. Evaluate it:\n- If Status: HEALTHY → smoke test PASSED.\n- If Status: UNHEALTHY or any error → smoke test FAILED (include error details).\nThen call k8s_delete_namespace(confirm='DELETE') to tear down the ephemeral namespace regardless of test outcome.\nReturn a final Markdown summary:\n## Smoke Test Result: PASSED/FAILED\n- Image: <image>\n- Pod: <pod>\n- Health check: <result>\n- Namespace deleted: yes/no",
+#       "allowedConnections": ["<connectionId-of-k8s-smoke-cluster>"]
+#     }
+#   ]
+# }
+#
+# Replace <connectionId-of-...> with the IDs from GET /api/workspaces/{id}/connections.
+#
+# IMPORTANT: The k8s-smoke-cluster connection must have allowDestructive=true.
+# Set this when creating the connection:
+#
+# POST /api/workspaces/{workspaceId}/connections
+# {
+#   "type": "kubernetes",
+#   "name": "k8s-smoke-cluster",
+#   "config": {
+#     "server": "https://k8s.example.com:6443",
+#     "namespace": "smoke-test",
+#     "allowDestructive": true
+#   },
+#   "secrets": { "kubeconfigPath": "/secrets/kube/config" }
+# }
+#
+# ── Step 3: Run the pipeline ──────────────────────────────────────────────────
+#
+# POST /api/pipelines/{pipelineId}/run
+# Content-Type: application/json
+#
+# {
+#   "input": "Run a smoke test for image myapp:v1.2.3. Dockerfile: FROM nginx:alpine\\nCOPY ./dist /usr/share/nginx/html\\nEXPOSE 8080"
+# }
+#
+# ── Tool reference ─────────────────────────────────────────────────────────────
+#
+# Stage 1 (build):
+#   docker_run(image, command, files, memoryLimit, cpuLimit, timeout, networkEnabled)
+#     → Returns exit code, stdout (build log), stderr
+#
+# Stage 2 (deploy):
+#   k8s_deploy_manifest(manifest)
+#     → Returns kubectl apply output
+#   k8s_get_logs(podName, tail=50)
+#     → Returns last N lines of pod logs
+#   k8s_port_forward_check(podName, targetPort=8080, healthPath="/health")
+#     → Returns "Status: HEALTHY" or "Status: UNHEALTHY" + response body
+#
+# Stage 3 (test + teardown):
+#   k8s_delete_namespace(confirm="DELETE")
+#     → Returns "Namespace smoke-test deleted." (DESTRUCTIVE — requires allowDestructive=true)
+#
+# ── Expected output ────────────────────────────────────────────────────────────
+#
+# ## Smoke Test Result: PASSED
+# - Image: smoke-test-image:latest
+# - Pod: myapp-deployment-7d4f8b9c6-xk2qp
+# - Health check: Status: HEALTHY / Response: {"status":"ok"}
+# - Namespace deleted: yes
