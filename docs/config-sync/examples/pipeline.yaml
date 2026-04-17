@@ -1,0 +1,33 @@
+# yaml-language-server: $schema=https://multiqlti.io/config-sync/schemas/config-entity.json
+# Example: pipeline entity
+kind: pipeline
+apiVersion: "1.0.0"
+name: code-review-pipeline
+description: Automated code review with architecture and security stages
+isTemplate: false
+stages:
+  - teamId: architecture
+    modelSlug: claude-sonnet-4-6
+    enabled: true
+    temperature: 0.3
+    maxTokens: 4096
+    approvalRequired: false
+    executionStrategy: single
+
+  - teamId: code_review
+    modelSlug: claude-sonnet-4-6
+    enabled: true
+    temperature: 0.2
+    maxTokens: 8192
+    systemPromptOverride: |
+      You are a senior code reviewer. Focus on security vulnerabilities,
+      performance issues, and maintainability concerns.
+    approvalRequired: true
+
+  - teamId: testing
+    modelSlug: claude-sonnet-4-6
+    enabled: true
+    temperature: 0.1
+    maxTokens: 4096
+    allowedConnections:
+      - github-main

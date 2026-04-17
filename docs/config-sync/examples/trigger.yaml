@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=https://multiqlti.io/config-sync/schemas/config-entity.json
+# Example: trigger entity — schedule variant
+kind: trigger
+apiVersion: "1.0.0"
+pipelineRef: code-review-pipeline
+enabled: true
+config:
+  type: schedule
+  cron: "0 9 * * 1-5"
+  timezone: "America/New_York"
+  input: "Run scheduled code health check"
+
+---
+# Example: trigger entity — GitHub event variant
+kind: trigger
+apiVersion: "1.0.0"
+pipelineRef: code-review-pipeline
+enabled: true
+config:
+  type: github_event
+  repository: "my-org/my-repo"
+  events:
+    - pull_request
+    - push
+  refFilter: "refs/heads/main"
+
+---
+# Example: trigger entity — webhook variant
+kind: trigger
+apiVersion: "1.0.0"
+pipelineRef: code-review-pipeline
+enabled: true
+config:
+  type: webhook
+
+---
+# Example: trigger entity — file change variant
+kind: trigger
+apiVersion: "1.0.0"
+pipelineRef: code-review-pipeline
+enabled: false
+config:
+  type: file_change
+  watchPath: /workspace/src
+  patterns:
+    - "**/*.ts"
+    - "**/*.tsx"
+    - "!**/*.test.ts"
+  debounceMs: 1000
+  input: "File changed: {{filePath}}"
