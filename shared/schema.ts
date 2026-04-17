@@ -1312,3 +1312,42 @@ export const insertMcpToolCallSchema = createInsertSchema(mcpToolCalls).omit({
 
 export type InsertMcpToolCall = z.infer<typeof insertMcpToolCallSchema>;
 export type McpToolCallRow = typeof mcpToolCalls.$inferSelect;
+
+// ── Connections YAML Schema (issue #276) ─────────────────────────────────────
+//
+// Zod schemas for the .multiqlti/connections.yaml declarative config file.
+// These are re-exported from shared/schema so both the server and the CLI
+// validation script can import them without a circular dependency.
+
+const SECRET_REF_REGEX = /^\$\{(env|file|vault):([^}]+)\}$/;
+
+/**
+ * A secret value must be a reference expression — never plaintext.
+ * Accepted forms: ${env:NAME}, ${file:./path}, ${vault:secret/path}
+ */
+export const ConnectionSecretRefSchema = z
+  .string()
+  .refine(
+    (v) => SECRET_REF_REGEX.test(v),
+    (v) => ({
+      message:
+        `Plaintext secrets are not allowed in connections.yaml. ` +
+        `Use \${env:VAR}, \${file:path}, or \${vault:path}. ` +
+        `Received value starts with: "${v.slice(0, 12)}"`,
+    }),
+  );
+
+export const YamlConnectionEntrySchema = z.object({
+  name: z.string().min(1).max(200),
+  type: z.enum(CONNECTION_TYPES),
+  config: z.record(z.unknown()).default({}),
+  secrets: z.record(ConnectionSecretRefSchema).optional(),
+});
+
+export const ConnectionsYamlFileSchema = z.object({
+  version: z.literal(1),
+  connections: z.array(YamlConnectionEntrySchema).default([]),
+});
+
+export type YamlConnectionEntry = z.infer<typeof YamlConnectionEntrySchema>;
+export type ConnectionsYamlFile = z.infer<typeof ConnectionsYamlFileSchema>;

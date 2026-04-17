@@ -2420,3 +2420,55 @@ export interface DeleteConnectionWithOverrideBody {
   /** Must be true to force-delete a connection that has dependents. */
   force?: boolean;
 }
+
+// ─── Connections YAML Sync Types (issue #276) ─────────────────────────────────
+
+/** Action type in a connections reconciliation plan. */
+export type ReconcileActionType = "create" | "update" | "delete" | "unchanged";
+
+/** A single planned change in the reconciliation plan. */
+export interface ReconcileAction {
+  type: ReconcileActionType;
+  connectionName: string;
+  reason: string;
+}
+
+/** Full reconciliation plan from diffing YAML against DB state. */
+export interface ConnectionsReconcilePlan {
+  actions: ReconcileAction[];
+  hasChanges: boolean;
+}
+
+/** Result of applying a reconciliation plan. */
+export interface ConnectionsApplyResult {
+  created: string[];
+  updated: string[];
+  deleted: string[];
+  errors: Array<{ connectionName: string; message: string }>;
+}
+
+/** A connection that has drifted from its YAML definition. */
+export interface ConnectionDriftItem {
+  connectionId: string;
+  connectionName: string;
+  connectionType: ConnectionType;
+  driftedConfigKeys: string[];
+}
+
+/** Full result of a connections YAML sync operation. */
+export interface ConnectionsSyncResult {
+  /** Whether the .multiqlti/connections.yaml file was absent. */
+  yamlMissing: boolean;
+  plan: ConnectionsReconcilePlan;
+  applied: boolean;
+  applyResult?: ConnectionsApplyResult;
+  drift: ConnectionDriftItem[];
+}
+
+/** Request body for POST /api/workspaces/:id/connections/sync. */
+export interface ConnectionsSyncRequest {
+  /** Auto-apply the plan without requiring a second call. Default: false. */
+  autoApply?: boolean;
+  /** Include deletions for DB connections absent from YAML. Default: false. */
+  includeDeletes?: boolean;
+}
