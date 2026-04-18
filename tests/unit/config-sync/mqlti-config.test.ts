@@ -1,18 +1,19 @@
 /**
- * Tests for script/mqlti-config.ts (issues #314, #315)
+ * Tests for script/mqlti-config.ts (issues #314, #315, #318)
  *
  * Coverage:
  *   - init: creates correct directory structure, meta file, .gitignore, git repo
  *   - init: refuses to re-init an already-initialised repo
  *   - init: requires <path> argument, exits 1 without it
  *   - init --json: machine-readable output
+ *   - init .gitignore: does NOT exclude .secret (encrypted files must be committed)
  *   - status: reads meta file, shows git state
  *   - status --json: machine-readable output
  *   - status: exits 1 when no config repo found
  *   - apply: exits 1 when no config repo found (requires init first)
  *   - diff: exits 1 when no config repo found
- *   - stubs (push/pull): exit 1, print "Not yet implemented"
- *   - stubs --json: machine-readable error output
+ *   - push: exits 1 when no config repo found (issue #318)
+ *   - pull: exits 1 when no config repo found (issue #318)
  *   - secrets add: encrypts a file for all recipients in public-keys/
  *   - secrets add: exits 1 when source file missing
  *   - secrets add: exits 1 when no public keys are present
@@ -196,7 +197,7 @@ describe("init", () => {
     expect(metaRaw).toContain("lastPullAt: null");
   });
 
-  it("creates .gitignore that blocks secret files", async () => {
+  it("creates .gitignore that blocks plaintext keys and env files", async () => {
     const target = path.join(tmpDir, "repo");
     await runCli(["init", target]);
 
@@ -204,9 +205,12 @@ describe("init", () => {
       path.join(target, ".gitignore"),
       "utf-8",
     );
-    expect(gitignore).toContain("*.secret");
+    // Plaintext keys and env files must be excluded
     expect(gitignore).toContain("*.key");
     expect(gitignore).toContain(".env");
+    // .secret files are age-encrypted and must NOT be excluded — they should
+    // be committed so all machines can decrypt them with their private keys.
+    expect(gitignore).not.toContain("*.secret");
   });
 
   it("initialises a git repository (.git directory exists)", async () => {
@@ -348,33 +352,40 @@ describe("status", () => {
   });
 });
 
-// ─── Stub subcommands ─────────────────────────────────────────────────────────
+// ─── push / pull no-repo errors (issue #318) ─────────────────────────────────
 
-describe("stub subcommands", () => {
-  const stubs = [
-    { name: "push", issue: "#319" },
-    { name: "pull", issue: "#320" },
-  ] as const;
+describe("push and pull without config repo", () => {
+  it("push: exits 1 with no-repo error when called outside a config repo", async () => {
+    const { exitCode, stdout, stderr } = await runCli(["push"], tmpDir);
+    expect(exitCode).toBe(1);
+    const combined = stdout + stderr;
+    expect(combined).toMatch(/no config repo/i);
+  });
 
-  for (const { name, issue } of stubs) {
-    it(`${name}: exits 1 and prints "Not yet implemented — requires ${issue}"`, async () => {
-      const { exitCode, stdout, stderr } = await runCli([name]);
-      expect(exitCode).toBe(1);
-      const combined = stdout + stderr;
-      expect(combined).toContain("Not yet implemented");
-      expect(combined).toContain(issue);
-    });
+  it("push --json: exits 1 with structured JSON error when no repo found", async () => {
+    const { exitCode, stdout } = await runCli(["push", "--json"], tmpDir);
+    expect(exitCode).toBe(1);
+    const json = JSON.parse(stdout);
+    expect(json.ok).toBe(false);
+    expect(json.subcommand).toBe("push");
+    expect(json.error).toMatch(/no config repo/i);
+  });
 
-    it(`${name} --json: exits 1 with structured JSON error`, async () => {
-      const { exitCode, stdout } = await runCli([name, "--json"]);
-      expect(exitCode).toBe(1);
-      const json = JSON.parse(stdout);
-      expect(json.ok).toBe(false);
-      expect(json.subcommand).toBe(name);
-      expect(json.error).toContain("Not yet implemented");
-      expect(json.error).toContain(issue);
-    });
-  }
+  it("pull: exits 1 with no-repo error when called outside a config repo", async () => {
+    const { exitCode, stdout, stderr } = await runCli(["pull"], tmpDir);
+    expect(exitCode).toBe(1);
+    const combined = stdout + stderr;
+    expect(combined).toMatch(/no config repo/i);
+  });
+
+  it("pull --json: exits 1 with structured JSON error when no repo found", async () => {
+    const { exitCode, stdout } = await runCli(["pull", "--json"], tmpDir);
+    expect(exitCode).toBe(1);
+    const json = JSON.parse(stdout);
+    expect(json.ok).toBe(false);
+    expect(json.subcommand).toBe("pull");
+    expect(json.error).toMatch(/no config repo/i);
+  });
 });
 
 // ─── secrets ─────────────────────────────────────────────────────────────────
@@ -808,6 +819,16 @@ describe("exit code contract", () => {
 
   it("diff without config repo → exit 1 (no repo found)", async () => {
     const { exitCode } = await runCli(["diff"], tmpDir);
+    expect(exitCode).toBe(1);
+  });
+
+  it("push without config repo → exit 1 (no repo found)", async () => {
+    const { exitCode } = await runCli(["push"], tmpDir);
+    expect(exitCode).toBe(1);
+  });
+
+  it("pull without config repo → exit 1 (no repo found)", async () => {
+    const { exitCode } = await runCli(["pull"], tmpDir);
     expect(exitCode).toBe(1);
   });
 
