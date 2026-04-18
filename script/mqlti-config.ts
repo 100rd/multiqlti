@@ -120,6 +120,7 @@ ${chalk.bold("Subcommands:")}
   ${chalk.cyan("secrets add <src>")}    Encrypt <src> for all repo recipients
   ${chalk.cyan("secrets rotate")}       Regenerate keys + re-encrypt all .secret files
   ${chalk.cyan("secrets list")}         List recipients in each .secret file
+  ${chalk.cyan("history [--limit N]")}   Show last N apply operations (default 20)
 
 ${chalk.bold("Options:")}
   ${chalk.yellow("--json")}              Output machine-readable JSON
@@ -128,6 +129,8 @@ ${chalk.bold("Options:")}
   ${chalk.yellow("--dry-run")}           (apply/diff) Show changes without writing to DB
   ${chalk.yellow("--force")}             (apply) Apply even when DB conflicts are detected
   ${chalk.yellow("--auto-apply")}        (pull) Automatically apply after a successful pull
+  ${chalk.yellow("--yes")}               (apply) Skip interactive warning prompts, proceed automatically
+  ${chalk.yellow("--limit N")}           (history) Number of entries to show (default 20)
 
 ${chalk.bold("Exit codes:")}
   0   Success
@@ -146,6 +149,8 @@ ${chalk.bold("Examples:")}
   npx tsx script/mqlti-config.ts secrets add connections/gitlab-main.yaml
   npx tsx script/mqlti-config.ts secrets list
   npx tsx script/mqlti-config.ts secrets rotate
+  npx tsx script/mqlti-config.ts history
+  npx tsx script/mqlti-config.ts history --limit 5
 `.trim();
 
 // ─── Output helpers ───────────────────────────────────────────────────────────
@@ -572,7 +577,7 @@ async function cmdExport(): Promise<void> {
  * With `--dry-run`: prints the diff but writes nothing.
  * With `--force`: applies even when DB conflicts are detected.
  */
-async function cmdApply(dryRun: boolean, force: boolean): Promise<void> {
+async function cmdApply(dryRun: boolean, force: boolean, skipPrompts = false): Promise<void> {
   const repoPath = await requireConfigRepo("apply");
   const meta = await readMeta(repoPath);
 
@@ -586,11 +591,25 @@ async function cmdApply(dryRun: boolean, force: boolean): Promise<void> {
     new URL("../server/storage.js", import.meta.url).href,
   );
 
+  // Resolve git commit sha for audit log
+  let gitCommitSha: string | null = null;
+  try {
+    const { simpleGit: _simpleGit } = await import("simple-git");
+    const git = _simpleGit(repoPath);
+    const log = await git.log({ maxCount: 1 });
+    gitCommitSha = log.latest?.hash ?? null;
+  } catch {
+    // Not a git repo or git unavailable — skip
+  }
+
   const result = await _runApply(_storage, repoPath, {
     dryRun,
     force,
     lastExportAt: meta?.lastExportAt ?? null,
     appliedBy: process.env["USER"] ?? "cli",
+    gitCommitSha,
+    skipWarningPrompts: skipPrompts,
+    instanceUrl: process.env["MQLTI_INSTANCE_URL"] ?? "http://localhost:5000",
   });
 
   // Update meta file with apply timestamp (skip for dry-run)
@@ -600,24 +619,64 @@ async function cmdApply(dryRun: boolean, force: boolean): Promise<void> {
 
   if (jsonMode) {
     printJson({
-      ok: !result.abortedDueToConflicts && result.totalErrors === 0,
+      ok: !result.abortedDueToLock && !result.abortedDueToSafetyCheck && !result.abortedDueToConflicts && result.totalErrors === 0,
       subcommand: "apply",
       data: {
         dryRun,
         appliedAt: result.appliedAt,
+        abortedDueToLock: result.abortedDueToLock,
+        abortedDueToSafetyCheck: result.abortedDueToSafetyCheck,
         abortedDueToConflicts: result.abortedDueToConflicts,
+        safetyIssues: result.safetyIssues,
         summaries: result.summaries,
         conflicts: result.conflicts,
         totalCreated: result.totalCreated,
         totalUpdated: result.totalUpdated,
         totalDeleted: result.totalDeleted,
         totalErrors: result.totalErrors,
+        healthCheck: result.healthCheck,
       },
     });
-    if (result.abortedDueToConflicts || result.totalErrors > 0) {
+    if (result.abortedDueToLock || result.abortedDueToSafetyCheck || result.abortedDueToConflicts || result.totalErrors > 0) {
       process.exit(1);
     }
     return;
+  }
+
+  // ── Lock abort ─────────────────────────────────────────────────────────────
+  if (result.abortedDueToLock) {
+    printError("Another apply is already in progress — retry in 30 seconds.");
+    process.exit(1);
+  }
+
+  // ── Safety check abort ─────────────────────────────────────────────────────
+  if (result.abortedDueToSafetyCheck) {
+    printInfo(chalk.red.bold("Aborted: safety check failed."));
+    for (const issue of result.safetyIssues) {
+      const icon = issue.level === "abort" ? chalk.red("✗") : chalk.yellow("⚠");
+      printInfo(`  ${icon} [${issue.code}] ${issue.message}`);
+      if (issue.details) {
+        for (const d of issue.details) {
+          printInfo(`       ${chalk.dim(d)}`);
+        }
+      }
+    }
+    process.exit(1);
+  }
+
+  // ── Safety warnings (non-abort) ────────────────────────────────────────────
+  const warnings = result.safetyIssues.filter((i) => i.level === "warn");
+  if (warnings.length > 0) {
+    printInfo(chalk.yellow.bold("Safety warnings:"));
+    for (const w of warnings) {
+      printWarn(`[${w.code}] ${w.message}`);
+      if (w.details) {
+        for (const d of w.details) {
+          printInfo(`  ${chalk.dim(d)}`);
+        }
+      }
+    }
+    printInfo("");
   }
 
   // ── Conflict abort ──────────────────────────────────────────────────────────
@@ -682,6 +741,16 @@ async function cmdApply(dryRun: boolean, force: boolean): Promise<void> {
     printInfo(chalk.dim("  Dry-run: no changes written to DB."));
   } else {
     printInfo(chalk.dim(`  Applied at: ${result.appliedAt}`));
+  }
+
+  // ── Post-apply health check ───────────────────────────────────────────────
+  if (!dryRun && result.healthCheck) {
+    const hc = result.healthCheck;
+    if (hc.status === "ok" || hc.status === "degraded") {
+      printInfo(chalk.dim(`  Health: ${hc.status}  (${hc.responseMs}ms)`));
+    } else {
+      printWarn(`Health check: ${hc.status}${hc.error ? " — " + hc.error : ""}`);
+    }
   }
 
   if (result.totalErrors > 0) {
@@ -1380,6 +1449,83 @@ async function cmdSecrets(
   }
 }
 
+
+// ─── history ──────────────────────────────────────────────────────────────────
+
+/**
+ * `history` — Show the last N apply operations from the audit log.
+ *
+ * Requires a Postgres connection (DATABASE_URL env var).
+ * Returns an error in MemStorage / test environments.
+ */
+async function cmdHistory(limit: number): Promise<void> {
+  printInfo(chalk.bold(`Last ${limit} config-sync applies:`));
+  printInfo("");
+
+  let entries: import("../server/config-sync/audit-log.js").AuditLogEntry[];
+
+  try {
+    const { readAuditHistory } = await import(
+      new URL("../server/config-sync/audit-log.js", import.meta.url).href,
+    );
+    const { pool: _pool } = await import(
+      new URL("../server/db.js", import.meta.url).href,
+    );
+    entries = await readAuditHistory(_pool, limit);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (jsonMode) {
+      printJson({ ok: false, subcommand: "history", error: message });
+    } else {
+      printError(`Failed to read apply history: ${message}`);
+      printInfo(chalk.dim("  Requires DATABASE_URL to be set."));
+    }
+    process.exit(1);
+  }
+
+  if (jsonMode) {
+    printJson({
+      ok: true,
+      subcommand: "history",
+      data: { entries },
+    });
+    return;
+  }
+
+  if (entries.length === 0) {
+    printInfo(chalk.dim("  No apply history found."));
+    return;
+  }
+
+  for (const entry of entries) {
+    const icon = entry.success ? chalk.green("✓") : chalk.red("✗");
+    const ts = new Date(entry.appliedAt).toLocaleString();
+    const sha = entry.gitCommitSha ? chalk.dim(`  ${entry.gitCommitSha.slice(0, 8)}`) : "";
+    const dryLabel = entry.summaryJson.dryRun ? chalk.dim(" [dry-run]") : "";
+
+    printInfo(
+      `${icon} ${chalk.bold(ts)}  by ${chalk.cyan(entry.appliedBy)}${sha}${dryLabel}`,
+    );
+
+    const s = entry.summaryJson;
+    if (s.totalCreated !== undefined || s.totalUpdated !== undefined || s.totalDeleted !== undefined) {
+      const parts: string[] = [];
+      if ((s.totalCreated ?? 0) > 0) parts.push(chalk.green(`+${s.totalCreated}`));
+      if ((s.totalUpdated ?? 0) > 0) parts.push(chalk.blue(`~${s.totalUpdated}`));
+      if ((s.totalDeleted ?? 0) > 0) parts.push(chalk.red(`-${s.totalDeleted}`));
+      if (parts.length > 0) {
+        printInfo(`  ${parts.join("  ")}`);
+      }
+    }
+
+    if (!entry.success && entry.error) {
+      printInfo(`  ${chalk.red(entry.error)}`);
+    }
+
+    printInfo("");
+  }
+}
+
 // ─── Stub subcommands ─────────────────────────────────────────────────────────
 
 type StubDef = {
@@ -1410,6 +1556,8 @@ interface ParsedArgs {
   dryRun: boolean;
   force: boolean;
   autoApply: boolean;
+  yes: boolean;
+  limit: number;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -1422,6 +1570,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     dryRun: false,
     force: false,
     autoApply: false,
+    yes: false,
+    limit: 20,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -1442,6 +1592,14 @@ function parseArgs(argv: string[]): ParsedArgs {
       result.force = true;
     } else if (arg === "--auto-apply") {
       result.autoApply = true;
+    } else if (arg === "--yes" || arg === "-y") {
+      result.yes = true;
+    } else if (arg === "--limit") {
+      const next = argv[i + 1];
+      if (next && !next.startsWith("-") && /^\d+$/.test(next)) {
+        result.limit = parseInt(next, 10);
+        i++;
+      }
     } else if (result.subcommand === null && !arg.startsWith("-")) {
       result.subcommand = arg;
     } else if (!arg.startsWith("-")) {
@@ -1524,9 +1682,10 @@ async function main(): Promise<void> {
             "diff",
             "push",
             "pull",
+            "history",
             "secrets",
           ],
-          flags: ["--json", "--help", "--key-file"],
+          flags: ["--json", "--help", "--key-file", "--yes", "--limit"],
         },
       });
     } else {
@@ -1569,7 +1728,7 @@ async function main(): Promise<void> {
       }
 
       case "apply": {
-        await cmdApply(args.dryRun, args.force);
+        await cmdApply(args.dryRun, args.force, args.yes);
         break;
       }
 
@@ -1590,6 +1749,11 @@ async function main(): Promise<void> {
 
       case "secrets": {
         await cmdSecrets(args.positional, args.keyFile);
+        break;
+      }
+
+      case "history": {
+        await cmdHistory(args.limit);
         break;
       }
 

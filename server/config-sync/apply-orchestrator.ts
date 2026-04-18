@@ -3,6 +3,7 @@
  *
  * Issue #317: Config sync apply path (YAMLs → DB) with atomic transaction
  * + rollback
+ * Issue #319: Config sync safety layer
  *
  * Usage:
  *   const result = await runApply(storage, repoPath, { dryRun: false });
@@ -11,35 +12,28 @@
  *  - Reads each entity-type directory, validates YAML against Zod schemas.
  *  - Computes create/update/delete diff against live DB state.
  *  - Conflict detection: warns when DB records were modified after last export.
- *  - All-or-nothing via simulated rollback map; rolls back on any applier error
- *    (real DB-level transactions require PgStorage; MemStorage uses an
- *     in-memory snapshot rollback instead).
+ *  - Advisory lock (Postgres) prevents concurrent applies.
+ *  - Safety checks: git conflict markers abort; DB drift / bulk delete / active
+ *    runs emit warnings (not aborts).
+ *  - All-or-nothing via DB transaction (PgStorage) or in-memory snapshot
+ *    rollback (MemStorage).
  *  - Dry-run mode: full diff computation but zero writes.
  *  - Tombstone semantics: entity missing from repo → tombstone (delete) by
  *    default.  Skills and preferences default to non-tombstone.
- *  - Pre-apply: blocks deletes of pipelines with active runs.
  *  - Post-apply: emits "config_applied" event via EventEmitter.
- *  - Audit: each apply records timestamp, files, per-entity stats.
+ *  - Audit: each apply is recorded in `config_applies` table.
+ *  - Health check: after a real apply, hits /api/health to confirm liveness.
  */
 
 import { EventEmitter } from "events";
+import type { Pool } from "pg";
 import type { IStorage } from "../storage.js";
 import type { Pipeline, Skill } from "@shared/schema";
 import type { WorkspaceConnection } from "@shared/types";
 import type {
-  DiffEntry,
   DiffOptions,
   EntityDiff,
 } from "./diff-engine.js";
-import type {
-  PipelineConfigEntity,
-  TriggerConfigEntity,
-  PromptConfigEntity,
-  SkillStateConfigEntity,
-  ConnectionConfigEntity,
-  ProviderKeyConfigEntity,
-  PreferencesConfigEntity,
-} from "@shared/config-sync/schemas.js";
 import {
   diffPipelines,
   diffTriggers,
@@ -56,6 +50,11 @@ import { applySkills } from "./appliers/skill-applier.js";
 import { applyConnections } from "./appliers/connection-applier.js";
 import { applyProviderKeys } from "./appliers/provider-key-applier.js";
 import { applyPreferences } from "./appliers/preferences-applier.js";
+import { runSafetyChecks } from "./safety-checks.js";
+import type { SafetyIssue } from "./safety-checks.js";
+import { withApplyLock, ApplyLockBusyError } from "./apply-lock.js";
+import { writeAuditEntry } from "./audit-log.js";
+import { checkInstanceHealth } from "./health-check.js";
 
 // ─── Public event emitter ─────────────────────────────────────────────────────
 
@@ -90,6 +89,25 @@ export interface ApplyOptions {
    *          provider-keys=true, prompts=true, skills=false, preferences=false.
    */
   tombstoneOverrides?: Partial<Record<EntityType, boolean>>;
+  /**
+   * Optional Postgres pool for advisory locking + audit log writes.
+   * When absent, locking is skipped and audit writes are no-ops.
+   */
+  pool?: Pool | null;
+  /**
+   * Base URL of the running instance for post-apply health check.
+   * Defaults to http://localhost:5000.  Pass null to skip.
+   */
+  instanceUrl?: string | null;
+  /**
+   * Git commit SHA of the repo at apply time (recorded in audit log).
+   */
+  gitCommitSha?: string | null;
+  /**
+   * When true, safety-check warnings are non-interactive (used by --yes flag
+   * in the CLI).  Warnings are still recorded in the result.
+   */
+  skipWarningPrompts?: boolean;
 }
 
 export type EntityType =
@@ -156,6 +174,14 @@ export interface ApplyResult {
   audit: ApplyAuditEntry;
   /** Whether the apply was aborted due to conflicts (and --force not set). */
   abortedDueToConflicts: boolean;
+  /** Whether the apply was aborted due to another apply in progress. */
+  abortedDueToLock: boolean;
+  /** Whether the apply was aborted by a safety check (e.g. conflict markers). */
+  abortedDueToSafetyCheck: boolean;
+  /** Safety issues detected during pre-apply checks. */
+  safetyIssues: SafetyIssue[];
+  /** Post-apply health check result (null when dryRun or skipped). */
+  healthCheck: { status: string; responseMs: number; error?: string } | null;
 }
 
 interface SingleApplyResult {
@@ -185,7 +211,67 @@ export async function runApply(
   const force = options.force ?? false;
   const appliedBy = options.appliedBy ?? "system";
   const lastExportAt = options.lastExportAt ?? null;
+  const pool = options.pool ?? null;
+  const instanceUrl = options.instanceUrl === null ? null : (options.instanceUrl ?? "http://localhost:5000");
 
+  // ── Advisory lock (Postgres only, skipped in dry-run / MemStorage) ────────
+  if (!dryRun && pool) {
+    try {
+      return await withApplyLock(pool, () =>
+        _runApplyCore(
+          storage,
+          repoPath,
+          appliedAt,
+          dryRun,
+          force,
+          appliedBy,
+          lastExportAt,
+          pool,
+          instanceUrl,
+          options,
+        ),
+      );
+    } catch (err) {
+      if (err instanceof ApplyLockBusyError) {
+        const emptyResult = buildEmptyResult(appliedAt, repoPath, dryRun, appliedBy, force);
+        return {
+          ...emptyResult,
+          abortedDueToLock: true,
+          abortedDueToSafetyCheck: false,
+        };
+      }
+      throw err;
+    }
+  }
+
+  return _runApplyCore(
+    storage,
+    repoPath,
+    appliedAt,
+    dryRun,
+    force,
+    appliedBy,
+    lastExportAt,
+    pool,
+    instanceUrl,
+    options,
+  );
+}
+
+// ─── Core apply logic ─────────────────────────────────────────────────────────
+
+async function _runApplyCore(
+  storage: IStorage,
+  repoPath: string,
+  appliedAt: string,
+  dryRun: boolean,
+  force: boolean,
+  appliedBy: string,
+  lastExportAt: string | null,
+  pool: Pool | null,
+  instanceUrl: string | null,
+  options: ApplyOptions,
+): Promise<ApplyResult> {
   const tombstone = buildTombstoneConfig(options.tombstoneOverrides);
   const diffOpts: DiffOptions = { lastExportAt, tombstone: true };
 
@@ -246,12 +332,85 @@ export async function runApply(
     preferencesDiff as EntityDiff,
   ];
 
-  // ── Step 3: Collect conflicts ─────────────────────────────────────────────
+  // ── Step 3: Safety checks ─────────────────────────────────────────────────
+  const safetyResult = await runSafetyChecks(repoPath, storage, diffs, lastExportAt);
+
+  if (!safetyResult.safe && !dryRun) {
+    const audit = buildAudit(appliedAt, appliedBy, repoPath, dryRun, force, diffs, []);
+    await writeAuditEntry(pool, {
+      appliedBy,
+      gitCommitSha: options.gitCommitSha ?? null,
+      result: {
+        appliedAt,
+        repoPath,
+        dryRun,
+        summaries: buildSummaries(diffs, []),
+        totalCreated: 0,
+        totalUpdated: 0,
+        totalDeleted: 0,
+        totalErrors: 0,
+        conflicts: [],
+        diffs,
+        audit,
+        abortedDueToConflicts: false,
+        abortedDueToLock: false,
+        abortedDueToSafetyCheck: true,
+        safetyIssues: safetyResult.issues,
+        healthCheck: null,
+      },
+      error: safetyResult.issues.find((i) => i.level === "abort")?.message,
+    });
+
+    return {
+      appliedAt,
+      repoPath,
+      dryRun,
+      summaries: buildSummaries(diffs, []),
+      totalCreated: 0,
+      totalUpdated: 0,
+      totalDeleted: 0,
+      totalErrors: 0,
+      conflicts: [],
+      diffs,
+      audit,
+      abortedDueToConflicts: false,
+      abortedDueToLock: false,
+      abortedDueToSafetyCheck: true,
+      safetyIssues: safetyResult.issues,
+      healthCheck: null,
+    };
+  }
+
+  // ── Step 4: Collect conflicts ─────────────────────────────────────────────
   const conflicts = collectConflicts(diffs);
 
-  // ── Step 4: Check for conflict abort ──────────────────────────────────────
+  // ── Step 5: Check for conflict abort ──────────────────────────────────────
   if (conflicts.length > 0 && !force && !dryRun) {
     const audit = buildAudit(appliedAt, appliedBy, repoPath, dryRun, force, diffs, conflicts);
+    await writeAuditEntry(pool, {
+      appliedBy,
+      gitCommitSha: options.gitCommitSha ?? null,
+      result: {
+        appliedAt,
+        repoPath,
+        dryRun,
+        summaries: buildSummaries(diffs, []),
+        totalCreated: 0,
+        totalUpdated: 0,
+        totalDeleted: 0,
+        totalErrors: 0,
+        conflicts,
+        diffs,
+        audit,
+        abortedDueToConflicts: true,
+        abortedDueToLock: false,
+        abortedDueToSafetyCheck: false,
+        safetyIssues: safetyResult.issues,
+        healthCheck: null,
+      },
+      error: "Aborted due to conflicts",
+    });
+
     return {
       appliedAt,
       repoPath,
@@ -265,51 +424,21 @@ export async function runApply(
       diffs,
       audit,
       abortedDueToConflicts: true,
+      abortedDueToLock: false,
+      abortedDueToSafetyCheck: false,
+      safetyIssues: safetyResult.issues,
+      healthCheck: null,
     };
   }
 
-  // ── Step 5: Apply (or dry-run) ────────────────────────────────────────────
-  const pipelineResult = await applyPipelines(
-    storage,
-    pipelineDiff.entries,
-    dryRun,
-  );
-
-  const triggerResult = await applyTriggers(
-    storage,
-    triggerDiff.entries,
-    dryRun,
-  );
-
-  const promptResult = await applyPrompts(
-    storage,
-    promptDiff.entries,
-    dryRun,
-  );
-
-  const skillResult = await applySkills(
-    storage,
-    skillDiff.entries,
-    dryRun,
-  );
-
-  const connectionResult = await applyConnections(
-    storage,
-    connectionDiff.entries,
-    dryRun,
-  );
-
-  const providerKeyResult = await applyProviderKeys(
-    providerKeyDiff.entries,
-    dryRun,
-    {},
-  );
-
-  const preferencesResult = await applyPreferences(
-    storage,
-    preferencesDiff.entries,
-    dryRun,
-  );
+  // ── Step 6: Apply (or dry-run) ────────────────────────────────────────────
+  const pipelineResult = await applyPipelines(storage, pipelineDiff.entries, dryRun);
+  const triggerResult = await applyTriggers(storage, triggerDiff.entries, dryRun);
+  const promptResult = await applyPrompts(storage, promptDiff.entries, dryRun);
+  const skillResult = await applySkills(storage, skillDiff.entries, dryRun);
+  const connectionResult = await applyConnections(storage, connectionDiff.entries, dryRun);
+  const providerKeyResult = await applyProviderKeys(providerKeyDiff.entries, dryRun, {});
+  const preferencesResult = await applyPreferences(storage, preferencesDiff.entries, dryRun);
 
   const allResults: SingleApplyResult[] = [
     pipelineResult,
@@ -321,7 +450,7 @@ export async function runApply(
     preferencesResult,
   ];
 
-  // ── Step 6: Rollback if any applier had errors ────────────────────────────
+  // ── Step 7: Rollback if any applier had errors ────────────────────────────
   const anyError = allResults.some((r) => r.errors.length > 0);
 
   if (anyError && !dryRun) {
@@ -330,16 +459,11 @@ export async function runApply(
     await attemptRollback(storage, dbState);
   }
 
-  // ── Step 7: Post-apply event + audit ─────────────────────────────────────
+  // ── Step 8: Post-apply event + audit ──────────────────────────────────────
   const audit = buildAudit(appliedAt, appliedBy, repoPath, dryRun, force, diffs, conflicts);
-
-  if (!dryRun && !anyError) {
-    configSyncEvents.emit("config_applied", { audit, repoPath });
-  }
-
   const summaries = buildSummaries(diffs, allResults);
 
-  return {
+  const baseResult: ApplyResult = {
     appliedAt,
     repoPath,
     dryRun,
@@ -352,7 +476,38 @@ export async function runApply(
     diffs,
     audit,
     abortedDueToConflicts: false,
+    abortedDueToLock: false,
+    abortedDueToSafetyCheck: false,
+    safetyIssues: safetyResult.issues,
+    healthCheck: null,
   };
+
+  // ── Step 9: Post-apply health check ──────────────────────────────────────
+  let healthCheck: ApplyResult["healthCheck"] = null;
+  if (!dryRun && !anyError && instanceUrl) {
+    try {
+      const hc = await checkInstanceHealth(instanceUrl);
+      healthCheck = { status: hc.status, responseMs: hc.responseMs, error: hc.error };
+    } catch {
+      healthCheck = { status: "unreachable", responseMs: 0, error: "health check threw" };
+    }
+  }
+
+  const finalResult: ApplyResult = { ...baseResult, healthCheck };
+
+  // ── Step 10: Persist audit entry ─────────────────────────────────────────
+  await writeAuditEntry(pool, {
+    appliedBy,
+    gitCommitSha: options.gitCommitSha ?? null,
+    result: finalResult,
+    error: anyError ? "One or more applier errors — rollback attempted" : null,
+  });
+
+  if (!dryRun && !anyError) {
+    configSyncEvents.emit("config_applied", { audit, repoPath });
+  }
+
+  return finalResult;
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -602,6 +757,47 @@ function buildAudit(
       dbUpdatedAt: c.dbUpdatedAt,
       lastExportAt: c.lastExportAt,
     })),
+  };
+}
+
+function buildEmptyResult(
+  appliedAt: string,
+  repoPath: string,
+  dryRun: boolean,
+  appliedBy: string,
+  force: boolean,
+): ApplyResult {
+  const emptyAudit: ApplyAuditEntry = {
+    appliedAt,
+    appliedBy,
+    repoPath,
+    dryRun,
+    forced: force,
+    summaries: [],
+    totalCreated: 0,
+    totalUpdated: 0,
+    totalDeleted: 0,
+    totalErrors: 0,
+    conflicts: [],
+  };
+
+  return {
+    appliedAt,
+    repoPath,
+    dryRun,
+    summaries: [],
+    totalCreated: 0,
+    totalUpdated: 0,
+    totalDeleted: 0,
+    totalErrors: 0,
+    conflicts: [],
+    diffs: [],
+    audit: emptyAudit,
+    abortedDueToConflicts: false,
+    abortedDueToLock: false,
+    abortedDueToSafetyCheck: false,
+    safetyIssues: [],
+    healthCheck: null,
   };
 }
 
