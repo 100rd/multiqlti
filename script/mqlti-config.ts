@@ -108,8 +108,8 @@ ${chalk.bold("Subcommands:")}
   ${chalk.cyan("init <path>")}          Create a config-sync repository at <path>
   ${chalk.cyan("status")}               Show git state and sync timestamps
   ${chalk.cyan("export")}               Export live config to YAML files
-  ${chalk.cyan("apply")}                Apply YAML to running instance (requires #317)
-  ${chalk.cyan("diff")}                 Diff local YAML vs live config (requires #318)
+  ${chalk.cyan("apply [--dry-run] [--force]")}   Apply YAML files to the running instance
+  ${chalk.cyan("diff")}                             Diff local YAML vs live config
   ${chalk.cyan("push")}                 Push local changes to remote git (requires #319)
   ${chalk.cyan("pull")}                 Pull remote changes and apply (requires #320)
   ${chalk.cyan("secrets add <src>")}    Encrypt <src> for all repo recipients
@@ -120,6 +120,8 @@ ${chalk.bold("Options:")}
   ${chalk.yellow("--json")}              Output machine-readable JSON
   ${chalk.yellow("--help, -h")}          Show this help message
   ${chalk.yellow("--key-file <path>")}   Override machine key file (default: ~/.config/mqlti/age-keys.txt)
+  ${chalk.yellow("--dry-run")}           (apply/diff) Show changes without writing to DB
+  ${chalk.yellow("--force")}             (apply) Apply even when DB conflicts are detected
 
 ${chalk.bold("Exit codes:")}
   0   Success
@@ -130,6 +132,9 @@ ${chalk.bold("Examples:")}
   npx tsx script/mqlti-config.ts init ./my-config-repo
   npx tsx script/mqlti-config.ts status
   npx tsx script/mqlti-config.ts export
+  npx tsx script/mqlti-config.ts diff
+  npx tsx script/mqlti-config.ts apply --dry-run
+  npx tsx script/mqlti-config.ts apply --force
   npx tsx script/mqlti-config.ts secrets add connections/gitlab-main.yaml
   npx tsx script/mqlti-config.ts secrets list
   npx tsx script/mqlti-config.ts secrets rotate
@@ -539,6 +544,247 @@ async function cmdExport(): Promise<void> {
   }
 }
 
+
+// ─── apply ────────────────────────────────────────────────────────────────────
+
+/**
+ * `apply` — Apply YAML files from the config repo to the running instance.
+ *
+ * 1. Loads current DB state for each entity type.
+ * 2. Computes a create/update/delete diff per entity type.
+ * 3. Checks for conflicts (DB modified after last export).
+ * 4. Applies atomically (all-or-nothing with rollback on error).
+ * 5. Records audit entry.
+ * 6. Updates `lastApplyAt` in `.mqlti-config.yaml`.
+ *
+ * With `--dry-run`: prints the diff but writes nothing.
+ * With `--force`: applies even when DB conflicts are detected.
+ */
+async function cmdApply(dryRun: boolean, force: boolean): Promise<void> {
+  const repoPath = await requireConfigRepo("apply");
+  const meta = await readMeta(repoPath);
+
+  printInfo(chalk.bold(dryRun ? "Dry-run: computing diff (no writes)…" : "Applying config from YAML → DB…"));
+  printInfo("");
+
+  const { runApply: _runApply } = await import(
+    new URL("../server/config-sync/apply-orchestrator.js", import.meta.url).href,
+  );
+  const { storage: _storage } = await import(
+    new URL("../server/storage.js", import.meta.url).href,
+  );
+
+  const result = await _runApply(_storage, repoPath, {
+    dryRun,
+    force,
+    lastExportAt: meta?.lastExportAt ?? null,
+    appliedBy: process.env["USER"] ?? "cli",
+  });
+
+  // Update meta file with apply timestamp (skip for dry-run)
+  if (!dryRun && !result.abortedDueToConflicts && meta) {
+    await writeMeta(repoPath, { ...meta, lastApplyAt: result.appliedAt });
+  }
+
+  if (jsonMode) {
+    printJson({
+      ok: !result.abortedDueToConflicts && result.totalErrors === 0,
+      subcommand: "apply",
+      data: {
+        dryRun,
+        appliedAt: result.appliedAt,
+        abortedDueToConflicts: result.abortedDueToConflicts,
+        summaries: result.summaries,
+        conflicts: result.conflicts,
+        totalCreated: result.totalCreated,
+        totalUpdated: result.totalUpdated,
+        totalDeleted: result.totalDeleted,
+        totalErrors: result.totalErrors,
+      },
+    });
+    if (result.abortedDueToConflicts || result.totalErrors > 0) {
+      process.exit(1);
+    }
+    return;
+  }
+
+  // ── Conflict abort ──────────────────────────────────────────────────────────
+  if (result.abortedDueToConflicts) {
+    printInfo(chalk.yellow("⚠  Aborted: DB has out-of-band modifications since last export."));
+    printInfo("");
+    for (const c of result.conflicts) {
+      printInfo(`  ${chalk.red("✗")} ${chalk.bold(c.entityType)} / ${chalk.cyan(c.label)}`);
+      printInfo(`       DB updated: ${c.dbUpdatedAt}  |  Last export: ${c.lastExportAt}`);
+    }
+    printInfo("");
+    printInfo(
+      `  Re-export first (${chalk.cyan("mqlti config export")}) or use ${chalk.yellow("--force")} to override.`,
+    );
+    process.exit(1);
+  }
+
+  // ── Conflict warnings (--force was set) ────────────────────────────────────
+  if (result.conflicts.length > 0) {
+    printWarn(`${result.conflicts.length} conflict(s) detected but --force is set — applying anyway.`);
+    for (const c of result.conflicts) {
+      printInfo(`  ${chalk.yellow("⚠")} ${chalk.bold(c.entityType)} / ${chalk.cyan(c.label)}: ${c.message}`);
+    }
+    printInfo("");
+  }
+
+  // ── Per-entity-type summary ─────────────────────────────────────────────────
+  for (const s of result.summaries) {
+    const hasChanges = s.created + s.updated + s.deleted + s.errors > 0;
+    if (!hasChanges && s.parseErrors === 0) continue;
+
+    const statusIcon = s.errors > 0 || s.parseErrors > 0
+      ? chalk.yellow("⚠")
+      : chalk.green("✓");
+
+    const parts: string[] = [];
+    if (s.created > 0) parts.push(chalk.green(`+${s.created}`));
+    if (s.updated > 0) parts.push(chalk.blue(`~${s.updated}`));
+    if (s.deleted > 0) parts.push(chalk.red(`-${s.deleted}`));
+    if (s.errors > 0) parts.push(chalk.red(`${s.errors} error(s)`));
+    if (s.parseErrors > 0) parts.push(chalk.yellow(`${s.parseErrors} parse error(s)`));
+
+    printInfo(`  ${statusIcon} ${chalk.cyan(s.entityType.padEnd(14))} ${parts.join("  ")}`);
+  }
+
+  // ── Rollback notice ────────────────────────────────────────────────────────
+  if (result.totalErrors > 0 && !dryRun) {
+    printInfo("");
+    printWarn("Errors occurred — rollback attempted.  DB state may be partially modified.");
+  }
+
+  printInfo("");
+  const actionLabel = dryRun ? "Would apply" : "Applied";
+  printInfo(
+    chalk.bold(`${actionLabel}:`) +
+      `  ${chalk.green("+" + result.totalCreated)} created` +
+      `  ${chalk.blue("~" + result.totalUpdated)} updated` +
+      `  ${chalk.red("-" + result.totalDeleted)} deleted` +
+      (result.totalErrors > 0 ? `  ${chalk.red(result.totalErrors + " error(s)")}` : ""),
+  );
+  if (dryRun) {
+    printInfo(chalk.dim("  Dry-run: no changes written to DB."));
+  } else {
+    printInfo(chalk.dim(`  Applied at: ${result.appliedAt}`));
+  }
+
+  if (result.totalErrors > 0) {
+    process.exit(1);
+  }
+}
+
+// ─── diff ─────────────────────────────────────────────────────────────────────
+
+/**
+ * `diff` — Show the diff between local YAML files and the live DB state.
+ *
+ * Equivalent to `apply --dry-run` but with a more detailed diff-style output.
+ */
+async function cmdDiff(): Promise<void> {
+  const repoPath = await requireConfigRepo("diff");
+  const meta = await readMeta(repoPath);
+
+  printInfo(chalk.bold("Computing diff between YAML repo and live DB…"));
+  printInfo("");
+
+  const { runApply: _runApply } = await import(
+    new URL("../server/config-sync/apply-orchestrator.js", import.meta.url).href,
+  );
+  const { storage: _storage } = await import(
+    new URL("../server/storage.js", import.meta.url).href,
+  );
+
+  const result = await _runApply(_storage, repoPath, {
+    dryRun: true,
+    force: true, // show conflicts but don't abort
+    lastExportAt: meta?.lastExportAt ?? null,
+    appliedBy: "diff",
+  });
+
+  if (jsonMode) {
+    printJson({
+      ok: true,
+      subcommand: "diff",
+      data: {
+        repoPath: result.repoPath,
+        diffedAt: result.appliedAt,
+        summaries: result.summaries,
+        conflicts: result.conflicts,
+        totalCreated: result.totalCreated,
+        totalUpdated: result.totalUpdated,
+        totalDeleted: result.totalDeleted,
+      },
+    });
+    return;
+  }
+
+  // ── Conflicts ───────────────────────────────────────────────────────────────
+  if (result.conflicts.length > 0) {
+    printInfo(chalk.yellow(`⚠  ${result.conflicts.length} conflict(s) detected (DB modified after last export):`));
+    for (const c of result.conflicts) {
+      printInfo(`  ${chalk.yellow("⚠")} ${chalk.bold(c.entityType)} / ${chalk.cyan(c.label)}`);
+      printInfo(`       DB updated: ${c.dbUpdatedAt}  |  Last export: ${c.lastExportAt}`);
+    }
+    printInfo("");
+  }
+
+  // ── Per-entity diff ─────────────────────────────────────────────────────────
+  let totalChanges = 0;
+
+  for (const diff of result.diffs) {
+    const creates = diff.entries.filter((e) => e.kind === "create");
+    const updates = diff.entries.filter((e) => e.kind === "update");
+    const deletes = diff.entries.filter((e) => e.kind === "delete");
+    const hasChanges = creates.length + updates.length + deletes.length > 0;
+
+    if (!hasChanges && diff.parseErrors.length === 0) continue;
+    totalChanges += creates.length + updates.length + deletes.length;
+
+    printInfo(chalk.bold(`  ${diff.entityType}:`));
+
+    for (const e of creates) {
+      printInfo(`    ${chalk.green("+")} ${e.label}`);
+    }
+    for (const e of updates) {
+      const conflictMark = e.conflict ? chalk.yellow(" ⚠ CONFLICT") : "";
+      printInfo(`    ${chalk.blue("~")} ${e.label}${conflictMark}`);
+      if (e.diff && Object.keys(e.diff).length > 0) {
+        for (const [field, [before, after]] of Object.entries(e.diff)) {
+          const bStr = JSON.stringify(before).slice(0, 60);
+          const aStr = JSON.stringify(after).slice(0, 60);
+          printInfo(`        ${chalk.dim(field + ":")} ${chalk.red(bStr)} → ${chalk.green(aStr)}`);
+        }
+      }
+    }
+    for (const e of deletes) {
+      printInfo(`    ${chalk.red("-")} ${e.label}`);
+    }
+    for (const pe of diff.parseErrors) {
+      printInfo(`    ${chalk.yellow("!")} Parse error: ${pe.filePath}: ${pe.error}`);
+    }
+
+    printInfo("");
+  }
+
+  if (totalChanges === 0) {
+    printInfo(chalk.green("✓  No changes — DB is in sync with YAML repo."));
+  } else {
+    printInfo(
+      chalk.bold("Summary:") +
+        `  ${chalk.green("+" + result.totalCreated)} to create` +
+        `  ${chalk.blue("~" + result.totalUpdated)} to update` +
+        `  ${chalk.red("-" + result.totalDeleted)} to delete`,
+    );
+    printInfo(
+      chalk.dim(`  Run ${chalk.cyan("mqlti config apply")} to apply, or ${chalk.cyan("mqlti config apply --dry-run")} to preview.`),
+    );
+  }
+}
+
 // ─── secrets ─────────────────────────────────────────────────────────────────
 
 /**
@@ -887,8 +1133,6 @@ type StubDef = {
 };
 
 const STUBS: StubDef[] = [
-  { name: "apply", issueRef: "#317" },
-  { name: "diff", issueRef: "#318" },
   { name: "push", issueRef: "#319" },
   { name: "pull", issueRef: "#320" },
 ];
@@ -911,6 +1155,8 @@ interface ParsedArgs {
   json: boolean;
   help: boolean;
   keyFile: string;
+  dryRun: boolean;
+  force: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -920,6 +1166,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     json: false,
     help: false,
     keyFile: DEFAULT_AGE_KEY_FILE,
+    dryRun: false,
+    force: false,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -934,6 +1182,10 @@ function parseArgs(argv: string[]): ParsedArgs {
         result.keyFile = next;
         i++;
       }
+    } else if (arg === "--dry-run") {
+      result.dryRun = true;
+    } else if (arg === "--force") {
+      result.force = true;
     } else if (result.subcommand === null && !arg.startsWith("-")) {
       result.subcommand = arg;
     } else if (!arg.startsWith("-")) {
@@ -1057,6 +1309,16 @@ async function main(): Promise<void> {
 
       case "export": {
         await cmdExport();
+        break;
+      }
+
+      case "apply": {
+        await cmdApply(args.dryRun, args.force);
+        break;
+      }
+
+      case "diff": {
+        await cmdDiff();
         break;
       }
 
