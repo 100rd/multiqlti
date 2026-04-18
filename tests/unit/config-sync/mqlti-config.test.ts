@@ -9,7 +9,7 @@
  *   - status: reads meta file, shows git state
  *   - status --json: machine-readable output
  *   - status: exits 1 when no config repo found
- *   - stubs (export/apply/diff/push/pull): exit 1, print "Not yet implemented"
+ *   - stubs (apply/diff/push/pull): exit 1, print "Not yet implemented"
  *   - stubs --json: machine-readable error output
  *   - secrets add: encrypts a file for all recipients in public-keys/
  *   - secrets add: exits 1 when source file missing
@@ -350,7 +350,6 @@ describe("status", () => {
 
 describe("stub subcommands", () => {
   const stubs = [
-    { name: "export", issue: "#316" },
     { name: "apply", issue: "#317" },
     { name: "diff", issue: "#318" },
     { name: "push", issue: "#319" },
@@ -802,7 +801,7 @@ describe("exit code contract", () => {
   });
 
   it("stub subcommand → exit 1 (user error, not yet implemented)", async () => {
-    const { exitCode } = await runCli(["export"]);
+    const { exitCode } = await runCli(["apply"]);
     expect(exitCode).toBe(1);
   });
 
