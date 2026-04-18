@@ -9,7 +9,7 @@
  * Subcommands:
  *   init <path>        Create a new config-sync repository
  *   status             Show sync state and git status
- *   export             [stub] Export live config to YAML files
+ *   export             Export live config to YAML files (issue #316)
  *   apply              [stub] Apply YAML files to running instance
  *   diff               [stub] Show diff between local YAML and live config
  *   push               [stub] Push local changes to remote git
@@ -49,6 +49,7 @@ import {
   reEncryptAll,
   type AgeKeyPair,
 } from "../server/config-sync/age-crypto.js";
+
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -106,7 +107,7 @@ ${chalk.bold("Usage:")}
 ${chalk.bold("Subcommands:")}
   ${chalk.cyan("init <path>")}          Create a config-sync repository at <path>
   ${chalk.cyan("status")}               Show git state and sync timestamps
-  ${chalk.cyan("export")}               Export live config to YAML (requires #316)
+  ${chalk.cyan("export")}               Export live config to YAML files
   ${chalk.cyan("apply")}                Apply YAML to running instance (requires #317)
   ${chalk.cyan("diff")}                 Diff local YAML vs live config (requires #318)
   ${chalk.cyan("push")}                 Push local changes to remote git (requires #319)
@@ -128,6 +129,7 @@ ${chalk.bold("Exit codes:")}
 ${chalk.bold("Examples:")}
   npx tsx script/mqlti-config.ts init ./my-config-repo
   npx tsx script/mqlti-config.ts status
+  npx tsx script/mqlti-config.ts export
   npx tsx script/mqlti-config.ts secrets add connections/gitlab-main.yaml
   npx tsx script/mqlti-config.ts secrets list
   npx tsx script/mqlti-config.ts secrets rotate
@@ -450,6 +452,91 @@ async function cmdStatus(): Promise<void> {
   printInfo(
     chalk.dim(`Schema version: ${meta.schemaVersion}  |  Created: ${meta.createdAt}`),
   );
+}
+
+// ─── export ───────────────────────────────────────────────────────────────────
+
+/**
+ * `export` — Export live config from DB to YAML files in the config repo.
+ *
+ * Reads from the storage instance (DB or MemStorage), validates each entity
+ * against the Zod schema, and writes atomic YAML files.  Idempotent: repeated
+ * runs with unchanged state produce byte-identical files.
+ *
+ * After a successful export, updates `lastExportAt` in `.mqlti-config.yaml`.
+ */
+async function cmdExport(): Promise<void> {
+  const repoPath = await requireConfigRepo("export");
+
+  printInfo(chalk.bold("Exporting config from DB → YAML…"));
+  printInfo("");
+
+  // Dynamic imports: keep @shared/* resolution inside the function so the
+  // CLI can be spawned from any cwd without tsx needing to find tsconfig.json.
+  const { runExport } = await import(
+    new URL("../server/config-sync/export-orchestrator.js", import.meta.url).href,
+  );
+  const { storage } = await import(
+    new URL("../server/storage.js", import.meta.url).href,
+  );
+
+  const result = await runExport(storage, repoPath);
+
+  // Update meta file with export timestamp
+  const meta = await readMeta(repoPath);
+  if (meta) {
+    await writeMeta(repoPath, { ...meta, lastExportAt: result.exportedAt });
+  }
+
+  if (jsonMode) {
+    printJson({
+      ok: result.summary.totalErrors === 0,
+      subcommand: "export",
+      data: result,
+    });
+    if (result.summary.totalErrors > 0) {
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Human-readable output
+  for (const exp of result.exporters) {
+    const count = exp.exported.length;
+    const errCount = exp.errors.length;
+    const skipCount = exp.skipped?.length ?? 0;
+
+    const statusIcon = errCount > 0 ? chalk.yellow("⚠") : chalk.green("✓");
+    const details: string[] = [`${count} file(s)`];
+    if (errCount > 0) details.push(chalk.red(`${errCount} error(s)`));
+    if (skipCount > 0) details.push(chalk.dim(`${skipCount} skipped`));
+
+    printInfo(`  ${statusIcon} ${chalk.cyan(exp.name.padEnd(16))} ${details.join("  ")}`);
+
+    for (const e of exp.errors) {
+      const label = e.name ?? e.provider ?? e.scope ?? e.id ?? "unknown";
+      printInfo(`       ${chalk.red("✗")} ${label}: ${e.error}`);
+    }
+  }
+
+  printInfo("");
+  printInfo(
+    chalk.bold("Summary:") +
+      `  ${chalk.green(String(result.summary.totalExported))} exported` +
+      (result.summary.totalErrors > 0
+        ? `  ${chalk.red(String(result.summary.totalErrors))} errors`
+        : "") +
+      (result.summary.totalSkipped > 0
+        ? `  ${chalk.dim(String(result.summary.totalSkipped))} skipped`
+        : ""),
+  );
+  printInfo(chalk.dim(`  Exported at: ${result.exportedAt}`));
+
+  if (result.summary.totalErrors > 0) {
+    printInfo("");
+    printWarn("Some entities failed to export. Check errors above.");
+    process.exit(1);
+  }
 }
 
 // ─── secrets ─────────────────────────────────────────────────────────────────
@@ -800,7 +887,6 @@ type StubDef = {
 };
 
 const STUBS: StubDef[] = [
-  { name: "export", issueRef: "#316" },
   { name: "apply", issueRef: "#317" },
   { name: "diff", issueRef: "#318" },
   { name: "push", issueRef: "#319" },
@@ -966,6 +1052,11 @@ async function main(): Promise<void> {
 
       case "status": {
         await cmdStatus();
+        break;
+      }
+
+      case "export": {
+        await cmdExport();
         break;
       }
 
