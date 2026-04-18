@@ -10,10 +10,10 @@
  *   init <path>        Create a new config-sync repository
  *   status             Show sync state and git status
  *   export             Export live config to YAML files (issue #316)
- *   apply              [stub] Apply YAML files to running instance
- *   diff               [stub] Show diff between local YAML and live config
- *   push               [stub] Push local changes to remote git
- *   pull               [stub] Pull remote changes and apply
+ *   apply              Apply YAML files to running instance (issue #317)
+ *   diff               Show diff between local YAML and live config (issue #317)
+ *   push               Export + commit + push to remote git (issue #318)
+ *   pull               Pull remote changes and optionally apply (issue #318)
  *   secrets add <src>  Encrypt a file for all repo recipients
  *   secrets rotate     Regenerate machine keys + re-encrypt all .secret files
  *   secrets list       Show recipients in each .secret file
@@ -49,6 +49,11 @@ import {
   reEncryptAll,
   type AgeKeyPair,
 } from "../server/config-sync/age-crypto.js";
+
+import {
+  gitPush,
+  gitPull,
+} from "../server/config-sync/git-wrapper.js";
 
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -110,8 +115,8 @@ ${chalk.bold("Subcommands:")}
   ${chalk.cyan("export")}               Export live config to YAML files
   ${chalk.cyan("apply [--dry-run] [--force]")}   Apply YAML files to the running instance
   ${chalk.cyan("diff")}                             Diff local YAML vs live config
-  ${chalk.cyan("push")}                 Push local changes to remote git (requires #319)
-  ${chalk.cyan("pull")}                 Pull remote changes and apply (requires #320)
+  ${chalk.cyan("push")}                 Export + commit + push to remote git
+  ${chalk.cyan("pull [--auto-apply]")}  Pull remote changes; prompt to apply unless --auto-apply
   ${chalk.cyan("secrets add <src>")}    Encrypt <src> for all repo recipients
   ${chalk.cyan("secrets rotate")}       Regenerate keys + re-encrypt all .secret files
   ${chalk.cyan("secrets list")}         List recipients in each .secret file
@@ -122,6 +127,7 @@ ${chalk.bold("Options:")}
   ${chalk.yellow("--key-file <path>")}   Override machine key file (default: ~/.config/mqlti/age-keys.txt)
   ${chalk.yellow("--dry-run")}           (apply/diff) Show changes without writing to DB
   ${chalk.yellow("--force")}             (apply) Apply even when DB conflicts are detected
+  ${chalk.yellow("--auto-apply")}        (pull) Automatically apply after a successful pull
 
 ${chalk.bold("Exit codes:")}
   0   Success
@@ -132,6 +138,8 @@ ${chalk.bold("Examples:")}
   npx tsx script/mqlti-config.ts init ./my-config-repo
   npx tsx script/mqlti-config.ts status
   npx tsx script/mqlti-config.ts export
+  npx tsx script/mqlti-config.ts push
+  npx tsx script/mqlti-config.ts pull --auto-apply
   npx tsx script/mqlti-config.ts diff
   npx tsx script/mqlti-config.ts apply --dry-run
   npx tsx script/mqlti-config.ts apply --force
@@ -258,14 +266,18 @@ async function cmdInit(targetPath: string): Promise<void> {
   await fs.writeFile(path.join(pkDir, ".gitkeep"), "");
 
   // Write .gitignore
+  // NOTE: .secret files are intentionally NOT excluded — they contain
+  // age-encrypted data and must be committed so all machines can decrypt them.
   const gitignoreContent =
     [
       "# mqlti config-sync — never commit plaintext secrets",
-      "*.secret",
       "*.key",
       "*.pem",
       ".env",
       ".env.*",
+      "# Temp files",
+      "*.tmp",
+      "*.bak",
       "# OS noise",
       ".DS_Store",
       "Thumbs.db",
@@ -301,7 +313,7 @@ async function cmdInit(targetPath: string): Promise<void> {
     printInfo(`    ${chalk.dim("public-keys/")}`);
     printInfo("");
     printInfo(`  ${chalk.dim(META_FILE_NAME)} — sync metadata`);
-    printInfo(`  ${chalk.dim(".gitignore")}        — blocks secret files`);
+    printInfo(`  ${chalk.dim(".gitignore")}        — blocks plaintext keys/env files`);
     printInfo("");
     printInfo(`  Git repository initialised.`);
     printInfo(`  Next: run ${chalk.cyan("mqlti config status")} to verify.`);
@@ -785,6 +797,249 @@ async function cmdDiff(): Promise<void> {
   }
 }
 
+// ─── push ─────────────────────────────────────────────────────────────────────
+
+/**
+ * `push` — Auto-export, commit all mqlti-managed files, and push to remote.
+ *
+ * Workflow:
+ *   1. Export live config to YAML files (same as `mqlti config export`).
+ *   2. `git add .`
+ *   3. `git commit -m "<timestamp>  <hostname>  <N entities>"` (skip if clean).
+ *   4. `git push` to default remote/branch.
+ *   5. Update `lastPushAt` in meta file.
+ *
+ * Graceful degradation:
+ *   - No remote configured → exit 1 with actionable hint.
+ *   - Network unreachable  → exit 1 with honest "offline" message.
+ *   - Dirty tree from non-mqlti files → still included in commit (user's repo).
+ */
+async function cmdPush(): Promise<void> {
+  const repoPath = await requireConfigRepo("push");
+
+  printInfo(chalk.bold("Pushing config to remote…"));
+  printInfo("");
+
+  // Step 1: Export live config first.
+  printInfo(chalk.dim("  Step 1/3: Exporting config from DB → YAML…"));
+  let exportedCount = 0;
+  try {
+    const { runExport } = await import(
+      new URL("../server/config-sync/export-orchestrator.js", import.meta.url).href,
+    );
+    const { storage } = await import(
+      new URL("../server/storage.js", import.meta.url).href,
+    );
+    const exportResult = await runExport(storage, repoPath);
+    exportedCount = exportResult.summary.totalExported;
+
+    const meta = await readMeta(repoPath);
+    if (meta) {
+      await writeMeta(repoPath, { ...meta, lastExportAt: exportResult.exportedAt });
+    }
+
+    if (exportResult.summary.totalErrors > 0) {
+      printWarn(`Export had ${exportResult.summary.totalErrors} error(s) — pushing anyway.`);
+    } else {
+      printInfo(chalk.dim(`       ${chalk.green("✓")} Exported ${exportedCount} file(s).`));
+    }
+  } catch (err: unknown) {
+    // Export failure is non-fatal for push — the user may want to push previously
+    // exported files. Warn but continue.
+    const msg = err instanceof Error ? err.message : String(err);
+    printWarn(`Export step failed (${msg}) — pushing existing files.`);
+  }
+
+  // Step 2+3+4: Commit and push via git-wrapper.
+  printInfo(chalk.dim("  Step 2/3: Committing and pushing…"));
+  const pushResult = await gitPush(repoPath, { entityCount: exportedCount });
+
+  if (!pushResult.ok) {
+    const hint = pushHint(pushResult.errorKind, repoPath);
+    if (jsonMode) {
+      printJson({
+        ok: false,
+        subcommand: "push",
+        error: pushResult.message,
+        data: { errorKind: pushResult.errorKind, hint },
+      });
+    } else {
+      printError(pushResult.message);
+      if (hint) printInfo(`  ${chalk.dim(hint)}`);
+    }
+    process.exit(1);
+  }
+
+  // Step 5: Update lastPushAt.
+  const meta = await readMeta(repoPath);
+  const pushedAt = new Date().toISOString();
+  if (meta) {
+    await writeMeta(repoPath, { ...meta, lastPushAt: pushedAt });
+  }
+
+  if (jsonMode) {
+    printJson({
+      ok: true,
+      subcommand: "push",
+      data: {
+        branch: pushResult.data.branch,
+        remote: pushResult.data.remote,
+        commitHash: pushResult.data.commitHash,
+        commitMessage: pushResult.data.commitMessage,
+        filesChanged: pushResult.data.filesChanged,
+        pushedAt,
+      },
+    });
+    return;
+  }
+
+  printInfo("");
+  if (pushResult.data.filesChanged === 0) {
+    printSuccess(`Nothing to commit — remote is already up to date.`);
+  } else {
+    printSuccess(
+      `Pushed ${chalk.cyan(pushResult.data.filesChanged)} file(s) to ` +
+      `${chalk.cyan(pushResult.data.remote)}/${chalk.cyan(pushResult.data.branch)}.`,
+    );
+    printInfo(`  Commit: ${chalk.dim(pushResult.data.commitHash)}`);
+    printInfo(`  Message: ${chalk.dim(pushResult.data.commitMessage)}`);
+  }
+  printInfo(chalk.dim(`  Pushed at: ${pushedAt}`));
+}
+
+/** Returns a human-friendly hint for a given push error kind. */
+function pushHint(errorKind: string, repoPath: string): string {
+  switch (errorKind) {
+    case "not-a-repo":
+      return `Run \`mqlti config init ${repoPath}\` to create a git repo first.`;
+    case "no-remote":
+      return `Add a remote: git -C "${repoPath}" remote add origin <url>`;
+    case "no-upstream":
+      return `Set upstream: git -C "${repoPath}" push --set-upstream origin <branch>`;
+    case "offline":
+      return "Check your network connection and try again.";
+    default:
+      return "";
+  }
+}
+
+// ─── pull ─────────────────────────────────────────────────────────────────────
+
+/**
+ * `pull` — Fetch + pull remote changes, then optionally apply them.
+ *
+ * Workflow:
+ *   1. `git fetch` to show ahead/behind counts.
+ *   2. `git pull --rebase` to integrate remote commits.
+ *   3. If conflict: abort rebase + print clear resolution instructions.
+ *   4. If `--auto-apply`: run `mqlti config apply` automatically.
+ *      Otherwise: print "apply changes? Run `mqlti config apply`" prompt.
+ *   5. Update `lastPullAt` in meta file.
+ *
+ * Graceful degradation:
+ *   - No remote → exit 1 with actionable hint.
+ *   - Offline    → exit 1 with honest message.
+ *   - Conflict   → abort + clear resolution steps.
+ */
+async function cmdPull(autoApply: boolean): Promise<void> {
+  const repoPath = await requireConfigRepo("pull");
+
+  printInfo(chalk.bold("Pulling remote changes…"));
+  printInfo("");
+
+  const pullResult = await gitPull(repoPath);
+
+  if (!pullResult.ok) {
+    const hint = pullHint(pullResult.errorKind, repoPath);
+    if (jsonMode) {
+      printJson({
+        ok: false,
+        subcommand: "pull",
+        error: pullResult.message,
+        data: { errorKind: pullResult.errorKind, hint },
+      });
+    } else {
+      printError(pullResult.message);
+      if (hint) printInfo(`  ${chalk.dim(hint)}`);
+    }
+    process.exit(1);
+  }
+
+  // Update lastPullAt.
+  const pulledAt = new Date().toISOString();
+  const meta = await readMeta(repoPath);
+  if (meta) {
+    await writeMeta(repoPath, { ...meta, lastPullAt: pulledAt });
+  }
+
+  if (jsonMode) {
+    printJson({
+      ok: true,
+      subcommand: "pull",
+      data: {
+        branch: pullResult.data.branch,
+        remote: pullResult.data.remote,
+        summary: pullResult.data.summary,
+        alreadyUpToDate: pullResult.data.alreadyUpToDate,
+        commitsAdded: pullResult.data.commitsAdded,
+        pulledAt,
+        autoApply,
+      },
+    });
+    // In JSON mode skip the apply prompt and return early.
+    return;
+  }
+
+  if (pullResult.data.alreadyUpToDate) {
+    printSuccess(`Already up to date — no new commits from remote.`);
+  } else {
+    printSuccess(
+      `Pulled from ${chalk.cyan(pullResult.data.remote)}/${chalk.cyan(pullResult.data.branch)}.`,
+    );
+    printInfo(`  Summary: ${chalk.dim(pullResult.data.summary)}`);
+  }
+  printInfo(chalk.dim(`  Pulled at: ${pulledAt}`));
+
+  // Apply section.
+  if (pullResult.data.alreadyUpToDate) {
+    return;
+  }
+
+  printInfo("");
+
+  if (autoApply) {
+    printInfo(chalk.dim("  --auto-apply is set — applying changes now…"));
+    printInfo("");
+    await cmdApply(false, false);
+  } else {
+    printInfo(
+      `  New commits pulled. Run ${chalk.cyan("mqlti config apply")} to apply changes, ` +
+      `or ${chalk.cyan("mqlti config diff")} to preview them.`,
+    );
+    printInfo(
+      chalk.dim(`  Tip: use ${chalk.cyan("pull --auto-apply")} to apply automatically.`),
+    );
+  }
+}
+
+/** Returns a human-friendly hint for a given pull error kind. */
+function pullHint(errorKind: string, repoPath: string): string {
+  switch (errorKind) {
+    case "not-a-repo":
+      return `Run \`mqlti config init ${repoPath}\` to create a git repo first.`;
+    case "no-remote":
+      return `Add a remote: git -C "${repoPath}" remote add origin <url>`;
+    case "no-upstream":
+      return `Set upstream: git -C "${repoPath}" branch --set-upstream-to=origin/<branch>`;
+    case "merge-conflict":
+      return "Resolve conflicts manually, then run `mqlti config apply`.";
+    case "offline":
+      return "Check your network connection and try again.";
+    default:
+      return "";
+  }
+}
+
 // ─── secrets ─────────────────────────────────────────────────────────────────
 
 /**
@@ -1132,10 +1387,7 @@ type StubDef = {
   issueRef: string;
 };
 
-const STUBS: StubDef[] = [
-  { name: "push", issueRef: "#319" },
-  { name: "pull", issueRef: "#320" },
-];
+const STUBS: StubDef[] = [];
 
 function runStub(name: string, issueRef: string): never {
   const message = `Not yet implemented — requires ${issueRef}`;
@@ -1157,6 +1409,7 @@ interface ParsedArgs {
   keyFile: string;
   dryRun: boolean;
   force: boolean;
+  autoApply: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -1168,6 +1421,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     keyFile: DEFAULT_AGE_KEY_FILE,
     dryRun: false,
     force: false,
+    autoApply: false,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -1186,6 +1440,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       result.dryRun = true;
     } else if (arg === "--force") {
       result.force = true;
+    } else if (arg === "--auto-apply") {
+      result.autoApply = true;
     } else if (result.subcommand === null && !arg.startsWith("-")) {
       result.subcommand = arg;
     } else if (!arg.startsWith("-")) {
@@ -1319,6 +1575,16 @@ async function main(): Promise<void> {
 
       case "diff": {
         await cmdDiff();
+        break;
+      }
+
+      case "push": {
+        await cmdPush();
+        break;
+      }
+
+      case "pull": {
+        await cmdPull(args.autoApply);
         break;
       }
 
