@@ -9,7 +9,9 @@
  *   - status: reads meta file, shows git state
  *   - status --json: machine-readable output
  *   - status: exits 1 when no config repo found
- *   - stubs (apply/diff/push/pull): exit 1, print "Not yet implemented"
+ *   - apply: exits 1 when no config repo found (requires init first)
+ *   - diff: exits 1 when no config repo found
+ *   - stubs (push/pull): exit 1, print "Not yet implemented"
  *   - stubs --json: machine-readable error output
  *   - secrets add: encrypts a file for all recipients in public-keys/
  *   - secrets add: exits 1 when source file missing
@@ -350,8 +352,6 @@ describe("status", () => {
 
 describe("stub subcommands", () => {
   const stubs = [
-    { name: "apply", issue: "#317" },
-    { name: "diff", issue: "#318" },
     { name: "push", issue: "#319" },
     { name: "pull", issue: "#320" },
   ] as const;
@@ -800,8 +800,14 @@ describe("exit code contract", () => {
     expect(exitCode).toBe(1);
   });
 
-  it("stub subcommand → exit 1 (user error, not yet implemented)", async () => {
-    const { exitCode } = await runCli(["apply"]);
+  it("apply without config repo → exit 1 (no repo found)", async () => {
+    // apply is now implemented; without a config repo it exits 1
+    const { exitCode } = await runCli(["apply"], tmpDir);
+    expect(exitCode).toBe(1);
+  });
+
+  it("diff without config repo → exit 1 (no repo found)", async () => {
+    const { exitCode } = await runCli(["diff"], tmpDir);
     expect(exitCode).toBe(1);
   });
 
