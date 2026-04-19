@@ -1629,3 +1629,58 @@ export interface ConfigApplySummary {
 
 export type ConfigApplyRow = typeof configApplies.$inferSelect;
 export type InsertConfigApply = typeof configApplies.$inferInsert;
+
+// ─── Config events outbox (issue #321) ─────────────────────────────────────
+
+/**
+ * Transactional outbox for federation config-sync events.
+ *
+ * When any syncable entity is mutated the storage layer enqueues a row here.
+ * The publisher loop reads unsent rows, sends them to connected peers via the
+ * federation transport, and stamps `sent_at` on success.
+ */
+export const CONFIG_EVENT_OPERATIONS = ["create", "update", "delete"] as const;
+export type ConfigEventOperation = typeof CONFIG_EVENT_OPERATIONS[number];
+
+export const configEventsOutbox = pgTable(
+  "config_events_outbox",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    entityKind: text("entity_kind").notNull(),
+    entityId: text("entity_id").notNull(),
+    operation: text("operation").notNull().$type<ConfigEventOperation>(),
+    payloadJsonb: jsonb("payload_jsonb").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    sentAt: timestamp("sent_at"),
+  },
+  (table) => [
+    index("config_events_outbox_unsent_idx").on(table.createdAt).where(sql`${table.sentAt} IS NULL`),
+    index("config_events_outbox_entity_idx").on(table.entityKind, table.entityId),
+  ],
+);
+
+export type ConfigEventOutboxRow = typeof configEventsOutbox.$inferSelect;
+export type InsertConfigEventOutbox = typeof configEventsOutbox.$inferInsert;
+
+/**
+ * Idempotency log for incoming federation config-sync events.
+ *
+ * Composite PK (peer_id, entity_kind, entity_id, version) prevents the same
+ * event from being applied more than once on this instance.
+ */
+export const configEventsReceived = pgTable("config_events_received", {
+  peerId: text("peer_id").notNull(),
+  entityKind: text("entity_kind").notNull(),
+  entityId: text("entity_id").notNull(),
+  version: text("version").notNull(),
+  receivedAt: timestamp("received_at").notNull().defaultNow(),
+}, (table) => [
+  {
+    pk: {
+      columns: [table.peerId, table.entityKind, table.entityId, table.version],
+      name: "config_events_received_pkey",
+    },
+  },
+]);
+
+export type ConfigEventReceivedRow = typeof configEventsReceived.$inferSelect;
