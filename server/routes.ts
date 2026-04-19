@@ -59,7 +59,7 @@ import { registerSkillMarketRoutes } from "./routes/skill-market";
 import { RegistryManager } from "./skill-market/registry-manager";
 import { McpRegistryAdapter } from "./skill-market/adapters/mcp-registry-adapter";
 import { SkillUpdateChecker } from "./skill-market/update-checker";
-import { registerFederationRoutes, registerCRDTRoutes, registerConfigConflictRoutes } from "./routes/federation";
+import { registerFederationRoutes, registerCRDTRoutes, registerConfigConflictRoutes, registerConfigSyncStatusRoute } from "./routes/federation";
 import { registerConnectionRoutes } from "./routes/connections";
 import { registerConnectionsYamlRoutes } from "./routes/connections-yaml";
 import { registerInventoryRoutes } from "./routes/inventory";
@@ -305,6 +305,9 @@ export async function registerRoutes(
   const conflictStore = new InMemoryConflictStore();
   app.use("/api/federation/config-conflicts", requireAuth);
   registerConfigConflictRoutes(app as unknown as Router, conflictStore);
+  // Issue #324: Config-sync aggregated status API
+  app.use("/api/federation/config-sync", requireAuth);
+  registerConfigSyncStatusRoute(app as unknown as Router, fm, conflictStore);
 
   // Graceful shutdown
   httpServer.on("close", async () => {
