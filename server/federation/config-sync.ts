@@ -2,8 +2,9 @@
  * config-sync.ts — Federation config-sync event stream service.
  *
  * Issue #321: Config sync federation event stream
+ * Issue #322: Offline queue per peer with TTL + coalesce
  *
- * Architecture: transactional outbox pattern
+ * Architecture: transactional outbox pattern + per-peer offline queue
  *
  *  1. Outbox writer — `enqueueConfigEvent(kind, entityId, operation, payload)`
  *     called from the storage layer whenever a syncable entity is mutated.
@@ -11,13 +12,18 @@
  *
  *  2. Publisher loop — periodically reads unsent outbox rows, broadcasts them
  *     to connected peers via `config:event` federation messages, marks
- *     `sent_at` on success.
+ *     `sent_at` on success.  If delivery to a specific peer fails the event
+ *     is enqueued in that peer's offline queue (peer_pending_events) via the
+ *     `PeerQueueService`.
  *
  *  3. Subscriber handler — receives `config:event` messages, verifies the
  *     federation HMAC (already done by the transport layer), checks the
  *     idempotency key (peer_id, entity_kind, entity_id, version), then
  *     delegates to `applyOne` which dispatches to the existing per-entity
  *     applier infrastructure from issue #317.
+ *
+ *  4. Reconnect flush — when a heartbeat (`peer:heartbeat`) is received the
+ *     service flushes the peer's offline queue in enqueued_at ASC order.
  *
  * Idempotency guarantee:
  *   Each received event is keyed by (peerId, entityKind, entityId, version).
@@ -31,6 +37,7 @@ import type { FederationMessage, PeerInfo } from "./types.js";
 import type { ConfigEventOperation } from "@shared/schema";
 import type { TriggerType, TriggerConfig } from "@shared/types";
 import type { IStorage } from "../storage.js";
+import type { PeerQueueService, SendEventFn } from "./peer-queue.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -42,6 +49,9 @@ const MAX_BATCH_SIZE = 100;
 
 /** Federation message type used for config-sync events. */
 const MSG_TYPE = "config:event";
+
+/** Federation message type indicating a peer is alive — triggers queue flush. */
+const HEARTBEAT_MSG_TYPE = "peer:heartbeat";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -123,6 +133,16 @@ export type ApplyOneFn = (
 export interface ConfigSyncOptions {
   /** How often to poll the outbox (ms). Defaults to 5 000 ms. */
   publishIntervalMs?: number;
+  /**
+   * Optional peer-queue service.  When provided, failed per-peer deliveries
+   * are enqueued here instead of silently dropped.
+   */
+  peerQueue?: PeerQueueService;
+  /**
+   * Optional send-event function to use when flushing the offline queue.
+   * Defaults to the federation transport send.
+   */
+  flushSendFn?: SendEventFn;
 }
 
 // ─── Default applyOne implementation ─────────────────────────────────────────
@@ -170,16 +190,19 @@ export async function defaultApplyOne(
  * Federation config-sync event stream service.
  *
  * Lifecycle:
- *   1. Construct with `new ConfigSyncService(federation, storage, syncStore, instanceId, applyOne)`
+ *   1. Construct with `new ConfigSyncService(federation, storage, syncStore, instanceId, applyOne, options)`
  *   2. Call `start()` to begin the publisher polling loop.
  *   3. Call `stop()` to cancel the loop cleanly.
  *
- * The constructor registers the `config:event` handler on the federation
- * transport immediately; `start()` / `stop()` only control the publisher.
+ * The constructor registers the `config:event` and `peer:heartbeat` handlers
+ * on the federation transport immediately; `start()` / `stop()` only control
+ * the publisher timer.
  */
 export class ConfigSyncService {
   private publishTimer: ReturnType<typeof setInterval> | null = null;
   private readonly publishIntervalMs: number;
+  private readonly peerQueue: PeerQueueService | null;
+  private readonly flushSendFn: SendEventFn | null;
 
   constructor(
     private readonly federation: FederationManager,
@@ -190,7 +213,11 @@ export class ConfigSyncService {
     options: ConfigSyncOptions = {},
   ) {
     this.publishIntervalMs = options.publishIntervalMs ?? DEFAULT_PUBLISH_INTERVAL_MS;
+    this.peerQueue = options.peerQueue ?? null;
+    this.flushSendFn = options.flushSendFn ?? null;
+
     this.federation.on(MSG_TYPE, this.handleIncoming.bind(this));
+    this.federation.on(HEARTBEAT_MSG_TYPE, this.handleHeartbeat.bind(this));
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -234,7 +261,9 @@ export class ConfigSyncService {
 
   /**
    * Read unsent outbox rows and broadcast each to connected peers.
-   * Marks `sent_at` on every row that was successfully dispatched.
+   * Marks `sent_at` on every row that was successfully dispatched to ALL peers.
+   * If delivery fails for a specific peer, enqueues the event in that peer's
+   * offline queue (if a `PeerQueueService` is configured).
    *
    * Exposed as a public method so tests can invoke it synchronously
    * without waiting for the timer.
@@ -246,7 +275,8 @@ export class ConfigSyncService {
     const unsent = await this.syncStore.getUnsentConfigEvents(MAX_BATCH_SIZE);
     if (unsent.length === 0) return;
 
-    const sentIds: string[] = [];
+    // IDs that were successfully delivered to every peer — mark sent_at.
+    const fullyDeliveredIds: string[] = [];
 
     for (const row of unsent) {
       const eventPayload: ConfigEventPayload = {
@@ -258,20 +288,48 @@ export class ConfigSyncService {
         issuedAt: row.createdAt.toISOString(),
       };
 
-      try {
-        this.federation.send(MSG_TYPE, {
-          from: this.instanceId,
-          event: eventPayload,
-        });
-        sentIds.push(row.id);
-      } catch {
-        // If send fails for this row, skip it — it will be retried next tick.
+      let deliveredToAll = true;
+
+      for (const peer of peers) {
+        const delivered = await this.sendToPeer(peer, row.id, eventPayload);
+        if (!delivered) {
+          deliveredToAll = false;
+          // Enqueue in offline queue if the service is wired up.
+          if (this.peerQueue) {
+            await this.peerQueue.enqueue(
+              peer.instanceId,
+              row.id,
+              row.entityKind,
+              row.entityId,
+            ).catch(() => {
+              // Queue errors must not stall the publisher.
+            });
+          }
+        }
+      }
+
+      if (deliveredToAll) {
+        fullyDeliveredIds.push(row.id);
       }
     }
 
-    if (sentIds.length > 0) {
-      await this.syncStore.markConfigEventsSent(sentIds);
+    if (fullyDeliveredIds.length > 0) {
+      await this.syncStore.markConfigEventsSent(fullyDeliveredIds);
     }
+  }
+
+  // ── Peer-queue flush (reconnect) ──────────────────────────────────────────────
+
+  /**
+   * Flush the offline queue for a peer.
+   * Called automatically when a `peer:heartbeat` is received.
+   * Can also be called manually for testing.
+   */
+  async flushPeer(peerId: string): Promise<{ sent: number; failed: number }> {
+    if (!this.peerQueue) return { sent: 0, failed: 0 };
+
+    const sendFn = this.flushSendFn ?? this.buildDefaultFlushSendFn();
+    return this.peerQueue.flush(peerId, sendFn);
   }
 
   // ── Subscriber handler ───────────────────────────────────────────────────────
@@ -287,7 +345,6 @@ export class ConfigSyncService {
   private async handleIncoming(msg: FederationMessage, peer: PeerInfo): Promise<void> {
     const raw = msg.payload as Record<string, unknown>;
 
-    // Validate the outer wrapper
     if (!raw || typeof raw !== "object") return;
 
     const event = raw["event"] as ConfigEventPayload | undefined;
@@ -306,7 +363,6 @@ export class ConfigSyncService {
       return;
     }
 
-    // Idempotency check — record returns false if already seen
     const isNew = await this.syncStore.recordConfigEventReceived(
       peer.instanceId,
       entityKind,
@@ -314,11 +370,8 @@ export class ConfigSyncService {
       version,
     );
 
-    if (!isNew) {
-      return;
-    }
+    if (!isNew) return;
 
-    // Apply the event locally
     await this.applyOne(
       entityKind,
       entityId,
@@ -326,6 +379,62 @@ export class ConfigSyncService {
       payload as Record<string, unknown>,
       this.storage,
     );
+  }
+
+  /**
+   * Handle an incoming `peer:heartbeat` message — triggers offline queue flush.
+   */
+  private async handleHeartbeat(_msg: FederationMessage, peer: PeerInfo): Promise<void> {
+    await this.flushPeer(peer.instanceId).catch(() => {
+      // Flush errors must not crash the handler.
+    });
+  }
+
+  // ── Internal helpers ──────────────────────────────────────────────────────────
+
+  /**
+   * Attempt to deliver one event to one peer.
+   * Returns `true` if delivery succeeded, `false` otherwise.
+   */
+  private async sendToPeer(
+    peer: PeerInfo,
+    _rowId: string,
+    eventPayload: ConfigEventPayload,
+  ): Promise<boolean> {
+    try {
+      this.federation.send(MSG_TYPE, {
+        from: this.instanceId,
+        event: eventPayload,
+      }, peer.instanceId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Build a `SendEventFn` that uses the federation transport.
+   * Used when no explicit `flushSendFn` is provided.
+   */
+  private buildDefaultFlushSendFn(): import("./peer-queue.js").SendEventFn {
+    return async (peerId, _eventId, entityKind, entityId, operation, payloadJsonb) => {
+      try {
+        this.federation.send(MSG_TYPE, {
+          from: this.instanceId,
+          event: {
+            entityKind,
+            entityId,
+            operation: operation as import("@shared/schema").ConfigEventOperation,
+            payload: payloadJsonb,
+            version: new Date().toISOString(),
+            issuedAt: new Date().toISOString(),
+          } satisfies ConfigEventPayload,
+        }, peerId);
+        return true;
+      } catch {
+        return false;
+      }
+    };
   }
 }
 
@@ -338,7 +447,6 @@ async function applyPipelineEvent(
   storage: IStorage,
 ): Promise<void> {
   if (operation === "delete") {
-    // Tombstone semantics require explicit id; skip if missing.
     return;
   }
 
