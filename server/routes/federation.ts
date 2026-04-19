@@ -887,3 +887,166 @@ export function registerCRDTRoutes(
     });
   });
 }
+
+// ─── Config-sync Conflict API (issue #323) ────────────────────────────────────
+
+import type { IConflictStore } from "../federation/config-conflict";
+import {
+  resolveHumanConflict,
+  dismissConflict,
+} from "../federation/config-conflict";
+
+// Validation schemas for conflict API
+const ConflictQuerySchema = z.object({
+  entityKind: z.string().optional(),
+  status: z.enum(["detected", "pending_human", "auto_resolved", "human_resolved", "dismissed"]).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+});
+
+const ResolveConflictSchema = z.object({
+  applyRemote: z.boolean(),
+  resolutionNote: z.string().max(2000).optional(),
+});
+
+const DismissConflictSchema = z.object({
+  resolutionNote: z.string().max(2000).optional(),
+});
+
+/**
+ * Register config-sync conflict management API endpoints.
+ *
+ * GET    /api/federation/config-conflicts              — list open conflicts
+ * GET    /api/federation/config-conflicts/:id          — get conflict by ID
+ * POST   /api/federation/config-conflicts/:id/resolve  — human resolves (connection/provider-key)
+ * POST   /api/federation/config-conflicts/:id/dismiss  — dismiss without applying
+ * GET    /api/federation/config-conflicts/:id/audit    — audit trail for a conflict
+ *
+ * All routes require authentication (covered by upstream requireAuth middleware).
+ */
+export function registerConfigConflictRoutes(
+  app: Router,
+  conflictStore: IConflictStore | null,
+): void {
+  const notAvailable = (res: Response) =>
+    res.status(503).json({ error: "Config conflict store is not available." });
+
+  // GET /api/federation/config-conflicts — list conflicts
+  app.get("/api/federation/config-conflicts", async (req: Request, res: Response) => {
+    if (!conflictStore) return notAvailable(res);
+
+    const parsed = ConflictQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid query", issues: parsed.error.flatten() });
+    }
+
+    try {
+      const { entityKind, status } = parsed.data;
+      const limit = parsed.data.limit ?? 100;
+
+      if (status && !["detected", "pending_human"].includes(status)) {
+        // For resolved/dismissed, we'd need full list — return empty for now
+        // (the DB store can support filtering but in-memory only tracks open).
+        return res.json({ conflicts: [], total: 0 });
+      }
+
+      const conflicts = await conflictStore.listOpenConflicts(entityKind);
+      const sliced = conflicts.slice(0, limit);
+      return res.json({ conflicts: sliced, total: conflicts.length });
+    } catch (err) {
+      return res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // GET /api/federation/config-conflicts/:id — get single conflict
+  app.get("/api/federation/config-conflicts/:id", async (req: Request, res: Response) => {
+    if (!conflictStore) return notAvailable(res);
+
+    try {
+      const conflict = await conflictStore.findOpenConflict("", "");
+      // findOpenConflict doesn't support lookup by ID in the interface;
+      // fall back to listing all and finding.
+      const all = await conflictStore.listOpenConflicts();
+      const found = all.find((c) => c.id === req.params.id);
+      if (!found) {
+        return res.status(404).json({ error: "Conflict not found or already resolved." });
+      }
+      return res.json(found);
+    } catch (err) {
+      return res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // POST /api/federation/config-conflicts/:id/resolve — human resolution
+  app.post("/api/federation/config-conflicts/:id/resolve", async (req: Request, res: Response) => {
+    if (!conflictStore) return notAvailable(res);
+
+    const parsed = ResolveConflictSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request", issues: parsed.error.flatten() });
+    }
+
+    try {
+      const userId = (req as unknown as { user?: { id?: string } }).user?.id ?? "anonymous";
+      const { conflict, applyEvent } = await resolveHumanConflict(
+        conflictStore,
+        String(req.params.id),
+        `human:${userId}`,
+        parsed.data.applyRemote,
+        parsed.data.resolutionNote,
+      );
+      return res.json({ conflict, applyEvent });
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.includes("not found") || msg.includes("not open")) {
+        return res.status(404).json({ error: msg });
+      }
+      if (msg.includes('not "human"')) {
+        return res.status(409).json({ error: msg });
+      }
+      return res.status(500).json({ error: msg });
+    }
+  });
+
+  // POST /api/federation/config-conflicts/:id/dismiss — dismiss without applying
+  app.post("/api/federation/config-conflicts/:id/dismiss", async (req: Request, res: Response) => {
+    if (!conflictStore) return notAvailable(res);
+
+    const parsed = DismissConflictSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request", issues: parsed.error.flatten() });
+    }
+
+    try {
+      const userId = (req as unknown as { user?: { id?: string } }).user?.id ?? "anonymous";
+      const conflict = await dismissConflict(
+        conflictStore,
+        String(req.params.id),
+        `human:${userId}`,
+        parsed.data.resolutionNote,
+      );
+      return res.json(conflict);
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg.includes("not found") || msg.includes("not open")) {
+        return res.status(404).json({ error: msg });
+      }
+      return res.status(500).json({ error: msg });
+    }
+  });
+
+  // GET /api/federation/config-conflicts/:id/audit — audit trail
+  // NOTE: Only available when store is InMemoryConflictStore (test environments).
+  // In production the audit would come from the DB layer.
+  app.get("/api/federation/config-conflicts/:id/audit", async (req: Request, res: Response) => {
+    if (!conflictStore) return notAvailable(res);
+
+    // Check if the store exposes getAuditLog (InMemoryConflictStore does)
+    const auditCapable = conflictStore as unknown as { getAuditLog?: () => Array<{ conflictId: string }> };
+    if (typeof auditCapable.getAuditLog !== "function") {
+      return res.status(501).json({ error: "Audit log not available on this store implementation." });
+    }
+
+    const entries = auditCapable.getAuditLog().filter((e) => e.conflictId === req.params.id);
+    return res.json({ audit: entries, total: entries.length });
+  });
+}

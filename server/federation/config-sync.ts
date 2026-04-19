@@ -38,6 +38,7 @@ import type { ConfigEventOperation } from "@shared/schema";
 import type { TriggerType, TriggerConfig } from "@shared/types";
 import type { IStorage } from "../storage.js";
 import type { PeerQueueService, SendEventFn } from "./peer-queue.js";
+import type { ConflictDetector } from "./config-conflict.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -143,6 +144,12 @@ export interface ConfigSyncOptions {
    * Defaults to the federation transport send.
    */
   flushSendFn?: SendEventFn;
+  /**
+   * Optional conflict detector.  When provided, each incoming event is
+   * checked for conflicts before being applied.  Blocked events (human-in-the-
+   * loop) are recorded in the conflict store and not forwarded to `applyOne`.
+   */
+  conflictDetector?: ConflictDetector;
 }
 
 // ─── Default applyOne implementation ─────────────────────────────────────────
@@ -203,6 +210,7 @@ export class ConfigSyncService {
   private readonly publishIntervalMs: number;
   private readonly peerQueue: PeerQueueService | null;
   private readonly flushSendFn: SendEventFn | null;
+  private readonly conflictDetector: ConflictDetector | null;
 
   constructor(
     private readonly federation: FederationManager,
@@ -215,6 +223,7 @@ export class ConfigSyncService {
     this.publishIntervalMs = options.publishIntervalMs ?? DEFAULT_PUBLISH_INTERVAL_MS;
     this.peerQueue = options.peerQueue ?? null;
     this.flushSendFn = options.flushSendFn ?? null;
+    this.conflictDetector = options.conflictDetector ?? null;
 
     this.federation.on(MSG_TYPE, this.handleIncoming.bind(this));
     this.federation.on(HEARTBEAT_MSG_TYPE, this.handleHeartbeat.bind(this));
@@ -340,7 +349,13 @@ export class ConfigSyncService {
    * Flow:
    *   1. Validate payload structure.
    *   2. Check idempotency key — discard duplicate events silently.
-   *   3. Delegate to `applyOne`.
+   *   3. Run conflict detection (if a ConflictDetector is wired up).
+   *      - No conflict  → apply normally.
+   *      - Conflict + apply allowed (LWW / auto-merge) → apply, optionally
+   *        using the merged payload.
+   *      - Conflict + blocked (human-in-the-loop) → skip apply; the conflict
+   *        row is persisted in the conflict store for human resolution.
+   *   4. Delegate to `applyOne`.
    */
   private async handleIncoming(msg: FederationMessage, peer: PeerInfo): Promise<void> {
     const raw = msg.payload as Record<string, unknown>;
@@ -371,6 +386,35 @@ export class ConfigSyncService {
     );
 
     if (!isNew) return;
+
+    // ── Conflict detection ───────────────────────────────────────────────────
+    if (this.conflictDetector) {
+      const result = await this.conflictDetector.check(
+        peer.instanceId,
+        entityKind,
+        entityId,
+        version,
+        payload as Record<string, unknown>,
+        operation as ConfigEventOperation,
+      );
+
+      if (result.conflicted && !result.applyEvent) {
+        // Human-in-the-loop required — do not apply.
+        return;
+      }
+
+      if (result.conflicted && result.applyEvent && result.mergedPayload) {
+        // Auto-merge produced a merged payload — apply the merged result.
+        await this.applyOne(
+          entityKind,
+          entityId,
+          operation as ConfigEventOperation,
+          result.mergedPayload,
+          this.storage,
+        );
+        return;
+      }
+    }
 
     await this.applyOne(
       entityKind,
