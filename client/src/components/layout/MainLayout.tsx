@@ -24,11 +24,13 @@ import {
   Network,
   GitBranchPlus,
   DollarSign,
+  Radio,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
 import { useAuth } from "@/hooks/use-auth";
 import type { UserRole } from "@shared/types";
+import { PeerStatusBadge } from "@/components/config-sync/PeerStatusBadge";
 
 interface MainLayoutProps {
   children: ReactNode;
@@ -100,6 +102,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: ShieldCheck, label: "Privacy", href: "/privacy" },
     { icon: Wrench, label: "Maintenance", href: "/maintenance" },
     { icon: Settings, label: "Settings", href: "/settings" },
+    { icon: Radio, label: "Config Sync", href: "/settings/peers" },
     // Admin-only: User Management
     ...(user?.role === "admin"
       ? [{ icon: Users, label: "Users", href: "/settings/users" }]
@@ -118,10 +121,13 @@ export default function MainLayout({ children }: MainLayoutProps) {
       {/* Sidebar */}
       <aside className="w-64 border-r border-border bg-sidebar flex flex-col justify-between">
         <div>
-          <div className="h-16 flex items-center px-6 border-b border-border">
-            <div className="flex items-center gap-2 text-primary font-medium tracking-tight">
+          <div className="min-h-16 flex items-center px-6 border-b border-border py-3">
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-2 text-primary font-medium tracking-tight">
               <ShieldAlert className="h-5 w-5" />
               <span>MultiQLTI</span>
+              </div>
+              <PeerStatusBadge />
             </div>
           </div>
 

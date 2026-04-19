@@ -1050,3 +1050,125 @@ export function registerConfigConflictRoutes(
     return res.json({ audit: entries, total: entries.length });
   });
 }
+
+// ─── Config-sync Aggregated Status API (issue #324) ──────────────────────────
+
+import type { PeerInfo } from "../federation/types";
+
+/**
+ * GET /api/federation/config-sync/status
+ *
+ * Returns an aggregated snapshot for the header badge and peers page:
+ *  - totalPeers, syncedPeers, badgeState, summary
+ *  - per-peer: peerId, peerName, endpoint, status, lastSeenSecs, queueDepth, openConflicts
+ *  - openConflicts (total)
+ *  - lastSyncAt (ISO string, newest lastMessageAt across peers)
+ *
+ * Returns 200 with an empty peers list when federation is not enabled
+ * (so the UI gracefully shows "no peers" rather than an error state).
+ *
+ * Requires authentication (covered by upstream requireAuth).
+ */
+export function registerConfigSyncStatusRoute(
+  app: Router,
+  federationManager: FederationManager | null,
+  conflictStore: IConflictStore | null,
+): void {
+  app.get("/api/federation/config-sync/status", async (_req: Request, res: Response) => {
+    // Fetch open conflicts (empty when store is null).
+    let openConflicts: Array<{ peerId: string }> = [];
+    if (conflictStore) {
+      try {
+        openConflicts = await conflictStore.listOpenConflicts();
+      } catch {
+        // Ignore store errors — degrade gracefully.
+      }
+    }
+
+    // Build per-peer conflict counts.
+    const conflictsByPeer: Record<string, number> = {};
+    for (const c of openConflicts) {
+      conflictsByPeer[c.peerId] = (conflictsByPeer[c.peerId] ?? 0) + 1;
+    }
+
+    // Fetch peers from federation manager (empty when disabled).
+    const rawPeers: PeerInfo[] = federationManager ? federationManager.getPeers() : [];
+
+    const now = Date.now();
+
+    const peers = rawPeers.map((p) => {
+      const lastSeenMs = p.lastMessageAt ? new Date(p.lastMessageAt).getTime() : null;
+      const lastSeenSecs = lastSeenMs !== null ? Math.floor((now - lastSeenMs) / 1000) : null;
+      const peerConflicts = conflictsByPeer[p.instanceId] ?? 0;
+
+      let peerStatus: "synced" | "pending" | "offline" | "conflict";
+      if (peerConflicts > 0) {
+        peerStatus = "conflict";
+      } else if (p.status === "disconnected" || (lastSeenSecs !== null && lastSeenSecs > 300)) {
+        peerStatus = "offline";
+      } else {
+        peerStatus = "synced";
+      }
+
+      return {
+        peerId: p.instanceId,
+        peerName: p.instanceName,
+        endpoint: p.endpoint,
+        status: peerStatus,
+        lastSeenAt: p.lastMessageAt ? new Date(p.lastMessageAt).toISOString() : null,
+        lastSeenSecs,
+        // Queue depth is not available without the PeerQueueService; default 0.
+        queueDepth: 0,
+        openConflicts: peerConflicts,
+      };
+    });
+
+    const totalPeers = peers.length;
+    const syncedPeers = peers.filter(
+      (p) => p.status === "synced" && (p.lastSeenSecs === null || p.lastSeenSecs <= 300),
+    ).length;
+    const totalOpenConflicts = openConflicts.length;
+
+    // Derive badge state.
+    let badgeState: "green" | "yellow" | "red" = "green";
+    if (totalOpenConflicts > 0 || peers.some((p) => p.status === "offline" || p.status === "conflict")) {
+      badgeState = "red";
+    } else if (peers.some((p) => p.queueDepth > 0)) {
+      badgeState = "yellow";
+    }
+
+    // Summary string: "3 peers, synced 2m ago"
+    const newestLastSeen = peers
+      .filter((p) => p.lastSeenSecs !== null)
+      .sort((a, b) => (a.lastSeenSecs ?? Infinity) - (b.lastSeenSecs ?? Infinity))[0];
+
+    const syncAgoStr = newestLastSeen?.lastSeenSecs !== null && newestLastSeen?.lastSeenSecs !== undefined
+      ? `, synced ${formatSecsAgo(newestLastSeen.lastSeenSecs)}`
+      : "";
+
+    const peerWord = totalPeers === 1 ? "peer" : "peers";
+    const summary =
+      totalPeers === 0
+        ? "No peers"
+        : `${totalPeers} ${peerWord}${syncAgoStr}${totalOpenConflicts > 0 ? `, ${totalOpenConflicts} conflict${totalOpenConflicts !== 1 ? "s" : ""}` : ""}`;
+
+    const lastSyncAt = newestLastSeen?.lastSeenAt ?? null;
+
+    return res.json({
+      totalPeers,
+      syncedPeers,
+      badgeState,
+      summary,
+      peers,
+      openConflicts: totalOpenConflicts,
+      lastSyncAt,
+    });
+  });
+}
+
+function formatSecsAgo(secs: number): string {
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
