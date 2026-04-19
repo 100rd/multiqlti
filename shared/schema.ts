@@ -1684,3 +1684,44 @@ export const configEventsReceived = pgTable("config_events_received", {
 ]);
 
 export type ConfigEventReceivedRow = typeof configEventsReceived.$inferSelect;
+
+// ─── Peer pending events queue (issue #322) ────────────────────────────────
+
+/**
+ * Per-peer offline queue for config-sync events.
+ *
+ * When sending a config-sync event to a peer fails (peer offline), the event
+ * is enqueued here.  On reconnect the queue is flushed in enqueued_at ASC
+ * order.  Coalesce keeps only the latest event per (peer_id, entity_kind,
+ * entity_id) to avoid redundant re-deliveries.  TTL prunes rows older than
+ * the configured threshold (default 7 days) and signals the peer to perform
+ * a full resync instead.
+ */
+export const PEER_PENDING_STATUSES = ["pending", "sending", "sent", "expired"] as const;
+export type PeerPendingStatus = typeof PEER_PENDING_STATUSES[number];
+
+export const peerPendingEvents = pgTable(
+  "peer_pending_events",
+  {
+    peerId: text("peer_id").notNull(),
+    eventId: varchar("event_id").notNull().references(() => configEventsOutbox.id, { onDelete: "cascade" }),
+    enqueuedAt: timestamp("enqueued_at").notNull().defaultNow(),
+    lastRetryAt: timestamp("last_retry_at"),
+    retryCount: integer("retry_count").notNull().default(0),
+    status: text("status").notNull().default("pending").$type<PeerPendingStatus>(),
+  },
+  (table) => [
+    {
+      pk: {
+        columns: [table.peerId, table.eventId],
+        name: "peer_pending_events_pkey",
+      },
+    },
+    index("peer_pending_events_flush_idx").on(table.peerId, table.enqueuedAt).where(sql`${table.status} = 'pending'`),
+    index("peer_pending_events_ttl_idx").on(table.enqueuedAt).where(sql`${table.status} = 'pending'`),
+    index("peer_pending_events_peer_idx").on(table.peerId).where(sql`${table.status} = 'pending'`),
+  ],
+);
+
+export type PeerPendingEventRow = typeof peerPendingEvents.$inferSelect;
+export type InsertPeerPendingEvent = typeof peerPendingEvents.$inferInsert;
