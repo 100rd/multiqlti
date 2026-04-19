@@ -1725,3 +1725,104 @@ export const peerPendingEvents = pgTable(
 
 export type PeerPendingEventRow = typeof peerPendingEvents.$inferSelect;
 export type InsertPeerPendingEvent = typeof peerPendingEvents.$inferInsert;
+
+// ─── Config sync conflict tracking (issue #323) ──────────────────────────────
+
+export const CONFIG_CONFLICT_STATUSES = [
+  "detected",
+  "pending_human",
+  "auto_resolved",
+  "human_resolved",
+  "dismissed",
+] as const;
+export type ConfigConflictStatus = typeof CONFIG_CONFLICT_STATUSES[number];
+
+export const CONFIG_CONFLICT_STRATEGIES = [
+  "lww",
+  "human",
+  "auto_merge",
+  "approval_voting",
+] as const;
+export type ConfigConflictStrategy = typeof CONFIG_CONFLICT_STRATEGIES[number];
+
+/**
+ * Active conflict records for config-sync events.
+ * Detected when an incoming remote event targets an entity modified locally
+ * after the last synced version.
+ */
+export const configConflicts = pgTable(
+  "config_conflicts",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    entityKind: text("entity_kind").notNull(),
+    entityId: text("entity_id").notNull(),
+    peerId: text("peer_id").notNull(),
+    remoteVersion: text("remote_version").notNull(),
+    localVersion: text("local_version").notNull(),
+    remotePayload: jsonb("remote_payload").notNull().default(sql`'{}'::jsonb`),
+    localPayload: jsonb("local_payload").notNull().default(sql`'{}'::jsonb`),
+    strategy: text("strategy").notNull().$type<ConfigConflictStrategy>(),
+    status: text("status").notNull().default("detected").$type<ConfigConflictStatus>(),
+    detectedAt: timestamp("detected_at").notNull().defaultNow(),
+    resolvedAt: timestamp("resolved_at"),
+    resolvedBy: text("resolved_by"),
+    resolutionNote: text("resolution_note"),
+    isContested: boolean("is_contested").notNull().default(false),
+    mergedPayload: jsonb("merged_payload"),
+  },
+  (table) => [
+    index("config_conflicts_open_idx").on(table.entityKind, table.entityId).where(
+      sql`${table.status} IN ('detected', 'pending_human')`,
+    ),
+    index("config_conflicts_peer_idx").on(table.peerId, table.detectedAt),
+    index("config_conflicts_stale_idx").on(table.detectedAt).where(
+      sql`${table.status} IN ('detected', 'pending_human')`,
+    ),
+  ],
+);
+
+export type ConfigConflictRow = typeof configConflicts.$inferSelect;
+export type InsertConfigConflict = typeof configConflicts.$inferInsert;
+
+/**
+ * Per-entity strategy configuration.
+ * Seeded with defaults; can be overridden per installation.
+ */
+export const configConflictStrategies = pgTable("config_conflict_strategies", {
+  entityKind: text("entity_kind").primaryKey(),
+  strategy: text("strategy").notNull().default("lww").$type<ConfigConflictStrategy>(),
+  markContested: boolean("mark_contested").notNull().default(true),
+  alertAfterH: integer("alert_after_h").notNull().default(24),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export type ConfigConflictStrategyRow = typeof configConflictStrategies.$inferSelect;
+
+/**
+ * Append-only audit log for every conflict + resolution action.
+ */
+export const configConflictAudit = pgTable(
+  "config_conflict_audit",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    conflictId: varchar("conflict_id").notNull().references(() => configConflicts.id, { onDelete: "cascade" }),
+    entityKind: text("entity_kind").notNull(),
+    entityId: text("entity_id").notNull(),
+    peerId: text("peer_id").notNull(),
+    strategy: text("strategy").notNull(),
+    action: text("action").notNull(), // 'detected' | 'auto_resolved' | 'human_resolved' | 'dismissed'
+    resolvedBy: text("resolved_by"),
+    resolutionNote: text("resolution_note"),
+    payloadBefore: jsonb("payload_before"),
+    payloadAfter: jsonb("payload_after"),
+    recordedAt: timestamp("recorded_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("config_conflict_audit_conflict_idx").on(table.conflictId),
+    index("config_conflict_audit_entity_idx").on(table.entityKind, table.entityId),
+    index("config_conflict_audit_recorded_at_idx").on(table.recordedAt),
+  ],
+);
+
+export type ConfigConflictAuditRow = typeof configConflictAudit.$inferSelect;
+export type InsertConfigConflictAudit = typeof configConflictAudit.$inferInsert;

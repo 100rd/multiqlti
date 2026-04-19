@@ -59,7 +59,7 @@ import { registerSkillMarketRoutes } from "./routes/skill-market";
 import { RegistryManager } from "./skill-market/registry-manager";
 import { McpRegistryAdapter } from "./skill-market/adapters/mcp-registry-adapter";
 import { SkillUpdateChecker } from "./skill-market/update-checker";
-import { registerFederationRoutes, registerCRDTRoutes } from "./routes/federation";
+import { registerFederationRoutes, registerCRDTRoutes, registerConfigConflictRoutes } from "./routes/federation";
 import { registerConnectionRoutes } from "./routes/connections";
 import { registerConnectionsYamlRoutes } from "./routes/connections-yaml";
 import { registerInventoryRoutes } from "./routes/inventory";
@@ -69,6 +69,7 @@ import { registerWorkspaceToolRoutes } from "./routes/workspace-tools";
 import { registerMcpRoutes } from "./routes/mcp";
 import { registerKnowledgeRoutes } from "./routes/knowledge";
 import { SessionSharingService } from "./federation/session-sharing";
+import { InMemoryConflictStore } from "./federation/config-conflict";
 import { ConflictResolutionService } from "./federation/conflict-resolution";
 import { MemoryFederationService } from "./federation/memory-federation";
 import { PipelineSyncService } from "./federation/pipeline-sync";
@@ -300,6 +301,10 @@ export async function registerRoutes(
   registerFederationRoutes(app as unknown as Router, sessionSharing, fm, memoryFederation, pipelineSync, storage, undefined, conflictResolution);
   // Bug #310: Register CRDT routes — returns 503 gracefully when crdtPeerSync is null.
   registerCRDTRoutes(app as unknown as Router, null);
+  // Issue #323: Config-sync conflict management API
+  const conflictStore = new InMemoryConflictStore();
+  app.use("/api/federation/config-conflicts", requireAuth);
+  registerConfigConflictRoutes(app as unknown as Router, conflictStore);
 
   // Graceful shutdown
   httpServer.on("close", async () => {
