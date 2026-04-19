@@ -121,6 +121,7 @@ ${chalk.bold("Subcommands:")}
   ${chalk.cyan("secrets rotate")}       Regenerate keys + re-encrypt all .secret files
   ${chalk.cyan("secrets list")}         List recipients in each .secret file
   ${chalk.cyan("history [--limit N]")}   Show last N apply operations (default 20)
+  ${chalk.cyan("peers")}                Show live federation peer status
 
 ${chalk.bold("Options:")}
   ${chalk.yellow("--json")}              Output machine-readable JSON
@@ -151,6 +152,8 @@ ${chalk.bold("Examples:")}
   npx tsx script/mqlti-config.ts secrets rotate
   npx tsx script/mqlti-config.ts history
   npx tsx script/mqlti-config.ts history --limit 5
+  npx tsx script/mqlti-config.ts peers
+  npx tsx script/mqlti-config.ts peers --json
 `.trim();
 
 // ─── Output helpers ───────────────────────────────────────────────────────────
@@ -1526,6 +1529,209 @@ async function cmdHistory(limit: number): Promise<void> {
   }
 }
 
+
+// ─── peers ────────────────────────────────────────────────────────────────────
+
+/**
+ * `peers` — Show live federation peer status from the running instance.
+ *
+ * Calls GET /api/federation/config-sync/status on the local instance
+ * (MQLTI_INSTANCE_URL or http://localhost:5000) and renders the result in a
+ * human-readable table or as JSON.
+ *
+ * Exit codes:
+ *   0  Success — response received
+ *   1  User error (instance unreachable, bad credentials, etc.)
+ *   2  Internal error (unexpected exception)
+ */
+async function cmdPeers(): Promise<void> {
+  const instanceUrl =
+    process.env["MQLTI_INSTANCE_URL"]?.replace(/\/$/, "") ?? "http://localhost:5000";
+  const statusUrl = `${instanceUrl}/api/federation/config-sync/status`;
+
+  let data: {
+    peers: Array<{
+      peerId: string;
+      peerName: string;
+      endpoint: string;
+      status: string;
+      lastSeenAt: string | null;
+      lastSeenSecs: number | null;
+      queueDepth: number;
+      openConflicts: number;
+    }>;
+    totalPeers: number;
+    syncedPeers: number;
+    badgeState: "green" | "yellow" | "red";
+    openConflicts: number;
+    lastSyncAt: string | null;
+    summary: string;
+  };
+
+  try {
+    const { default: _fetch } = await import(
+      new URL("node-fetch", import.meta.url).href
+    ).catch(() => ({ default: globalThis.fetch as typeof fetch }));
+
+    const fetchFn = (_fetch ?? globalThis.fetch) as typeof fetch;
+    const response = await fetchFn(statusUrl, {
+      headers: { Accept: "application/json" },
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      const errorMsg = `Instance returned HTTP ${response.status}: ${body.slice(0, 200)}`;
+      if (jsonMode) {
+        printJson({ ok: false, subcommand: "peers", error: errorMsg });
+      } else {
+        printError(errorMsg);
+        printInfo(chalk.dim(`  Check that the instance is running at ${instanceUrl}`));
+      }
+      process.exit(1);
+    }
+
+    data = (await response.json()) as typeof data;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const isConnRefused =
+      msg.includes("ECONNREFUSED") ||
+      msg.includes("fetch failed") ||
+      msg.includes("Failed to fetch");
+
+    if (jsonMode) {
+      printJson({
+        ok: false,
+        subcommand: "peers",
+        error: isConnRefused
+          ? `Could not connect to instance at ${instanceUrl}: connection refused`
+          : msg,
+      });
+    } else {
+      if (isConnRefused) {
+        printError(`Could not connect to instance at ${chalk.bold(instanceUrl)}`);
+        printInfo(
+          chalk.dim(
+            `  Set MQLTI_INSTANCE_URL or ensure the instance is running on port 5000.`,
+          ),
+        );
+      } else {
+        printError(`Failed to fetch peer status: ${msg}`);
+      }
+    }
+    process.exit(1);
+  }
+
+  if (jsonMode) {
+    printJson({ ok: true, subcommand: "peers", data });
+    return;
+  }
+
+  // ── Human-readable table ────────────────────────────────────────────────────
+  const badgeColour =
+    data.badgeState === "green"
+      ? chalk.green
+      : data.badgeState === "yellow"
+        ? chalk.yellow
+        : chalk.red;
+  const badgeDot = badgeColour("●");
+
+  printInfo(chalk.bold("Federation peer status") + "  " + badgeDot + "  " + chalk.dim(data.summary));
+  printInfo(chalk.dim(`  Instance: ${instanceUrl}`));
+  printInfo("");
+
+  if (data.peers.length === 0) {
+    printInfo(chalk.dim("  No peers registered. Federation may be disabled."));
+    return;
+  }
+
+  // Column widths (fixed — wide enough for typical IDs and endpoints).
+  const COL_PEER   = 24;
+  const COL_EP     = 30;
+  const COL_STATUS = 10;
+  const COL_SEEN   = 10;
+  const COL_QUEUE  =  7;
+  const COL_CNFL   =  9;
+
+  const pad = (s: string, n: number): string =>
+    s.length >= n ? s.slice(0, n - 1) + "…" : s.padEnd(n);
+
+  const header = [
+    chalk.bold(pad("PEER ID", COL_PEER)),
+    chalk.bold(pad("ENDPOINT", COL_EP)),
+    chalk.bold(pad("STATUS", COL_STATUS)),
+    chalk.bold(pad("LAST SEEN", COL_SEEN)),
+    chalk.bold(pad("QUEUE", COL_QUEUE)),
+    chalk.bold(pad("CONFLICTS", COL_CNFL)),
+  ].join("  ");
+
+  printInfo("  " + header);
+  printInfo("  " + "─".repeat(COL_PEER + COL_EP + COL_STATUS + COL_SEEN + COL_QUEUE + COL_CNFL + 10));
+
+  for (const peer of data.peers) {
+    const statusStr = (() => {
+      switch (peer.status) {
+        case "synced":   return chalk.green(pad("synced", COL_STATUS));
+        case "offline":  return chalk.red(pad("offline", COL_STATUS));
+        case "conflict": return chalk.red(pad("conflict", COL_STATUS));
+        case "pending":  return chalk.yellow(pad("pending", COL_STATUS));
+        default:         return chalk.dim(pad(peer.status, COL_STATUS));
+      }
+    })();
+
+    const lastSeenStr = peer.lastSeenSecs === null
+      ? chalk.dim(pad("unknown", COL_SEEN))
+      : pad(formatSecsAgo(peer.lastSeenSecs), COL_SEEN);
+
+    const queueStr = peer.queueDepth > 0
+      ? chalk.yellow(pad(String(peer.queueDepth), COL_QUEUE))
+      : chalk.dim(pad("0", COL_QUEUE));
+
+    const conflictStr = peer.openConflicts > 0
+      ? chalk.red(pad(String(peer.openConflicts), COL_CNFL))
+      : chalk.dim(pad("0", COL_CNFL));
+
+    printInfo(
+      "  " + [
+        pad(peer.peerId, COL_PEER),
+        pad(peer.endpoint, COL_EP),
+        statusStr,
+        lastSeenStr,
+        queueStr,
+        conflictStr,
+      ].join("  "),
+    );
+  }
+
+  printInfo("");
+  printInfo(
+    chalk.dim(
+      `Total: ${data.totalPeers} peer(s)  |  ` +
+      `Synced: ${data.syncedPeers}  |  ` +
+      `Open conflicts: ${data.openConflicts}` +
+      (data.lastSyncAt ? `  |  Last sync: ${data.lastSyncAt}` : ""),
+    ),
+  );
+
+  if (data.openConflicts > 0) {
+    printInfo("");
+    printWarn(
+      `${data.openConflicts} open conflict(s) detected. ` +
+      `Visit ${chalk.cyan(`${instanceUrl}/settings/peers`)} to resolve.`,
+    );
+  }
+}
+
+/**
+ * Format a duration in seconds as a human-readable "X ago" string.
+ * Mirrors the formatLastSeen helper from the UI hook.
+ */
+function formatSecsAgo(secs: number): string {
+  if (secs < 60)   return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
 // ─── Stub subcommands ─────────────────────────────────────────────────────────
 
 type StubDef = {
@@ -1683,6 +1889,7 @@ async function main(): Promise<void> {
             "push",
             "pull",
             "history",
+            "peers",
             "secrets",
           ],
           flags: ["--json", "--help", "--key-file", "--yes", "--limit"],
@@ -1754,6 +1961,11 @@ async function main(): Promise<void> {
 
       case "history": {
         await cmdHistory(args.limit);
+        break;
+      }
+
+      case "peers": {
+        await cmdPeers();
         break;
       }
 
