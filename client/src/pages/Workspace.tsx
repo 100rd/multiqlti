@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useRoute } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import { RefreshCw, GitBranch, Eye, MessageSquare, Code2, Settings2, Network, Search } from "lucide-react";
+import { RefreshCw, GitBranch, Eye, MessageSquare, Code2, Settings2, Network, Search, Play } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { FileTree } from "@/components/workspace/FileTree";
 import { CodeViewer } from "@/components/workspace/CodeViewer";
@@ -12,6 +12,7 @@ import { ConfigDiffView } from "@/components/workspace/ConfigDiffView";
 import { DependencyGraph } from "@/components/workspace/DependencyGraph";
 import { SymbolSearch } from "@/components/workspace/SymbolSearch";
 import { IndexStatusBadge } from "@/components/workspace/IndexStatusBadge";
+import { RunPipelineDialog } from "@/components/workspace/RunPipelineDialog";
 import { useIndexTrigger } from "@/hooks/useIndexTrigger";
 import { useWorkspaceSocket } from "@/hooks/useWorkspaceSocket";
 import type { WorkspaceRow } from "@shared/schema";
@@ -137,6 +138,7 @@ export default function Workspace() {
   const [isReviewing, setIsReviewing] = useState(false);
   const [showConfigDiff, setShowConfigDiff] = useState(false);
   const [mainView, setMainView] = useState<MainView>("files");
+  const [runPipelineOpen, setRunPipelineOpen] = useState(false);
   const qc = useQueryClient();
 
   const indexTrigger = useIndexTrigger(workspaceId);
@@ -288,8 +290,25 @@ export default function Workspace() {
               Sync
             </button>
           )}
+
+          {/* Run a pipeline against this workspace (issue #343). */}
+          <button
+            onClick={() => setRunPipelineOpen(true)}
+            className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-primary/40 text-primary bg-primary/5 hover:bg-primary/10 transition-colors"
+            data-testid="run-pipeline-button"
+          >
+            <Play className="h-3 w-3" />
+            Run pipeline
+          </button>
         </div>
       </div>
+
+      <RunPipelineDialog
+        workspaceId={workspaceId}
+        workspaceName={workspace.name}
+        open={runPipelineOpen}
+        onOpenChange={setRunPipelineOpen}
+      />
 
       {/* Config diff banner */}
       {showConfigDiff && (

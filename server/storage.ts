@@ -530,6 +530,7 @@ export class MemStorage implements IStorage {
     const run: PipelineRun = {
       id,
       pipelineId: insert.pipelineId,
+      workspaceId: insert.workspaceId ?? null,
       status: insert.status ?? "pending",
       input: insert.input,
       output: insert.output ?? null,

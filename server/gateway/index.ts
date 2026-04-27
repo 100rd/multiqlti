@@ -413,8 +413,15 @@ export class Gateway {
     tools: ToolDefinition[];
     options?: ILLMProviderOptions;
     maxIterations?: number;
+    /**
+     * Optional defaults injected into every tool call's `arguments` (issue #343).
+     * Used so that workspace-aware tools (file-read, code-search, knowledge-search)
+     * can default to the run's bound workspace without the LLM having to specify
+     * it. Explicit args from the LLM still win — defaults only fill missing keys.
+     */
+    workspaceDefaults?: { workspaceId?: string; workspacePath?: string };
   }): Promise<{ content: string; tokensUsed: number; toolCallLog: ToolCallLogEntry[] }> {
-    const { modelSlug, tools, options } = params;
+    const { modelSlug, tools, options, workspaceDefaults } = params;
     const maxIterations = params.maxIterations ?? 10;
     const toolCallLog: ToolCallLogEntry[] = [];
 
@@ -462,6 +469,18 @@ export class Gateway {
 
       // Execute each tool call and collect results
       for (const call of result.toolCalls) {
+        // Apply workspace defaults — only when the LLM didn't already supply
+        // the key. Explicit args win.
+        if (workspaceDefaults) {
+          const merged = { ...call.arguments };
+          if (workspaceDefaults.workspaceId !== undefined && merged.workspaceId === undefined) {
+            merged.workspaceId = workspaceDefaults.workspaceId;
+          }
+          if (workspaceDefaults.workspacePath !== undefined && merged.workspacePath === undefined) {
+            merged.workspacePath = workspaceDefaults.workspacePath;
+          }
+          call.arguments = merged;
+        }
         const callStart = Date.now();
         const toolResult = await toolRegistry.execute(call);
         const durationMs = Date.now() - callStart;

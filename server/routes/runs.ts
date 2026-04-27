@@ -40,6 +40,10 @@ function maskUrl(value: string): string {
 const CreateRunSchema = z.object({
   pipelineId: z.string().min(1, "pipelineId is required").max(100),
   input: z.string().min(1, "input must be a non-empty string").max(50000),
+  // Optional binding to a workspace (issue #343). When set, the run is recorded
+  // against the workspace and tools (file-read, code-search, knowledge-search)
+  // default to that workspace's path unless the tool call overrides it.
+  workspaceId: z.string().max(100).optional(),
   variables: z.record(z.string().max(10000))
     .refine(
       (v) => Object.keys(v).length <= 50,
@@ -138,7 +142,7 @@ export function registerRunRoutes(
   });
 
   router.post("/api/runs", validateBody(CreateRunSchema), async (req, res) => {
-    const { pipelineId, input, variables } = req.body as z.infer<typeof CreateRunSchema>;
+    const { pipelineId, input, workspaceId, variables } = req.body as z.infer<typeof CreateRunSchema>;
     try {
       // C3: Apply rate limiting for manager-mode runs
       const pipeline = await storage.getPipeline(pipelineId);
@@ -152,8 +156,18 @@ export function registerRunRoutes(
           });
         }
       }
+      // Validate workspaceId references an existing workspace (issue #343).
+      // The DB FK enforces this on insert, but checking here returns a clearer
+      // 400 instead of letting the DB error bubble up as a 400 with a noisy
+      // constraint message.
+      if (workspaceId) {
+        const ws = await storage.getWorkspace(workspaceId);
+        if (!ws) {
+          return res.status(400).json({ error: `Workspace not found: ${workspaceId}` });
+        }
+      }
       const triggeredBy = req.user?.id;
-      const run = await controller.startRun(pipelineId, input, variables, triggeredBy);
+      const run = await controller.startRun(pipelineId, input, variables, triggeredBy, workspaceId);
       res.status(201).json(run);
     } catch (e) {
       res.status(400).json({ error: (e as Error).message });

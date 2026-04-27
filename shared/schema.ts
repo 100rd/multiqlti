@@ -138,6 +138,11 @@ export const pipelineRuns = pgTable("pipeline_runs", {
     .primaryKey()
     .default(sql`gen_random_uuid()`),
   pipelineId: varchar("pipeline_id").notNull(),
+  // Optional link to the workspace the run is operating against. Pipelines are
+  // workspace-agnostic templates; binding happens per-run. NULL means the run
+  // is not tied to any workspace (legacy / unbound runs). FK uses ON DELETE
+  // SET NULL so deleting a workspace doesn't cascade-destroy run history.
+  workspaceId: varchar("workspace_id"),
   status: text("status").notNull().default("pending"),
   input: text("input").notNull(),
   output: jsonb("output"),
