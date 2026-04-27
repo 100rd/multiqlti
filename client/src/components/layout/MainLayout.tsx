@@ -57,7 +57,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: MessageSquare, label: "Chat & Models", href: "/chat" },
     {
       icon: GitMerge,
-      label: "Workflows",
+      label: "Pipelines",
       href: "/pipelines",
       badge: pendingCount > 0 ? pendingCount : undefined,
     },

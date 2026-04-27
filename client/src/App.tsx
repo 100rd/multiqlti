@@ -11,7 +11,6 @@ import { useAuth } from "@/hooks/use-auth";
 import MainLayout from "@/components/layout/MainLayout";
 import Dashboard from "@/pages/Dashboard";
 import Chat from "@/pages/Chat";
-import Workflow from "@/pages/Workflow";
 import PipelineList from "@/pages/PipelineList";
 import PipelineDetail from "@/pages/PipelineDetail";
 import PipelineRun from "@/pages/PipelineRun";
@@ -66,9 +65,6 @@ function ProtectedRouter() {
         )} />
         <Route path="/chat" component={() => (
           <ErrorBoundary><Chat /></ErrorBoundary>
-        )} />
-        <Route path="/workflow" component={() => (
-          <ErrorBoundary><Workflow /></ErrorBoundary>
         )} />
         <Route path="/pipelines" component={() => (
           <ErrorBoundary><PipelineList /></ErrorBoundary>
