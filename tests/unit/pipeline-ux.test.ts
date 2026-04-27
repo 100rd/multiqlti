@@ -22,7 +22,7 @@ const PROJECT_ROOT = resolve(import.meta.dirname, "../..");
 
 describe("T-300 — MultiAgentPipeline: pipelines[0] fallback removal", () => {
   const componentSource = readFileSync(
-    resolve(PROJECT_ROOT, "client/src/components/workflow/MultiAgentPipeline.tsx"),
+    resolve(PROJECT_ROOT, "client/src/components/pipeline/MultiAgentPipeline.tsx"),
     "utf-8",
   );
 
@@ -138,7 +138,7 @@ describe("T-302 — computeCostMultiplier function", () => {
 
 describe("T-302 — MultiAgentPipeline component: costMultiplier rendered on buttons", () => {
   const componentSource = readFileSync(
-    resolve(PROJECT_ROOT, "client/src/components/workflow/MultiAgentPipeline.tsx"),
+    resolve(PROJECT_ROOT, "client/src/components/pipeline/MultiAgentPipeline.tsx"),
     "utf-8",
   );
 

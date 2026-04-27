@@ -268,7 +268,7 @@ export default function PipelineRun() {
       {/* Header */}
       <div className="h-14 border-b border-border flex items-center justify-between px-6 bg-card shrink-0">
         <div className="flex items-center gap-3">
-          <Link href="/workflow">
+          <Link href="/pipelines">
             <Button variant="ghost" size="icon" className="h-8 w-8">
               <ArrowLeft className="h-4 w-4" />
             </Button>
