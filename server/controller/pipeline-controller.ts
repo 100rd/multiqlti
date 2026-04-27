@@ -84,7 +84,13 @@ export class PipelineController {
     }
   }
 
-  async startRun(pipelineId: string, input: string, variables?: Record<string, string>, triggeredBy?: string): Promise<PipelineRun> {
+  async startRun(
+    pipelineId: string,
+    input: string,
+    variables?: Record<string, string>,
+    triggeredBy?: string,
+    workspaceId?: string,
+  ): Promise<PipelineRun> {
     const pipeline = await this.storage.getPipeline(pipelineId);
     if (!pipeline) throw new Error(`Pipeline not found: ${pipelineId}`);
 
@@ -95,6 +101,7 @@ export class PipelineController {
       pipelineId,
       status: "running",
       input,
+      workspaceId: workspaceId ?? null,
       currentStageIndex: 0,
       startedAt: new Date(),
       triggeredBy: triggeredBy ?? null,
@@ -238,6 +245,11 @@ export class PipelineController {
           ? this.memoryProvider.formatForPrompt(relevantMemories)
           : undefined;
 
+        const runWorkspaceId = (run as { workspaceId?: string | null }).workspaceId ?? null;
+        const runWorkspacePath = runWorkspaceId
+          ? (await this.storage.getWorkspace(runWorkspaceId))?.path ?? null
+          : null;
+
         const context = {
           runId: run.id,
           stageIndex,
@@ -251,6 +263,9 @@ export class PipelineController {
           memoryContext,
           variables: ephemeralVarStore.get(run.id) ?? undefined,
           stageConfig: dagStage as unknown as PipelineStageConfig,
+          // Workspace binding for the run (issue #343).
+          workspaceId: runWorkspaceId ?? undefined,
+          workspacePath: runWorkspacePath ?? undefined,
         };
 
         const result = dagStage.remoteAgent
@@ -487,6 +502,13 @@ export class PipelineController {
     const previousOutputs: Record<string, unknown>[] = [];
     const fullContext: StageOutput[] = [];
 
+    // Resolve the run's workspace once so per-stage contexts can use it
+    // without hitting the DB on every stage (issue #343).
+    const runWorkspaceId = (run as { workspaceId?: string | null }).workspaceId ?? null;
+    const runWorkspacePath = runWorkspaceId
+      ? (await this.storage.getWorkspace(runWorkspaceId))?.path ?? null
+      : null;
+
     // Collect outputs from already-completed stages (for resume)
     if (startFromIndex > 0) {
       const executions = await this.storage.getStageExecutions(run.id);
@@ -592,6 +614,10 @@ export class PipelineController {
           variables: ephemeralVarStore.get(run.id) ?? undefined,
           stageConfig: resolvedStage,
           delegate: this.buildDelegateFn(run.id, stage.teamId, resolvedStage),
+          // Workspace binding for the run (issue #343). Tools default to this
+          // workspace when their input doesn't supply one.
+          workspaceId: runWorkspaceId ?? undefined,
+          workspacePath: runWorkspacePath ?? undefined,
         };
 
         // Pass execution strategy (undefined = single, handled in BaseTeam)

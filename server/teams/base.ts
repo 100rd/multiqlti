@@ -85,6 +85,16 @@ export abstract class BaseTeam {
             toolChoice: toolConfig?.toolChoice ?? 'auto',
           },
           maxIterations: toolConfig?.maxToolCalls ?? 10,
+          // Workspace binding (issue #343). When a run is bound to a workspace,
+          // tool calls that don't supply workspaceId / workspacePath are filled
+          // in from this default. Tools that do specify these args explicitly
+          // still win.
+          workspaceDefaults: (context.workspaceId || context.workspacePath)
+            ? {
+                workspaceId: context.workspaceId,
+                workspacePath: context.workspacePath,
+              }
+            : undefined,
         });
 
         const parsed = this.parseOutput(result.content);

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { usePipelineRun, useCancelRun, useApproveStage, useRejectStage, useExportRun, usePipeline, useSwarmResults } from "@/hooks/use-pipeline";
 import { usePipelineEvents, useWebSocket } from "@/hooks/use-websocket";
 import StageProgress from "@/components/pipeline/StageProgress";
@@ -78,6 +79,23 @@ export default function PipelineRun() {
   const pipelineEvents = usePipelineEvents(runId);
   const { data: pipeline } = usePipeline(run?.pipelineId ?? "");
   const isManagerMode = pipeline != null && (pipeline as Record<string, unknown>).managerConfig != null;
+
+  // Linked workspace chip (issue #343). Fetch the workspace name lazily when
+  // the run is bound to one. Falls back to a generic chip on error so the
+  // link is still useful.
+  const linkedWorkspaceId = (run as { workspaceId?: string | null } | undefined)?.workspaceId ?? null;
+  const { data: linkedWorkspace } = useQuery<{ id: string; name: string }>({
+    queryKey: ["/api/workspaces", linkedWorkspaceId],
+    queryFn: async () => {
+      const token = localStorage.getItem("auth_token");
+      const res = await fetch(`/api/workspaces/${linkedWorkspaceId}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+    enabled: !!linkedWorkspaceId,
+  });
 
   const [rejectReasonMap, setRejectReasonMap] = useState<Record<number, string>>({});
 
@@ -285,6 +303,17 @@ export default function PipelineRun() {
               <span className="text-[10px] text-muted-foreground">
                 Run {runId.slice(0, 8)}
               </span>
+              {linkedWorkspaceId && (
+                <Link href={`/workspaces/${linkedWorkspaceId}`}>
+                  <Badge
+                    variant="outline"
+                    className="text-[10px] h-4 px-1.5 cursor-pointer hover:bg-primary/10 hover:border-primary/40"
+                    data-testid="run-linked-workspace-chip"
+                  >
+                    workspace: {linkedWorkspace?.name ?? linkedWorkspaceId.slice(0, 8)}
+                  </Badge>
+                </Link>
+              )}
             </div>
           </div>
         </div>

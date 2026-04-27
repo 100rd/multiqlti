@@ -147,8 +147,14 @@ export function usePipelineRun(runId: string) {
 export function useStartRun() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { pipelineId: string; input: string; variables?: Record<string, string> }) =>
-      apiRequest("POST", "/api/runs", data),
+    mutationFn: (data: {
+      pipelineId: string;
+      input: string;
+      variables?: Record<string, string>;
+      // Optional workspace binding (issue #343). When set, the run is recorded
+      // against the workspace and tools default to it.
+      workspaceId?: string;
+    }) => apiRequest("POST", "/api/runs", data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/runs"] });
     },

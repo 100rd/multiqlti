@@ -704,6 +704,13 @@ export interface StageContext {
   stageConfig?: PipelineStageConfig;
   variables?: Record<string, string>;
   delegate?: DelegateFn; // present when DelegationService is active and stage has delegationEnabled
+  // Optional workspace binding for the run (issue #343). Tools that need a
+  // workspace (file-read, code-search, knowledge-search, ...) default to this
+  // workspace when their input doesn't supply one. Both fields are populated
+  // together — workspaceId is the row id, workspacePath is the resolved
+  // filesystem path for tool convenience.
+  workspaceId?: string;
+  workspacePath?: string;
 }
 
 export interface TeamResult {
