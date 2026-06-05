@@ -35,7 +35,25 @@ export const ConfigSchema = z.object({
   }).default({}),
   providers: z.object({
     anthropic: z.object({ apiKey: z.string().optional() }).default({}),
+    /**
+     * Cloud Gemini API (billed). Kept optional for backward compatibility but
+     * hidden by default — Antigravity (below) is the preferred local,
+     * subscription-backed replacement (issue #348). Only registered when an
+     * apiKey is explicitly present AND Antigravity is disabled.
+     */
     google: z.object({ apiKey: z.string().optional() }).default({}),
+    /**
+     * Local Antigravity CLI provider (subscription-backed, no Gemini API
+     * tokens). Enabled by default; the gateway registers it under the
+     * "antigravity" provider key and mirrors it onto "google" so existing
+     * Gemini-routed models run through the local CLI.
+     */
+    antigravity: z.object({
+      enabled: z.boolean().default(true),
+      binPath: z.string().optional(),
+      model: z.string().optional(),
+      timeoutMs: z.coerce.number().int().positive().optional(),
+    }).default({}),
     xai: z.object({ apiKey: z.string().optional() }).default({}),
     vllm: z.object({ endpoint: z.string().url().optional() }).default({}),
     ollama: z.object({ endpoint: z.string().url().optional() }).default({}),
