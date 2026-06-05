@@ -8,6 +8,30 @@ import type { ProviderMessage } from "@shared/types";
 import { validateBody, validateQuery } from "../middleware/validate";
 import { toolRegistry } from "../tools/index";
 
+// ─── Error sanitization ──────────────────────────────────────────────────────
+
+/**
+ * CLI-provider error names whose messages embed raw stderr (host paths, install
+ * hints, "run /login"). These must not reach the client.
+ */
+const CLI_ERROR_NAMES: ReadonlySet<string> = new Set([
+  "CliExecutionError",
+  "CliNotInstalledError",
+  "AntigravityCliError",
+]);
+
+/**
+ * Map an error to a safe client-facing message. CLI errors carry host-revealing
+ * stderr, so they are logged server-side and replaced with a generic message.
+ */
+export function toClientErrorMessage(error: unknown): string {
+  if (error instanceof Error && CLI_ERROR_NAMES.has(error.name)) {
+    console.error("[chat] model backend (CLI) error:", error.message);
+    return "Model backend unavailable. Please try again.";
+  }
+  return error instanceof Error ? error.message : "Unexpected error";
+}
+
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
 
 const HistoryMessageSchema = z.object({
@@ -193,7 +217,7 @@ export function registerChatRoutes(
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     } catch (error) {
       res.write(
-        `data: ${JSON.stringify({ error: (error as Error).message })}\n\n`,
+        `data: ${JSON.stringify({ error: toClientErrorMessage(error) })}\n\n`,
       );
     }
     res.end();
