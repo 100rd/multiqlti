@@ -1,10 +1,12 @@
-import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, sql as drizzleSql } from "drizzle-orm";
+import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, sql as drizzleSql } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import { db } from "./db";
 import type { IStorage, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint } from "./storage";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
 import {
   users, models, pipelines, pipelineRuns,
   stageExecutions, questions, chatMessages, llmRequests,
+  lessons,
   memories,
   mcpServers,
   delegationRequests,
@@ -23,6 +25,7 @@ import {
   type Pipeline, type InsertPipeline,
   type PipelineRun, type InsertPipelineRun,
   type StageExecution, type InsertStageExecution,
+  type Lesson, type InsertLesson,
   type Question, type InsertQuestion,
   type ChatMessage, type InsertChatMessage,
   type LlmRequest, type InsertLlmRequest,
@@ -73,6 +76,7 @@ import {
   type SessionConflictRow,
   type DecisionLogRow,
 } from "@shared/schema";
+import type { LessonRecallFilter } from "./memory/lessons/types";
 import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome } from "@shared/types";
 
 import { encrypt, decrypt } from "./crypto";
@@ -234,6 +238,51 @@ export class PgStorage implements IStorage {
       .returning();
     if (!row) throw new Error(`Stage execution not found: ${id}`);
     return row;
+  }
+
+  // ─── Lessons (agent-experience memory — Track B) ─────
+
+  async createLesson(lesson: InsertLesson): Promise<Lesson> {
+    const [row] = await db.insert(lessons).values(lesson).returning();
+    return row;
+  }
+
+  async recallLessons(filter: LessonRecallFilter): Promise<Lesson[]> {
+    const conditions: SQL[] = [];
+    if (filter.workspaceId !== undefined) {
+      conditions.push(
+        filter.workspaceId === null
+          ? isNull(lessons.workspaceId)
+          : eq(lessons.workspaceId, filter.workspaceId),
+      );
+    }
+    if (filter.teamId !== undefined) {
+      conditions.push(
+        filter.teamId === null
+          ? isNull(lessons.teamId)
+          : eq(lessons.teamId, filter.teamId),
+      );
+    }
+    if (filter.outcome !== undefined) {
+      conditions.push(eq(lessons.outcome, filter.outcome));
+    }
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    return db
+      .select()
+      .from(lessons)
+      .where(where)
+      .orderBy(desc(lessons.createdAt))
+      .limit(filter.limit ?? 10);
+  }
+
+  async getLessons(workspaceId?: string): Promise<Lesson[]> {
+    const where =
+      workspaceId != null ? eq(lessons.workspaceId, workspaceId) : undefined;
+    return db
+      .select()
+      .from(lessons)
+      .where(where)
+      .orderBy(desc(lessons.createdAt));
   }
 
   // ─── Questions ──────────────────────────────────────

@@ -55,8 +55,11 @@ import {
   type InsertBudget,
   type UpdateBudget,
   type WorkspaceSettingsRow,
+  type Lesson,
+  type InsertLesson,
 } from "@shared/schema";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome } from "@shared/types";
+import type { LessonRecallFilter } from "./memory/lessons/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
 import { configLoader } from "./config/loader";
@@ -117,6 +120,21 @@ export interface LlmTimelinePoint {
   costUsd: number;
 }
 
+/** Recency sort key for a lesson (createdAt may be null in degenerate rows). */
+function lessonTime(lesson: Lesson): number {
+  return lesson.createdAt?.getTime() ?? 0;
+}
+
+/** True when a lesson satisfies a recall filter (undefined fields ignored). */
+function matchesLessonFilter(lesson: Lesson, filter: LessonRecallFilter): boolean {
+  if (filter.workspaceId !== undefined && lesson.workspaceId !== filter.workspaceId) {
+    return false;
+  }
+  if (filter.teamId !== undefined && lesson.teamId !== filter.teamId) return false;
+  if (filter.outcome !== undefined && lesson.outcome !== filter.outcome) return false;
+  return true;
+}
+
 export interface IStorage {
   // Users (legacy scaffold — auth handled by AuthService)
   getUser(id: string): Promise<UserRow | undefined>;
@@ -150,6 +168,11 @@ export interface IStorage {
   getStageExecution(id: string): Promise<StageExecution | undefined>;
   createStageExecution(execution: InsertStageExecution): Promise<StageExecution>;
   updateStageExecution(id: string, updates: Partial<StageExecution>): Promise<StageExecution>;
+
+  // Lessons (agent-experience memory — Track B)
+  createLesson(lesson: InsertLesson): Promise<Lesson>;
+  recallLessons(filter: LessonRecallFilter): Promise<Lesson[]>;
+  getLessons(workspaceId?: string): Promise<Lesson[]>;
 
   // Questions
   getQuestions(runId: string): Promise<Question[]>;
@@ -358,6 +381,7 @@ export class MemStorage implements IStorage {
   private pipelinesMap: Map<string, Pipeline>;
   private runs: Map<string, PipelineRun>;
   private stages: Map<string, StageExecution>;
+  private lessonsMap: Map<string, Lesson>;
   private questionsMap: Map<string, Question>;
   private messages: Map<string, ChatMessage>;
   private llmRequestsMap: Map<number, LlmRequest>;
@@ -377,6 +401,7 @@ export class MemStorage implements IStorage {
     this.pipelinesMap = new Map();
     this.runs = new Map();
     this.stages = new Map();
+    this.lessonsMap = new Map();
     this.questionsMap = new Map();
     this.messages = new Map();
     this.llmRequestsMap = new Map();
@@ -609,6 +634,43 @@ export class MemStorage implements IStorage {
     const updated = { ...stage, ...updates };
     this.stages.set(id, updated);
     return updated;
+  }
+
+  // ─── Lessons (agent-experience memory — Track B) ──
+
+  async createLesson(insert: InsertLesson): Promise<Lesson> {
+    const id = randomUUID();
+    const lesson: Lesson = {
+      id,
+      workspaceId: insert.workspaceId ?? null,
+      runId: insert.runId ?? null,
+      stageId: insert.stageId ?? null,
+      teamId: insert.teamId ?? null,
+      modelSlug: insert.modelSlug ?? null,
+      outcome: insert.outcome,
+      category: insert.category ?? null,
+      errorPattern: insert.errorPattern ?? null,
+      title: insert.title,
+      summary: insert.summary,
+      detail: insert.detail ?? null,
+      createdAt: new Date(),
+    };
+    this.lessonsMap.set(id, lesson);
+    return lesson;
+  }
+
+  async recallLessons(filter: LessonRecallFilter): Promise<Lesson[]> {
+    const limit = filter.limit ?? 10;
+    return Array.from(this.lessonsMap.values())
+      .filter((l) => matchesLessonFilter(l, filter))
+      .sort((a, b) => lessonTime(b) - lessonTime(a))
+      .slice(0, limit);
+  }
+
+  async getLessons(workspaceId?: string): Promise<Lesson[]> {
+    return Array.from(this.lessonsMap.values())
+      .filter((l) => workspaceId == null || l.workspaceId === workspaceId)
+      .sort((a, b) => lessonTime(b) - lessonTime(a));
   }
 
   // ─── Questions ──────────────────────────────────

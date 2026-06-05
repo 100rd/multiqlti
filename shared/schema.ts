@@ -1835,3 +1835,59 @@ export const configConflictAudit = pgTable(
 
 export type ConfigConflictAuditRow = typeof configConflictAudit.$inferSelect;
 export type InsertConfigConflictAudit = typeof configConflictAudit.$inferInsert;
+
+// ─── Lessons (Agent-Experience Memory — Track B) ─────────────────────────────
+//
+// Native "lessons" layer per the merged memory-architecture ADR. Captures the
+// OUTCOME of a run/stage (what worked / what failed) as a reusable lesson and
+// lets the planning stage recall relevant prior lessons so the pipeline
+// improves across runs. Source material lives in `stage_executions`
+// (status/error/output/rejectionReason — `error` added in #342) and run
+// outcomes. Nullable-friendly; no backfill.
+
+export const lessonOutcomes = ["success", "failure"] as const;
+export type LessonOutcome = (typeof lessonOutcomes)[number];
+
+export const lessons = pgTable(
+  "lessons",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    // Workspace the run operated against; NULL for unbound / legacy runs.
+    workspaceId: varchar("workspace_id"),
+    runId: varchar("run_id"),
+    // NULL when the lesson summarizes a whole run rather than a single stage.
+    stageId: varchar("stage_id"),
+    teamId: text("team_id"),
+    modelSlug: text("model_slug"),
+    outcome: text("outcome").notNull().$type<LessonOutcome>(),
+    // Coarse classification of a failure (e.g. "sandbox", "rejection",
+    // "exception"); NULL for successes or when unclassified.
+    category: text("category"),
+    // Normalized failure signature for grouping similar lessons; NULL otherwise.
+    errorPattern: text("error_pattern"),
+    title: text("title").notNull(),
+    summary: text("summary").notNull(),
+    // Structured evidence (truncated error, output keys, rejection reason …).
+    detail: jsonb("detail").$type<Record<string, unknown> | null>(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("lessons_workspace_idx").on(table.workspaceId),
+    index("lessons_team_idx").on(table.teamId),
+    index("lessons_outcome_idx").on(table.outcome),
+    index("lessons_created_at_idx").on(table.createdAt),
+  ],
+);
+
+export const insertLessonSchema = createInsertSchema(lessons, {
+  outcome: z.enum(lessonOutcomes),
+  detail: z.record(z.unknown()).nullable().optional(),
+}).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertLesson = z.infer<typeof insertLessonSchema>;
+export type Lesson = typeof lessons.$inferSelect;

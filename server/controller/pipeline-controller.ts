@@ -15,6 +15,9 @@ import { SandboxExecutor } from "../sandbox/executor";
 import { ThoughtTreeCollector } from "../pipeline/thought-tree-collector";
 import { MemoryExtractor } from "../memory/extractor";
 import { MemoryProvider } from "../memory/provider";
+import { LessonCaptureService } from "../memory/lessons/capture";
+import { LessonRecallService } from "../memory/lessons/recall";
+import type { Lesson } from "@shared/schema";
 import { ephemeralVarStore } from "../run-variables/store";
 import { GuardrailValidator } from "../pipeline/guardrail-validator.js";
 import { ManagerAgent } from "../pipeline/manager-agent";
@@ -36,6 +39,8 @@ export class PipelineController {
   private swarmExecutor: SwarmExecutor;
   private memoryExtractor: MemoryExtractor;
   private memoryProvider: MemoryProvider;
+  private lessonCapture: LessonCaptureService;
+  private lessonRecall: LessonRecallService;
   private guardrailValidator: GuardrailValidator;
   private delegationService?: DelegationService;
   private dagExecutor: DAGExecutor;
@@ -67,6 +72,8 @@ export class PipelineController {
     );
     this.memoryExtractor = new MemoryExtractor();
     this.memoryProvider = new MemoryProvider(storage);
+    this.lessonCapture = new LessonCaptureService(storage);
+    this.lessonRecall = new LessonRecallService(storage);
     this.guardrailValidator = new GuardrailValidator(gateway ?? createNullGateway());
     this.delegationService = delegationService;
     this.managerAgent = managerAgent;
@@ -309,6 +316,8 @@ export class PipelineController {
           });
         }
 
+        await this.captureStageLesson(stageExec.id);
+
         return { output: result.output, failed: false };
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : "Unknown error";
@@ -334,6 +343,8 @@ export class PipelineController {
           });
         }
 
+        await this.captureStageLesson(stageExec.id);
+
         return { output: {}, failed: true };
       }
     };
@@ -352,6 +363,43 @@ export class PipelineController {
     if (run == null || run.output != null) return null;
     const failed = executions.find((e) => e.status === "failed" && e.error != null);
     return failed?.error ?? null;
+  }
+
+  /**
+   * Capture an agent-experience lesson for a finished stage (Track B). Reads
+   * the freshly-updated stage row so it sees the persisted status/error,
+   * resolves the run's workspace, then derives + stores a lesson. Fully
+   * defensive — capture failures are swallowed inside LessonCaptureService and
+   * must never break the run path. Workspace resolution is wrapped so a lookup
+   * failure degrades to a null workspace rather than throwing into the run.
+   */
+  private async captureStageLesson(stageExecId: string): Promise<void> {
+    try {
+      const stage = await this.storage.getStageExecution(stageExecId);
+      if (stage == null) return;
+      const run = await this.storage.getPipelineRun(stage.runId);
+      const workspaceId =
+        (run as { workspaceId?: string | null } | undefined)?.workspaceId ?? null;
+      await this.lessonCapture.captureStage(stage, {
+        runId: stage.runId,
+        workspaceId,
+      });
+    } catch {
+      // Lesson capture is best-effort; never propagate into the run path.
+    }
+  }
+
+  /**
+   * Recall prior lessons relevant to a planning context (Track B). Exposed so a
+   * planning stage can fold past failures/successes into its prompt; recall is
+   * itself defensive (returns [] on storage failure) so it never breaks a run.
+   */
+  async recallLessonsForPlanning(
+    workspaceId: string | null,
+    teamId?: string | null,
+    limit?: number,
+  ): Promise<Lesson[]> {
+    return this.lessonRecall.recallForPlanning({ workspaceId, teamId }, limit);
   }
 
   /** Called after DAGExecutor finishes to mark run as completed or failed. */
@@ -844,6 +892,8 @@ export class PipelineController {
           ...(sandboxResult ? { sandboxResult } : {}),
         });
 
+        await this.captureStageLesson(stageExec.id);
+
         previousOutputs.push(result.output);
         fullContext.push({ teamId: stage.teamId, output: result.output, stageIndex: i });
 
@@ -940,6 +990,8 @@ export class PipelineController {
           // has none yet, so the run row is self-explaining (issue #342).
           ...(run.output == null ? { output: errMsg } : {}),
         });
+
+        await this.captureStageLesson(stageExec.id);
 
         this.broadcast(run.id, {
           type: "stage:failed",
