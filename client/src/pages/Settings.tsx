@@ -43,7 +43,7 @@ import { useQueryClient, useMutation, useQuery } from "@tanstack/react-query";
 import { ArgocdSettings } from "@/components/settings/ArgocdSettings";
 import { SettingsSection } from "@/components/settings/SettingsSection";
 import { VersionInfoPanel } from "@/components/settings/VersionInfoPanel";
-import { LmStudioConnect } from "@/components/settings/LmStudioConnect";
+import { LocalModelsSection } from "@/components/settings/LocalModelsSection";
 
 type CloudProvider = "anthropic" | "google" | "xai";
 
@@ -298,58 +298,13 @@ export default function Settings() {
       <ScrollArea className="flex-1">
         <div className="max-w-4xl mx-auto p-6 space-y-3">
 
-          {/* ── 1. Gateway Status ──────────────────────────── */}
-          <SettingsSection
-            title="Gateway Status"
-            icon={<Server className="h-4 w-4" />}
-            shortDescription="Live connection status for all configured model providers."
-            longDescription="Shows real-time connectivity for each configured provider. Green = reachable and authenticated. Yellow = key configured but not tested. Red = unreachable or auth failed. Refresh to re-check."
-            defaultOpen={true}
-          >
-            <div className="p-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="flex items-center gap-3 p-3 rounded-lg border border-border">
-                  {gatewayStatus?.vllm ? (
-                    <CheckCircle2 className="h-5 w-5 text-emerald-500" />
-                  ) : (
-                    <XCircle className="h-5 w-5 text-muted-foreground" />
-                  )}
-                  <div>
-                    <div className="text-sm font-medium">vLLM</div>
-                    <div className="text-xs text-muted-foreground font-mono">
-                      {(gatewayStatus as Record<string, unknown>)?.vllmEndpoint as string ?? "Not configured"}
-                    </div>
-                    {!(gatewayStatus as Record<string, unknown>)?.vllmEndpoint && (
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Set via <code className="font-mono">VLLM_ENDPOINT</code> environment variable
-                      </p>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 p-3 rounded-lg border border-border">
-                  {gatewayStatus?.ollama ? (
-                    <CheckCircle2 className="h-5 w-5 text-emerald-500" />
-                  ) : (
-                    <XCircle className="h-5 w-5 text-muted-foreground" />
-                  )}
-                  <div>
-                    <div className="text-sm font-medium">Ollama</div>
-                    <div className="text-xs text-muted-foreground font-mono">
-                      {(gatewayStatus as Record<string, unknown>)?.ollamaEndpoint as string ?? "Not configured"}
-                    </div>
-                    {!(gatewayStatus as Record<string, unknown>)?.ollamaEndpoint && (
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Set via <code className="font-mono">OLLAMA_ENDPOINT</code> environment variable
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </SettingsSection>
-
-          {/* ── 1.5 LM Studio Quick Connect ───────────────── */}
-          <LmStudioConnect />
+          {/* ── 1. Local models (experimental, collapsed by default) ── */}
+          <LocalModelsSection
+            vllmActive={Boolean(gatewayStatus?.vllm)}
+            vllmEndpoint={((gatewayStatus as Record<string, unknown>)?.vllmEndpoint as string | undefined) ?? null}
+            ollamaActive={Boolean(gatewayStatus?.ollama)}
+            ollamaEndpoint={((gatewayStatus as Record<string, unknown>)?.ollamaEndpoint as string | undefined) ?? null}
+          />
 
           {/* ── 2. Cloud Providers ─────────────────────────── */}
           <SettingsSection
