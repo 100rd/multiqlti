@@ -193,7 +193,9 @@ describe("MockProvider", () => {
 
 describe("Gateway.testProvider()", () => {
   it("throws when provider is not registered", async () => {
-    // Minimal Gateway stub with empty registry
+    // Minimal Gateway stub with empty registry.
+    // NOTE: "anthropic" is always registered now (CLI subscription provider is
+    // the default — issue #347), so we probe an unconfigured key instead.
     const { Gateway } = await import("../../server/gateway/index.js");
     const fakeStorage = {
       getModelBySlug: async () => null,
@@ -201,7 +203,7 @@ describe("Gateway.testProvider()", () => {
     } as unknown as import("../../server/storage.js").IStorage;
 
     const gw = new Gateway(fakeStorage);
-    await expect(gw.testProvider("anthropic")).rejects.toThrow("Provider not configured");
+    await expect(gw.testProvider("xai")).rejects.toThrow("Provider not configured");
   });
 
   it("calls the real provider's complete() — does NOT fall back to MockProvider", async () => {
