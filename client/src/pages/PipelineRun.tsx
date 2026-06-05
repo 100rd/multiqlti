@@ -6,6 +6,7 @@ import { usePipelineEvents, useWebSocket } from "@/hooks/use-websocket";
 import StageProgress from "@/components/pipeline/StageProgress";
 import QuestionPanel from "@/components/pipeline/QuestionPanel";
 import StageOutput from "@/components/pipeline/StageOutput";
+import StageError from "@/components/pipeline/StageError";
 import DelegationLog from "@/components/pipeline/DelegationLog";
 import SwarmProgress from "@/components/pipeline/SwarmProgress";
 import SwarmResultView from "@/components/pipeline/SwarmResultView";
@@ -246,6 +247,7 @@ export default function PipelineRun() {
     modelSlug: string;
     status: string;
     output: Record<string, unknown> | null;
+    error?: string | null;
     tokensUsed: number;
     approvalStatus?: string | null;
   }>;
@@ -265,6 +267,7 @@ export default function PipelineRun() {
   }
 
   const completedStages = pipelineStages.filter((s) => s.status === "completed" && s.output);
+  const failedStages = pipelineStages.filter((s) => s.status === "failed" && s.error);
   const questions = pipelineEvents.questions.length > 0
     ? pipelineEvents.questions
     : (run.questions ?? []);
@@ -515,6 +518,18 @@ export default function PipelineRun() {
                           </div>
                         )}
                       </div>
+                    );
+                  })}
+
+                  {failedStages.map((stage) => {
+                    const team =
+                      SDLC_TEAMS[stage.teamId as keyof typeof SDLC_TEAMS];
+                    return (
+                      <StageError
+                        key={`error-${stage.id}`}
+                        teamName={team?.name ?? stage.teamId}
+                        error={stage.error ?? ""}
+                      />
                     );
                   })}
                   {status === "completed" && (

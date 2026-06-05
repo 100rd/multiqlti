@@ -248,5 +248,33 @@ describe("MemStorage", () => {
       expect(updated.status).toBe("completed");
       expect(updated.output).toEqual({ summary: "Done" });
     });
+
+    it("createStageExecution() defaults error to null", async () => {
+      const pipeline = await storage.createPipeline({ name: "P", stages: [] });
+      const run = await storage.createPipelineRun({ pipelineId: pipeline.id, status: "running", input: "i", currentStageIndex: 0 });
+      const stage = await storage.createStageExecution({ runId: run.id, stageIndex: 0, teamId: "planning", modelSlug: "mock", status: "pending", input: {} });
+
+      expect(stage.error).toBeNull();
+    });
+
+    it("updateStageExecution() persists the error message on a failed stage (issue #342)", async () => {
+      const pipeline = await storage.createPipeline({ name: "P", stages: [] });
+      const run = await storage.createPipelineRun({ pipelineId: pipeline.id, status: "running", input: "i", currentStageIndex: 0 });
+      const stage = await storage.createStageExecution({ runId: run.id, stageIndex: 0, teamId: "planning", modelSlug: "mock", status: "running", input: {} });
+
+      const failureMessage = "http://host.docker.internal:1234 error 400: Failed to load model";
+      const updated = await storage.updateStageExecution(stage.id, {
+        status: "failed",
+        completedAt: new Date(),
+        error: failureMessage,
+      });
+
+      expect(updated.status).toBe("failed");
+      expect(updated.error).toBe(failureMessage);
+
+      // The error survives a re-read (would survive a page reload via the API).
+      const [reloaded] = await storage.getStageExecutions(run.id);
+      expect(reloaded.error).toBe(failureMessage);
+    });
   });
 });

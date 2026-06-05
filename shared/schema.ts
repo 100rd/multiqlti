@@ -185,6 +185,10 @@ export const stageExecutions = pgTable("stage_executions", {
   approvedAt: timestamp("approved_at"),
   approvedBy: text("approved_by"),
   rejectionReason: text("rejection_reason"),
+  // Persisted failure reason for a `failed` stage. Written in the controller
+  // catch blocks so the run UI can surface *why* a stage failed after a page
+  // reload (WS `stage:failed` events are not replayable). See issue #342.
+  error: text("error"),
   dagStageId: text("dag_stage_id"),
   swarmCloneResults: jsonb("swarm_clone_results").$type<SwarmCloneResult[]>(),
   swarmMeta: jsonb("swarm_meta").$type<{
