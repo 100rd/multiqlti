@@ -232,3 +232,46 @@ describe("Gateway.testProvider()", () => {
     expect(calls[0]).toBe("claude-haiku-4-5-20251001");
   });
 });
+
+
+// ─── Local providers OFF by default (issue #346) ───────────────────────────
+
+describe("Gateway — local providers off by default", () => {
+  const fakeStorage = {
+    getModelBySlug: async () => null,
+    createLlmRequest: async () => {},
+  } as unknown as import("../../server/storage.js").IStorage;
+
+  it("does not register vLLM / Ollama / LM Studio on a clean install (no endpoints)", async () => {
+    const { Gateway } = await import("../../server/gateway/index.js");
+    const gw = new Gateway(fakeStorage);
+    const status = gw.getStatus();
+
+    expect(status.vllm).toBe(false);
+    expect(status.ollama).toBe(false);
+    expect(status.lmstudio).toBe(false);
+  });
+
+  it("reports null endpoints for local providers when unset", async () => {
+    const { Gateway } = await import("../../server/gateway/index.js");
+    const gw = new Gateway(fakeStorage);
+    const status = gw.getStatus();
+
+    expect(status.vllmEndpoint).toBeNull();
+    expect(status.ollamaEndpoint).toBeNull();
+    expect(status.lmstudioEndpoint).toBeNull();
+  });
+
+  it("activates LM Studio only after an endpoint is explicitly connected", async () => {
+    const { Gateway } = await import("../../server/gateway/index.js");
+    const gw = new Gateway(fakeStorage);
+
+    expect(gw.getStatus().lmstudio).toBe(false);
+
+    gw.connectLmStudio("http://localhost:1234");
+
+    const status = gw.getStatus();
+    expect(status.lmstudio).toBe(true);
+    expect(status.lmstudioEndpoint).toBe("http://localhost:1234");
+  });
+});

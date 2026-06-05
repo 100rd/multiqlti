@@ -333,6 +333,19 @@ describe("CostService.getSummary", () => {
   const WS = "ws-summary";
   const NOW = new Date("2026-04-15T12:00:00Z");
 
+  // Freeze the wall clock to NOW so ledger entries inserted via
+  // appendCostLedger receive ts === NOW (inside the queried period).
+  // Without this, rows get the real system time and fall outside the
+  // April-2026 window the assertions query, making aggregation flaky.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("19. empty workspace returns zero totals and empty series", async () => {
     const storage = makeStorage();
     const service = new CostService(storage);
@@ -456,6 +469,17 @@ describe("CostService.getSummary", () => {
 describe("CostService.exportCsv", () => {
   const WS = "ws-csv";
   const NOW = new Date("2026-04-15T12:00:00Z");
+
+  // Freeze the wall clock to NOW so ledger entries inserted via
+  // appendCostLedger receive ts === NOW (inside the queried period).
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   it("25. empty period → CSV header only", async () => {
     const storage = makeStorage();
