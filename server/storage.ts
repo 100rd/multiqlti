@@ -590,6 +590,7 @@ export class MemStorage implements IStorage {
       approvedAt: insert.approvedAt ?? null,
       approvedBy: insert.approvedBy ?? null,
       rejectionReason: insert.rejectionReason ?? null,
+      error: insert.error ?? null,
       dagStageId: insert.dagStageId ?? null,
       swarmCloneResults: insert.swarmCloneResults ?? null,
       swarmMeta: insert.swarmMeta ?? null,

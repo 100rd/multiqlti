@@ -10,7 +10,7 @@ import { ParallelExecutor } from "../pipeline/parallel-executor";
 import { SwarmExecutor } from "../pipeline/swarm-executor";
 import type { RemoteAgentManager } from "../remote-agents/remote-agent-manager";
 
-import type { PipelineRun } from "@shared/schema";
+import type { PipelineRun, StageExecution } from "@shared/schema";
 import { SandboxExecutor } from "../sandbox/executor";
 import { ThoughtTreeCollector } from "../pipeline/thought-tree-collector";
 import { MemoryExtractor } from "../memory/extractor";
@@ -316,6 +316,7 @@ export class PipelineController {
         await this.storage.updateStageExecution(stageExec.id, {
           status: "failed",
           completedAt: new Date(),
+          error: errMsg,
         });
 
         this.broadcast(run.id, {
@@ -338,6 +339,21 @@ export class PipelineController {
     };
   }
 
+  /**
+   * Promote the first failed stage's persisted error into the run output when
+   * the run has none yet, so the run row is self-explaining (issue #342).
+   * Returns the error string, or null when nothing should be promoted.
+   */
+  private async firstFailureOutput(
+    runId: string,
+    executions: readonly StageExecution[],
+  ): Promise<string | null> {
+    const run = await this.storage.getPipelineRun(runId);
+    if (run == null || run.output != null) return null;
+    const failed = executions.find((e) => e.status === "failed" && e.error != null);
+    return failed?.error ?? null;
+  }
+
   /** Called after DAGExecutor finishes to mark run as completed or failed. */
   private async finishDAGRun(runId: string, signal: AbortSignal): Promise<void> {
     const executions = await this.storage.getStageExecutions(runId);
@@ -349,9 +365,11 @@ export class PipelineController {
     }
 
     if (anyFailed) {
+      const runOutput = await this.firstFailureOutput(runId, executions);
       await this.storage.updatePipelineRun(runId, {
         status: "failed",
         completedAt: new Date(),
+        ...(runOutput != null ? { output: runOutput } : {}),
       });
       this.broadcast(runId, {
         type: "pipeline:failed",
@@ -913,10 +931,14 @@ export class PipelineController {
         await this.storage.updateStageExecution(stageExec.id, {
           status: "failed",
           completedAt: new Date(),
+          error: errMsg,
         });
         await this.storage.updatePipelineRun(run.id, {
           status: "failed",
           completedAt: new Date(),
+          // Promote the failing stage's error into the run output when the run
+          // has none yet, so the run row is self-explaining (issue #342).
+          ...(run.output == null ? { output: errMsg } : {}),
         });
 
         this.broadcast(run.id, {
