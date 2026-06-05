@@ -5,6 +5,7 @@ import { MockProvider } from "./providers/mock";
 import { VllmProvider } from "./providers/vllm";
 import { OllamaProvider } from "./providers/ollama";
 import { ClaudeProvider } from "./providers/claude";
+import { ClaudeCliProvider } from "./providers/claude-cli";
 import { GeminiProvider } from "./providers/gemini";
 import { AntigravityProvider } from "./providers/antigravity";
 import { DEFAULT_ANTIGRAVITY_MODEL, DEFAULT_ANTIGRAVITY_TIMEOUT_MS } from "./providers/antigravity-cli";
@@ -60,10 +61,9 @@ export class Gateway {
       this.registry.set("lmstudio", new LmStudioProvider(lmStudioEndpoint));
     }
 
-    // Cloud: API-key-gated (config values; DB keys loaded later via loadDbKeys())
-    if (providers.anthropic.apiKey) {
-      this.registry.set("anthropic", new ClaudeProvider(providers.anthropic.apiKey));
-    }
+    // Anthropic: CLI subscription by default (0 API tokens). The paid API path
+    // is opt-in via providers.anthropic.mode === "api" AND a configured apiKey.
+    this.registerAnthropic(providers.anthropic.apiKey);
     // Antigravity (local, subscription-backed) replaces the cloud Gemini API.
     // When enabled it is registered under "antigravity" AND mirrored onto the
     // "google" provider key so existing Gemini-routed models run locally with
@@ -86,6 +86,24 @@ export class Gateway {
   }
 
   /**
+   * Register the Anthropic provider under the "anthropic" key.
+   *
+   * Default = CLI subscription (ClaudeCliProvider) → 0 API tokens, no Anthropic
+   * SDK instantiated, ANTHROPIC_API_KEY not required. The paid API provider
+   * (ClaudeProvider via @anthropic-ai/sdk) is used ONLY when both
+   * providers.anthropic.mode === "api" and an apiKey are present. This keeps the
+   * SDK out of the default hot path entirely.
+   */
+  private registerAnthropic(apiKey: string | null | undefined): void {
+    const mode = configLoader.get().providers.anthropic.mode;
+    if (mode === "api" && apiKey) {
+      this.registry.set("anthropic", new ClaudeProvider(apiKey));
+      return;
+    }
+    this.registry.set("anthropic", new ClaudeCliProvider());
+  }
+
+  /**
    * Load provider keys from DB, registering any providers not already set via config.
    * Called once at startup after DB is available.
    */
@@ -103,7 +121,13 @@ export class Gateway {
    */
   async reloadProvider(provider: CloudProviderKey, apiKey: string | null): Promise<void> {
     if (!apiKey) {
-      // Only remove if not backed by a config value
+      // Anthropic always falls back to the CLI subscription provider — it needs
+      // no API key, so it is never removed, only downgraded from API → CLI.
+      if (provider === "anthropic") {
+        this.registerAnthropic(null);
+        return;
+      }
+      // Other providers: only remove if not backed by a config value.
       const providers = configLoader.get().providers;
       const configKeys: Record<CloudProviderKey, string | undefined> = {
         anthropic: providers.anthropic.apiKey,
@@ -120,7 +144,7 @@ export class Gateway {
 
     switch (provider) {
       case "anthropic":
-        this.registry.set("anthropic", new ClaudeProvider(apiKey));
+        this.registerAnthropic(apiKey);
         break;
       case "google":
         // Ignore Gemini API keys while Antigravity owns the "google" key —

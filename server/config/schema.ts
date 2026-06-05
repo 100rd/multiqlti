@@ -34,7 +34,13 @@ export const ConfigSchema = z.object({
     }).default({}),
   }).default({}),
   providers: z.object({
-    anthropic: z.object({ apiKey: z.string().optional() }).default({}),
+    anthropic: z.object({
+      apiKey: z.string().optional(),
+      // "cli" (default) routes Claude through the local `claude` CLI
+      // subscription (0 API tokens). "api" uses the paid Anthropic API and
+      // requires apiKey — opt-in only.
+      mode: z.enum(["cli", "api"]).default("cli"),
+    }).default({}),
     /**
      * Cloud Gemini API (billed). Kept optional for backward compatibility but
      * hidden by default — Antigravity (below) is the preferred local,
