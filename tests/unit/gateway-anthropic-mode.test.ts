@@ -58,6 +58,7 @@ function configWith(anthropic: { apiKey?: string; mode: "cli" | "api" }) {
     providers: {
       anthropic,
       google: {},
+      antigravity: { enabled: false },
       xai: {},
       vllm: {},
       ollama: {},

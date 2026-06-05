@@ -7,6 +7,8 @@ import { OllamaProvider } from "./providers/ollama";
 import { ClaudeProvider } from "./providers/claude";
 import { ClaudeCliProvider } from "./providers/claude-cli";
 import { GeminiProvider } from "./providers/gemini";
+import { AntigravityProvider } from "./providers/antigravity";
+import { DEFAULT_ANTIGRAVITY_MODEL, DEFAULT_ANTIGRAVITY_TIMEOUT_MS } from "./providers/antigravity-cli";
 import { GrokProvider } from "./providers/grok";
 import { LmStudioProvider } from "./providers/lmstudio";
 import { AnonymizerService } from "../privacy/anonymizer";
@@ -62,7 +64,20 @@ export class Gateway {
     // Anthropic: CLI subscription by default (0 API tokens). The paid API path
     // is opt-in via providers.anthropic.mode === "api" AND a configured apiKey.
     this.registerAnthropic(providers.anthropic.apiKey);
-    if (providers.google.apiKey) {
+    // Antigravity (local, subscription-backed) replaces the cloud Gemini API.
+    // When enabled it is registered under "antigravity" AND mirrored onto the
+    // "google" provider key so existing Gemini-routed models run locally with
+    // zero Gemini API-token spend. The billed Gemini API path is only used when
+    // Antigravity is explicitly disabled and a google.apiKey is present.
+    if (providers.antigravity?.enabled) {
+      const antigravity = new AntigravityProvider({
+        binPath: providers.antigravity.binPath,
+        defaultModel: providers.antigravity.model ?? DEFAULT_ANTIGRAVITY_MODEL,
+        timeoutMs: providers.antigravity.timeoutMs ?? DEFAULT_ANTIGRAVITY_TIMEOUT_MS,
+      });
+      this.registry.set("antigravity", antigravity);
+      this.registry.set("google", antigravity);
+    } else if (providers.google.apiKey) {
       this.registry.set("google", new GeminiProvider(providers.google.apiKey));
     }
     if (providers.xai.apiKey) {
@@ -119,7 +134,9 @@ export class Gateway {
         google: providers.google.apiKey,
         xai: providers.xai.apiKey,
       };
-      if (!configKeys[provider]) {
+      const antigravityOwnsGoogle =
+        provider === "google" && providers.antigravity?.enabled;
+      if (!configKeys[provider] && !antigravityOwnsGoogle) {
         this.registry.delete(provider);
       }
       return;
@@ -130,7 +147,11 @@ export class Gateway {
         this.registerAnthropic(apiKey);
         break;
       case "google":
-        this.registry.set("google", new GeminiProvider(apiKey));
+        // Ignore Gemini API keys while Antigravity owns the "google" key —
+        // the local subscription path must not be replaced by the billed API.
+        if (!configLoader.get().providers.antigravity?.enabled) {
+          this.registry.set("google", new GeminiProvider(apiKey));
+        }
         break;
       case "xai":
         this.registry.set("xai", new GrokProvider(apiKey));
@@ -402,6 +423,7 @@ export class Gateway {
       anthropic: this.registry.has("anthropic"),
       google: this.registry.has("google"),
       xai: this.registry.has("xai"),
+      antigravity: this.registry.has("antigravity"),
       lmstudio: this.registry.has("lmstudio"),
       vllmEndpoint: providers.vllm.endpoint ?? null,
       ollamaEndpoint: providers.ollama.endpoint ?? null,
