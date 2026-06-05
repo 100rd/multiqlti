@@ -258,8 +258,16 @@ describe("MemStorage.getConnectionUsageMetrics", () => {
   });
 
   it("computes callsPerDay correctly", async () => {
-    const day1 = new Date("2026-04-15T10:00:00Z");
-    const day2 = new Date("2026-04-16T10:00:00Z");
+    // Anchor both days relative to "now" so they stay inside the metrics
+    // rolling 30-day window (fixed calendar dates age out and flip isOrphan
+    // to true). Use a fixed 10:00 UTC hour to avoid the midnight day-bucket
+    // boundary, and derive expected date keys from the same dates.
+    const dayMs = 24 * 60 * 60 * 1000;
+    const base = new Date(`${new Date().toISOString().slice(0, 10)}T10:00:00Z`);
+    const day1 = new Date(base.getTime() - 6 * dayMs);
+    const day2 = new Date(base.getTime() - 5 * dayMs);
+    const day1Key = day1.toISOString().slice(0, 10);
+    const day2Key = day2.toISOString().slice(0, 10);
     for (let i = 0; i < 3; i++) {
       await storage.recordMcpToolCall(makeRecordInput({ connectionId: "conn-1", startedAt: day1 }));
     }
@@ -270,8 +278,8 @@ describe("MemStorage.getConnectionUsageMetrics", () => {
     const metrics = await storage.getConnectionUsageMetrics("conn-1");
     expect(metrics.isOrphan).toBe(false);
 
-    const day1Entry = metrics.callsPerDay.find((d) => d.date === "2026-04-15");
-    const day2Entry = metrics.callsPerDay.find((d) => d.date === "2026-04-16");
+    const day1Entry = metrics.callsPerDay.find((d) => d.date === day1Key);
+    const day2Entry = metrics.callsPerDay.find((d) => d.date === day2Key);
     expect(day1Entry?.count).toBe(3);
     expect(day2Entry?.count).toBe(5);
   });
