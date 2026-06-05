@@ -34,7 +34,7 @@ import path from "path";
 import os from "os";
 import simpleGit from "simple-git";
 import yaml from "js-yaml";
-import chalk from "chalk";
+import chalk from "../server/config-sync/ansi-style.js";
 
 import {
   generateKeyPair,
