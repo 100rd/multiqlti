@@ -137,7 +137,7 @@ function releaseSlot(): void {
 function runProcess(input: AntigravityCliInput): Promise<AntigravityCliResult> {
   const args = buildCliArgs(input);
   return new Promise<AntigravityCliResult>((resolve, reject) => {
-    execFile(
+    const child = execFile(
       input.binPath,
       args,
       { timeout: input.timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, signal: input.signal, shell: false },
@@ -154,6 +154,9 @@ function runProcess(input: AntigravityCliInput): Promise<AntigravityCliResult> {
         resolve({ text, promptBytes: Buffer.byteLength(input.prompt, "utf8") });
       },
     );
+    // `agy --print` blocks waiting for stdin EOF; execFile leaves the stdin
+    // pipe open, so close it immediately or the process hangs until timeout.
+    child.stdin?.end();
   });
 }
 

@@ -35,11 +35,21 @@ const BASE_INPUT = {
   timeoutMs: 30_000,
 } as const;
 
+/** Spy for the most recent child's stdin.end() — execFile returns a ChildProcess. */
+let lastStdinEnd: ReturnType<typeof vi.fn>;
+
+/** Fake ChildProcess: real execFile returns one; the provider closes its stdin. */
+function makeFakeChild(): { stdin: { end: ReturnType<typeof vi.fn> } } {
+  lastStdinEnd = vi.fn();
+  return { stdin: { end: lastStdinEnd } };
+}
+
 /** Make execFile invoke its callback synchronously with the given values. */
 function respondWith(err: NodeJS.ErrnoException | null, stdout: string, stderr = ""): void {
   execFileMock.mockImplementationOnce(
     (_bin: string, _args: string[], _opts: unknown, cb: ExecFileCb) => {
       cb(err, stdout, stderr);
+      return makeFakeChild();
     },
   );
 }
@@ -118,6 +128,14 @@ describe("invokeAntigravityCli", () => {
     );
   });
 
+  it("closes the child's stdin so `agy --print` does not hang waiting for EOF", async () => {
+    respondWith(null, "ok");
+
+    await invokeAntigravityCli({ ...BASE_INPUT });
+
+    expect(lastStdinEnd).toHaveBeenCalledTimes(1);
+  });
+
   it("serialises calls beyond the concurrency cap", async () => {
     // Hold all five calls' callbacks and resolve them after the fact, proving
     // the 5th call queues (cap is 4) until a slot frees up.
@@ -125,6 +143,7 @@ describe("invokeAntigravityCli", () => {
     execFileMock.mockImplementation(
       (_bin: string, _args: string[], _opts: unknown, cb: ExecFileCb) => {
         pending.push(cb);
+        return makeFakeChild();
       },
     );
 
