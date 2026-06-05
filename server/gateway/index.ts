@@ -69,7 +69,7 @@ export class Gateway {
     // "google" provider key so existing Gemini-routed models run locally with
     // zero Gemini API-token spend. The billed Gemini API path is only used when
     // Antigravity is explicitly disabled and a google.apiKey is present.
-    if (providers.antigravity.enabled) {
+    if (providers.antigravity?.enabled) {
       const antigravity = new AntigravityProvider({
         binPath: providers.antigravity.binPath,
         defaultModel: providers.antigravity.model ?? DEFAULT_ANTIGRAVITY_MODEL,
@@ -135,7 +135,7 @@ export class Gateway {
         xai: providers.xai.apiKey,
       };
       const antigravityOwnsGoogle =
-        provider === "google" && providers.antigravity.enabled;
+        provider === "google" && providers.antigravity?.enabled;
       if (!configKeys[provider] && !antigravityOwnsGoogle) {
         this.registry.delete(provider);
       }
@@ -149,7 +149,7 @@ export class Gateway {
       case "google":
         // Ignore Gemini API keys while Antigravity owns the "google" key —
         // the local subscription path must not be replaced by the billed API.
-        if (!configLoader.get().providers.antigravity.enabled) {
+        if (!configLoader.get().providers.antigravity?.enabled) {
           this.registry.set("google", new GeminiProvider(apiKey));
         }
         break;
