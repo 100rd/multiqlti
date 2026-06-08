@@ -20,6 +20,7 @@ import {
   ShoppingBag,
   ListChecks,
   BookOpen,
+  BookMarked,
   Plug,
   Network,
   GitBranchPlus,
@@ -64,7 +65,8 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: ListChecks, label: "Task Groups", href: "/task-groups" },
     { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
-    // Show "Connections", "Inventory", and "Traces" sub-items when inside a workspace
+    // Show "Connections", "Inventory", "Knowledge Base", and "Traces" sub-items
+    // when inside a workspace
     ...(currentWorkspaceId
       ? [
           {
@@ -77,6 +79,12 @@ export default function MainLayout({ children }: MainLayoutProps) {
             icon: Network,
             label: "Inventory",
             href: `/workspaces/${currentWorkspaceId}/inventory`,
+            indent: true,
+          },
+          {
+            icon: BookMarked,
+            label: "Knowledge Base",
+            href: `/workspaces/${currentWorkspaceId}/knowledge-base`,
             indent: true,
           },
           {
