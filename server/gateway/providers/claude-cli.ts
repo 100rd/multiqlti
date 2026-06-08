@@ -23,11 +23,28 @@ import {
   streamCliLines,
   type CliSpawnRequest,
 } from "./cli-spawn";
+import type { RemoteModel } from "./ollama";
 
 const DEFAULT_BINARY = "claude";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_CONCURRENCY = 4;
 const ERROR_PREVIEW_CHARS = 200;
+
+/**
+ * Curated current Claude models surfaced through the subscription CLI. The CLI
+ * accepts short aliases (`opus`/`sonnet`/`haiku`) that always resolve to the
+ * latest build, so these `modelId`s stay valid across point releases.
+ */
+const CLAUDE_MODELS: ReadonlyArray<{
+  modelId: string;
+  slug: string;
+  name: string;
+  contextLimit: number;
+}> = [
+  { modelId: "opus", slug: "claude-opus", name: "Claude Opus", contextLimit: 200_000 },
+  { modelId: "sonnet", slug: "claude-sonnet", name: "Claude Sonnet", contextLimit: 200_000 },
+  { modelId: "haiku", slug: "claude-haiku", name: "Claude Haiku", contextLimit: 200_000 },
+];
 
 interface ClaudeCliResult {
   type: string;
@@ -185,5 +202,21 @@ export class ClaudeCliProvider implements ILLMProvider {
       }
       previous = full;
     }
+  }
+
+  /**
+   * The `claude` CLI has no model-listing command, so we expose a curated set
+   * of current models. `modelId` is an alias the CLI resolves to the latest
+   * build (so this list does not go stale as point releases ship).
+   */
+  async listModels(): Promise<RemoteModel[]> {
+    return CLAUDE_MODELS.map((m) => ({
+      id: m.modelId,
+      name: m.name,
+      provider: "anthropic",
+      modelId: m.modelId,
+      slug: m.slug,
+      contextLimit: m.contextLimit,
+    }));
   }
 }

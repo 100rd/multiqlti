@@ -531,6 +531,14 @@ export interface GatewayRequest {
   stream?: boolean;
   /** Per-request timeout override in milliseconds */
   timeoutMs?: number;
+  /**
+   * Explicit provider key (e.g. "antigravity", "anthropic"). When set, it wins
+   * over the DB model lookup — used by live-discovered models that are not
+   * persisted in the `models` table.
+   */
+  provider?: string;
+  /** Explicit provider-native model id/label. Wins over the DB lookup. */
+  modelId?: string;
 }
 
 export interface GatewayResponse {
