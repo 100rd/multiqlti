@@ -21,11 +21,21 @@ import type {
 } from "@shared/types";
 import {
   invokeAntigravityCli,
+  listAntigravityModels,
   AntigravityCliError,
   DEFAULT_ANTIGRAVITY_BIN,
   DEFAULT_ANTIGRAVITY_MODEL,
   DEFAULT_ANTIGRAVITY_TIMEOUT_MS,
 } from "./antigravity-cli";
+import type { RemoteModel } from "./ollama";
+
+/** Turn a CLI model label into a stable, URL-safe slug. */
+function slugifyModelLabel(label: string): string {
+  return label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
 
 /** Rough characters-per-token ratio for estimating usage from byte counts. */
 const CHARS_PER_TOKEN = 4;
@@ -105,5 +115,21 @@ export class AntigravityProvider implements ILLMProvider {
   ): AsyncGenerator<string> {
     const { content } = await this.complete(modelId, messages, options);
     if (content.length > 0) yield content;
+  }
+
+  /**
+   * List the subscription models reported by `agy models`. The label is used
+   * verbatim as the `modelId` (passed back via `--model=<label>`); a derived
+   * slug gives the client a stable identifier without a DB row.
+   */
+  async listModels(): Promise<RemoteModel[]> {
+    const labels = await listAntigravityModels(this.binPath, this.timeoutMs);
+    return labels.map((label) => ({
+      id: label,
+      name: label,
+      provider: "antigravity",
+      modelId: label,
+      slug: slugifyModelLabel(label),
+    }));
   }
 }

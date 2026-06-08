@@ -1,11 +1,17 @@
 export interface RemoteModel {
   id: string;
   name: string;
-  provider: "ollama";
+  provider: string;
   size?: number;
   parameterSize?: string;
   quantization?: string;
   family?: string;
+  /** Provider-native model id/label to pass back when invoking (CLI providers). */
+  modelId?: string;
+  /** Stable client-facing slug (CLI providers, which have no DB row). */
+  slug?: string;
+  /** Context window size, when known. */
+  contextLimit?: number;
 }
 
 export class OllamaProvider {

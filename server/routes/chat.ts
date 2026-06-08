@@ -43,20 +43,30 @@ const GetChatMessagesQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(500).optional(),
 });
 
+// Optional explicit routing for live-discovered models that have no DB row.
+const ProviderField = z.string().max(100).optional();
+const ModelIdField = z.string().max(200).optional();
+
 const SendChatSchema = z.object({
   content: z.string().min(1, "content is required").max(50000),
   modelSlug: z.string().max(200).optional(),
+  provider: ProviderField,
+  modelId: ModelIdField,
 });
 
 const StandaloneChatSchema = z.object({
   content: z.string().min(1, "content is required").max(50000),
   modelSlug: z.string().max(200).optional(),
+  provider: ProviderField,
+  modelId: ModelIdField,
   history: z.array(HistoryMessageSchema).max(100).optional(),
 });
 
 const StreamChatSchema = z.object({
   content: z.string().min(1, "content is required").max(50000),
   modelSlug: z.string().max(200).optional(),
+  provider: ProviderField,
+  modelId: ModelIdField,
   history: z.array(HistoryMessageSchema).max(100).optional(),
 });
 
@@ -178,6 +188,8 @@ export function registerChatRoutes(
     const tools = getPlatformToolDefinitions(userRole);
     const response = await gateway.completeWithTools({
       modelSlug: slug,
+      provider: body.provider,
+      modelId: body.modelId,
       messages,
       tools,
     });
@@ -211,7 +223,12 @@ export function registerChatRoutes(
     res.setHeader("Connection", "keep-alive");
 
     try {
-      for await (const chunk of gateway.stream({ modelSlug: slug, messages })) {
+      for await (const chunk of gateway.stream({
+        modelSlug: slug,
+        provider: body.provider,
+        modelId: body.modelId,
+        messages,
+      })) {
         res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
       }
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`);

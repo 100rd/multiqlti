@@ -1,11 +1,11 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Send, Bot, User, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useModels, useStandaloneChat, useGatewayStatus } from "@/hooks/use-pipeline";
+import { useDiscoverProviderModels, useStandaloneChat } from "@/hooks/use-pipeline";
 
 interface ChatMsg {
   role: string;
@@ -37,27 +37,48 @@ const DEFAULT_GREETING: ChatMsg = {
   content: "Local environment initialized. Sandboxes are active. I am restricted from external network access. How can I help you today?",
 };
 
-type GatewayStatus = Record<string, boolean | string | null>;
-type ModelRecord = Record<string, unknown>;
+/** A model as surfaced by /api/providers/discover (CLI + remote providers). */
+interface DiscoveredModel {
+  id: string;
+  name: string;
+  provider: string;
+  modelId?: string;
+  slug?: string;
+  contextLimit?: number;
+}
+type DiscoverResponse = Record<
+  string,
+  { available: boolean; models?: DiscoveredModel[]; error?: string }
+>;
 
-function isProviderAvailable(provider: string, gatewayStatus: GatewayStatus | undefined): boolean {
-  if (!gatewayStatus) return true; // not yet loaded — don't hide anything
-  if (provider === "mock") return true;
-  return !!gatewayStatus[provider];
+/** Flatten the per-provider discover payload into a deduped, selectable list. */
+function flattenDiscovered(data: DiscoverResponse | undefined): DiscoveredModel[] {
+  if (!data) return [];
+  const seen = new Set<string>();
+  const out: DiscoveredModel[] = [];
+  for (const group of Object.values(data)) {
+    if (!group?.available || !Array.isArray(group.models)) continue;
+    for (const m of group.models) {
+      const slug = m.slug ?? m.id;
+      if (!slug || seen.has(slug)) continue;
+      seen.add(slug);
+      out.push({ ...m, slug });
+    }
+  }
+  return out;
 }
 
 export default function Chat() {
-  const { data: models } = useModels();
-  const { data: gatewayStatus } = useGatewayStatus();
+  // Models are pulled live from the provider CLIs (claude, agy) via the gateway,
+  // not from the (stale) DB catalog — see /api/providers/discover.
+  const { data: discovered, isLoading: modelsLoading } = useDiscoverProviderModels();
   const chatMutation = useStandaloneChat();
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Only show active models whose provider is actually configured (has API key / endpoint)
-  const modelList: ModelRecord[] = Array.isArray(models)
-    ? models.filter((m: ModelRecord) =>
-        m.isActive && isProviderAvailable(m.provider as string, gatewayStatus as GatewayStatus)
-      )
-    : [];
+  const modelList: DiscoveredModel[] = useMemo(
+    () => flattenDiscovered(discovered as DiscoverResponse | undefined),
+    [discovered],
+  );
 
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [messages, setMessages] = useState<ChatMsg[]>(() => {
@@ -70,17 +91,17 @@ export default function Chat() {
   // Set default model once models are loaded
   useEffect(() => {
     if (!selectedModel && modelList.length > 0) {
-      setSelectedModel(modelList[0].slug as string);
+      setSelectedModel(modelList[0].slug ?? "");
     }
   }, [modelList, selectedModel]);
 
-  // If the selected model's provider loses its key, switch to first available
+  // If the selected model disappears from the discovered list, fall back to the first.
   useEffect(() => {
-    if (selectedModel && gatewayStatus && modelList.length > 0) {
-      const still = modelList.find((m) => (m.slug as string) === selectedModel);
-      if (!still) setSelectedModel(modelList[0].slug as string);
+    if (selectedModel && modelList.length > 0) {
+      const still = modelList.find((m) => m.slug === selectedModel);
+      if (!still) setSelectedModel(modelList[0].slug ?? "");
     }
-  }, [modelList, selectedModel, gatewayStatus]);
+  }, [modelList, selectedModel]);
 
   // Reset token counter when switching models
   useEffect(() => {
@@ -99,9 +120,9 @@ export default function Chat() {
     }
   }, [messages]);
 
-  const selectedModelData = modelList.find((m) => (m.slug as string) === selectedModel);
-  const contextLimit = (selectedModelData?.contextLimit as number) ?? 0;
-  const noModelsAvailable = !!gatewayStatus && modelList.length === 0;
+  const selectedModelData = modelList.find((m) => m.slug === selectedModel);
+  const contextLimit = selectedModelData?.contextLimit ?? 0;
+  const noModelsAvailable = !modelsLoading && modelList.length === 0;
   const canSend = !!selectedModel && !chatMutation.isPending && !!input.trim() && !noModelsAvailable;
 
   const handleSend = () => {
@@ -115,6 +136,8 @@ export default function Chat() {
       {
         content: input,
         modelSlug: selectedModel,
+        provider: selectedModelData?.provider,
+        modelId: selectedModelData?.modelId ?? selectedModelData?.id,
         history: updatedMessages.slice(-10),
       },
       {
@@ -174,9 +197,9 @@ export default function Chat() {
             </SelectTrigger>
             <SelectContent>
               {modelList.map((m) => (
-                <SelectItem key={m.slug as string} value={m.slug as string}>
-                  {m.name as string}
-                  <span className="text-muted-foreground ml-1">({m.provider as string})</span>
+                <SelectItem key={m.slug} value={m.slug ?? m.id}>
+                  {m.name}
+                  <span className="text-muted-foreground ml-1">({m.provider})</span>
                 </SelectItem>
               ))}
             </SelectContent>
