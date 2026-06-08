@@ -15,8 +15,8 @@
  *     callers degrade to all-unknown/empty. This module never throws to the route.
  */
 import { readFile, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { PracticeCardRow } from "@shared/schema";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -45,12 +45,26 @@ export interface CardComplianceEntry {
 /** Hard cap on the graph file before we read or parse it (DoS guard). */
 const MAX_GRAPH_BYTES = 25 * 1024 * 1024; // 25 MiB
 
-/** Default repo-relative location of the infra graphify graph. */
+/** Relative location of the infra graphify graph, from a repo-root-ish anchor. */
+const INFRA_GRAPH_RELATIVE = path.join("infra", "graphify-out", "graph.json");
+
+/**
+ * Default location of the infra graphify graph — resolved WITHOUT import.meta so
+ * it works in the cjs prod bundle (where import.meta.url is empty). We anchor on
+ * process.cwd() and walk up a bounded number of parents looking for the graph;
+ * if none is found we return the cwd-relative candidate (a stable string that
+ * loadGraph() will simply treat as "missing" and fail closed).
+ */
 function defaultGraphPath(): string {
-  // This module lives at <repo>/project/multiqlti/server/knowledge/.
-  // The infra graph is at <repo>/infra/graphify-out/graph.json (4 levels up).
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  return path.resolve(here, "../../../../infra/graphify-out/graph.json");
+  let dir = process.cwd();
+  for (let depth = 0; depth < 6; depth++) {
+    const candidate = path.join(dir, INFRA_GRAPH_RELATIVE);
+    if (existsSync(candidate)) return candidate;
+    const parent = path.dirname(dir);
+    if (parent === dir) break; // reached filesystem root
+    dir = parent;
+  }
+  return path.resolve(process.cwd(), INFRA_GRAPH_RELATIVE);
 }
 
 /** Server-resolved graph path: env override or the fixed default. Never request-derived. */

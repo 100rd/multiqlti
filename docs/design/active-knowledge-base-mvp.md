@@ -330,3 +330,25 @@ Conventions: TDD (RED→GREEN→REFACTOR, ≥80% coverage), files `<800` lines, 
 6. **Compliance honesty.** MVP heuristic returns many `unknown`s. **Confirm** acceptable for a "thin first cut"; we must not surface false `followed`/`violated`.
 7. **`TRIGGER_SECRET_KEY` for the signal path.** The `github_event` subsystem is disabled if `TRIGGER_SECRET_KEY` is absent (`server/routes.ts`). Cadence path has no such dependency; signal path inherits it. Note for D4.
 8. **Source versioning granularity.** HashiCorp docs are unversioned pages; changelog has releases. Proposal: store the Terraform release tag for changelog-derived cards; `fetched_at` + `etag`/`last-modified` for doc pages. **Confirm** granularity.
+
+---
+
+## Deploying the schema
+
+This repo materializes the database schema with **`npm run db:push`** (`drizzle-kit push`), driving the live DB from the drizzle definitions in `shared/schema.ts` (`drizzle.config.ts` → `schema: ./shared/schema.ts`, `out: ./migrations`).
+
+- **`drizzle migrate` is journal-gated at `0012`.** `migrations/meta/_journal.json` lists tags only through `0012_memory_published`, so the journalled-migrate path stops there. The loose, hand-authored `.sql` files after it (e.g. `0026_practice_cards.sql`) are **records of intent + hardening** rather than journalled steps. They are applied via `npm run db:push` (the drizzle definitions are the source of truth) or directly via `psql` for the parts push can't express.
+- **What `0026` carries** for the Active Knowledge Base:
+  - The two new tables `practice_cards` and `practice_card_refresh_runs` (materialized by `db:push` from `shared/schema.ts`).
+  - The `practice_cards.ingested_by_user_id` **NOT NULL** hardening (the adversarial-gate invariant) — also expressed in the schema, so `db:push` enforces it.
+  - The `memory_chunks` `source_type` **CHECK** widening to include `'practice_card'`. drizzle does not model raw CHECK constraints, so this is applied by the `.sql` file / `psql` and recorded there for reproducibility.
+- **Deploy steps (host):** with `DATABASE_URL` exported (see `scripts/dev-host.sh`), run `npm run db:push`. For the `memory_chunks` CHECK widening, apply the relevant statement from `migrations/0026_practice_cards.sql` via `psql` (it is idempotent — drop-if-exists + recreate).
+- **Verified against the live local DB (2026-06-08):** `db:push` reports **no destructive changes** for these tables. The one prompt it raises is to add `practice_cards_content_hash_uq`; the uniqueness already exists as a `CREATE UNIQUE INDEX`, while the schema declares it via drizzle's `unique()` (a table-constraint form), so push offers to add the constraint representation. This is answered **"No, add the constraint without truncating the table"** — it is non-destructive and never requires truncation (the seeded rows have distinct content hashes). All Active-Knowledge tables/columns/CHECK are present and correct (`ingested_by_user_id` is `NOT NULL`; the `memory_chunks` CHECK includes `practice_card`).
+
+### Seeding the example dataset
+
+A real, idempotent example dataset of ~14 genuine Terraform module best-practice cards ships in `server/knowledge/seed-terraform-cards.ts`.
+
+- **On startup:** seeded only when `KB_SEED_EXAMPLE=true` (off by default — no surprise seeding in prod), following the `DEFAULT_MODELS` seed pattern in `server/routes.ts`.
+- **As a script:** `DATABASE_URL=... npx tsx script/seed-knowledge-example.ts` (source `.env` as `scripts/dev-host.sh` does). It prints the example workspace id and how many cards were created.
+- **Idempotent + best-effort:** re-runs create no duplicates (content-hash dedupe); the example workspace owner is resolved to a real admin user (FK-valid) or left `NULL`; projection into `memory_chunks` is best-effort — if the embedding provider (Ollama) is unreachable the cards still persist and projection is skipped with a hint to run `/re-embed` later.

@@ -6,12 +6,13 @@
  * gracefully (missing / malformed / oversized → null, never throws). mapCard()
  * produces a coarse followed/violated/unknown heuristic with honest unknowns.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import path from "node:path";
 import {
   loadGraph,
   mapCard,
   resetGraphCache,
+  resolveGraphPath,
   type ComplianceGraph,
 } from "../../../server/knowledge/compliance-mapper";
 import type { PracticeCardRow } from "@shared/schema";
@@ -159,5 +160,29 @@ describe("mapCard — heuristic mapping", () => {
   it("returns all-empty when the graph is null (feature disabled)", () => {
     const result = mapCard(card(), null);
     expect(result).toEqual({ cardId: "card-1", statement: card().statement, followed: [], violated: [], unknown: [] });
+  });
+});
+
+describe("resolveGraphPath — cjs-safe default (no import.meta)", () => {
+  const original = process.env.KB_INFRA_GRAPH_PATH;
+  afterEach(() => {
+    if (original === undefined) delete process.env.KB_INFRA_GRAPH_PATH;
+    else process.env.KB_INFRA_GRAPH_PATH = original;
+  });
+
+  it("returns a non-empty absolute string for the default (no env override)", () => {
+    delete process.env.KB_INFRA_GRAPH_PATH;
+    const resolved = resolveGraphPath();
+    // The cjs prod bundle has an empty import.meta.url; the default must NOT
+    // collapse to a relative './infra/...' rooted at "" — it must be absolute.
+    expect(typeof resolved).toBe("string");
+    expect(resolved.length).toBeGreaterThan(0);
+    expect(path.isAbsolute(resolved)).toBe(true);
+    expect(resolved.endsWith(path.join("infra", "graphify-out", "graph.json"))).toBe(true);
+  });
+
+  it("honors the KB_INFRA_GRAPH_PATH env override", () => {
+    process.env.KB_INFRA_GRAPH_PATH = "/custom/graph.json";
+    expect(resolveGraphPath()).toBe("/custom/graph.json");
   });
 });

@@ -71,6 +71,7 @@ import { registerKnowledgeRoutes } from "./routes/knowledge";
 import { registerPracticeCardRoutes } from "./routes/practice-cards";
 import { buildPracticeCardDeps } from "./knowledge/practice-card-deps";
 import { initRefreshScheduler, getRefreshScheduler } from "./knowledge/refresh-scheduler";
+import { seedExampleTerraformCards, resolveFirstAdminUserId } from "./knowledge/seed-terraform-cards";
 import { SessionSharingService } from "./federation/session-sharing";
 import { InMemoryConflictStore } from "./federation/config-conflict";
 import { ConflictResolutionService } from "./federation/conflict-resolution";
@@ -351,6 +352,20 @@ export async function registerRoutes(
       await storage.createModel(model);
     }
     log(`Seeded ${DEFAULT_MODELS.length} default models`);
+  }
+
+  // Active Knowledge Base — optional example dataset (off by default; opt in via
+  // KB_SEED_EXAMPLE=true). Idempotent; projection is best-effort.
+  if (process.env.KB_SEED_EXAMPLE === "true") {
+    try {
+      const seed = await seedExampleTerraformCards(storage, { resolveAdminUserId: resolveFirstAdminUserId });
+      log(
+        `Seeded example Terraform cards: ${seed.created} created, ${seed.alreadyPresent} already present ` +
+          `(workspace ${seed.workspaceId}; projection ${seed.projectionSkipped ? "skipped" : "ok"})`,
+      );
+    } catch (e) {
+      log(`Knowledge example seed skipped: ${(e as Error).message}`);
+    }
   }
 
   // Seed default pipeline template

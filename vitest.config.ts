@@ -56,6 +56,7 @@ export default defineConfig({
         "server/knowledge/diff-engine.ts",
         "server/knowledge/compliance-mapper.ts",
         "server/knowledge/refresh-scheduler.ts",
+        "server/knowledge/seed-terraform-cards.ts",
       ],
       exclude: ["server/**/*.test.ts", "server/index.ts", "server/vite.ts"],
     },
