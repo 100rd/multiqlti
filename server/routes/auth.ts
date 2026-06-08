@@ -18,9 +18,16 @@ import {
   OAuthError,
 } from "../auth/oauth";
 
+// In NODE_ENV=test, each Playwright worker process invokes login independently
+// because module-level caches (cachedToken in auth.ts) are isolated per-process.
+// A single E2E file with 19 tests and workers:1 still spawns a new Node.js worker
+// per test. The production limit of 5/min is therefore too tight for local E2E
+// runs. Raising to 200/min in test mode keeps the limiter active (so the
+// middleware code path is exercised) while preventing false 429s.
+// In production (NODE_ENV != test) the limit stays at 5.
 const loginLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 5,
+  max: process.env.NODE_ENV === "test" ? 200 : 5,
   message: { error: "Too many login attempts, please try again later" },
   standardHeaders: true,
   legacyHeaders: false,

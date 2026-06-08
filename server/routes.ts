@@ -68,6 +68,10 @@ import { registerCostRoutes } from "./routes/costs";
 import { registerWorkspaceToolRoutes } from "./routes/workspace-tools";
 import { registerMcpRoutes } from "./routes/mcp";
 import { registerKnowledgeRoutes } from "./routes/knowledge";
+import { registerPracticeCardRoutes } from "./routes/practice-cards";
+import { buildPracticeCardDeps } from "./knowledge/practice-card-deps";
+import { initRefreshScheduler, getRefreshScheduler } from "./knowledge/refresh-scheduler";
+import { seedExampleTerraformCards, resolveFirstAdminUserId } from "./knowledge/seed-terraform-cards";
 import { SessionSharingService } from "./federation/session-sharing";
 import { InMemoryConflictStore } from "./federation/config-conflict";
 import { ConflictResolutionService } from "./federation/conflict-resolution";
@@ -148,6 +152,14 @@ export async function registerRoutes(
   registerWorkspaceToolRoutes(app, storage);
   registerMcpRoutes(app as unknown as Router, storage, controller);
   registerKnowledgeRoutes(app as unknown as Router);  // Bug #309: was imported but not called
+  const knowledgeRefreshScheduler = initRefreshScheduler(storage);
+  registerPracticeCardRoutes(
+    app as unknown as Router,
+    storage,
+    buildPracticeCardDeps({
+      triggerNow: (workspaceId, trigger) => knowledgeRefreshScheduler.triggerNow(workspaceId, trigger),
+    }),
+  );
   registerSandboxRoutes(app as unknown as Router);
   registerSettingsRoutes(app as unknown as Router, gateway);
   registerMaintenanceRoutes(app as unknown as Router);
@@ -238,6 +250,9 @@ export async function registerRoutes(
     });
     await cronScheduler.bootstrap();
 
+    // Active Knowledge Base — weekly practice-card refresh (cadence; no auto-commit).
+    await knowledgeRefreshScheduler.start();
+
     fileWatcherService = new FileWatcherService({
       getEnabledTriggersByType: (type) => storage.getEnabledTriggersByType(type),
       fireTrigger,
@@ -313,6 +328,7 @@ export async function registerRoutes(
   httpServer.on("close", async () => {
     cronScheduler?.stopAll();
     fileWatcherService?.stopAll();
+    getRefreshScheduler()?.stop();
     stopRateLimitCleanup();
     await remoteAgentManager?.shutdown();
     skillUpdateChecker?.stop();
@@ -336,6 +352,20 @@ export async function registerRoutes(
       await storage.createModel(model);
     }
     log(`Seeded ${DEFAULT_MODELS.length} default models`);
+  }
+
+  // Active Knowledge Base — optional example dataset (off by default; opt in via
+  // KB_SEED_EXAMPLE=true). Idempotent; projection is best-effort.
+  if (process.env.KB_SEED_EXAMPLE === "true") {
+    try {
+      const seed = await seedExampleTerraformCards(storage, { resolveAdminUserId: resolveFirstAdminUserId });
+      log(
+        `Seeded example Terraform cards: ${seed.created} created, ${seed.alreadyPresent} already present ` +
+          `(workspace ${seed.workspaceId}; projection ${seed.projectionSkipped ? "skipped" : "ok"})`,
+      );
+    } catch (e) {
+      log(`Knowledge example seed skipped: ${(e as Error).message}`);
+    }
   }
 
   // Seed default pipeline template
