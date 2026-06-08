@@ -22,7 +22,7 @@ services:
 
   # ── PostgreSQL ──────────────────────────────────────────────────────────────
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     profiles: [full, cloud-only, dev]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-multiqlti}
