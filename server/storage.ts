@@ -62,6 +62,15 @@ import {
   type PracticeCardRefreshRunRow,
   type PracticeCardReviewState,
   type PracticeCardStatus,
+  type NewsProfileRow,
+  type InsertNewsProfile,
+  type MorningBriefRow,
+  type InsertMorningBrief,
+  type NewsItemRow,
+  type InsertNewsItem,
+  type BriefStatus,
+  type NewsFeedback,
+  type NewsReadState,
 } from "@shared/schema";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome } from "@shared/types";
 import type { LessonRecallFilter } from "./memory/lessons/types";
@@ -80,6 +89,20 @@ export interface LlmRequestFilters {
   to?: Date;
   page?: number;
   limit?: number;
+}
+
+// ─── Morning News Board query filters ────────────────────────────────────────
+
+export interface MorningBriefFilters {
+  userId?: string;
+  status?: BriefStatus;
+  limit?: number;
+  offset?: number;
+}
+
+export interface NewsItemFilters {
+  category?: "internal" | "external";
+  readState?: NewsReadState;
 }
 
 export interface LlmRequestStats {
@@ -282,6 +305,19 @@ export interface IStorage {
   createRefreshRun(workspaceId: string, topic: string, trigger: string): Promise<PracticeCardRefreshRunRow>;
   getRefreshRun(id: string): Promise<PracticeCardRefreshRunRow | null>;
   updateRefreshRun(id: string, updates: Partial<PracticeCardRefreshRunRow>): Promise<PracticeCardRefreshRunRow>;
+
+  // Morning News Board (morning-news-board-mvp.md)
+  getNewsProfile(workspaceId: string, userId: string): Promise<NewsProfileRow | null>;
+  upsertNewsProfile(data: InsertNewsProfile): Promise<NewsProfileRow>;
+  createMorningBrief(data: InsertMorningBrief): Promise<{ brief: MorningBriefRow; claimed: boolean }>;
+  getMorningBriefByDate(workspaceId: string, userId: string, briefDate: string): Promise<MorningBriefRow | null>;
+  getMorningBrief(id: string): Promise<MorningBriefRow | null>;
+  listMorningBriefs(workspaceId: string, filters?: MorningBriefFilters): Promise<{ briefs: MorningBriefRow[]; total: number }>;
+  updateMorningBriefStatus(id: string, updates: { status?: BriefStatus; internalDegraded?: boolean; meta?: Record<string, unknown> }): Promise<MorningBriefRow>;
+  upsertNewsItems(items: InsertNewsItem[]): Promise<NewsItemRow[]>;
+  setNewsItemFeedback(id: string, updates: { feedback?: NewsFeedback; readState?: NewsReadState }): Promise<NewsItemRow>;
+  getNewsItem(id: string): Promise<NewsItemRow | null>;
+  listNewsItems(briefId: string, filters?: NewsItemFilters): Promise<NewsItemRow[]>;
 
   // Traces (Phase 6.5)
   createTrace(data: InsertTrace): Promise<TraceRow>;
@@ -2225,6 +2261,9 @@ export class MemStorage implements IStorage {
 
   private practiceCardsMap: Map<string, PracticeCardRow> = new Map();
   private refreshRunsMap: Map<string, PracticeCardRefreshRunRow> = new Map();
+  private newsProfilesMap: Map<string, NewsProfileRow> = new Map();
+  private morningBriefsMap: Map<string, MorningBriefRow> = new Map();
+  private newsItemsMap: Map<string, NewsItemRow> = new Map();
 
   async createPracticeCard(data: InsertPracticeCard): Promise<PracticeCardRow> {
     // Idempotent upsert by (workspaceId, contentHash) — ON CONFLICT DO NOTHING.
@@ -2334,6 +2373,160 @@ export class MemStorage implements IStorage {
     const updated: PracticeCardRefreshRunRow = { ...existing, ...updates, id: existing.id };
     this.refreshRunsMap.set(id, updated);
     return updated;
+  }
+
+  // ─── Morning News Board ──────────────────────────────────────────────────
+
+  async getNewsProfile(workspaceId: string, userId: string): Promise<NewsProfileRow | null> {
+    return (
+      Array.from(this.newsProfilesMap.values()).find(
+        (p) => p.workspaceId === workspaceId && p.userId === userId,
+      ) ?? null
+    );
+  }
+
+  async upsertNewsProfile(data: InsertNewsProfile): Promise<NewsProfileRow> {
+    const existing = await this.getNewsProfile(data.workspaceId, data.userId);
+    const now = new Date();
+    if (existing) {
+      const updated: NewsProfileRow = {
+        ...existing,
+        role: (data.role ?? existing.role),
+        stack: data.stack ?? existing.stack,
+        mutedCategories: data.mutedCategories ?? existing.mutedCategories,
+        updatedAt: now,
+      };
+      this.newsProfilesMap.set(existing.id, updated);
+      return updated;
+    }
+    const row: NewsProfileRow = {
+      id: randomUUID(),
+      workspaceId: data.workspaceId,
+      userId: data.userId,
+      role: data.role ?? "sre",
+      stack: data.stack ?? ["terraform", "kubernetes", "aws", "argocd", "go"],
+      mutedCategories: data.mutedCategories ?? [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.newsProfilesMap.set(row.id, row);
+    return row;
+  }
+
+  async createMorningBrief(data: InsertMorningBrief): Promise<{ brief: MorningBriefRow; claimed: boolean }> {
+    // Atomic claim: the (workspace,user,brief_date) uniqueness IS the gen lock.
+    const existing = await this.getMorningBriefByDate(data.workspaceId, data.userId, data.briefDate);
+    if (existing) return { brief: existing, claimed: false };
+    const now = new Date();
+    const row: MorningBriefRow = {
+      id: randomUUID(),
+      workspaceId: data.workspaceId,
+      userId: data.userId,
+      briefDate: data.briefDate,
+      status: data.status ?? "generating",
+      internalDegraded: data.internalDegraded ?? false,
+      meta: data.meta ?? {},
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.morningBriefsMap.set(row.id, row);
+    return { brief: row, claimed: true };
+  }
+
+  async getMorningBriefByDate(workspaceId: string, userId: string, briefDate: string): Promise<MorningBriefRow | null> {
+    return (
+      Array.from(this.morningBriefsMap.values()).find(
+        (b) => b.workspaceId === workspaceId && b.userId === userId && b.briefDate === briefDate,
+      ) ?? null
+    );
+  }
+
+  async getMorningBrief(id: string): Promise<MorningBriefRow | null> {
+    return this.morningBriefsMap.get(id) ?? null;
+  }
+
+  async listMorningBriefs(workspaceId: string, filters: MorningBriefFilters = {}): Promise<{ briefs: MorningBriefRow[]; total: number }> {
+    let briefs = Array.from(this.morningBriefsMap.values()).filter((b) => b.workspaceId === workspaceId);
+    if (filters.userId) briefs = briefs.filter((b) => b.userId === filters.userId);
+    if (filters.status) briefs = briefs.filter((b) => b.status === filters.status);
+    briefs.sort((a, b) => (a.briefDate < b.briefDate ? 1 : a.briefDate > b.briefDate ? -1 : 0));
+    const total = briefs.length;
+    const offset = filters.offset ?? 0;
+    const limit = filters.limit ?? 14;
+    return { briefs: briefs.slice(offset, offset + limit), total };
+  }
+
+  async updateMorningBriefStatus(id: string, updates: { status?: BriefStatus; internalDegraded?: boolean; meta?: Record<string, unknown> }): Promise<MorningBriefRow> {
+    const existing = this.morningBriefsMap.get(id);
+    if (!existing) throw new Error(`Morning brief not found: ${id}`);
+    const updated: MorningBriefRow = {
+      ...existing,
+      status: updates.status ?? existing.status,
+      internalDegraded: updates.internalDegraded ?? existing.internalDegraded,
+      meta: updates.meta ?? existing.meta,
+      updatedAt: new Date(),
+    };
+    this.morningBriefsMap.set(id, updated);
+    return updated;
+  }
+
+  async upsertNewsItems(items: InsertNewsItem[]): Promise<NewsItemRow[]> {
+    // onConflict(briefId, contentHash) DO NOTHING — idempotent dedup.
+    const out: NewsItemRow[] = [];
+    for (const data of items) {
+      const dup = Array.from(this.newsItemsMap.values()).find(
+        (i) => i.briefId === data.briefId && i.contentHash === data.contentHash,
+      );
+      if (dup) {
+        out.push(dup);
+        continue;
+      }
+      const row: NewsItemRow = {
+        id: randomUUID(),
+        briefId: data.briefId,
+        workspaceId: data.workspaceId,
+        category: data.category,
+        title: data.title,
+        summary: data.summary,
+        sourceUri: data.sourceUri ?? null,
+        sourceName: data.sourceName ?? null,
+        provider: data.provider ?? null,
+        whyRelevant: data.whyRelevant ?? null,
+        affects: (data.affects ?? []) as NewsItemRow["affects"],
+        relevanceScore: data.relevanceScore ?? 0,
+        readState: data.readState ?? "unread",
+        feedback: data.feedback ?? "none",
+        contentHash: data.contentHash,
+        createdAt: new Date(),
+      };
+      this.newsItemsMap.set(row.id, row);
+      out.push(row);
+    }
+    return out;
+  }
+
+  async setNewsItemFeedback(id: string, updates: { feedback?: NewsFeedback; readState?: NewsReadState }): Promise<NewsItemRow> {
+    const existing = this.newsItemsMap.get(id);
+    if (!existing) throw new Error(`News item not found: ${id}`);
+    const updated: NewsItemRow = {
+      ...existing,
+      feedback: updates.feedback ?? existing.feedback,
+      readState: updates.readState ?? existing.readState,
+    };
+    this.newsItemsMap.set(id, updated);
+    return updated;
+  }
+
+  async getNewsItem(id: string): Promise<NewsItemRow | null> {
+    return this.newsItemsMap.get(id) ?? null;
+  }
+
+  async listNewsItems(briefId: string, filters: NewsItemFilters = {}): Promise<NewsItemRow[]> {
+    let items = Array.from(this.newsItemsMap.values()).filter((i) => i.briefId === briefId);
+    if (filters.category) items = items.filter((i) => i.category === filters.category);
+    if (filters.readState) items = items.filter((i) => i.readState === filters.readState);
+    items.sort((a, b) => b.relevanceScore - a.relevanceScore);
+    return items;
   }
 
 }

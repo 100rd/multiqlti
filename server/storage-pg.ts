@@ -1,7 +1,7 @@
-import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, sql as drizzleSql } from "drizzle-orm";
+import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, inArray, sql as drizzleSql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "./db";
-import type { IStorage, PracticeCardFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint } from "./storage";
+import type { IStorage, PracticeCardFilters, MorningBriefFilters, NewsItemFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint } from "./storage";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
 import {
   users, models, pipelines, pipelineRuns,
@@ -22,11 +22,23 @@ import {
   workspaces,
   practiceCards,
   practiceCardRefreshRuns,
+  newsProfile,
+  morningBrief,
+  newsItem,
   type PracticeCardRow,
   type InsertPracticeCard,
   type PracticeCardRefreshRunRow,
   type PracticeCardReviewState,
   type PracticeCardStatus,
+  type NewsProfileRow,
+  type InsertNewsProfile,
+  type MorningBriefRow,
+  type InsertMorningBrief,
+  type NewsItemRow,
+  type InsertNewsItem,
+  type BriefStatus,
+  type NewsFeedback,
+  type NewsReadState,
   type UserRow, type InsertUser,
   type Model, type InsertModel,
   type Pipeline, type InsertPipeline,
@@ -2021,6 +2033,142 @@ export class PgStorage implements IStorage {
       .returning();
     if (!row) throw new Error(`Refresh run not found: ${id}`);
     return row;
+  }
+
+  // ─── Morning News Board ──────────────────────────────────────────────────
+
+  async getNewsProfile(workspaceId: string, userId: string): Promise<NewsProfileRow | null> {
+    const [row] = await db
+      .select()
+      .from(newsProfile)
+      .where(and(eq(newsProfile.workspaceId, workspaceId), eq(newsProfile.userId, userId)));
+    return row ?? null;
+  }
+
+  async upsertNewsProfile(data: InsertNewsProfile): Promise<NewsProfileRow> {
+    const [row] = await db
+      .insert(newsProfile)
+      .values(data as typeof newsProfile.$inferInsert)
+      .onConflictDoUpdate({
+        target: [newsProfile.workspaceId, newsProfile.userId],
+        set: {
+          role: data.role,
+          stack: data.stack,
+          mutedCategories: data.mutedCategories,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return row;
+  }
+
+  async createMorningBrief(data: InsertMorningBrief): Promise<{ brief: MorningBriefRow; claimed: boolean }> {
+    // Atomic claim: UNIQUE(workspace_id,user_id,brief_date) IS the gen lock.
+    // ON CONFLICT DO NOTHING — an empty return means another worker holds it.
+    const [inserted] = await db
+      .insert(morningBrief)
+      .values(data as typeof morningBrief.$inferInsert)
+      .onConflictDoNothing({
+        target: [morningBrief.workspaceId, morningBrief.userId, morningBrief.briefDate],
+      })
+      .returning();
+    if (inserted) return { brief: inserted, claimed: true };
+    const existing = await this.getMorningBriefByDate(data.workspaceId, data.userId, data.briefDate);
+    if (!existing) throw new Error("Morning brief claim failed and no existing row found");
+    return { brief: existing, claimed: false };
+  }
+
+  async getMorningBriefByDate(workspaceId: string, userId: string, briefDate: string): Promise<MorningBriefRow | null> {
+    const [row] = await db
+      .select()
+      .from(morningBrief)
+      .where(
+        and(
+          eq(morningBrief.workspaceId, workspaceId),
+          eq(morningBrief.userId, userId),
+          eq(morningBrief.briefDate, briefDate),
+        ),
+      );
+    return row ?? null;
+  }
+
+  async getMorningBrief(id: string): Promise<MorningBriefRow | null> {
+    const [row] = await db.select().from(morningBrief).where(eq(morningBrief.id, id));
+    return row ?? null;
+  }
+
+  async listMorningBriefs(workspaceId: string, filters: MorningBriefFilters = {}): Promise<{ briefs: MorningBriefRow[]; total: number }> {
+    const conditions = [eq(morningBrief.workspaceId, workspaceId)];
+    if (filters.userId) conditions.push(eq(morningBrief.userId, filters.userId));
+    if (filters.status) conditions.push(eq(morningBrief.status, filters.status));
+    const where = and(...conditions);
+
+    const [{ count }] = await db
+      .select({ count: drizzleSql<number>`count(*)::int` })
+      .from(morningBrief)
+      .where(where);
+
+    const briefs = await db
+      .select()
+      .from(morningBrief)
+      .where(where)
+      .orderBy(desc(morningBrief.briefDate))
+      .limit(filters.limit ?? 14)
+      .offset(filters.offset ?? 0);
+
+    return { briefs, total: count ?? 0 };
+  }
+
+  async updateMorningBriefStatus(id: string, updates: { status?: BriefStatus; internalDegraded?: boolean; meta?: Record<string, unknown> }): Promise<MorningBriefRow> {
+    const set: Partial<typeof morningBrief.$inferInsert> = { updatedAt: new Date() };
+    if (updates.status !== undefined) set.status = updates.status;
+    if (updates.internalDegraded !== undefined) set.internalDegraded = updates.internalDegraded;
+    if (updates.meta !== undefined) set.meta = updates.meta;
+    const [row] = await db.update(morningBrief).set(set).where(eq(morningBrief.id, id)).returning();
+    if (!row) throw new Error(`Morning brief not found: ${id}`);
+    return row;
+  }
+
+  async upsertNewsItems(items: InsertNewsItem[]): Promise<NewsItemRow[]> {
+    if (items.length === 0) return [];
+    // onConflict(brief_id, content_hash) DO NOTHING — idempotent dedup.
+    await db
+      .insert(newsItem)
+      .values(items as Array<typeof newsItem.$inferInsert>)
+      .onConflictDoNothing({ target: [newsItem.briefId, newsItem.contentHash] });
+    // Return the persisted rows for these (briefId, contentHash) pairs.
+    const briefIds = Array.from(new Set(items.map((i) => i.briefId)));
+    const rows = await db
+      .select()
+      .from(newsItem)
+      .where(inArray(newsItem.briefId, briefIds));
+    const wanted = new Set(items.map((i) => `${i.briefId}::${i.contentHash}`));
+    return rows.filter((r) => wanted.has(`${r.briefId}::${r.contentHash}`));
+  }
+
+  async setNewsItemFeedback(id: string, updates: { feedback?: NewsFeedback; readState?: NewsReadState }): Promise<NewsItemRow> {
+    const set: Partial<typeof newsItem.$inferInsert> = {};
+    if (updates.feedback !== undefined) set.feedback = updates.feedback;
+    if (updates.readState !== undefined) set.readState = updates.readState;
+    const [row] = await db.update(newsItem).set(set).where(eq(newsItem.id, id)).returning();
+    if (!row) throw new Error(`News item not found: ${id}`);
+    return row;
+  }
+
+  async getNewsItem(id: string): Promise<NewsItemRow | null> {
+    const [row] = await db.select().from(newsItem).where(eq(newsItem.id, id));
+    return row ?? null;
+  }
+
+  async listNewsItems(briefId: string, filters: NewsItemFilters = {}): Promise<NewsItemRow[]> {
+    const conditions = [eq(newsItem.briefId, briefId)];
+    if (filters.category) conditions.push(eq(newsItem.category, filters.category));
+    if (filters.readState) conditions.push(eq(newsItem.readState, filters.readState));
+    return db
+      .select()
+      .from(newsItem)
+      .where(and(...conditions))
+      .orderBy(desc(newsItem.relevanceScore));
   }
 
 }

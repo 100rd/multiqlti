@@ -141,6 +141,15 @@ export const ConfigSchema = z.object({
           .default("hybrid"),
         /** Request timeout in milliseconds. */
         timeoutMs: z.coerce.number().int().positive().default(15_000),
+        /**
+         * Morning News Board internal feed (Security H3). Explicit opt-in,
+         * SEPARATE from selecting the Omniscience RAG backend: enabling the
+         * backend for other features must NOT silently turn on the board feed.
+         * When true (and backend === "omniscience"), the board surfaces ONE
+         * shared Omniscience workspace to ALL board users across ALL multiqlti
+         * workspaces (single shared OMNISCIENCE_TOKEN). Default FALSE.
+         */
+        board: z.object({ enabled: z.boolean().default(false) }).default({}),
       }).default({}),
     }).default({}),
   }).default({}),

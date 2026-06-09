@@ -72,6 +72,11 @@ import { registerKnowledgeRoutes } from "./routes/knowledge";
 import { registerPracticeCardRoutes } from "./routes/practice-cards";
 import { buildPracticeCardDeps } from "./knowledge/practice-card-deps";
 import { initRefreshScheduler, getRefreshScheduler } from "./knowledge/refresh-scheduler";
+import { registerNewsRoutes } from "./routes/news";
+import { BriefScheduler } from "./news/brief-scheduler";
+import { generateBrief } from "./news/brief-generator";
+import { buildNewsLiveDeps, bindGeneratorDeps } from "./news/news-deps";
+import { configLoader as appConfigLoader } from "./config/loader";
 import { seedExampleTerraformCards, resolveFirstAdminUserId } from "./knowledge/seed-terraform-cards";
 import { SessionSharingService } from "./federation/session-sharing";
 import { InMemoryConflictStore } from "./federation/config-conflict";
@@ -163,6 +168,15 @@ export async function registerRoutes(
       triggerNow: (workspaceId, trigger) => knowledgeRefreshScheduler.triggerNow(workspaceId, trigger),
     }),
   );
+
+  // Morning News Board (morning-news-board-mvp.md) — LAZY-on-first-GET, no cron.
+  // Live deps degrade gracefully when backend=local (boardProvider=null →
+  // internalDegraded). The Omniscience token stays env-only inside news-deps.
+  const newsLive = await buildNewsLiveDeps(appConfigLoader.get(), gateway);
+  const briefScheduler = new BriefScheduler(storage, (params) =>
+    generateBrief(bindGeneratorDeps(storage, newsLive.deps), params),
+  );
+  registerNewsRoutes(app as unknown as Router, storage, { scheduler: briefScheduler });
   registerSandboxRoutes(app as unknown as Router);
   registerSettingsRoutes(app as unknown as Router, gateway);
   registerMaintenanceRoutes(app as unknown as Router);
@@ -332,6 +346,7 @@ export async function registerRoutes(
     cronScheduler?.stopAll();
     fileWatcherService?.stopAll();
     getRefreshScheduler()?.stop();
+    await newsLive.close();
     stopRateLimitCleanup();
     await remoteAgentManager?.shutdown();
     skillUpdateChecker?.stop();

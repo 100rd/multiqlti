@@ -21,6 +21,13 @@ const ALLOWED_HOSTS: readonly string[] = [
   "terraform-best-practices.com",
   "developer.hashicorp.com",
   "opentofu.org",
+  // ── Morning News Board curated news hosts (morning-news-board-mvp.md) ──
+  // Same strict gate (https-only, exact host or dot-boundary subdomain, no
+  // ports/userinfo/punycode). No parallel weaker gate is introduced.
+  "aws.amazon.com",
+  "kubernetes.io",
+  "cncf.io",
+  "hashicorp.com",
 ] as const;
 
 /**

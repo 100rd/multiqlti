@@ -26,6 +26,7 @@ import {
   GitBranchPlus,
   DollarSign,
   Radio,
+  Newspaper,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -85,6 +86,12 @@ export default function MainLayout({ children }: MainLayoutProps) {
             icon: BookMarked,
             label: "Knowledge Base",
             href: `/workspaces/${currentWorkspaceId}/knowledge-base`,
+            indent: true,
+          },
+          {
+            icon: Newspaper,
+            label: "Morning Brief",
+            href: `/workspaces/${currentWorkspaceId}/morning-brief`,
             indent: true,
           },
           {

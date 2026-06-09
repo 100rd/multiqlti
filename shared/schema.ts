@@ -1463,7 +1463,7 @@ export type WorkspaceSettingsRow = typeof workspaceSettings.$inferSelect;
 // Dimensions default to 1536 (OpenAI/Voyage); Ollama nomic-embed-text uses 768.
 // The actual model dimension is stored in metadata.dim.
 
-export const CHUNK_SOURCE_TYPES = ["code", "pipeline_run", "document", "memory_entry", "practice_card"] as const;
+export const CHUNK_SOURCE_TYPES = ["code", "pipeline_run", "document", "memory_entry", "practice_card", "news_item"] as const;
 export type ChunkSourceType = typeof CHUNK_SOURCE_TYPES[number];
 
 export const memoryChunks = pgTable(
@@ -1632,6 +1632,174 @@ export const practiceCardRefreshRuns = pgTable(
 );
 
 export type PracticeCardRefreshRunRow = typeof practiceCardRefreshRuns.$inferSelect;
+
+// ─── Morning News Board (Stage 1 MVP — morning-news-board-mvp.md) ─────────────
+// Personalized daily DevOps/SRE/Platform brief. Two feeds (internal Omniscience
+// + external curated news), profile-based personalization, and an "affects YOUR
+// platform" cross-link powered structurally by Omniscience blast_radius.impacted.
+//
+// Security invariants encoded here:
+//   - workspace_id on every row; user_id bound to req.user.id (never from body).
+//   - morning_brief UNIQUE(workspace_id,user_id,brief_date) IS the generation lock
+//     (Security M1: a 'generating' claim is an atomic onConflict insert).
+//   - news_item UNIQUE(brief_id,content_hash) is the idempotent dedup key;
+//     content_hash is ALWAYS server-computed (never client-supplied).
+//   - `affects` is sourced ONLY from blast_radius.impacted (Security C2), never
+//     derived from any LLM output.
+
+export const NEWS_PROFILE_ROLES = ["devops", "sre", "platform"] as const;
+export type NewsProfileRole = typeof NEWS_PROFILE_ROLES[number];
+
+export const BRIEF_STATUSES = ["generating", "ready", "failed"] as const;
+export type BriefStatus = typeof BRIEF_STATUSES[number];
+
+export const NEWS_CATEGORIES = ["internal", "external"] as const;
+export type NewsCategory = typeof NEWS_CATEGORIES[number];
+
+export const NEWS_READ_STATES = ["unread", "read"] as const;
+export type NewsReadState = typeof NEWS_READ_STATES[number];
+
+export const NEWS_FEEDBACK = ["none", "up", "down", "hidden"] as const;
+export type NewsFeedback = typeof NEWS_FEEDBACK[number];
+
+/**
+ * A single impacted entity surfaced for an item's "affects you" cross-link.
+ * Mirrors blast_radius.impacted EXACTLY — this is the only origin of affects data.
+ */
+export interface BlastAffect {
+  entityId: string;
+  entityType: string;
+  impactScore: number;
+  confidence: number;
+  path: Array<{ fromEntity: string; toEntity: string; edgeType: string }>;
+}
+
+export const newsProfile = pgTable(
+  "news_profile",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    workspaceId: varchar("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
+    role: text("role").notNull().default("sre").$type<NewsProfileRole>(),
+    stack: jsonb("stack")
+      .notNull()
+      .default(sql`'["terraform","kubernetes","aws","argocd","go"]'::jsonb`)
+      .$type<string[]>(),
+    mutedCategories: jsonb("muted_categories")
+      .notNull()
+      .default(sql`'[]'::jsonb`)
+      .$type<string[]>(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    unique("news_profile_workspace_user_uq").on(table.workspaceId, table.userId),
+    index("news_profile_workspace_user_idx").on(table.workspaceId, table.userId),
+  ],
+);
+
+export type NewsProfileRow = typeof newsProfile.$inferSelect;
+
+export const insertNewsProfileSchema = createInsertSchema(newsProfile)
+  .omit({ id: true, createdAt: true, updatedAt: true })
+  .extend({
+    role: z.enum(NEWS_PROFILE_ROLES).optional(),
+    stack: z.array(z.string()).optional(),
+    mutedCategories: z.array(z.string()).optional(),
+  });
+
+export type InsertNewsProfile = z.infer<typeof insertNewsProfileSchema>;
+
+export const morningBrief = pgTable(
+  "morning_brief",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    workspaceId: varchar("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
+    /** YYYY-MM-DD; the personalization key. The UNIQUE on this triple is the gen lock. */
+    briefDate: text("brief_date").notNull(),
+    status: text("status").notNull().default("generating").$type<BriefStatus>(),
+    /** true when Omniscience was unavailable/forbidden — internal feed is degraded. */
+    internalDegraded: boolean("internal_degraded").notNull().default(false),
+    meta: jsonb("meta").notNull().default(sql`'{}'::jsonb`).$type<Record<string, unknown>>(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    unique("morning_brief_workspace_user_date_uq").on(
+      table.workspaceId,
+      table.userId,
+      table.briefDate,
+    ),
+    index("morning_brief_workspace_user_idx").on(table.workspaceId, table.userId),
+  ],
+);
+
+export type MorningBriefRow = typeof morningBrief.$inferSelect;
+
+export const insertMorningBriefSchema = createInsertSchema(morningBrief)
+  .omit({ id: true, createdAt: true, updatedAt: true })
+  .extend({
+    status: z.enum(BRIEF_STATUSES).optional(),
+    internalDegraded: z.boolean().optional(),
+    meta: z.record(z.unknown()).optional(),
+  });
+
+export type InsertMorningBrief = z.infer<typeof insertMorningBriefSchema>;
+
+export const newsItem = pgTable(
+  "news_item",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    briefId: varchar("brief_id")
+      .notNull()
+      .references(() => morningBrief.id, { onDelete: "cascade" }),
+    workspaceId: varchar("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    category: text("category").notNull().$type<NewsCategory>(),
+    /** All of these are UNTRUSTED, inert-rendered text. */
+    title: text("title").notNull(),
+    summary: text("summary").notNull(),
+    sourceUri: text("source_uri"),
+    sourceName: text("source_name"),
+    provider: text("provider"),
+    whyRelevant: text("why_relevant"),
+    /** ONLY from blast_radius.impacted (Security C2). Never LLM-derived. */
+    affects: jsonb("affects").notNull().default(sql`'[]'::jsonb`).$type<BlastAffect[]>(),
+    relevanceScore: real("relevance_score").notNull().default(0),
+    readState: text("read_state").notNull().default("unread").$type<NewsReadState>(),
+    feedback: text("feedback").notNull().default("none").$type<NewsFeedback>(),
+    /** sha256(canonical(title+summary+sourceUri)) — server-computed dedup key. */
+    contentHash: text("content_hash").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    unique("news_item_brief_content_hash_uq").on(table.briefId, table.contentHash),
+    index("news_item_brief_idx").on(table.briefId),
+    index("news_item_workspace_idx").on(table.workspaceId),
+    index("news_item_brief_read_state_idx").on(table.briefId, table.readState),
+  ],
+);
+
+export type NewsItemRow = typeof newsItem.$inferSelect;
+
+export const insertNewsItemSchema = createInsertSchema(newsItem)
+  .omit({ id: true, createdAt: true })
+  .extend({
+    category: z.enum(NEWS_CATEGORIES),
+    readState: z.enum(NEWS_READ_STATES).optional(),
+    feedback: z.enum(NEWS_FEEDBACK).optional(),
+    affects: z.array(z.unknown()).optional(),
+  });
+
+export type InsertNewsItem = z.infer<typeof insertNewsItemSchema>;
+
+
 
 
 // ── Federation: Subjective Conflict Resolution (issue #229) ──────────────────
