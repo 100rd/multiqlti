@@ -3,10 +3,16 @@
  *
  * retrieveContext() embeds the query, searches the vector store, applies a
  * token budget, and returns formatted context chunks ready for LLM injection.
+ *
+ * Routing (memory-architecture ADR, Track A): when an Omniscience provider is
+ * wired in (feature flag `memory.retrieval.backend = "omniscience"`), the
+ * Retriever delegates world-knowledge retrieval to it and falls back to the
+ * local pgvector path on any error. By default (no provider) it uses pgvector.
  */
 import type { EmbeddingProvider } from "./embeddings.js";
 import type { VectorStore, VectorSearchResult } from "./vector-store.js";
 import type { ChunkSourceType } from "./chunker.js";
+import type { OmniscienceProvider, OmniscienceRetrievalStrategy } from "./omniscience-provider.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -20,6 +26,16 @@ export interface RetrievalOptions {
   maxTokens?: number;
   /** Minimum similarity score (0–1). */
   minScore?: number;
+  /**
+   * Bitemporal anchor (ISO-8601 datetime) passed through to Omniscience
+   * `search`. Ignored by the local pgvector path.
+   */
+  asOf?: string;
+  /**
+   * Retrieval strategy passed through to Omniscience `search`. Ignored by the
+   * local pgvector path. Unknown strategies downgrade server-side to "hybrid".
+   */
+  retrievalStrategy?: OmniscienceRetrievalStrategy;
 }
 
 export interface RetrievedChunk {
@@ -45,16 +61,41 @@ const CHARS_PER_TOKEN = 4;
 const DEFAULT_TOP_K = 5;
 const DEFAULT_MAX_TOKENS = 2000;
 const DEFAULT_MIN_SCORE = 0.3;
+const MIN_TRUNCATION_CHARS = 40;
 
 // ─── Retriever ────────────────────────────────────────────────────────────────
 
 export class Retriever {
+  /**
+   * @param embeddingProvider — embeds queries for the local pgvector path.
+   * @param vectorStore       — local pgvector store (default + fallback backend).
+   * @param omniscience       — optional Omniscience provider; when present the
+   *   Retriever routes to it and falls back to local pgvector on error.
+   */
   constructor(
     private readonly embeddingProvider: EmbeddingProvider,
     private readonly vectorStore: VectorStore,
+    private readonly omniscience?: OmniscienceProvider,
   ) {}
 
   async retrieveContext(options: RetrievalOptions): Promise<RetrievalResult> {
+    if (this.omniscience) {
+      try {
+        return await this.omniscience.retrieveContext(options);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Graceful fallback: log and use local pgvector. Never throw to the
+        // caller just because the optional world-knowledge backend is down.
+        console.warn(
+          `[retriever] Omniscience retrieval failed, falling back to local pgvector: ${msg}`,
+        );
+      }
+    }
+    return this.retrieveLocal(options);
+  }
+
+  /** Local pgvector retrieval path (default backend + Omniscience fallback). */
+  private async retrieveLocal(options: RetrievalOptions): Promise<RetrievalResult> {
     const topK = options.topK ?? DEFAULT_TOP_K;
     const maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
     const minScore = options.minScore ?? DEFAULT_MIN_SCORE;
@@ -70,44 +111,55 @@ export class Retriever {
       minScore,
     });
 
-    // Apply token budget: include chunks in order of relevance until budget exhausted.
-    const selectedChunks: RetrievedChunk[] = [];
-    let usedChars = 0;
+    const selectedChunks = selectWithinBudget(searchResults, maxChars);
+    const usedChars = selectedChunks.reduce((sum, c) => sum + c.chunkText.length, 0);
 
-    for (const result of searchResults) {
-      const chunkChars = result.chunkText.length;
-      if (usedChars + chunkChars > maxChars && selectedChunks.length > 0) {
-        // Partial inclusion: truncate the last chunk to fit within budget.
-        const remaining = maxChars - usedChars;
-        if (remaining > 40) {
-          selectedChunks.push({
-            id: result.id,
-            sourceType: result.sourceType,
-            sourceId: result.sourceId,
-            chunkText: result.chunkText.slice(0, remaining) + "…",
-            score: result.score,
-            metadata: result.metadata,
-          });
-          usedChars += remaining;
-        }
-        break;
-      }
-      selectedChunks.push({
-        id: result.id,
-        sourceType: result.sourceType,
-        sourceId: result.sourceId,
-        chunkText: result.chunkText,
-        score: result.score,
-        metadata: result.metadata,
-      });
-      usedChars += chunkChars;
-    }
-
-    const context = formatContext(selectedChunks);
-    const tokensUsed = Math.ceil(usedChars / CHARS_PER_TOKEN);
-
-    return { chunks: selectedChunks, context, tokensUsed };
+    return {
+      chunks: selectedChunks,
+      context: formatContext(selectedChunks),
+      tokensUsed: Math.ceil(usedChars / CHARS_PER_TOKEN),
+    };
   }
+}
+
+// ─── Token budget ───────────────────────────────────────────────────────────────
+
+/**
+ * Select chunks in relevance order until the character budget is exhausted,
+ * truncating the final chunk to fit when there is meaningful room left.
+ */
+function selectWithinBudget(
+  results: VectorSearchResult[],
+  maxChars: number,
+): RetrievedChunk[] {
+  const selected: RetrievedChunk[] = [];
+  let usedChars = 0;
+
+  for (const result of results) {
+    const chunkChars = result.chunkText.length;
+    if (usedChars + chunkChars > maxChars && selected.length > 0) {
+      const remaining = maxChars - usedChars;
+      if (remaining > MIN_TRUNCATION_CHARS) {
+        selected.push(toChunk(result, result.chunkText.slice(0, remaining) + "…"));
+      }
+      break;
+    }
+    selected.push(toChunk(result, result.chunkText));
+    usedChars += chunkChars;
+  }
+
+  return selected;
+}
+
+function toChunk(result: VectorSearchResult, chunkText: string): RetrievedChunk {
+  return {
+    id: result.id,
+    sourceType: result.sourceType,
+    sourceId: result.sourceId,
+    chunkText,
+    score: result.score,
+    metadata: result.metadata,
+  };
 }
 
 // ─── Formatting ───────────────────────────────────────────────────────────────
