@@ -5,7 +5,7 @@ export const SDLC_TEAMS: Record<TeamId, TeamConfig> = {
     id: "planning",
     name: "Planning",
     description: "Requirements analysis, task breakdown, acceptance criteria",
-    defaultModelSlug: "llama3-70b",
+    defaultModelSlug: "claude-sonnet",
     systemPromptTemplate: `You are a senior software project planner. Analyze the given task and produce a structured plan.
 
 Your output MUST be valid JSON with this structure:
@@ -33,7 +33,7 @@ Be specific, actionable, and thorough.`,
     id: "architecture",
     name: "Architecture",
     description: "System design, tech stack decisions, component structure",
-    defaultModelSlug: "llama3-70b",
+    defaultModelSlug: "claude-sonnet",
     systemPromptTemplate: `You are a senior software architect. Based on the planning output, design the system architecture.
 
 Your output MUST be valid JSON with this structure:
@@ -61,7 +61,7 @@ If you need clarification, include a "questions" array.`,
     id: "development",
     name: "Development",
     description: "Code generation and implementation",
-    defaultModelSlug: "deepseek-coder",
+    defaultModelSlug: "claude-sonnet",
     systemPromptTemplate: `You are an expert software developer. Based on the architecture, generate production-ready code.
 
 Your output MUST be valid JSON with this structure:
@@ -87,7 +87,7 @@ If you need clarification, include a "questions" array.`,
     id: "testing",
     name: "Testing",
     description: "Test generation, execution strategy, coverage analysis",
-    defaultModelSlug: "mixtral-8x7b",
+    defaultModelSlug: "claude-haiku",
     systemPromptTemplate: `You are a QA engineer. Generate comprehensive tests for the code.
 
 Your output MUST be valid JSON with this structure:
@@ -115,7 +115,7 @@ If you need clarification, include a "questions" array.`,
     id: "code_review",
     name: "Code Review",
     description: "Quality analysis, security audit, best practices",
-    defaultModelSlug: "llama3-70b",
+    defaultModelSlug: "claude-sonnet",
     systemPromptTemplate: `You are a senior code reviewer. Review the code and tests for quality and security.
 
 Your output MUST be valid JSON with this structure:
@@ -146,7 +146,7 @@ If you need clarification, include a "questions" array.`,
     id: "deployment",
     name: "Deployment",
     description: "CI/CD config, Docker/K8s manifests, deployment scripts",
-    defaultModelSlug: "deepseek-coder",
+    defaultModelSlug: "claude-haiku",
     systemPromptTemplate: `You are a DevOps engineer. Generate deployment configurations.
 
 Your output MUST be valid JSON with this structure:
@@ -173,7 +173,7 @@ If you need clarification, include a "questions" array.`,
     id: "monitoring",
     name: "Monitoring",
     description: "Observability setup, alerting rules, health checks",
-    defaultModelSlug: "mixtral-8x7b",
+    defaultModelSlug: "claude-haiku",
     systemPromptTemplate: `You are an SRE engineer. Set up monitoring and observability.
 
 Your output MUST be valid JSON with this structure:
@@ -199,7 +199,7 @@ If you need clarification, include a "questions" array.`,
     id: 'fact_check',
     name: 'Fact Check',
     description: 'Grok verifies outputs against real-time web data',
-    defaultModelSlug: 'grok-3',
+    defaultModelSlug: "claude-haiku",
     systemPromptTemplate: `You are a fact-checking AI powered by Grok with real-time web search capability.
 
 Your task is to fact-check the provided stage output. Specifically:
@@ -358,13 +358,13 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     temperature: 0.3,
     maxTokens: 1024,
     stageOverrides: {
-      planning: { modelSlug: "phi3-mini" },
-      architecture: { modelSlug: "phi3-mini" },
-      development: { modelSlug: "phi3-mini" },
-      testing: { modelSlug: "phi3-mini" },
-      code_review: { modelSlug: "phi3-mini" },
-      deployment: { modelSlug: "phi3-mini" },
-      monitoring: { modelSlug: "phi3-mini" },
+      planning: { modelSlug: "claude-haiku" },
+      architecture: { modelSlug: "claude-haiku" },
+      development: { modelSlug: "claude-haiku" },
+      testing: { modelSlug: "claude-haiku" },
+      code_review: { modelSlug: "claude-haiku" },
+      deployment: { modelSlug: "claude-haiku" },
+      monitoring: { modelSlug: "claude-haiku" },
     },
   },
   {
@@ -374,13 +374,13 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     temperature: 0.7,
     maxTokens: 2048,
     stageOverrides: {
-      planning: { modelSlug: "llama3-70b" },
-      architecture: { modelSlug: "llama3-70b" },
-      development: { modelSlug: "deepseek-coder" },
-      testing: { modelSlug: "mixtral-8x7b" },
-      code_review: { modelSlug: "llama3-70b" },
-      deployment: { modelSlug: "deepseek-coder" },
-      monitoring: { modelSlug: "mixtral-8x7b" },
+      planning: { modelSlug: "claude-sonnet" },
+      architecture: { modelSlug: "claude-sonnet" },
+      development: { modelSlug: "claude-sonnet" },
+      testing: { modelSlug: "claude-sonnet" },
+      code_review: { modelSlug: "claude-sonnet" },
+      deployment: { modelSlug: "claude-sonnet" },
+      monitoring: { modelSlug: "claude-sonnet" },
     },
   },
   {
@@ -390,13 +390,13 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     temperature: 0.9,
     maxTokens: 4096,
     stageOverrides: {
-      planning: { modelSlug: "llama3-70b" },
-      architecture: { modelSlug: "llama3-70b" },
-      development: { modelSlug: "deepseek-coder" },
-      testing: { modelSlug: "mixtral-8x7b" },
-      code_review: { modelSlug: "llama3-70b" },
-      deployment: { modelSlug: "deepseek-coder" },
-      monitoring: { modelSlug: "mixtral-8x7b" },
+      planning: { modelSlug: "claude-opus" },
+      architecture: { modelSlug: "claude-opus" },
+      development: { modelSlug: "claude-opus" },
+      testing: { modelSlug: "claude-opus" },
+      code_review: { modelSlug: "claude-opus" },
+      deployment: { modelSlug: "claude-opus" },
+      monitoring: { modelSlug: "claude-opus" },
     },
   },
   {
@@ -406,13 +406,13 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     temperature: 0.3,
     maxTokens: 1024,
     stageOverrides: {
-      planning: { modelSlug: "phi3-mini" },
-      architecture: { modelSlug: "phi3-mini" },
-      development: { modelSlug: "phi3-mini" },
-      testing: { modelSlug: "phi3-mini" },
-      code_review: { modelSlug: "phi3-mini" },
-      deployment: { modelSlug: "phi3-mini" },
-      monitoring: { modelSlug: "phi3-mini" },
+      planning: { modelSlug: "claude-haiku" },
+      architecture: { modelSlug: "claude-haiku" },
+      development: { modelSlug: "claude-haiku" },
+      testing: { modelSlug: "claude-haiku" },
+      code_review: { modelSlug: "claude-haiku" },
+      deployment: { modelSlug: "claude-haiku" },
+      monitoring: { modelSlug: "claude-haiku" },
     },
   },
   {
@@ -422,13 +422,13 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     temperature: 0.3,
     maxTokens: 2048,
     stageOverrides: {
-      planning: { modelSlug: "llama3-70b", temperature: 0.2 },
-      architecture: { modelSlug: "llama3-70b", temperature: 0.2 },
-      development: { modelSlug: "deepseek-coder", temperature: 0.2 },
-      testing: { modelSlug: "llama3-70b", temperature: 0.1 },
-      code_review: { modelSlug: "llama3-70b", temperature: 0.1 },
-      deployment: { modelSlug: "deepseek-coder", temperature: 0.2 },
-      monitoring: { modelSlug: "mixtral-8x7b", temperature: 0.2 },
+      planning: { modelSlug: "claude-sonnet", temperature: 0.2 },
+      architecture: { modelSlug: "claude-sonnet", temperature: 0.2 },
+      development: { modelSlug: "claude-sonnet", temperature: 0.2 },
+      testing: { modelSlug: "claude-sonnet", temperature: 0.1 },
+      code_review: { modelSlug: "claude-sonnet", temperature: 0.1 },
+      deployment: { modelSlug: "claude-sonnet", temperature: 0.2 },
+      monitoring: { modelSlug: "claude-sonnet", temperature: 0.2 },
     },
   },
 ];
@@ -452,39 +452,39 @@ export const EXECUTION_STRATEGY_PRESETS: ExecutionStrategyPreset[] = [
       planning: {
         type: "moa",
         proposers: [
-          { modelSlug: "llama3-70b", role: "optimist", temperature: 0.8 },
-          { modelSlug: "mixtral-8x7b", role: "skeptic", temperature: 0.6 },
-          { modelSlug: "phi3-mini", role: "pragmatist", temperature: 0.5 },
+          { modelSlug: "claude-opus", role: "optimist", temperature: 0.8 },
+          { modelSlug: "claude-opus", role: "skeptic", temperature: 0.6 },
+          { modelSlug: "claude-opus", role: "pragmatist", temperature: 0.5 },
         ],
-        aggregator: { modelSlug: "llama3-70b" },
+        aggregator: { modelSlug: "claude-opus" },
       },
       architecture: {
         type: "debate",
         participants: [
-          { modelSlug: "llama3-70b", role: "proposer" },
-          { modelSlug: "mixtral-8x7b", role: "critic" },
-          { modelSlug: "phi3-mini", role: "devil_advocate" },
+          { modelSlug: "claude-opus", role: "proposer" },
+          { modelSlug: "claude-opus", role: "critic" },
+          { modelSlug: "claude-opus", role: "devil_advocate" },
         ],
-        judge: { modelSlug: "llama3-70b", criteria: ["scalability", "maintainability", "security"] },
+        judge: { modelSlug: "claude-opus", criteria: ["scalability", "maintainability", "security"] },
         rounds: 3,
       },
       development: {
         type: "moa",
         proposers: [
-          { modelSlug: "deepseek-coder", role: "primary", temperature: 0.4 },
-          { modelSlug: "llama3-70b", role: "reviewer", temperature: 0.5 },
-          { modelSlug: "mixtral-8x7b", role: "alternative", temperature: 0.6 },
+          { modelSlug: "claude-opus", role: "primary", temperature: 0.4 },
+          { modelSlug: "claude-opus", role: "reviewer", temperature: 0.5 },
+          { modelSlug: "claude-opus", role: "alternative", temperature: 0.6 },
         ],
-        aggregator: { modelSlug: "deepseek-coder" },
+        aggregator: { modelSlug: "claude-opus" },
       },
       testing: {
         type: "voting",
         candidates: [
-          { modelSlug: "mixtral-8x7b", temperature: 0.5 },
-          { modelSlug: "llama3-70b", temperature: 0.5 },
-          { modelSlug: "phi3-mini", temperature: 0.4 },
-          { modelSlug: "deepseek-coder", temperature: 0.4 },
-          { modelSlug: "mixtral-8x7b", temperature: 0.7 },
+          { modelSlug: "claude-opus", temperature: 0.5 },
+          { modelSlug: "claude-opus", temperature: 0.5 },
+          { modelSlug: "claude-opus", temperature: 0.4 },
+          { modelSlug: "claude-opus", temperature: 0.4 },
+          { modelSlug: "claude-opus", temperature: 0.7 },
         ],
         threshold: 0.6,
         validationMode: "text_similarity",
@@ -492,18 +492,18 @@ export const EXECUTION_STRATEGY_PRESETS: ExecutionStrategyPreset[] = [
       code_review: {
         type: "debate",
         participants: [
-          { modelSlug: "llama3-70b", role: "proposer" },
-          { modelSlug: "mixtral-8x7b", role: "critic" },
+          { modelSlug: "claude-opus", role: "proposer" },
+          { modelSlug: "claude-opus", role: "critic" },
         ],
-        judge: { modelSlug: "llama3-70b", criteria: ["correctness", "security", "performance"] },
+        judge: { modelSlug: "claude-opus", criteria: ["correctness", "security", "performance"] },
         rounds: 3,
       },
       deployment: {
         type: "voting",
         candidates: [
-          { modelSlug: "deepseek-coder", temperature: 0.4 },
-          { modelSlug: "llama3-70b", temperature: 0.5 },
-          { modelSlug: "mixtral-8x7b", temperature: 0.5 },
+          { modelSlug: "claude-opus", temperature: 0.4 },
+          { modelSlug: "claude-opus", temperature: 0.5 },
+          { modelSlug: "claude-opus", temperature: 0.5 },
         ],
         threshold: 0.6,
         validationMode: "text_similarity",
@@ -511,10 +511,10 @@ export const EXECUTION_STRATEGY_PRESETS: ExecutionStrategyPreset[] = [
       monitoring: {
         type: "moa",
         proposers: [
-          { modelSlug: "mixtral-8x7b", role: "primary", temperature: 0.5 },
-          { modelSlug: "llama3-70b", role: "secondary", temperature: 0.6 },
+          { modelSlug: "claude-opus", role: "primary", temperature: 0.5 },
+          { modelSlug: "claude-opus", role: "secondary", temperature: 0.6 },
         ],
-        aggregator: { modelSlug: "mixtral-8x7b" },
+        aggregator: { modelSlug: "claude-opus" },
       },
     },
   },
@@ -527,18 +527,18 @@ export const EXECUTION_STRATEGY_PRESETS: ExecutionStrategyPreset[] = [
       planning: {
         type: "moa",
         proposers: [
-          { modelSlug: "llama3-70b", role: "primary", temperature: 0.7 },
-          { modelSlug: "mixtral-8x7b", role: "secondary", temperature: 0.6 },
+          { modelSlug: "claude-sonnet", role: "primary", temperature: 0.7 },
+          { modelSlug: "claude-sonnet", role: "secondary", temperature: 0.6 },
         ],
-        aggregator: { modelSlug: "llama3-70b" },
+        aggregator: { modelSlug: "claude-sonnet" },
       },
       architecture: {
         type: "debate",
         participants: [
-          { modelSlug: "llama3-70b", role: "proposer" },
-          { modelSlug: "mixtral-8x7b", role: "critic" },
+          { modelSlug: "claude-sonnet", role: "proposer" },
+          { modelSlug: "claude-sonnet", role: "critic" },
         ],
-        judge: { modelSlug: "llama3-70b" },
+        judge: { modelSlug: "claude-sonnet" },
         rounds: 2,
       },
     },
@@ -552,18 +552,18 @@ export const EXECUTION_STRATEGY_PRESETS: ExecutionStrategyPreset[] = [
       architecture: {
         type: "debate",
         participants: [
-          { modelSlug: "llama3-70b", role: "proposer" },
-          { modelSlug: "phi3-mini", role: "critic" },
+          { modelSlug: "claude-haiku", role: "proposer" },
+          { modelSlug: "claude-haiku", role: "critic" },
         ],
-        judge: { modelSlug: "llama3-70b" },
+        judge: { modelSlug: "claude-haiku" },
         rounds: 2,
       },
       testing: {
         type: "voting",
         candidates: [
-          { modelSlug: "mixtral-8x7b", temperature: 0.5 },
-          { modelSlug: "phi3-mini", temperature: 0.4 },
-          { modelSlug: "mixtral-8x7b", temperature: 0.7 },
+          { modelSlug: "claude-haiku", temperature: 0.5 },
+          { modelSlug: "claude-haiku", temperature: 0.4 },
+          { modelSlug: "claude-haiku", temperature: 0.7 },
         ],
         threshold: 0.6,
         validationMode: "text_similarity",
@@ -579,20 +579,20 @@ export const EXECUTION_STRATEGY_PRESETS: ExecutionStrategyPreset[] = [
       development: {
         type: "moa",
         proposers: [
-          { modelSlug: "deepseek-coder", role: "primary", temperature: 0.4 },
-          { modelSlug: "llama3-70b", role: "alternative", temperature: 0.5 },
-          { modelSlug: "mixtral-8x7b", role: "creative", temperature: 0.7 },
+          { modelSlug: "claude-sonnet", role: "primary", temperature: 0.4 },
+          { modelSlug: "claude-sonnet", role: "alternative", temperature: 0.5 },
+          { modelSlug: "claude-sonnet", role: "creative", temperature: 0.7 },
         ],
-        aggregator: { modelSlug: "deepseek-coder" },
+        aggregator: { modelSlug: "claude-sonnet" },
       },
       testing: {
         type: "voting",
         candidates: [
-          { modelSlug: "mixtral-8x7b", temperature: 0.5 },
-          { modelSlug: "llama3-70b", temperature: 0.5 },
-          { modelSlug: "deepseek-coder", temperature: 0.4 },
-          { modelSlug: "phi3-mini", temperature: 0.4 },
-          { modelSlug: "mixtral-8x7b", temperature: 0.7 },
+          { modelSlug: "claude-sonnet", temperature: 0.5 },
+          { modelSlug: "claude-sonnet", temperature: 0.5 },
+          { modelSlug: "claude-sonnet", temperature: 0.4 },
+          { modelSlug: "claude-sonnet", temperature: 0.4 },
+          { modelSlug: "claude-sonnet", temperature: 0.7 },
         ],
         threshold: 0.6,
         validationMode: "text_similarity",
@@ -600,11 +600,11 @@ export const EXECUTION_STRATEGY_PRESETS: ExecutionStrategyPreset[] = [
       code_review: {
         type: "debate",
         participants: [
-          { modelSlug: "llama3-70b", role: "proposer" },
-          { modelSlug: "deepseek-coder", role: "critic" },
-          { modelSlug: "mixtral-8x7b", role: "devil_advocate" },
+          { modelSlug: "claude-sonnet", role: "proposer" },
+          { modelSlug: "claude-sonnet", role: "critic" },
+          { modelSlug: "claude-sonnet", role: "devil_advocate" },
         ],
-        judge: { modelSlug: "llama3-70b", criteria: ["correctness", "security", "performance"] },
+        judge: { modelSlug: "claude-sonnet", criteria: ["correctness", "security", "performance"] },
         rounds: 3,
       },
     },

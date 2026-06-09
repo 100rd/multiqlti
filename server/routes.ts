@@ -2,7 +2,7 @@ import type { Express, Router } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
 import { Gateway } from "./gateway/index";
-import { reconcileModelCatalog } from "./gateway/catalog-sync";
+import { reconcileModelCatalog, reconcileExistingPipelineStages } from "./gateway/catalog-sync";
 import { TeamRegistry } from "./teams/registry";
 import { PipelineController } from "./controller/pipeline-controller";
 import { WsManager } from "./ws/manager";
@@ -381,6 +381,19 @@ export async function registerRoutes(
     log(`Reconciled model catalog: ${recon.upserted} upserted, ${recon.deactivated} deactivated`);
   } catch (e) {
     log(`Model catalog reconcile skipped: ${(e as Error).message}`);
+  }
+
+  // Best-effort: re-point any EXISTING pipeline stage that still references a now
+  // inactive/dead model slug onto a working default. Never throws / never blocks boot.
+  try {
+    const stageRecon = await reconcileExistingPipelineStages(storage);
+    if (stageRecon.stagesRepointed > 0) {
+      log(
+        `Re-pointed dead pipeline stages: ${stageRecon.stagesRepointed} stages across ${stageRecon.pipelinesUpdated} pipelines`,
+      );
+    }
+  } catch (e) {
+    log(`Pipeline stage reconcile skipped: ${(e as Error).message}`);
   }
 
   // Active Knowledge Base — optional example dataset (off by default; opt in via

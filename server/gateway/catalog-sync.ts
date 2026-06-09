@@ -153,3 +153,65 @@ export async function reconcileModelCatalog(
 
   return { upserted, deactivated };
 }
+
+// ─── Existing-pipeline stage reconcile ───────────────────────────────────────
+
+/** Fallback slug applied to stages that point at a dead/inactive model. */
+const FALLBACK_STAGE_SLUG = "claude-sonnet";
+
+export interface PipelineStageReconcileResult {
+  pipelinesUpdated: number;
+  stagesRepointed: number;
+}
+
+/** Narrow a jsonb stage entry enough to read/repoint its `modelSlug`. */
+function isStageRecord(value: unknown): value is Record<string, unknown> & { modelSlug?: unknown } {
+  return typeof value === "object" && value !== null;
+}
+
+/**
+ * Re-point any EXISTING pipeline stage whose `modelSlug` no longer resolves to an
+ * active model onto a working default (`claude-sonnet`). Runs against an already
+ * populated DB so previously seeded pipelines stop selecting dead local/xai models.
+ *
+ * Best-effort: never throws, never blocks boot. When the fallback slug itself is
+ * not active (e.g. discovery unavailable), it does nothing rather than guess.
+ */
+export async function reconcileExistingPipelineStages(
+  storage: IStorage,
+): Promise<PipelineStageReconcileResult> {
+  let pipelinesUpdated = 0;
+  let stagesRepointed = 0;
+  try {
+    const activeModels = await storage.getActiveModels();
+    const activeSlugs = new Set(activeModels.map((m) => m.slug));
+    // Only repoint if we actually have a working fallback to point at.
+    if (!activeSlugs.has(FALLBACK_STAGE_SLUG)) {
+      return { pipelinesUpdated, stagesRepointed };
+    }
+
+    const pipelines = await storage.getPipelines();
+    for (const pipeline of pipelines) {
+      const stages = pipeline.stages;
+      if (!Array.isArray(stages)) continue;
+
+      let changedInPipeline = 0;
+      const nextStages = stages.map((stage) => {
+        if (!isStageRecord(stage)) return stage;
+        const slug = stage.modelSlug;
+        if (typeof slug !== "string" || activeSlugs.has(slug)) return stage;
+        changedInPipeline += 1;
+        return { ...stage, modelSlug: FALLBACK_STAGE_SLUG };
+      });
+
+      if (changedInPipeline > 0) {
+        await storage.updatePipeline(pipeline.id, { stages: nextStages });
+        pipelinesUpdated += 1;
+        stagesRepointed += changedInPipeline;
+      }
+    }
+  } catch {
+    // Swallow: this is a best-effort startup convenience, never a boot blocker.
+  }
+  return { pipelinesUpdated, stagesRepointed };
+}
