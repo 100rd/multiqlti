@@ -1,0 +1,88 @@
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "built_at_commit": "deadbeef",
+  "nodes": [
+    {
+      "id": "mod_network_main_tf",
+      "label": "network module",
+      "file_type": "code",
+      "source_file": "modules/network/main.tf",
+      "source_location": "L1",
+      "metadata": { "language": "hcl", "kind": "module" }
+    },
+    {
+      "id": "backend_s3_tf",
+      "label": "remote state backend",
+      "file_type": "code",
+      "source_file": "live/prod/backend.tf",
+      "source_location": "L1",
+      "metadata": { "language": "hcl", "kind": "backend" }
+    },
+    {
+      "id": "vpc_resource",
+      "label": "aws_vpc main",
+      "file_type": "code",
+      "source_file": "modules/network/vpc.tf",
+      "source_location": "L10",
+      "metadata": { "language": "hcl", "kind": "resource" }
+    },
+    {
+      "id": "tags_locals_tf",
+      "label": "common tags locals",
+      "file_type": "code",
+      "source_file": "modules/network/locals.tf",
+      "source_location": "L1",
+      "metadata": { "language": "hcl", "kind": "locals" }
+    },
+    {
+      "id": "untagged_bucket",
+      "label": "logging bucket",
+      "file_type": "code",
+      "source_file": "modules/storage/bucket.tf",
+      "source_location": "L5",
+      "metadata": { "language": "hcl", "kind": "resource" }
+    },
+    {
+      "id": "ci_workflow",
+      "label": "terraform plan workflow",
+      "file_type": "code",
+      "source_file": ".github/workflows/plan.yml",
+      "source_location": "L1",
+      "metadata": { "language": "yaml", "kind": "workflow" }
+    },
+    {
+      "id": "readme_doc",
+      "label": "README",
+      "file_type": "doc",
+      "source_file": "README.md",
+      "source_location": "L1",
+      "metadata": { "language": "markdown", "kind": "file" }
+    },
+    {
+      "id": "node_no_source",
+      "label": "synthetic node",
+      "file_type": "code",
+      "metadata": { "language": "hcl", "kind": "inferred" }
+    },
+    {
+      "id": "script_bash",
+      "label": "run-plan.sh",
+      "file_type": "code",
+      "source_file": "scripts/run-plan.sh",
+      "source_location": "L1",
+      "metadata": { "language": "bash", "kind": "file" }
+    },
+    {
+      "id": "variables_tf",
+      "label": "module variables",
+      "file_type": "code",
+      "source_file": "modules/network/variables.tf",
+      "source_location": "L1",
+      "metadata": { "language": "hcl", "kind": "variable" }
+    }
+  ],
+  "links": [],
+  "hyperedges": []
+}

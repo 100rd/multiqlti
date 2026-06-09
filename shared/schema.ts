@@ -1463,7 +1463,7 @@ export type WorkspaceSettingsRow = typeof workspaceSettings.$inferSelect;
 // Dimensions default to 1536 (OpenAI/Voyage); Ollama nomic-embed-text uses 768.
 // The actual model dimension is stored in metadata.dim.
 
-export const CHUNK_SOURCE_TYPES = ["code", "pipeline_run", "document", "memory_entry"] as const;
+export const CHUNK_SOURCE_TYPES = ["code", "pipeline_run", "document", "memory_entry", "practice_card"] as const;
 export type ChunkSourceType = typeof CHUNK_SOURCE_TYPES[number];
 
 export const memoryChunks = pgTable(
@@ -1523,6 +1523,116 @@ export const embeddingProviderConfig = pgTable(
 );
 
 export type EmbeddingProviderConfigRow = typeof embeddingProviderConfig.$inferSelect;
+
+// ─── Practice Cards (Active Knowledge Base — issue: active-knowledge-base) ─────
+// Atomic, cited, dated best-practice assertions. Cards own structured/relational
+// state here and are PROJECTED into memory_chunks (source_type='practice_card')
+// for ANN search. The model must not bless its own update: ingested_by / verified_by
+// are recorded separately and the API enforces they differ.
+
+export const PRACTICE_CARD_STATUSES = ["active", "superseded", "deprecated"] as const;
+export type PracticeCardStatus = typeof PRACTICE_CARD_STATUSES[number];
+
+export const PRACTICE_CARD_REVIEW_STATES = [
+  "pending_verification",
+  "pending_review",
+  "accepted",
+  "rejected",
+] as const;
+export type PracticeCardReviewState = typeof PRACTICE_CARD_REVIEW_STATES[number];
+
+export const PRACTICE_CARD_REFRESH_STATUSES = ["running", "completed", "failed"] as const;
+export type PracticeCardRefreshStatus = typeof PRACTICE_CARD_REFRESH_STATUSES[number];
+
+/** A single cited source backing a practice card. */
+export interface PracticeCardSource {
+  url: string;
+  sourceVersion?: string;
+  fetchedAt: string;
+}
+
+/** Scope descriptor — which tools/resources/tags the card applies to. */
+export interface PracticeCardAppliesTo {
+  tool: string;
+  resourceKinds?: string[];
+  tags?: string[];
+}
+
+export const practiceCards = pgTable(
+  "practice_cards",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    workspaceId: varchar("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    topic: text("topic").notNull(),
+    statement: text("statement").notNull(),
+    rationale: text("rationale").notNull(),
+    appliesTo: jsonb("applies_to").notNull().default(sql`'{}'::jsonb`).$type<PracticeCardAppliesTo>(),
+    sources: jsonb("sources").notNull().default(sql`'[]'::jsonb`).$type<PracticeCardSource[]>(),
+    confidence: real("confidence").notNull().default(0),
+    status: text("status").notNull().default("active").$type<PracticeCardStatus>(),
+    supersedes: jsonb("supersedes").notNull().default(sql`'[]'::jsonb`).$type<string[]>(),
+    supersededBy: jsonb("superseded_by").notNull().default(sql`'[]'::jsonb`).$type<string[]>(),
+    /** Actor/agent that PROPOSED the card (untrusted label). */
+    ingestedBy: text("ingested_by").notNull(),
+    /** Authenticated user id that performed the ingest (server-bound, trusted; NOT NULL — the adversarial gate depends on it). */
+    ingestedByUserId: text("ingested_by_user_id").notNull(),
+    /** Actor/agent that VERIFIED the card (untrusted label; NULL until verified). */
+    verifiedBy: text("verified_by"),
+    /** Authenticated user id that performed verification (server-bound, trusted). */
+    verifiedByUserId: text("verified_by_user_id"),
+    verification: jsonb("verification").notNull().default(sql`'{}'::jsonb`).$type<Record<string, unknown>>(),
+    reviewState: text("review_state").notNull().default("pending_verification").$type<PracticeCardReviewState>(),
+    /** sha256(canonicalized statement+rationale+appliesTo) — server-computed, never client-supplied. */
+    contentHash: text("content_hash").notNull(),
+    lastVerifiedAt: timestamp("last_verified_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("practice_cards_workspace_topic_idx").on(table.workspaceId, table.topic),
+    index("practice_cards_status_idx").on(table.workspaceId, table.status),
+    index("practice_cards_review_state_idx").on(table.workspaceId, table.reviewState),
+    index("practice_cards_verified_idx").on(table.workspaceId, table.lastVerifiedAt),
+    unique("practice_cards_content_hash_uq").on(table.workspaceId, table.contentHash),
+  ],
+);
+
+export type PracticeCardRow = typeof practiceCards.$inferSelect;
+
+export const insertPracticeCardSchema = createInsertSchema(practiceCards).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  status: z.enum(PRACTICE_CARD_STATUSES).optional(),
+  reviewState: z.enum(PRACTICE_CARD_REVIEW_STATES).optional(),
+});
+
+export type InsertPracticeCard = z.infer<typeof insertPracticeCardSchema>;
+
+export const practiceCardRefreshRuns = pgTable(
+  "practice_card_refresh_runs",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    workspaceId: varchar("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    topic: text("topic").notNull(),
+    trigger: text("trigger").notNull().default("manual"),
+    status: text("status").notNull().default("running").$type<PracticeCardRefreshStatus>(),
+    report: jsonb("report").notNull().default(sql`'{}'::jsonb`).$type<Record<string, unknown>>(),
+    startedAt: timestamp("started_at").notNull().defaultNow(),
+    completedAt: timestamp("completed_at"),
+  },
+  (table) => [
+    index("practice_card_refresh_runs_workspace_idx").on(table.workspaceId),
+  ],
+);
+
+export type PracticeCardRefreshRunRow = typeof practiceCardRefreshRuns.$inferSelect;
+
 
 // ── Federation: Subjective Conflict Resolution (issue #229) ──────────────────
 

@@ -174,3 +174,43 @@ export async function invokeAntigravityCli(
     releaseSlot();
   }
 }
+
+/**
+ * List the subscription model labels exposed by `agy models`.
+ *
+ * Output is one model label per line, e.g.
+ *   Gemini 3.5 Flash (Medium)
+ *   Claude Sonnet 4.6 (Thinking)
+ * Returned verbatim (trimmed, blanks dropped); each label is what the provider
+ * later passes back via `--model=<label>`.
+ */
+export async function listAntigravityModels(
+  binPath: string,
+  timeoutMs: number = DEFAULT_ANTIGRAVITY_TIMEOUT_MS,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  await acquireSlot();
+  try {
+    return await new Promise<string[]>((resolve, reject) => {
+      const child = execFile(
+        binPath,
+        ["models"],
+        { timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES, signal, shell: false },
+        (err, stdout, stderr) => {
+          if (err) {
+            reject(toCliError(err as NodeJS.ErrnoException, stderr ?? ""));
+            return;
+          }
+          const labels = (stdout ?? "")
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0);
+          resolve(labels);
+        },
+      );
+      child.stdin?.end();
+    });
+  } finally {
+    releaseSlot();
+  }
+}

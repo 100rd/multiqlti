@@ -1,7 +1,7 @@
 import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, sql as drizzleSql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "./db";
-import type { IStorage, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint } from "./storage";
+import type { IStorage, PracticeCardFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint } from "./storage";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
 import {
   users, models, pipelines, pipelineRuns,
@@ -20,6 +20,13 @@ import {
   traces,
   argoCdConfig,
   workspaces,
+  practiceCards,
+  practiceCardRefreshRuns,
+  type PracticeCardRow,
+  type InsertPracticeCard,
+  type PracticeCardRefreshRunRow,
+  type PracticeCardReviewState,
+  type PracticeCardStatus,
   type UserRow, type InsertUser,
   type Model, type InsertModel,
   type Pipeline, type InsertPipeline,
@@ -1902,6 +1909,118 @@ export class PgStorage implements IStorage {
       : await query;
 
     return rows.map((r) => this.rowToDecisionLogEntry(r));
+  }
+
+  // ─── Practice Cards (Active Knowledge Base) ───────────────────────────────
+
+  async createPracticeCard(data: InsertPracticeCard): Promise<PracticeCardRow> {
+    // Idempotent: ON CONFLICT (workspace_id, content_hash) DO NOTHING.
+    const [inserted] = await db
+      .insert(practiceCards)
+      .values(data as typeof practiceCards.$inferInsert)
+      .onConflictDoNothing({ target: [practiceCards.workspaceId, practiceCards.contentHash] })
+      .returning();
+    if (inserted) return inserted;
+    // Conflict occurred — return the existing row for this content hash.
+    const [existing] = await db
+      .select()
+      .from(practiceCards)
+      .where(
+        and(
+          eq(practiceCards.workspaceId, data.workspaceId),
+          eq(practiceCards.contentHash, data.contentHash),
+        ),
+      );
+    return existing;
+  }
+
+  async getPracticeCard(id: string): Promise<PracticeCardRow | null> {
+    const [row] = await db.select().from(practiceCards).where(eq(practiceCards.id, id));
+    return row ?? null;
+  }
+
+  async listPracticeCards(
+    workspaceId: string,
+    filters: PracticeCardFilters = {},
+  ): Promise<{ cards: PracticeCardRow[]; total: number }> {
+    const conditions = [eq(practiceCards.workspaceId, workspaceId)];
+    if (filters.status) {
+      conditions.push(eq(practiceCards.status, filters.status as PracticeCardStatus));
+    }
+    if (filters.reviewState) {
+      conditions.push(eq(practiceCards.reviewState, filters.reviewState as PracticeCardReviewState));
+    }
+    if (filters.topic) {
+      conditions.push(eq(practiceCards.topic, filters.topic));
+    }
+    const where = and(...conditions);
+
+    const [{ count }] = await db
+      .select({ count: drizzleSql<number>`count(*)::int` })
+      .from(practiceCards)
+      .where(where);
+
+    const cards = await db
+      .select()
+      .from(practiceCards)
+      .where(where)
+      .orderBy(desc(practiceCards.createdAt))
+      .limit(filters.limit ?? 50)
+      .offset(filters.offset ?? 0);
+
+    return { cards, total: count ?? 0 };
+  }
+
+  async getPracticeCardsByWorkspace(workspaceId: string): Promise<PracticeCardRow[]> {
+    return db.select().from(practiceCards).where(eq(practiceCards.workspaceId, workspaceId));
+  }
+
+  async updatePracticeCardState(
+    id: string,
+    updates: Partial<PracticeCardRow>,
+  ): Promise<PracticeCardRow> {
+    const { id: _ignore, createdAt: _c, ...rest } = updates;
+    const [row] = await db
+      .update(practiceCards)
+      .set({ ...rest, updatedAt: new Date() } as Partial<typeof practiceCards.$inferInsert>)
+      .where(eq(practiceCards.id, id))
+      .returning();
+    if (!row) throw new Error(`Practice card not found: ${id}`);
+    return row;
+  }
+
+  async createRefreshRun(
+    workspaceId: string,
+    topic: string,
+    trigger: string,
+  ): Promise<PracticeCardRefreshRunRow> {
+    const [row] = await db
+      .insert(practiceCardRefreshRuns)
+      .values({ workspaceId, topic, trigger, status: "running", report: {} })
+      .returning();
+    return row;
+  }
+
+  async getRefreshRun(id: string): Promise<PracticeCardRefreshRunRow | null> {
+    const [row] = await db
+      .select()
+      .from(practiceCardRefreshRuns)
+      .where(eq(practiceCardRefreshRuns.id, id));
+    return row ?? null;
+  }
+
+  async updateRefreshRun(
+    id: string,
+    updates: Partial<PracticeCardRefreshRunRow>,
+  ): Promise<PracticeCardRefreshRunRow> {
+    const { id: _ignore, ...rest } = updates;
+    const [row] = await db
+      .update(practiceCardRefreshRuns)
+      .set(rest as Partial<typeof practiceCardRefreshRuns.$inferInsert>)
+      .where(eq(practiceCardRefreshRuns.id, id))
+      .returning();
+    if (!row) throw new Error(`Refresh run not found: ${id}`);
+    return row;
   }
 
 }

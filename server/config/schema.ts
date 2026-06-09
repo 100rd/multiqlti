@@ -95,6 +95,55 @@ export const ConfigSchema = z.object({
   encryption: z.object({
     key: z.string().min(32).optional(),
   }).default({}),
+  /**
+   * Memory / retrieval backend selection (memory-architecture ADR, Track A).
+   *
+   * `retrieval.backend` selects the world-knowledge retrieval path:
+   *   - "local"        — existing pgvector RAG (default, fallback).
+   *   - "omniscience"  — Omniscience MCP `search` tool.
+   *
+   * Nothing changes by default: the backend is "local" unless explicitly
+   * switched. When "omniscience" is selected the Retriever calls Omniscience
+   * and falls back to local pgvector on any error.
+   *
+   * The Omniscience auth token is NEVER stored in config — it is read at
+   * call time from the OMNISCIENCE_TOKEN environment variable (the var name
+   * is configurable via `tokenEnv`).
+   */
+  memory: z.object({
+    retrieval: z.object({
+      backend: z.enum(["local", "omniscience"]).default("local"),
+      omniscience: z.object({
+        /** MCP transport used to reach Omniscience. */
+        transport: z.enum(["stdio", "streamable-http"]).default("stdio"),
+        /** Command to spawn the Omniscience MCP server (stdio transport). */
+        command: z.string().optional(),
+        /** Arguments for the stdio command. */
+        args: z.array(z.string()).default([]),
+        /** Endpoint URL for the streamable-http transport. */
+        endpoint: z.preprocess(
+          (v) => (v === "" ? undefined : v),
+          z.string().url().optional(),
+        ),
+        /**
+         * Name of the environment variable that holds the Omniscience auth
+         * token (scopes: search, sources:read). The token value itself is
+         * never persisted in config. Defaults to OMNISCIENCE_TOKEN.
+         */
+        tokenEnv: z.string().default("OMNISCIENCE_TOKEN"),
+        /**
+         * Default retrieval strategy passed to Omniscience `search`. The
+         * contract accepts structural/keyword/auto and downgrades unknown
+         * strategies to "hybrid" in v0.1 (we preserve the contract).
+         */
+        retrievalStrategy: z
+          .enum(["hybrid", "structural", "keyword", "auto"])
+          .default("hybrid"),
+        /** Request timeout in milliseconds. */
+        timeoutMs: z.coerce.number().int().positive().default(15_000),
+      }).default({}),
+    }).default({}),
+  }).default({}),
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;

@@ -245,8 +245,9 @@ export class Gateway {
     loggingOptions?: GatewayLoggingOptions,
   ): Promise<GatewayResponse> {
     const model = await this.storage.getModelBySlug(request.modelSlug);
-    const providerKey = model?.provider ?? "mock";
-    const modelId = model?.modelId ?? model?.name ?? request.modelSlug;
+    // Explicit provider/modelId (live-discovered CLI models) win over the DB row.
+    const providerKey = request.provider ?? model?.provider ?? "mock";
+    const modelId = request.modelId ?? model?.modelId ?? model?.name ?? request.modelSlug;
 
     const provider = this.getProvider(providerKey);
 
@@ -357,8 +358,9 @@ export class Gateway {
     privacyOptions?: GatewayPrivacyOptions,
   ): AsyncGenerator<string> {
     const model = await this.storage.getModelBySlug(request.modelSlug);
-    const providerKey = model?.provider ?? "mock";
-    const modelId = model?.modelId ?? model?.name ?? request.modelSlug;
+    // Explicit provider/modelId (live-discovered CLI models) win over the DB row.
+    const providerKey = request.provider ?? model?.provider ?? "mock";
+    const modelId = request.modelId ?? model?.modelId ?? model?.name ?? request.modelSlug;
 
     const provider = this.getProvider(providerKey);
 
@@ -433,14 +435,28 @@ export class Gateway {
 
   async discoverModels(): Promise<Record<string, { available: boolean; models: unknown[]; error?: string }>> {
     const results: Record<string, { available: boolean; models: unknown[]; error?: string }> = {};
+    // Some provider instances are registered under multiple keys (e.g. the
+    // Antigravity provider is mirrored onto "google"). Cache by instance so we
+    // only spawn the CLI once and reuse the result across its aliases.
+    const cache = new Map<ILLMProvider, { models: unknown[]; error?: string }>();
 
     for (const [key, provider] of this.registry.entries()) {
       results[key] = { available: true, models: [] };
       if ("listModels" in provider && typeof (provider as unknown as { listModels: unknown }).listModels === "function") {
+        const cached = cache.get(provider);
+        if (cached) {
+          results[key].models = cached.models;
+          if (cached.error) results[key].error = cached.error;
+          continue;
+        }
         try {
-          results[key].models = await (provider as unknown as { listModels: () => Promise<unknown[]> }).listModels();
+          const models = await (provider as unknown as { listModels: () => Promise<unknown[]> }).listModels();
+          results[key].models = models;
+          cache.set(provider, { models });
         } catch (e) {
-          results[key].error = (e as Error).message;
+          const error = (e as Error).message;
+          results[key].error = error;
+          cache.set(provider, { models: [], error });
         }
       }
     }
@@ -455,6 +471,10 @@ export class Gateway {
    */
   async completeWithTools(params: {
     modelSlug: string;
+    /** Explicit provider key — wins over the DB lookup (live-discovered models). */
+    provider?: string;
+    /** Explicit provider-native model id/label — wins over the DB lookup. */
+    modelId?: string;
     messages: ProviderMessage[];
     tools: ToolDefinition[];
     options?: ILLMProviderOptions;
@@ -472,8 +492,9 @@ export class Gateway {
     const toolCallLog: ToolCallLogEntry[] = [];
 
     const model = await this.storage.getModelBySlug(modelSlug);
-    const providerKey = model?.provider ?? 'mock';
-    const modelId = model?.modelId ?? model?.name ?? modelSlug;
+    // Explicit provider/modelId (live-discovered CLI models) win over the DB row.
+    const providerKey = params.provider ?? model?.provider ?? 'mock';
+    const modelId = params.modelId ?? model?.modelId ?? model?.name ?? modelSlug;
     const provider = this.getProvider(providerKey);
 
     let messages: ProviderMessage[] = [...params.messages];

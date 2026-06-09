@@ -57,6 +57,11 @@ import {
   type WorkspaceSettingsRow,
   type Lesson,
   type InsertLesson,
+  type PracticeCardRow,
+  type InsertPracticeCard,
+  type PracticeCardRefreshRunRow,
+  type PracticeCardReviewState,
+  type PracticeCardStatus,
 } from "@shared/schema";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome } from "@shared/types";
 import type { LessonRecallFilter } from "./memory/lessons/types";
@@ -133,6 +138,14 @@ function matchesLessonFilter(lesson: Lesson, filter: LessonRecallFilter): boolea
   if (filter.teamId !== undefined && lesson.teamId !== filter.teamId) return false;
   if (filter.outcome !== undefined && lesson.outcome !== filter.outcome) return false;
   return true;
+}
+
+export interface PracticeCardFilters {
+  status?: PracticeCardStatus;
+  reviewState?: PracticeCardReviewState;
+  topic?: string;
+  limit?: number;
+  offset?: number;
 }
 
 export interface IStorage {
@@ -260,6 +273,16 @@ export interface IStorage {
   updateTrigger(id: string, updates: Partial<TriggerRow>): Promise<TriggerRow>;
   deleteTrigger(id: string): Promise<void>;
 
+  // Practice Cards (Active Knowledge Base)
+  createPracticeCard(data: InsertPracticeCard): Promise<PracticeCardRow>;
+  getPracticeCard(id: string): Promise<PracticeCardRow | null>;
+  listPracticeCards(workspaceId: string, filters?: PracticeCardFilters): Promise<{ cards: PracticeCardRow[]; total: number }>;
+  getPracticeCardsByWorkspace(workspaceId: string): Promise<PracticeCardRow[]>;
+  updatePracticeCardState(id: string, updates: Partial<PracticeCardRow>): Promise<PracticeCardRow>;
+  createRefreshRun(workspaceId: string, topic: string, trigger: string): Promise<PracticeCardRefreshRunRow>;
+  getRefreshRun(id: string): Promise<PracticeCardRefreshRunRow | null>;
+  updateRefreshRun(id: string, updates: Partial<PracticeCardRefreshRunRow>): Promise<PracticeCardRefreshRunRow>;
+
   // Traces (Phase 6.5)
   createTrace(data: InsertTrace): Promise<TraceRow>;
   getTraceByRunId(runId: string): Promise<TraceRow | null>;
@@ -373,6 +396,18 @@ export interface IStorage {
   getSessionConflicts(sessionId: string): Promise<SessionConflict[]>;
   appendDecisionLog(entry: DecisionLogEntry): Promise<void>;
   getDecisionLog(sessionId?: string): Promise<DecisionLogEntry[]>;
+}
+
+/**
+ * Enforce the practice_cards.ingested_by_user_id NOT NULL invariant in MemStorage,
+ * mirroring the Postgres constraint so tests and dev parity catch a missing
+ * trusted ingester id (the adversarial verify gate depends on it).
+ */
+function requireIngesterId(value: string | null | undefined): string {
+  if (!value) {
+    throw new Error("practice_cards.ingested_by_user_id must be non-null");
+  }
+  return value;
 }
 
 export class MemStorage implements IStorage {
@@ -2184,6 +2219,121 @@ export class MemStorage implements IStorage {
       return this.decisionLogEntries.filter((e) => e.sessionId === sessionId);
     }
     return [...this.decisionLogEntries];
+  }
+
+  // ─── Practice Cards (Active Knowledge Base) ───────────────────────────────
+
+  private practiceCardsMap: Map<string, PracticeCardRow> = new Map();
+  private refreshRunsMap: Map<string, PracticeCardRefreshRunRow> = new Map();
+
+  async createPracticeCard(data: InsertPracticeCard): Promise<PracticeCardRow> {
+    // Idempotent upsert by (workspaceId, contentHash) — ON CONFLICT DO NOTHING.
+    const existing = Array.from(this.practiceCardsMap.values()).find(
+      (c) => c.workspaceId === data.workspaceId && c.contentHash === data.contentHash,
+    );
+    if (existing) return existing;
+
+    const id = randomUUID();
+    const now = new Date();
+    const row: PracticeCardRow = {
+      id,
+      workspaceId: data.workspaceId,
+      topic: data.topic,
+      statement: data.statement,
+      rationale: data.rationale,
+      appliesTo: data.appliesTo ?? { tool: "terraform" },
+      sources: data.sources ?? [],
+      confidence: data.confidence ?? 0,
+      status: (data.status ?? "active") as PracticeCardStatus,
+      supersedes: data.supersedes ?? [],
+      supersededBy: data.supersededBy ?? [],
+      ingestedBy: data.ingestedBy,
+      // Parity with the DB NOT NULL constraint: a bound ingester id is required.
+      ingestedByUserId: requireIngesterId(data.ingestedByUserId),
+      verifiedBy: data.verifiedBy ?? null,
+      verifiedByUserId: data.verifiedByUserId ?? null,
+      verification: data.verification ?? {},
+      reviewState: (data.reviewState ?? "pending_verification") as PracticeCardReviewState,
+      contentHash: data.contentHash,
+      lastVerifiedAt: data.lastVerifiedAt ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.practiceCardsMap.set(id, row);
+    return row;
+  }
+
+  async getPracticeCard(id: string): Promise<PracticeCardRow | null> {
+    return this.practiceCardsMap.get(id) ?? null;
+  }
+
+  async listPracticeCards(
+    workspaceId: string,
+    filters: PracticeCardFilters = {},
+  ): Promise<{ cards: PracticeCardRow[]; total: number }> {
+    let cards = Array.from(this.practiceCardsMap.values()).filter(
+      (c) => c.workspaceId === workspaceId,
+    );
+    if (filters.status) cards = cards.filter((c) => c.status === filters.status);
+    if (filters.reviewState) cards = cards.filter((c) => c.reviewState === filters.reviewState);
+    if (filters.topic) cards = cards.filter((c) => c.topic === filters.topic);
+    cards.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    const total = cards.length;
+    const offset = filters.offset ?? 0;
+    const limit = filters.limit ?? 50;
+    return { cards: cards.slice(offset, offset + limit), total };
+  }
+
+  async getPracticeCardsByWorkspace(workspaceId: string): Promise<PracticeCardRow[]> {
+    return Array.from(this.practiceCardsMap.values()).filter(
+      (c) => c.workspaceId === workspaceId,
+    );
+  }
+
+  async updatePracticeCardState(
+    id: string,
+    updates: Partial<PracticeCardRow>,
+  ): Promise<PracticeCardRow> {
+    const existing = this.practiceCardsMap.get(id);
+    if (!existing) throw new Error(`Practice card not found: ${id}`);
+    const updated: PracticeCardRow = { ...existing, ...updates, id: existing.id, updatedAt: new Date() };
+    this.practiceCardsMap.set(id, updated);
+    return updated;
+  }
+
+  async createRefreshRun(
+    workspaceId: string,
+    topic: string,
+    trigger: string,
+  ): Promise<PracticeCardRefreshRunRow> {
+    const id = randomUUID();
+    const row: PracticeCardRefreshRunRow = {
+      id,
+      workspaceId,
+      topic,
+      trigger,
+      status: "running",
+      report: {},
+      startedAt: new Date(),
+      completedAt: null,
+    };
+    this.refreshRunsMap.set(id, row);
+    return row;
+  }
+
+  async getRefreshRun(id: string): Promise<PracticeCardRefreshRunRow | null> {
+    return this.refreshRunsMap.get(id) ?? null;
+  }
+
+  async updateRefreshRun(
+    id: string,
+    updates: Partial<PracticeCardRefreshRunRow>,
+  ): Promise<PracticeCardRefreshRunRow> {
+    const existing = this.refreshRunsMap.get(id);
+    if (!existing) throw new Error(`Refresh run not found: ${id}`);
+    const updated: PracticeCardRefreshRunRow = { ...existing, ...updates, id: existing.id };
+    this.refreshRunsMap.set(id, updated);
+    return updated;
   }
 
 }

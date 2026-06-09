@@ -121,6 +121,19 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { envKey: "MULTI_FEDERATION_CLUSTER_SECRET",       configPath: ["federation", "clusterSecret"],                 kind: "string"  },
   { envKey: "MULTI_FEDERATION_PORT",                 configPath: ["federation", "listenPort"],                    kind: "number"  },
   { envKey: "MULTI_FEDERATION_PEERS",                configPath: ["federation", "peers"],                         kind: "csv"     },
+
+  // Memory / retrieval backend (memory-architecture ADR, Track A).
+  // NOTE: the Omniscience auth TOKEN is intentionally NOT mapped here — it is
+  // read directly from process.env at call time (see schema `memory.retrieval.
+  // omniscience.tokenEnv`) so it never lands in the validated/cached config.
+  { envKey: "MULTI_MEMORY_RETRIEVAL_BACKEND",                  configPath: ["memory", "retrieval", "backend"],                          kind: "string"  },
+  { envKey: "MULTI_MEMORY_RETRIEVAL_OMNISCIENCE_TRANSPORT",    configPath: ["memory", "retrieval", "omniscience", "transport"],         kind: "string"  },
+  { envKey: "MULTI_MEMORY_RETRIEVAL_OMNISCIENCE_COMMAND",      configPath: ["memory", "retrieval", "omniscience", "command"],           kind: "string"  },
+  { envKey: "MULTI_MEMORY_RETRIEVAL_OMNISCIENCE_ARGS",         configPath: ["memory", "retrieval", "omniscience", "args"],              kind: "csv"     },
+  { envKey: "MULTI_MEMORY_RETRIEVAL_OMNISCIENCE_ENDPOINT",     configPath: ["memory", "retrieval", "omniscience", "endpoint"],          kind: "string"  },
+  { envKey: "MULTI_MEMORY_RETRIEVAL_OMNISCIENCE_TOKEN_ENV",    configPath: ["memory", "retrieval", "omniscience", "tokenEnv"],          kind: "string"  },
+  { envKey: "MULTI_MEMORY_RETRIEVAL_OMNISCIENCE_STRATEGY",     configPath: ["memory", "retrieval", "omniscience", "retrievalStrategy"], kind: "string"  },
+  { envKey: "MULTI_MEMORY_RETRIEVAL_OMNISCIENCE_TIMEOUT_MS",   configPath: ["memory", "retrieval", "omniscience", "timeoutMs"],         kind: "number"  },
 ];
 
 /**

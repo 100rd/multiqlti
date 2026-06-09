@@ -137,7 +137,10 @@ export { getFederationManager };
     {
       port,
       host: "0.0.0.0",
-      ...(config.server.nodeEnv === "production" && { reusePort: true }),
+      // SO_REUSEPORT is unsupported on macOS (listen throws ENOTSUP), so only
+      // enable it for production on non-Darwin hosts (Linux containers/k8s).
+      ...(config.server.nodeEnv === "production" &&
+        process.platform !== "darwin" && { reusePort: true }),
     },
     () => {
       log(`serving on port ${port}`);
