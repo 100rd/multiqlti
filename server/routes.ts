@@ -2,6 +2,7 @@ import type { Express, Router } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
 import { Gateway } from "./gateway/index";
+import { reconcileModelCatalog } from "./gateway/catalog-sync";
 import { TeamRegistry } from "./teams/registry";
 import { PipelineController } from "./controller/pipeline-controller";
 import { WsManager } from "./ws/manager";
@@ -370,6 +371,16 @@ export async function registerRoutes(
       await storage.createModel(model);
     }
     log(`Seeded ${DEFAULT_MODELS.length} default models`);
+  }
+
+  // Reconcile the DB model catalog to the LIVE discovered models so every
+  // DB-catalog consumer (Workspace, pipeline, manager, dashboard, settings)
+  // only sees the real subscription-CLI models. Best-effort, never blocks boot.
+  try {
+    const recon = await reconcileModelCatalog(storage, gateway);
+    log(`Reconciled model catalog: ${recon.upserted} upserted, ${recon.deactivated} deactivated`);
+  } catch (e) {
+    log(`Model catalog reconcile skipped: ${(e as Error).message}`);
   }
 
   // Active Knowledge Base — optional example dataset (off by default; opt in via

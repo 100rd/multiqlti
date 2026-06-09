@@ -54,3 +54,20 @@ export const CLOUD_PROVIDER_KEYS = ["anthropic", "google", "xai"] as const;
 export function isCloudProvider(provider: string): boolean {
   return (CLOUD_PROVIDER_KEYS as readonly string[]).includes(provider);
 }
+
+/**
+ * Provider keys currently SURFACED to model pickers / catalogues. Mirrors the
+ * server-side VISIBLE_PROVIDER_KEYS allowlist (server/gateway/index.ts): only
+ * the subscription-CLI providers — Claude ("anthropic"), Antigravity, and the
+ * Antigravity "google" mirror. Local providers (vllm/ollama/lmstudio) and the
+ * billed cloud APIs (xai, Gemini API) are hidden until properly wired up.
+ *
+ * Used by client surfaces that build a model list from a static source instead
+ * of the (already server-filtered) /api/models endpoints.
+ */
+export const VISIBLE_PROVIDER_KEYS = ["anthropic", "antigravity", "google"] as const;
+
+/** True when `provider` is on the visible-provider allowlist. */
+export function isVisibleProvider(provider: string): boolean {
+  return (VISIBLE_PROVIDER_KEYS as readonly string[]).includes(provider);
+}

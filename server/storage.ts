@@ -182,6 +182,8 @@ export interface IStorage {
   getActiveModels(): Promise<Model[]>;
   getModelBySlug(slug: string): Promise<Model | undefined>;
   createModel(model: InsertModel): Promise<Model>;
+  /** Create the model if its slug is new, otherwise update the existing row. */
+  upsertModelBySlug(model: InsertModel): Promise<Model>;
   updateModel(id: string, updates: Partial<InsertModel>): Promise<Model>;
   deleteModel(id: string): Promise<void>;
 
@@ -545,6 +547,12 @@ export class MemStorage implements IStorage {
     };
     this.models.set(id, model);
     return model;
+  }
+
+  async upsertModelBySlug(insert: InsertModel): Promise<Model> {
+    const existing = await this.getModelBySlug(insert.slug);
+    if (!existing) return this.createModel(insert);
+    return this.updateModel(existing.id, insert);
   }
 
   async updateModel(id: string, updates: Partial<InsertModel>): Promise<Model> {

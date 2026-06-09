@@ -17,6 +17,8 @@ import {
   isLocalProvider,
   isCloudProvider,
   hasActiveLocalProvider,
+  VISIBLE_PROVIDER_KEYS,
+  isVisibleProvider,
 } from "../../client/src/lib/local-providers.js";
 
 describe("local provider keys", () => {
@@ -69,6 +71,27 @@ describe("isCloudProvider()", () => {
     expect(isCloudProvider("vllm")).toBe(false);
     expect(isCloudProvider("ollama")).toBe(false);
     expect(isCloudProvider("lmstudio")).toBe(false);
+  });
+});
+
+describe("visible-provider allowlist", () => {
+  it("mirrors the server VISIBLE_PROVIDER_KEYS set (anthropic/antigravity/google)", () => {
+    expect([...VISIBLE_PROVIDER_KEYS]).toEqual(["anthropic", "antigravity", "google"]);
+  });
+
+  it("isVisibleProvider() returns true only for allowlisted providers", () => {
+    expect(isVisibleProvider("anthropic")).toBe(true);
+    expect(isVisibleProvider("antigravity")).toBe(true);
+    expect(isVisibleProvider("google")).toBe(true);
+  });
+
+  it("isVisibleProvider() hides local + billed providers (vllm/ollama/lmstudio/xai/mock)", () => {
+    expect(isVisibleProvider("vllm")).toBe(false);
+    expect(isVisibleProvider("ollama")).toBe(false);
+    expect(isVisibleProvider("lmstudio")).toBe(false);
+    expect(isVisibleProvider("xai")).toBe(false);
+    expect(isVisibleProvider("mock")).toBe(false);
+    expect(isVisibleProvider("")).toBe(false);
   });
 });
 

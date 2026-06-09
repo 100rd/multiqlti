@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { IStorage } from "../storage";
+import { VISIBLE_PROVIDER_KEYS } from "../gateway/index";
 
 const MODEL_PROVIDERS = ["vllm", "ollama", "mock", "anthropic", "google", "xai", "lmstudio"] as const;
 
@@ -26,14 +27,20 @@ async function resolveModel(storage: IStorage, idOrSlug: string) {
 }
 
 export function registerModelRoutes(router: Router, storage: IStorage) {
+  // Defense-in-depth: only surface models from the visible provider allowlist
+  // (subscription CLIs). Hidden local/xai catalog rows never reach any consumer,
+  // even if they linger in storage as active. See server/gateway/index.ts.
+  const onlyVisible = <T extends { provider: string }>(models: T[]): T[] =>
+    models.filter((m) => VISIBLE_PROVIDER_KEYS.has(m.provider));
+
   router.get("/api/models", async (_req, res) => {
     const models = await storage.getModels();
-    res.json(models);
+    res.json(onlyVisible(models));
   });
 
   router.get("/api/models/active", async (_req, res) => {
     const models = await storage.getActiveModels();
-    res.json(models);
+    res.json(onlyVisible(models));
   });
 
   router.get("/api/models/:slug", async (req, res) => {

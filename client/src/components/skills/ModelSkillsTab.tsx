@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/dialog";
 import { Cpu, Plus, Trash2, X } from "lucide-react";
 import { DEFAULT_MODELS } from "@shared/constants";
+import { isVisibleProvider } from "@/lib/local-providers";
 import { useSkills } from "@/hooks/use-skills";
 import {
   useModelSkills,
@@ -38,7 +39,11 @@ interface KnownModel {
   provider: string;
 }
 
-const CATALOGUE: KnownModel[] = DEFAULT_MODELS.map((m) => ({
+// Only surface models from the visible-provider allowlist (subscription CLIs),
+// mirroring the server-side /api/models filter. Dead local (vllm/ollama/lmstudio)
+// and billed (xai) models from the static DEFAULT_MODELS seed are excluded so the
+// Skills -> Model-bindings picker never offers a model that cannot run.
+const CATALOGUE: KnownModel[] = DEFAULT_MODELS.filter((m) => isVisibleProvider(m.provider)).map((m) => ({
   id: "modelId" in m && m.modelId ? (m.modelId as string) : m.slug,
   label: m.name,
   provider: m.provider,
@@ -48,7 +53,7 @@ const CATALOGUE_BY_PROVIDER: Record<string, KnownModel[]> = {};
 for (const model of CATALOGUE) {
   (CATALOGUE_BY_PROVIDER[model.provider] ??= []).push(model);
 }
-const PROVIDER_ORDER = ["anthropic", "google", "xai", "mock"] as const;
+const PROVIDER_ORDER = ["anthropic", "antigravity", "google"] as const;
 
 // ─── Add-Skill Dialog ─────────────────────────────────────────────────────────
 

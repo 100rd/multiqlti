@@ -92,6 +92,47 @@ async function createUnauthenticatedApp() {
   return { app };
 }
 
+// ─── Provider visibility filter (issue: limit providers to CLIs) ─────────────
+//
+// /api/models and /api/models/active must only surface models whose provider is
+// on the VISIBLE_PROVIDER_KEYS allowlist (anthropic, antigravity, google), even
+// if hidden-provider rows are present and active in storage.
+
+describe("provider visibility filter on catalog endpoints", () => {
+  async function seedMixedCatalog(storage: MemStorage) {
+    await storage.createModel({ name: "Llama (local)", slug: "llama3-70b", provider: "vllm", contextLimit: 8192, isActive: true, capabilities: [] });
+    await storage.createModel({ name: "Ollama Phi", slug: "phi3-mini", provider: "ollama", contextLimit: 131072, isActive: true, capabilities: [] });
+    await storage.createModel({ name: "Grok", slug: "grok-3", provider: "xai", contextLimit: 131072, isActive: true, capabilities: [] });
+    await storage.createModel({ name: "Claude Opus", slug: "claude-opus", provider: "anthropic", contextLimit: 200000, isActive: true, capabilities: [] });
+    await storage.createModel({ name: "Gemini Pro", slug: "gemini-2-5-pro", provider: "antigravity", contextLimit: 1000000, isActive: true, capabilities: [] });
+  }
+
+  it("GET /api/models excludes non-visible-provider models even when active", async () => {
+    const { app, storage } = await createAuthenticatedApp();
+    await seedMixedCatalog(storage);
+
+    const res = await request(app).get("/api/models");
+    expect(res.status).toBe(200);
+    const providers = (res.body as Array<{ provider: string }>).map((m) => m.provider);
+    expect(providers).not.toContain("vllm");
+    expect(providers).not.toContain("ollama");
+    expect(providers).not.toContain("xai");
+    const slugs = (res.body as Array<{ slug: string }>).map((m) => m.slug);
+    expect(slugs).toEqual(expect.arrayContaining(["claude-opus", "gemini-2-5-pro"]));
+    expect(slugs).not.toContain("grok-3");
+  });
+
+  it("GET /api/models/active excludes non-visible-provider models even when active", async () => {
+    const { app, storage } = await createAuthenticatedApp();
+    await seedMixedCatalog(storage);
+
+    const res = await request(app).get("/api/models/active");
+    expect(res.status).toBe(200);
+    const slugs = (res.body as Array<{ slug: string }>).map((m) => m.slug);
+    expect(slugs.sort()).toEqual(["claude-opus", "gemini-2-5-pro"]);
+  });
+});
+
 // ─── GET /api/models ──────────────────────────────────────────────────────────
 
 describe("GET /api/models", () => {
@@ -107,7 +148,7 @@ describe("GET /api/models", () => {
     await storage.createModel({
       name: "Model A",
       slug: "model-a",
-      provider: "mock",
+      provider: "anthropic",
       contextLimit: 4096,
       isActive: true,
       capabilities: [],
@@ -115,7 +156,7 @@ describe("GET /api/models", () => {
     await storage.createModel({
       name: "Model B",
       slug: "model-b",
-      provider: "mock",
+      provider: "antigravity",
       contextLimit: 8192,
       isActive: false,
       capabilities: [],
@@ -141,7 +182,7 @@ describe("GET /api/models/active", () => {
     await storage.createModel({
       name: "Active Model",
       slug: "active-model",
-      provider: "mock",
+      provider: "anthropic",
       contextLimit: 4096,
       isActive: true,
       capabilities: [],
@@ -149,7 +190,7 @@ describe("GET /api/models/active", () => {
     await storage.createModel({
       name: "Inactive Model",
       slug: "inactive-model",
-      provider: "mock",
+      provider: "anthropic",
       contextLimit: 4096,
       isActive: false,
       capabilities: [],
