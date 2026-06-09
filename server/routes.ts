@@ -14,6 +14,7 @@ import { registerStrategyRoutes } from "./routes/strategies";
 import { registerPrivacyRoutes } from "./routes/privacy";
 import { registerStatsRoutes } from "./routes/stats";
 import { registerMemoryRoutes } from "./routes/memory";
+import { registerLessonRoutes } from "./routes/lessons";
 import { registerToolRoutes } from "./routes/tools";
 import { registerWorkspaceRoutes } from "./routes/workspaces";
 import { registerAuthRoutes } from "./routes/auth";
@@ -111,6 +112,7 @@ export async function registerRoutes(
   app.use("/api/privacy", requireAuth);
   app.use("/api/memory", requireAuth);
   app.use("/api/memories", requireAuth);
+  app.use("/api/lessons", requireAuth);
   app.use("/api/tools", requireAuth);
   app.use("/api/mcp", requireAuth);
   app.use("/api/providers", requireAuth);
@@ -142,6 +144,7 @@ export async function registerRoutes(
   registerPrivacyRoutes(app);
   registerStatsRoutes(app, storage);
   registerMemoryRoutes(app, storage);
+  registerLessonRoutes(app, storage);
   registerToolRoutes(app, storage);
   registerWorkspaceRoutes(app, gateway, wsManager, storage);
   registerConnectionRoutes(app, storage);
