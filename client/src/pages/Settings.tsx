@@ -47,6 +47,15 @@ import { LocalModelsSection } from "@/components/settings/LocalModelsSection";
 
 type CloudProvider = "anthropic" | "google" | "xai";
 
+/**
+ * TEMPORARY: hide the model-provider / model-registry configuration cluster
+ * (local models, cloud API keys, discover, probe, add/registered models).
+ * Providers are currently limited to the subscription CLIs (Antigravity +
+ * Claude), which need no UI config. Flip to true (or make config-driven) to
+ * restore the provider configuration UI — see GitHub issue #362.
+ */
+const PROVIDER_CONFIG_UI_ENABLED = false;
+
 interface ProviderTestResult {
   ok: boolean;
   latencyMs?: number;
@@ -298,6 +307,17 @@ export default function Settings() {
       <ScrollArea className="flex-1">
         <div className="max-w-4xl mx-auto p-6 space-y-3">
 
+          {/* Providers are temporarily limited to the subscription CLIs — see issue #362 */}
+          <div className="rounded-md border border-border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+            Model providers are temporarily limited to the subscription CLIs{" "}
+            <strong className="text-foreground">Antigravity</strong> and{" "}
+            <strong className="text-foreground">Claude</strong>. Local models and
+            other cloud providers are disabled for now and hidden from
+            configuration.
+          </div>
+
+          {PROVIDER_CONFIG_UI_ENABLED && (
+            <>
           {/* ── 1. Local models (experimental, collapsed by default) ── */}
           <LocalModelsSection
             vllmActive={Boolean(gatewayStatus?.vllm)}
@@ -877,6 +897,8 @@ export default function Settings() {
               )}
             </div>
           </SettingsSection>
+            </>
+          )}
 
           {/* ── 7. Tools & MCP ─────────────────────────────── */}
           <SettingsSection

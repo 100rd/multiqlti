@@ -262,7 +262,7 @@ describe("Gateway — local providers off by default", () => {
     expect(status.lmstudioEndpoint).toBeNull();
   });
 
-  it("activates LM Studio only after an endpoint is explicitly connected", async () => {
+  it("registers LM Studio when connected but HIDES it from status (provider allowlist — issue #362)", async () => {
     const { Gateway } = await import("../../server/gateway/index.js");
     const gw = new Gateway(fakeStorage);
 
@@ -270,8 +270,57 @@ describe("Gateway — local providers off by default", () => {
 
     gw.connectLmStudio("http://localhost:1234");
 
+    // The provider IS registered in the registry…
+    expect(
+      (gw as unknown as { registry: Map<string, unknown> }).registry.has("lmstudio"),
+    ).toBe(true);
+    // …but hidden from status (+ endpoint nulled) while it's off the allowlist.
     const status = gw.getStatus();
-    expect(status.lmstudio).toBe(true);
-    expect(status.lmstudioEndpoint).toBe("http://localhost:1234");
+    expect(status.lmstudio).toBe(false);
+    expect(status.lmstudioEndpoint).toBeNull();
+  });
+});
+
+
+// ─── Provider visibility allowlist (issue #362) ────────────────────────────
+
+describe("Gateway — provider visibility allowlist", () => {
+  const fakeStorage = {
+    getModelBySlug: async () => null,
+    createLlmRequest: async () => {},
+  } as unknown as import("../../server/storage.js").IStorage;
+
+  it("VISIBLE_PROVIDER_KEYS = only the subscription-CLI providers", async () => {
+    const { VISIBLE_PROVIDER_KEYS } = await import("../../server/gateway/index.js");
+    expect([...VISIBLE_PROVIDER_KEYS].sort()).toEqual(["anthropic", "antigravity", "google"]);
+    for (const hidden of ["vllm", "ollama", "lmstudio", "xai"]) {
+      expect(VISIBLE_PROVIDER_KEYS.has(hidden)).toBe(false);
+    }
+  });
+
+  it("getStatus() reports hidden providers false even when registered", async () => {
+    const { Gateway } = await import("../../server/gateway/index.js");
+    const gw = new Gateway(fakeStorage);
+    const reg = (gw as unknown as { registry: Map<string, unknown> }).registry;
+    reg.set("ollama", { complete: async () => ({ content: "", tokensUsed: 0 }) });
+    reg.set("xai", { complete: async () => ({ content: "", tokensUsed: 0 }) });
+
+    const status = gw.getStatus();
+    expect(status.ollama).toBe(false);
+    expect(status.xai).toBe(false);
+    expect(status.vllm).toBe(false);
+    expect(status.lmstudio).toBe(false);
+  });
+
+  it("discoverModels() omits hidden providers entirely", async () => {
+    const { Gateway } = await import("../../server/gateway/index.js");
+    const gw = new Gateway(fakeStorage);
+    const reg = (gw as unknown as { registry: Map<string, unknown> }).registry;
+    reg.set("ollama", { listModels: async () => [{ id: "llama3" }] });
+
+    const discovered = await gw.discoverModels();
+    expect(discovered.ollama).toBeUndefined();
+    expect(discovered.vllm).toBeUndefined();
+    expect(discovered.lmstudio).toBeUndefined();
   });
 });
