@@ -23,6 +23,7 @@ import Statistics from "@/pages/Statistics";
 import Memory from "@/pages/Memory";
 import Knowledge from "@/pages/Knowledge";
 import KnowledgeBase from "@/pages/KnowledgeBase";
+import MorningBrief from "@/pages/MorningBrief";
 import WorkspaceList from "@/pages/WorkspaceList";
 import Workspace from "@/pages/Workspace";
 import Connections from "@/pages/Connections";
@@ -106,6 +107,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/workspaces/:id/inventory" component={() => (
           <ErrorBoundary><Inventory /></ErrorBoundary>
+        )} />
+        <Route path="/workspaces/:id/morning-brief" component={() => (
+          <ErrorBoundary><MorningBrief /></ErrorBoundary>
         )} />
         <Route path="/workspaces/:id/knowledge-base" component={() => (
           <ErrorBoundary><KnowledgeBase /></ErrorBoundary>

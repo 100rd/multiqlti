@@ -10,7 +10,7 @@
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type ChunkSourceType = "code" | "pipeline_run" | "document" | "memory_entry" | "practice_card";
+export type ChunkSourceType = "code" | "pipeline_run" | "document" | "memory_entry" | "practice_card" | "news_item";
 
 export interface TextChunk {
   text: string;
@@ -264,6 +264,7 @@ export class TextChunker {
         return chunkDocument(text, this.opts).map((c) => ({ ...c, metadata: { ...meta, ...c.metadata } }));
       case "memory_entry":
       case "practice_card":
+      case "news_item":
         return chunkMemoryEntry(text, meta);
       default: {
         const _exhaustive: never = sourceType;
