@@ -40,6 +40,13 @@ export default defineConfig({
       // Full server coverage (routes/chat, workspace, tools, ws) is tracked in
       // nightly CI once those modules gain test suites.
       include: [
+        // streaming-stage-execution: changed modules (>=80% lines targeted).
+        "server/gateway/providers/cli-spawn.ts",
+        "server/gateway/providers/claude-cli.ts",
+        "server/gateway/secret-scrub.ts",
+        "server/gateway/index.ts",
+        "server/teams/base.ts",
+        "server/controller/stage-progress.ts",
         "server/privacy/**/*.ts",
         "server/memory/extractor.ts",
         "server/routes/privacy.ts",

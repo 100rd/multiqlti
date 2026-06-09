@@ -10,12 +10,23 @@
  *   - Enforce a per-process timeout and honour an optional AbortSignal.
  *   - Cap the number of concurrently running child processes.
  *   - Surface a clear, typed error when the binary is missing (ENOENT).
+ *
+ * `streamCliLines` additionally enforces, for the long-running stage path
+ * (streaming-stage-execution): an idle (inactivity) timeout, an independent
+ * overall wall-clock cap, a cumulative output byte cap, and a max single-line
+ * length guard. Every failure path settles exactly once and kills the child
+ * with SIGTERM→SIGKILL escalation (Security C2/C3/H1/H3/H4).
  */
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { scrubSecrets } from "../secret-scrub";
 
 const DEFAULT_MAX_CONCURRENCY = 4;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const SIGKILL_GRACE_MS = 2_000;
+/** Default cap on a single newline-less line (no-newline flood guard, H4). */
+const DEFAULT_MAX_LINE_BYTES = 1_048_576; // 1 MiB
+/** Default cumulative output cap (matches Antigravity MAX_OUTPUT_BYTES). */
+const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024; // 8 MiB
 
 /** Thrown when the underlying CLI binary is not installed / not on PATH. */
 export class CliNotInstalledError extends Error {
@@ -37,6 +48,46 @@ export class CliExecutionError extends Error {
   }
 }
 
+/** Distinct failure class: no output for the idle window (hung CLI). */
+export class CliIdleTimeoutError extends CliExecutionError {
+  constructor(idleTimeoutMs: number, stderr: string) {
+    super(`CLI idle for ${idleTimeoutMs}ms (no output)`, null, stderr);
+    this.name = "CliIdleTimeoutError";
+  }
+}
+
+/** Distinct failure class: overall wall-clock cap exceeded. */
+export class CliOverallTimeoutError extends CliExecutionError {
+  constructor(overallTimeoutMs: number, stderr: string) {
+    super(`CLI exceeded overall cap of ${overallTimeoutMs}ms`, null, stderr);
+    this.name = "CliOverallTimeoutError";
+  }
+}
+
+/** Distinct failure class: cumulative output byte cap exceeded. */
+export class CliByteCapError extends CliExecutionError {
+  constructor(maxOutputBytes: number, stderr: string) {
+    super(`CLI output exceeded ${maxOutputBytes} bytes`, null, stderr);
+    this.name = "CliByteCapError";
+  }
+}
+
+/** Distinct failure class: a single line exceeded the max line length. */
+export class CliLineCapError extends CliExecutionError {
+  constructor(maxLineBytes: number, stderr: string) {
+    super(`CLI emitted a line exceeding ${maxLineBytes} bytes (no newline)`, null, stderr);
+    this.name = "CliLineCapError";
+  }
+}
+
+/** Distinct failure class: caller aborted the request mid-flight. */
+export class CliAbortError extends CliExecutionError {
+  constructor(stderr: string) {
+    super("CLI request aborted", null, stderr);
+    this.name = "CliAbortError";
+  }
+}
+
 export interface CliSpawnRequest {
   /** Binary name or absolute path (e.g. "claude"). */
   binary: string;
@@ -44,8 +95,21 @@ export interface CliSpawnRequest {
   args: string[];
   /** Data written to the child's stdin, then closed. */
   stdin: string;
-  /** Per-process timeout in milliseconds. */
+  /**
+   * Overall wall-clock cap in ms. For `spawnCli` this is the only timeout
+   * (default 120s, short callers). For `streamCliLines` it is the overall cap
+   * that is NEVER reset by chunks.
+   */
   timeoutMs?: number;
+  /**
+   * Idle (inactivity) timeout in ms (streamCliLines only). Reset on each stdout
+   * chunk. Fires only when no output has arrived for this window.
+   */
+  idleTimeoutMs?: number;
+  /** Cumulative stdout byte cap (streamCliLines only). */
+  maxOutputBytes?: number;
+  /** Max single newline-less line length (streamCliLines only, H4). */
+  maxLineBytes?: number;
   /** Cancels the child when aborted. */
   signal?: AbortSignal;
   /** Extra env vars merged over process.env. */
@@ -74,6 +138,21 @@ export class ConcurrencyLimiter {
     }
   }
 
+  /**
+   * Acquire a slot for a manually-managed lifetime (e.g. an async generator that
+   * holds the slot until it completes/errors/early-returns). Returns an
+   * idempotent release callback the caller MUST invoke in a finally block.
+   */
+  async acquireSlot(): Promise<() => void> {
+    await this.acquire();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.release();
+    };
+  }
+
   private acquire(): Promise<void> {
     if (this.active < this.max) {
       this.active += 1;
@@ -90,6 +169,19 @@ export class ConcurrencyLimiter {
     }
     this.active -= 1;
   }
+}
+
+/**
+ * SIGTERM the child, then SIGKILL after the grace window (C3). The SIGKILL is
+ * unconditional: a sent SIGTERM flips child.killed even while the process is
+ * still alive, so guarding the SIGKILL on !child.killed would defeat the
+ * escalation. SIGKILL on an already-dead pid is a harmless no-op.
+ */
+function killWithEscalation(child: ChildProcess): void {
+  child.kill("SIGTERM");
+  setTimeout(() => {
+    child.kill("SIGKILL");
+  }, SIGKILL_GRACE_MS);
 }
 
 function rejectOnSpawnError(
@@ -118,7 +210,7 @@ function settleClose(
   }
   reject(
     new CliExecutionError(
-      `CLI exited with code ${code ?? "null"}${stderr ? `: ${stderr.trim()}` : ""}`,
+      `CLI exited with code ${code ?? "null"}${stderr ? `: ${scrubSecrets(stderr.trim())}` : ""}`,
       code,
       stderr,
     ),
@@ -127,7 +219,9 @@ function settleClose(
 
 /**
  * Spawn a CLI process, feed `stdin`, and resolve with its captured output.
- * Buffers stdout/stderr in memory — intended for bounded CLI responses.
+ * Buffers stdout/stderr in memory — intended for bounded CLI responses
+ * (short callers: health-check ping, model discovery). Keeps the 120s default
+ * and NO idle/byte caps — those belong to the streaming stage path only (H2).
  */
 export function spawnCli(request: CliSpawnRequest): Promise<CliSpawnResult> {
   const timeoutMs = request.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -151,13 +245,12 @@ export function spawnCli(request: CliSpawnRequest): Promise<CliSpawnResult> {
     };
 
     const onAbort = (): void => {
-      child.kill("SIGTERM");
-      finish(() => reject(new CliExecutionError("CLI request aborted", null, stderr)));
+      killWithEscalation(child);
+      finish(() => reject(new CliAbortError(stderr)));
     };
 
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), SIGKILL_GRACE_MS);
+      killWithEscalation(child);
       finish(() =>
         reject(new CliExecutionError(`CLI timed out after ${timeoutMs}ms`, null, stderr)),
       );
@@ -179,13 +272,23 @@ export function spawnCli(request: CliSpawnRequest): Promise<CliSpawnResult> {
 
 /**
  * Spawn a CLI process and yield its stdout split into complete lines as they
- * arrive. Used for `--output-format stream-json` (JSONL). The child is killed
- * on abort/timeout; a non-zero exit after streaming rejects the generator.
+ * arrive. Used for `--output-format stream-json` (JSONL).
+ *
+ * Timeout model (streaming-stage-execution): an idle timer reset on each chunk,
+ * an independent overall cap armed once at spawn, a cumulative byte cap, and a
+ * max single-line guard. Every failure path settles exactly once via `settle()`
+ * (clears both timers, removes the abort listener, kills the child with
+ * SIGTERM→SIGKILL escalation), so there are no leaked timers/listeners and the
+ * child is never orphaned (C2/C3).
  */
 export async function* streamCliLines(
   request: CliSpawnRequest,
 ): AsyncGenerator<string> {
-  const timeoutMs = request.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const overallTimeoutMs = request.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const idleTimeoutMs = request.idleTimeoutMs;
+  const maxOutputBytes = request.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+  const maxLineBytes = request.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
+
   const child = spawn(request.binary, request.args, {
     env: { ...process.env, ...request.env },
     stdio: ["pipe", "pipe", "pipe"],
@@ -194,9 +297,12 @@ export async function* streamCliLines(
   const queue: string[] = [];
   let buffer = "";
   let stderr = "";
+  let totalBytes = 0;
   let done = false;
   let failure: Error | null = null;
+  let settled = false;
   let wake: (() => void) | null = null;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
 
   const signalReady = (): void => {
     if (wake) {
@@ -206,26 +312,71 @@ export async function* streamCliLines(
     }
   };
 
-  const fail = (err: Error): void => {
-    failure = err;
+  // Single idempotent settle: clears both timers, removes the abort listener,
+  // and (for termination paths) kills the child with SIGTERM→SIGKILL — exactly
+  // once on EVERY exit path. `kill` is false only for a clean self-exit where
+  // the child is already gone (avoids scheduling a stray post-exit SIGKILL).
+  const settle = (err: Error | null, kill = true): void => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(overallTimer);
+    if (idleTimer) clearTimeout(idleTimer);
+    request.signal?.removeEventListener("abort", onAbort);
+    if (kill) killWithEscalation(child);
+    if (err) failure = err;
     done = true;
     signalReady();
   };
 
-  const timer = setTimeout(() => {
-    child.kill("SIGTERM");
-    setTimeout(() => child.kill("SIGKILL"), SIGKILL_GRACE_MS);
-    fail(new CliExecutionError(`CLI timed out after ${timeoutMs}ms`, null, stderr));
-  }, timeoutMs);
+  // Normal completion path (child closed on its own): flush the remaining
+  // buffer, then settle exactly once WITHOUT killing — the child already exited.
+  const settleNormal = (code: number | null): void => {
+    if (settled) return;
+    if (buffer.length > 0) {
+      queue.push(buffer);
+      buffer = "";
+    }
+    const err =
+      code !== 0 && code !== null
+        ? new CliExecutionError(
+            `CLI exited with code ${code}${stderr ? `: ${scrubSecrets(stderr.trim())}` : ""}`,
+            code,
+            stderr,
+          )
+        : null;
+    settle(err, false);
+  };
+
+  const armIdle = (): void => {
+    if (idleTimeoutMs === undefined) return;
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      settle(new CliIdleTimeoutError(idleTimeoutMs, stderr));
+    }, idleTimeoutMs);
+  };
+
+  const overallTimer = setTimeout(() => {
+    settle(new CliOverallTimeoutError(overallTimeoutMs, stderr));
+  }, overallTimeoutMs);
 
   const onAbort = (): void => {
-    child.kill("SIGTERM");
-    fail(new CliExecutionError("CLI request aborted", null, stderr));
+    settle(new CliAbortError(stderr));
   };
   request.signal?.addEventListener("abort", onAbort, { once: true });
 
+  armIdle();
+
   child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
   child.stdout.on("data", (chunk: Buffer) => {
+    if (settled) return;
+    armIdle(); // reset idle timer on every chunk (overall cap untouched)
+
+    totalBytes += chunk.length;
+    if (totalBytes > maxOutputBytes) {
+      settle(new CliByteCapError(maxOutputBytes, stderr));
+      return;
+    }
+
     buffer += chunk.toString();
     let idx = buffer.indexOf("\n");
     while (idx !== -1) {
@@ -233,30 +384,21 @@ export async function* streamCliLines(
       buffer = buffer.slice(idx + 1);
       idx = buffer.indexOf("\n");
     }
+    // Guard a newline-less flood: the unflushed tail must stay bounded (H4).
+    if (buffer.length > maxLineBytes) {
+      settle(new CliLineCapError(maxLineBytes, stderr));
+      return;
+    }
     signalReady();
   });
   child.on("error", (err: NodeJS.ErrnoException) =>
-    fail(
+    settle(
       err.code === "ENOENT"
         ? new CliNotInstalledError(request.binary)
         : new CliExecutionError(`Failed to spawn "${request.binary}": ${err.message}`, null, ""),
     ),
   );
-  child.on("close", (code) => {
-    if (buffer.length > 0) {
-      queue.push(buffer);
-      buffer = "";
-    }
-    if (code !== 0 && code !== null) {
-      failure = new CliExecutionError(
-        `CLI exited with code ${code}${stderr ? `: ${stderr.trim()}` : ""}`,
-        code,
-        stderr,
-      );
-    }
-    done = true;
-    signalReady();
-  });
+  child.on("close", (code) => settleNormal(code));
 
   child.stdin.end(request.stdin);
 
@@ -270,8 +412,8 @@ export async function* streamCliLines(
     }
     if (failure) throw failure;
   } finally {
-    clearTimeout(timer);
-    request.signal?.removeEventListener("abort", onAbort);
-    if (!child.killed) child.kill("SIGTERM");
+    // Defensive: if the consumer breaks early, settle (idempotent) so timers /
+    // the abort listener are cleared and the child is killed.
+    settle(null);
   }
 }

@@ -1,7 +1,8 @@
 import type { IStorage } from "../storage";
 import { toolRegistry } from "../tools/index";
-import type { GatewayRequest, GatewayResponse, ILLMProvider, ILLMProviderOptions, PrivacySettings, ProviderMessage, ToolDefinition, ToolCallLogEntry } from "@shared/types";
+import type { GatewayRequest, GatewayResponse, ILLMProvider, IStreamingToolProvider, ILLMProviderOptions, PrivacySettings, ProviderMessage, ProviderStreamEvent, StreamingStageOptions, ToolCall, ToolDefinition, ToolCallLogEntry } from "@shared/types";
 import { MockProvider } from "./providers/mock";
+import { scrubAndTruncate } from "./secret-scrub";
 import { VllmProvider } from "./providers/vllm";
 import { OllamaProvider } from "./providers/ollama";
 import { ClaudeProvider } from "./providers/claude";
@@ -183,6 +184,15 @@ export class Gateway {
    */
   connectLmStudio(endpoint: string): void {
     this.registry.set("lmstudio", new LmStudioProvider(endpoint));
+  }
+
+  /**
+   * Register a provider under an explicit key. General-purpose seam (mirrors
+   * connectLmStudio) used by streaming tests and any caller that constructs a
+   * provider instance directly.
+   */
+  registerProvider(key: string, provider: ILLMProvider): void {
+    this.registry.set(key, provider);
   }
 
   /** Resolve the ILLMProvider for a model record's provider string. */
@@ -599,6 +609,324 @@ export class Gateway {
     // Max iterations reached — return final content from last assistant message
     const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
     const content = lastAssistant && 'content' in lastAssistant ? lastAssistant.content : '';
+    return { content, tokensUsed: totalTokensUsed, toolCallLog };
+  }
+
+
+  // ─── Streaming stage execution (streaming-stage-execution) ──────────────────
+
+  /** Cap (bytes) on the assembled streamed text, mirroring the CLI byte cap. */
+  private static readonly DEFAULT_STREAM_MAX_BYTES = 8 * 1024 * 1024;
+
+  /** Resolve provider key + native model id for a request (shared by complete*). */
+  private resolveTarget(
+    modelSlug: string,
+    explicitProvider: string | undefined,
+    explicitModelId: string | undefined,
+    model: { provider?: string; modelId?: string | null; name?: string } | undefined,
+  ): { providerKey: string; modelId: string; provider: ILLMProvider | null } {
+    const providerKey = explicitProvider ?? model?.provider ?? "mock";
+    const modelId = explicitModelId ?? model?.modelId ?? model?.name ?? modelSlug;
+    return { providerKey, modelId, provider: this.getProvider(providerKey) };
+  }
+
+  /** Apply anonymization to messages when privacy is enabled (no mutation). */
+  private maybeAnonymize(
+    messages: ProviderMessage[],
+    privacy: PrivacySettings | undefined,
+    sessionId: string,
+  ): ProviderMessage[] {
+    if (!this.shouldAnonymize(privacy)) return messages;
+    return messages.map((m) => ({
+      ...m,
+      content: this.anonymizer.anonymize(
+        (m as { content: string }).content,
+        sessionId,
+        privacy!.level,
+        privacy!.vaultTtlMs,
+      ).anonymizedText,
+    })) as unknown as ProviderMessage[];
+  }
+
+  /** Budget pre-call check (throws on hard-block). Shared with complete(). */
+  private async budgetPreCheck(
+    request: { modelSlug: string; maxTokens?: number; messages: ReadonlyArray<{ content: string }> },
+    providerKey: string,
+    workspaceId: string | undefined,
+  ): Promise<void> {
+    if (!workspaceId) return;
+    const budgetCheck = await this.costService.checkBudget({
+      workspaceId,
+      provider: providerKey,
+      model: request.modelSlug,
+      estimatedPromptTokens: request.messages.reduce(
+        (sum, m) => sum + Math.ceil(((m as { content: string }).content ?? "").length / 4),
+        0,
+      ),
+      estimatedCompletionTokens: request.maxTokens ?? 500,
+    });
+    if (budgetCheck.warning) console.warn("[gateway] Budget check:", budgetCheck.warning);
+    if (!budgetCheck.allowed) throw new Error(`[budget-exceeded] ${budgetCheck.warning}`);
+  }
+
+  /** Invoke an onDelta callback without letting its errors break the stream. */
+  private safeOnDelta(
+    onDelta: StreamingStageOptions["onDelta"],
+    delta: string,
+    cumulativeChars: number,
+  ): void {
+    if (!onDelta) return;
+    try {
+      onDelta(delta, cumulativeChars);
+    } catch (cbErr) {
+      console.warn("[gateway] stage onDelta callback threw (ignored):", cbErr);
+    }
+  }
+
+  /**
+   * Streaming-aware sibling of complete(). Consumes provider.stream(), assembles
+   * the full content from deltas (bounded), and surfaces idle/overall/byte-cap/
+   * abort/non-zero failures by REJECTING (never a partial success). Records
+   * usage and logs success+error exactly like complete().
+   */
+  async completeStreaming(
+    request: GatewayRequest,
+    privacyOptions?: GatewayPrivacyOptions,
+    loggingOptions?: GatewayLoggingOptions,
+    streamOptions?: StreamingStageOptions,
+  ): Promise<GatewayResponse> {
+    const model = await this.storage.getModelBySlug(request.modelSlug);
+    const { providerKey, modelId, provider } = this.resolveTarget(
+      request.modelSlug,
+      request.provider,
+      request.modelId,
+      model,
+    );
+
+    const privacy = privacyOptions?.privacy;
+    const sessionId = privacyOptions?.sessionId ?? crypto.randomUUID();
+    const messages = this.maybeAnonymize(request.messages as ProviderMessage[], privacy, sessionId);
+
+    await this.budgetPreCheck(request, providerKey, loggingOptions?.workspaceId);
+
+    const maxBytes = streamOptions?.maxOutputBytes ?? Gateway.DEFAULT_STREAM_MAX_BYTES;
+    const providerOpts: ILLMProviderOptions = {
+      maxTokens: request.maxTokens,
+      temperature: request.temperature,
+      signal: streamOptions?.signal,
+      idleTimeoutMs: streamOptions?.idleTimeoutMs,
+      timeoutMs: streamOptions?.overallTimeoutMs,
+      maxOutputBytes: maxBytes,
+    };
+
+    const start = Date.now();
+    let assembled = "";
+    let assembledBytes = 0;
+    try {
+      const iter = provider
+        ? provider.stream(modelId, messages, providerOpts)
+        : this.mockProvider.stream(messages);
+      for await (const delta of iter) {
+        assembledBytes += Buffer.byteLength(delta);
+        if (assembledBytes > maxBytes) {
+          throw new Error(`Assembled stream output exceeded ${maxBytes} bytes`);
+        }
+        assembled += delta;
+        this.safeOnDelta(streamOptions?.onDelta, delta, assembled.length);
+      }
+    } catch (err) {
+      const latencyMs = Date.now() - start;
+      await this.logRequest({
+        modelSlug: request.modelSlug,
+        providerKey,
+        messages,
+        options: { ...request, ...loggingOptions },
+        latencyMs,
+        status: "error",
+        errorMessage: scrubAndTruncate(String(err)),
+      });
+      throw err;
+    }
+
+    const latencyMs = Date.now() - start;
+    const content = this.shouldAnonymize(privacy)
+      ? this.anonymizer.rehydrate(assembled, sessionId)
+      : assembled;
+    // Streamed text deltas do not carry per-chunk token counts; estimate from
+    // assembled length so the cost ledger never silently records zero.
+    const tokensUsed = Math.max(1, Math.ceil(content.length / 4));
+
+    await this.logRequest({
+      modelSlug: request.modelSlug,
+      providerKey,
+      messages,
+      options: { ...request, ...loggingOptions },
+      result: { content, tokensUsed, inputTokens: 0, outputTokens: tokensUsed },
+      latencyMs,
+      status: "success",
+    });
+
+    if (loggingOptions?.workspaceId) {
+      void this.costService.recordCost({
+        workspaceId: loggingOptions.workspaceId,
+        provider: providerKey,
+        model: request.modelSlug,
+        pipelineRunId: loggingOptions.runId ?? null,
+        stageId: loggingOptions.stageId ?? null,
+        promptTokens: 0,
+        completionTokens: tokensUsed,
+      });
+    }
+
+    return { content, tokensUsed, modelSlug: request.modelSlug, finishReason: "stop" };
+  }
+
+  /** Duck-typed check: does the provider expose a streamEvents tool channel? */
+  private supportsStreamingToolLoop(
+    provider: ILLMProvider | null,
+  ): provider is ILLMProvider & IStreamingToolProvider {
+    return (
+      provider !== null &&
+      typeof (provider as unknown as { streamEvents?: unknown }).streamEvents === "function"
+    );
+  }
+
+  /**
+   * Validate a streamed/unvalidated tool call's args against the tool's declared
+   * parameters + a bound size BEFORE executing (Security C1 — toolRegistry does
+   * NOT validate). For the enabled CLI providers this is moot (no multiqlti
+   * tool-calls), but the guard is implemented in the tool-loop path regardless.
+   */
+  private validateToolCallArgs(call: ToolCall, tools: ToolDefinition[]): void {
+    const def = tools.find((t) => t.name === call.name);
+    if (!def) {
+      throw new Error(`[tool-validation] Unknown tool "${call.name}" requested by model`);
+    }
+    const serialized = JSON.stringify(call.arguments ?? {});
+    if (serialized.length > 64 * 1024) {
+      throw new Error(`[tool-validation] Tool "${call.name}" arguments exceed 64KiB`);
+    }
+    const schema = def.inputSchema as { properties?: Record<string, unknown> } | undefined;
+    if (schema?.properties && call.arguments) {
+      const allowed = new Set(Object.keys(schema.properties));
+      for (const key of Object.keys(call.arguments)) {
+        // Permit workspace defaults injected by the caller.
+        if (key === "workspaceId" || key === "workspacePath") continue;
+        if (!allowed.has(key)) {
+          throw new Error(
+            `[tool-validation] Tool "${call.name}" got unexpected argument "${key}"`,
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * Streaming-aware tool loop. Each assistant turn is obtained via the
+   * provider's streamEvents channel; tool-use events are executed via
+   * toolRegistry (with C1 arg validation + workspace-default merge) and fed
+   * back. Providers without a streamEvents channel fall back to the blocking
+   * completeWithTools under the overall cap. maxIterations is honored.
+   */
+  async completeWithToolsStreaming(
+    params: {
+      modelSlug: string;
+      provider?: string;
+      modelId?: string;
+      messages: ProviderMessage[];
+      tools: ToolDefinition[];
+      options?: ILLMProviderOptions;
+      maxIterations?: number;
+      workspaceDefaults?: { workspaceId?: string; workspacePath?: string };
+    },
+    streamOptions?: StreamingStageOptions,
+  ): Promise<{ content: string; tokensUsed: number; toolCallLog: ToolCallLogEntry[] }> {
+    const { tools, options, workspaceDefaults } = params;
+    const maxIterations = params.maxIterations ?? 10;
+    const toolCallLog: ToolCallLogEntry[] = [];
+
+    const model = await this.storage.getModelBySlug(params.modelSlug);
+    const { modelId, provider } = this.resolveTarget(
+      params.modelSlug,
+      params.provider,
+      params.modelId,
+      model,
+    );
+
+    // Capability fallback: no streamEvents → blocking tool loop under overall cap.
+    if (!this.supportsStreamingToolLoop(provider)) {
+      return this.completeWithTools({
+        ...params,
+        options: {
+          ...options,
+          timeoutMs: streamOptions?.overallTimeoutMs ?? options?.timeoutMs,
+        },
+      });
+    }
+
+    const providerOpts: ILLMProviderOptions = {
+      ...options,
+      tools,
+      toolChoice: options?.toolChoice ?? "auto",
+      signal: streamOptions?.signal,
+      idleTimeoutMs: streamOptions?.idleTimeoutMs,
+      timeoutMs: streamOptions?.overallTimeoutMs ?? options?.timeoutMs,
+      maxOutputBytes: streamOptions?.maxOutputBytes,
+    };
+
+    const messages: ProviderMessage[] = [...params.messages];
+    let totalTokensUsed = 0;
+    let cumulativeChars = 0;
+    let iteration = 0;
+
+    while (iteration < maxIterations) {
+      iteration++;
+      let turnText = "";
+      const pendingToolCalls: ToolCall[] = [];
+      let finishReason: "stop" | "tool_use" = "stop";
+
+      for await (const event of provider.streamEvents(modelId, messages, providerOpts)) {
+        if (event.kind === "text-delta") {
+          turnText += event.text;
+          cumulativeChars += event.text.length;
+          this.safeOnDelta(streamOptions?.onDelta, event.text, cumulativeChars);
+        } else if (event.kind === "tool-call") {
+          pendingToolCalls.push(event.call);
+        } else {
+          totalTokensUsed += event.tokensUsed;
+          finishReason = event.finishReason;
+        }
+      }
+
+      if (finishReason !== "tool_use" || pendingToolCalls.length === 0) {
+        return { content: turnText, tokensUsed: totalTokensUsed, toolCallLog };
+      }
+
+      messages.push({ role: "assistant", content: turnText, toolCalls: pendingToolCalls });
+
+      for (const call of pendingToolCalls) {
+        const merged = { ...call.arguments };
+        if (workspaceDefaults) {
+          if (workspaceDefaults.workspaceId !== undefined && merged.workspaceId === undefined) {
+            merged.workspaceId = workspaceDefaults.workspaceId;
+          }
+          if (workspaceDefaults.workspacePath !== undefined && merged.workspacePath === undefined) {
+            merged.workspacePath = workspaceDefaults.workspacePath;
+          }
+        }
+        const validatedCall: ToolCall = { ...call, arguments: merged };
+        this.validateToolCallArgs(validatedCall, tools);
+
+        const callStart = Date.now();
+        const toolResult = await toolRegistry.execute(validatedCall);
+        const durationMs = Date.now() - callStart;
+        toolCallLog.push({ iteration, call: validatedCall, result: toolResult, durationMs });
+        messages.push({ role: "tool", toolCallId: toolResult.toolCallId, content: toolResult.content });
+      }
+    }
+
+    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+    const content = lastAssistant && "content" in lastAssistant ? lastAssistant.content : "";
     return { content, tokensUsed: totalTokensUsed, toolCallLog };
   }
 

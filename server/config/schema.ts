@@ -153,6 +153,27 @@ export const ConfigSchema = z.object({
       }).default({}),
     }).default({}),
   }).default({}),
+  /**
+   * Pipeline stage streaming (streaming-stage-execution). Replaces the blocking
+   * 120s wall-clock cap on the stage LLM path with an idle + overall timeout
+   * model, bounds output, and gates WS progress emission. Bounds (.min/.max)
+   * are enforced at load so a misconfig can NEVER disable the overall cap or
+   * set an absurd buffer (Security M1).
+   */
+  pipeline: z.object({
+    streaming: z.object({
+      /** Kill-switch: false → BaseTeam uses the old blocking complete/completeWithTools path. */
+      enabled: z.boolean().default(true),
+      /** Idle (inactivity) timeout; reset on each chunk. 1s..10min. */
+      idleTimeoutMs: z.coerce.number().int().min(1_000).max(600_000).default(60_000),
+      /** Overall wall-clock cap; never reset by chunks. 10s..1h. */
+      overallTimeoutMs: z.coerce.number().int().min(10_000).max(3_600_000).default(600_000),
+      /** Cumulative output byte cap. 64KiB..64MiB (default 8MiB). */
+      maxOutputBytes: z.coerce.number().int().min(65_536).max(67_108_864).default(8_388_608),
+      /** WS stage:progress coalescing flush interval. 50ms..5s. */
+      wsProgressFlushMs: z.coerce.number().int().min(50).max(5_000).default(250),
+    }).default({}),
+  }).default({}),
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;

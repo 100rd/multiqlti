@@ -19,6 +19,11 @@ import {
   ConcurrencyLimiter,
   CliNotInstalledError,
   CliExecutionError,
+  CliIdleTimeoutError,
+  CliOverallTimeoutError,
+  CliByteCapError,
+  CliLineCapError,
+  CliAbortError,
 } from "../../../server/gateway/providers/cli-spawn.js";
 
 interface FakeChild extends EventEmitter {
@@ -43,6 +48,15 @@ function makeChild(): FakeChild {
 }
 
 const REQ = { binary: "claude", args: ["-p"], stdin: "hi" } as const;
+
+const NL = "\n";
+
+/** Drain a generator to completion, collecting yielded lines. */
+async function drain(gen: AsyncGenerator<string>): Promise<string[]> {
+  const lines: string[] = [];
+  for await (const line of gen) lines.push(line);
+  return lines;
+}
 
 describe("spawnCli", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -122,43 +136,212 @@ describe("spawnCli", () => {
     await expect(promise).rejects.toThrow(/aborted/i);
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
   });
+
+  it("escalates SIGTERM to SIGKILL on abort (C3)", async () => {
+    vi.useFakeTimers();
+    const child = makeChild();
+    spawnMock.mockImplementation(() => child);
+    const controller = new AbortController();
+
+    const promise = spawnCli({ ...REQ, signal: controller.signal });
+    const expectation = expect(promise).rejects.toThrow(/aborted/i);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(2_001);
+    await expectation;
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+  });
+
+  it("keeps the 120s default timeout (regression — short callers, H2)", async () => {
+    vi.useFakeTimers();
+    const child = makeChild();
+    spawnMock.mockImplementation(() => child); // never emits close
+    const promise = spawnCli({ ...REQ });
+    const expectation = expect(promise).rejects.toThrow(/timed out after 120000ms/);
+    await vi.advanceTimersByTimeAsync(120_001);
+    await expectation;
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
 });
 
 describe("streamCliLines", () => {
   beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.useRealTimers());
 
   it("yields complete lines split on newlines, including a trailing partial", async () => {
     const child = makeChild();
     spawnMock.mockImplementation(() => {
       setImmediate(() => {
-        child.stdout.emit("data", Buffer.from("a\nb\nc"));
+        child.stdout.emit("data", Buffer.from("a" + NL + "b" + NL + "c"));
         child.emit("close", 0);
       });
       return child;
     });
 
-    const lines: string[] = [];
-    for await (const line of streamCliLines({ ...REQ })) lines.push(line);
-    expect(lines).toEqual(["a", "b", "c"]);
+    expect(await drain(streamCliLines({ ...REQ }))).toEqual(["a", "b", "c"]);
   });
 
   it("throws CliExecutionError on a non-zero exit after streaming", async () => {
     const child = makeChild();
     spawnMock.mockImplementation(() => {
       setImmediate(() => {
-        child.stdout.emit("data", Buffer.from("partial\n"));
+        child.stdout.emit("data", Buffer.from("partial" + NL));
         child.stderr.emit("data", Buffer.from("oops"));
         child.emit("close", 1);
       });
       return child;
     });
+    await expect(drain(streamCliLines({ ...REQ }))).rejects.toBeInstanceOf(CliExecutionError);
+  });
 
-    const run = async (): Promise<void> => {
-      for await (const _line of streamCliLines({ ...REQ })) {
-        void _line;
+  // ── Idle timeout (H1) ──────────────────────────────────────────────────────
+  it("fires the idle timeout when no data arrives within the window", async () => {
+    vi.useFakeTimers();
+    const child = makeChild();
+    spawnMock.mockImplementation(() => child); // silent, never closes
+    const gen = streamCliLines({ ...REQ, idleTimeoutMs: 5_000, timeoutMs: 600_000 });
+    const expectation = expect(drain(gen)).rejects.toBeInstanceOf(CliIdleTimeoutError);
+    await vi.advanceTimersByTimeAsync(5_001);
+    await expectation;
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("resets the idle timer on each chunk so a slow-but-progressing stream survives past 120s (H1)", async () => {
+    vi.useFakeTimers();
+    const child = makeChild();
+    spawnMock.mockImplementation(() => child);
+    const gen = streamCliLines({ ...REQ, idleTimeoutMs: 5_000, timeoutMs: 600_000 });
+    const collected: string[] = [];
+    const consume = (async () => {
+      for await (const line of gen) collected.push(line);
+    })();
+    // Emit a line every 4s (< 5s idle) for 130s total — well past the old 120s cap.
+    for (let t = 0; t < 130_000; t += 4_000) {
+      child.stdout.emit("data", Buffer.from("line" + String(t) + NL));
+      await vi.advanceTimersByTimeAsync(4_000);
+    }
+    child.emit("close", 0);
+    await vi.advanceTimersByTimeAsync(0);
+    await consume;
+    expect(collected.length).toBeGreaterThan(30);
+    expect(child.kill).not.toHaveBeenCalledWith("SIGKILL");
+  });
+
+  // ── Overall cap (H1): fires despite continuous chunks ───────────────────────
+  it("fires the overall cap even while chunks keep arriving (H1)", async () => {
+    vi.useFakeTimers();
+    const child = makeChild();
+    spawnMock.mockImplementation(() => child);
+    const gen = streamCliLines({ ...REQ, idleTimeoutMs: 60_000, timeoutMs: 20_000 });
+    const collected: string[] = [];
+    let caught: unknown = null;
+    const consume = (async () => {
+      try {
+        for await (const line of gen) collected.push(line);
+      } catch (e) {
+        caught = e;
       }
-    };
-    await expect(run()).rejects.toBeInstanceOf(CliExecutionError);
+    })();
+    // Chunk every 2s (idle never fires) but overall cap is 20s.
+    for (let t = 0; t < 30_000; t += 2_000) {
+      child.stdout.emit("data", Buffer.from("c" + String(t) + NL));
+      await vi.advanceTimersByTimeAsync(2_000);
+    }
+    await consume;
+    expect(caught).toBeInstanceOf(CliOverallTimeoutError);
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  // ── Byte cap (C2/H4) ────────────────────────────────────────────────────────
+  it("kills + fails with CliByteCapError when cumulative stdout exceeds maxOutputBytes", async () => {
+    const child = makeChild();
+    spawnMock.mockImplementation(() => {
+      setImmediate(() => {
+        child.stdout.emit("data", Buffer.from("x".repeat(50) + NL));
+        child.stdout.emit("data", Buffer.from("y".repeat(50) + NL));
+      });
+      return child;
+    });
+    await expect(
+      drain(streamCliLines({ ...REQ, maxOutputBytes: 64 })),
+    ).rejects.toBeInstanceOf(CliByteCapError);
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  // ── Line cap (H4): no-newline flood ─────────────────────────────────────────
+  it("kills + fails with CliLineCapError when a single line exceeds the max line length", async () => {
+    const child = makeChild();
+    spawnMock.mockImplementation(() => {
+      setImmediate(() => {
+        // No newline — would grow the buffer unboundedly.
+        child.stdout.emit("data", Buffer.from("z".repeat(200)));
+      });
+      return child;
+    });
+    await expect(
+      drain(streamCliLines({ ...REQ, maxLineBytes: 100 })),
+    ).rejects.toBeInstanceOf(CliLineCapError);
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  // ── Abort (C3) ──────────────────────────────────────────────────────────────
+  it("kills + fails with CliAbortError when the AbortSignal fires, escalating to SIGKILL", async () => {
+    vi.useFakeTimers();
+    const child = makeChild();
+    spawnMock.mockImplementation(() => child);
+    const controller = new AbortController();
+    const gen = streamCliLines({ ...REQ, signal: controller.signal, timeoutMs: 600_000 });
+    const expectation = expect(drain(gen)).rejects.toBeInstanceOf(CliAbortError);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(2_001);
+    await expectation;
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+  });
+
+  // ── Single settle / cleanup (C2): no leaked listeners/timers ─────────────────
+  it("settles exactly once and removes the abort listener on normal close", async () => {
+    vi.useFakeTimers();
+    const child = makeChild();
+    const controller = new AbortController();
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+    spawnMock.mockImplementation(() => child);
+
+    const collected: string[] = [];
+    const consume = (async () => {
+      for await (const line of streamCliLines({
+        ...REQ,
+        signal: controller.signal,
+        idleTimeoutMs: 5_000,
+        timeoutMs: 600_000,
+      })) {
+        collected.push(line);
+      }
+    })();
+
+    // Emit a line then close on the SAME child (generator already attached).
+    child.stdout.emit("data", Buffer.from("ok" + NL));
+    child.emit("close", 0);
+    await vi.advanceTimersByTimeAsync(0);
+    await consume;
+
+    expect(collected).toEqual(["ok"]);
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+    // No pending idle/overall timer should fire post-settle (would re-kill).
+    child.kill.mockClear();
+    await vi.advanceTimersByTimeAsync(600_001);
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it("maps ENOENT to CliNotInstalledError", async () => {
+    const child = makeChild();
+    spawnMock.mockImplementation(() => {
+      setImmediate(() =>
+        child.emit("error", Object.assign(new Error("ENOENT"), { code: "ENOENT" })),
+      );
+      return child;
+    });
+    await expect(drain(streamCliLines({ ...REQ }))).rejects.toBeInstanceOf(CliNotInstalledError);
   });
 });
 
