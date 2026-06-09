@@ -16,6 +16,24 @@ import { estimateCostUsd } from "@shared/constants";
 import { configLoader } from "../config/loader";
 import { CostService } from "../services/cost-service";
 
+/**
+ * Provider visibility allowlist (TEMPORARY — see the tracking GitHub issue).
+ * Only the subscription-CLI providers are surfaced to the chat model list and
+ * the gateway status: Claude (the "anthropic" CLI provider) and Antigravity
+ * (registered under "antigravity" and mirrored onto "google"). The local
+ * providers (vllm / ollama / lmstudio) and the billed cloud APIs (xai, the
+ * Gemini API) are HIDDEN until they are properly wired up.
+ *
+ * This ONLY gates what `discoverModels()` / `getStatus()` expose — provider
+ * registration is left fully intact, so re-enabling is a one-line change:
+ * widen this set in a follow-up PR.
+ */
+export const VISIBLE_PROVIDER_KEYS: ReadonlySet<string> = new Set([
+  "anthropic",
+  "antigravity",
+  "google",
+]);
+
 export interface GatewayPrivacyOptions {
   privacy?: PrivacySettings;
   sessionId?: string;
@@ -417,19 +435,26 @@ export class Gateway {
   }
 
   getStatus() {
+    // A provider is reported "available" only when it is BOTH registered and on
+    // the visibility allowlist (VISIBLE_PROVIDER_KEYS). Hidden providers report
+    // false + null endpoints so no UI surfaces them. Reversible — see the const.
+    const visible = (key: string): boolean =>
+      VISIBLE_PROVIDER_KEYS.has(key) && this.registry.has(key);
+    const endpointFor = (key: string, endpoint: string | null | undefined): string | null =>
+      VISIBLE_PROVIDER_KEYS.has(key) ? endpoint ?? null : null;
     const providers = configLoader.get().providers;
     const lmStudioProvider = this.registry.get("lmstudio") as LmStudioProvider | undefined;
     return {
-      vllm: this.registry.has("vllm"),
-      ollama: this.registry.has("ollama"),
-      anthropic: this.registry.has("anthropic"),
-      google: this.registry.has("google"),
-      xai: this.registry.has("xai"),
-      antigravity: this.registry.has("antigravity"),
-      lmstudio: this.registry.has("lmstudio"),
-      vllmEndpoint: providers.vllm.endpoint ?? null,
-      ollamaEndpoint: providers.ollama.endpoint ?? null,
-      lmstudioEndpoint: lmStudioProvider?.endpoint ?? null,
+      vllm: visible("vllm"),
+      ollama: visible("ollama"),
+      anthropic: visible("anthropic"),
+      google: visible("google"),
+      xai: visible("xai"),
+      antigravity: visible("antigravity"),
+      lmstudio: visible("lmstudio"),
+      vllmEndpoint: endpointFor("vllm", providers.vllm.endpoint),
+      ollamaEndpoint: endpointFor("ollama", providers.ollama.endpoint),
+      lmstudioEndpoint: endpointFor("lmstudio", lmStudioProvider?.endpoint),
     };
   }
 
@@ -441,6 +466,9 @@ export class Gateway {
     const cache = new Map<ILLMProvider, { models: unknown[]; error?: string }>();
 
     for (const [key, provider] of this.registry.entries()) {
+      // Hidden providers (not on the visibility allowlist) are omitted entirely
+      // so the chat model list only offers the subscription-CLI providers.
+      if (!VISIBLE_PROVIDER_KEYS.has(key)) continue;
       results[key] = { available: true, models: [] };
       if ("listModels" in provider && typeof (provider as unknown as { listModels: unknown }).listModels === "function") {
         const cached = cache.get(provider);

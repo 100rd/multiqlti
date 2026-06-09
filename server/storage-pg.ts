@@ -139,6 +139,27 @@ export class PgStorage implements IStorage {
     return row;
   }
 
+  async upsertModelBySlug(model: InsertModel): Promise<Model> {
+    // Parameterized upsert keyed on the unique slug column. On conflict we
+    // refresh the mutable fields (name/provider/modelId/contextLimit/isActive)
+    // but keep the existing id/createdAt.
+    const [row] = await db
+      .insert(models)
+      .values(model)
+      .onConflictDoUpdate({
+        target: models.slug,
+        set: {
+          name: model.name,
+          provider: model.provider,
+          modelId: model.modelId ?? null,
+          contextLimit: model.contextLimit,
+          isActive: model.isActive ?? true,
+        },
+      })
+      .returning();
+    return row;
+  }
+
   async updateModel(id: string, updates: Partial<InsertModel>): Promise<Model> {
     const [row] = await db
       .update(models)

@@ -49,6 +49,8 @@ export default defineConfig({
         "server/routes/settings.ts",
         "server/routes/pipelines.ts",
         "server/gateway/providers/mock.ts",
+        "server/gateway/catalog-sync.ts",
+        "server/routes/models.ts",
         "server/knowledge/source-allowlist.ts",
         "server/knowledge/safe-fetch.ts",
         "server/knowledge/practice-card-service.ts",

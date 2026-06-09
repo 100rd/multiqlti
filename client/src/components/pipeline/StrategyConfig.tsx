@@ -182,7 +182,7 @@ function MoaConfig({
       ...strategy,
       proposers: [
         ...strategy.proposers,
-        { modelSlug: models[0]?.value ?? "llama3-70b", temperature: 0.7 },
+        { modelSlug: models[0]?.value ?? "", temperature: 0.7 },
       ],
     });
   };
@@ -294,7 +294,7 @@ function DebateConfig({
       ...strategy,
       participants: [
         ...strategy.participants,
-        { modelSlug: models[0]?.value ?? "llama3-70b", role: "critic" },
+        { modelSlug: models[0]?.value ?? "", role: "critic" },
       ],
     });
   };
@@ -426,7 +426,7 @@ function VotingConfig({
     if (strategy.candidates.length >= 7) return;
     onChange({
       ...strategy,
-      candidates: [...strategy.candidates, { modelSlug: models[0]?.value ?? "llama3-70b", temperature: 0.7 }],
+      candidates: [...strategy.candidates, { modelSlug: models[0]?.value ?? "", temperature: 0.7 }],
     });
   };
 

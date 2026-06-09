@@ -724,7 +724,7 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium">Fact Check Stage</span>
-                <span className="text-xs text-muted-foreground">(optional — Grok verifies outputs via web search)</span>
+                <span className="text-xs text-muted-foreground">(optional — verifies outputs with an independent reviewer model)</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">
@@ -742,7 +742,7 @@ export default function MultiAgentPipeline({ pipelineId }: MultiAgentPipelinePro
                     setFactCheckEnabled(next);
                     if (next) {
                       const factStage = SDLC_TEAMS["fact_check" as keyof typeof SDLC_TEAMS];
-                      const defaultSlug = (modelList[0]?.value as string) ?? "grok-3";
+                      const defaultSlug = (modelList[0]?.value as string) ?? "";
                       setLocalStages(prev => {
                         if (prev.find(s => s.teamId === "fact_check")) {
                           return prev.map(s => s.teamId === "fact_check" ? { ...s, enabled: true } : s);
