@@ -13,7 +13,7 @@ const MANAGER_RUN_RATE_LIMIT = 5;
 const MANAGER_RUN_WINDOW_MS = 60_000;
 const managerRunCounts = new Map<string, { count: number; windowStart: number }>();
 
-function checkManagerRunRateLimit(userId: string): { allowed: boolean; retryAfterMs?: number } {
+export function checkManagerRunRateLimit(userId: string): { allowed: boolean; retryAfterMs?: number } {
   const now = Date.now();
   const entry = managerRunCounts.get(userId);
   if (!entry || now - entry.windowStart > MANAGER_RUN_WINDOW_MS) {

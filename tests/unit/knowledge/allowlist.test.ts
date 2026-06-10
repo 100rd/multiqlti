@@ -79,9 +79,10 @@ describe("isAllowedSource — rejected vectors", () => {
     expect(isAllowedSource("https://169.254.169.254/")).toBe(false);
   });
 
-  it("rejects github.com paths outside the scoped repos", () => {
+  it("rejects github.com paths outside the scoped orgs/repos (Q3: /hashicorp, /aws-samples, /kubernetes, /opentofu now in-scope)", () => {
     expect(isAllowedSource("https://github.com/evil/malware")).toBe(false);
-    expect(isAllowedSource("https://github.com/hashicorp/vault")).toBe(false);
+    expect(isAllowedSource("https://github.com/microsoft/vscode")).toBe(false);
+    expect(isAllowedSource("https://github.com/")).toBe(false);
   });
 
   it("rejects garbage / unparseable input", () => {

@@ -21,11 +21,22 @@ import {
 import { resolveThreshold } from "../pipeline/voting/threshold-resolver.js";
 import { scoreAllCandidates, aggregateConfidence } from "../pipeline/voting/confidence-scorer.js";
 import { handleFallback, VotingThresholdNotMetError } from "../pipeline/voting/fallback-handler.js";
+import { scrubSecrets } from "../gateway/secret-scrub.js";
 
 export interface StrategyContext {
   runId: string;
   stageId: string;
   maxTokens?: number;
+  /**
+   * Security C1: abort signal threaded into every debate turn (proposer/
+   * critic/judge). When it fires, the in-flight gateway.complete is cancelled.
+   */
+  signal?: AbortSignal;
+  /**
+   * Security C1/H1: per-turn timeout (ms) applied to EVERY gateway.complete in
+   * the debate. Bounds a single hung/blocking turn (e.g. a Gemini CLI spawn).
+   */
+  turnTimeoutMs?: number;
 }
 
 export class StrategyExecutor {
@@ -216,6 +227,9 @@ export class StrategyExecutor {
           modelSlug: participant.modelSlug,
           messages,
           maxTokens: context.maxTokens,
+          // C1/H1: every debate turn carries the run abort signal + per-turn cap.
+          signal: context.signal,
+          timeoutMs: context.turnTimeoutMs,
         });
 
         totalTokens += response.tokensUsed;
@@ -232,10 +246,12 @@ export class StrategyExecutor {
         // Add to conversation so next participant sees this
         conversationHistory.push({ role: "assistant", content: response.content });
 
+        // M-WS-1: scrub model text before it crosses the WS trust boundary
+        // (live stream is pre-persistence; the persisted row keeps raw content).
         this.wsManager.broadcastToRun(context.runId, {
           type: "strategy:debate:round",
           runId: context.runId,
-          payload: { stageId: context.stageId, ...entry },
+          payload: { stageId: context.stageId, ...entry, content: scrubSecrets(entry.content) },
           timestamp: new Date().toISOString(),
         });
       }
@@ -257,6 +273,8 @@ export class StrategyExecutor {
       modelSlug: strategy.judge.modelSlug,
       messages: judgeMessages,
       maxTokens: context.maxTokens,
+      signal: context.signal,
+      timeoutMs: context.turnTimeoutMs,
     });
 
     totalTokens += judgeResponse.tokensUsed;
@@ -264,7 +282,8 @@ export class StrategyExecutor {
     this.wsManager.broadcastToRun(context.runId, {
       type: "strategy:debate:judge",
       runId: context.runId,
-      payload: { stageId: context.stageId, verdict: judgeResponse.content },
+      // M-WS-1: scrub the verdict text on the live WS stream (pre-persistence).
+      payload: { stageId: context.stageId, verdict: scrubSecrets(judgeResponse.content) },
       timestamp: new Date().toISOString(),
     });
 
@@ -291,6 +310,8 @@ export class StrategyExecutor {
         modelSlug: strategy.arbitrator.modelSlug,
         messages: arbitratorMessages,
         maxTokens: context.maxTokens,
+        signal: context.signal,
+        timeoutMs: context.turnTimeoutMs,
       });
 
       totalTokens += arbitratorResponse.tokensUsed;

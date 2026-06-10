@@ -17,6 +17,10 @@ import {
   modelSkillBindings,
   triggers,
   managerIterations,
+  orchestratorRuns,
+  orchestratorSteps,
+  orchestratorDebates,
+  orchestratorResearch,
   traces,
   argoCdConfig,
   workspaces,
@@ -55,6 +59,10 @@ import {
   type SkillVersionRow,
   type SkillTeam, type InsertSkillTeam,
   type InsertManagerIteration, type ManagerIterationRow,
+  type InsertOrchestratorRun, type OrchestratorRunRow,
+  type InsertOrchestratorStep, type OrchestratorStepRow,
+  type InsertOrchestratorDebate, type OrchestratorDebateRow,
+  type InsertOrchestratorResearch, type OrchestratorResearchRow,
   type TriggerRow,
   type InsertTrace,
   type TraceRow,
@@ -1066,6 +1074,76 @@ export class PgStorage implements IStorage {
       .from(managerIterations)
       .where(eq(managerIterations.runId, runId));
     return result[0]?.count ?? 0;
+  }
+
+  // ─── Debate-Research Orchestrator ───────────────────────────────────────────
+
+  async createOrchestratorRun(data: InsertOrchestratorRun): Promise<OrchestratorRunRow> {
+    const [row] = await db.insert(orchestratorRuns).values(data).returning();
+    return row;
+  }
+
+  async getOrchestratorRun(runId: string): Promise<OrchestratorRunRow | undefined> {
+    const [row] = await db
+      .select()
+      .from(orchestratorRuns)
+      .where(eq(orchestratorRuns.runId, runId));
+    return row;
+  }
+
+  async updateOrchestratorRun(
+    runId: string,
+    updates: Partial<Omit<OrchestratorRunRow, "id" | "runId" | "createdAt">>,
+  ): Promise<void> {
+    await db.update(orchestratorRuns).set(updates).where(eq(orchestratorRuns.runId, runId));
+  }
+
+  async createOrchestratorStep(data: InsertOrchestratorStep): Promise<OrchestratorStepRow> {
+    const [row] = await db.insert(orchestratorSteps).values(data).returning();
+    return row;
+  }
+
+  async updateOrchestratorStep(
+    stepId: string,
+    updates: Partial<Omit<OrchestratorStepRow, "id" | "runId" | "createdAt">>,
+  ): Promise<void> {
+    await db.update(orchestratorSteps).set(updates).where(eq(orchestratorSteps.id, stepId));
+  }
+
+  async getOrchestratorSteps(runId: string): Promise<OrchestratorStepRow[]> {
+    return db
+      .select()
+      .from(orchestratorSteps)
+      .where(eq(orchestratorSteps.runId, runId))
+      .orderBy(asc(orchestratorSteps.stepIndex));
+  }
+
+  async createOrchestratorDebate(data: InsertOrchestratorDebate): Promise<OrchestratorDebateRow> {
+    const [row] = await db.insert(orchestratorDebates).values(data).returning();
+    return row;
+  }
+
+  async getOrchestratorDebates(runId: string): Promise<OrchestratorDebateRow[]> {
+    return db
+      .select()
+      .from(orchestratorDebates)
+      .where(eq(orchestratorDebates.runId, runId))
+      .orderBy(asc(orchestratorDebates.createdAt));
+  }
+
+  async createOrchestratorResearch(
+    data: InsertOrchestratorResearch,
+  ): Promise<OrchestratorResearchRow> {
+    const [row] = await db.insert(orchestratorResearch).values(data).returning();
+    return row;
+  }
+
+  async getOrchestratorResearch(runId: string): Promise<OrchestratorResearchRow[]> {
+    return db
+      .select()
+      .from(orchestratorResearch)
+      .where(eq(orchestratorResearch.runId, runId))
+      .orderBy(asc(orchestratorResearch.createdAt));
   }
 
   // ─── Triggers (Phase 6.3) ─────────────────────────────────────────────────

@@ -173,6 +173,36 @@ export const ConfigSchema = z.object({
       /** WS stage:progress coalescing flush interval. 50ms..5s. */
       wsProgressFlushMs: z.coerce.number().int().min(50).max(5_000).default(250),
     }).default({}),
+    /**
+     * Debate-research orchestrator (additive 3rd run mode). Kill-switch default
+     * FALSE. Every cap is bounded at load (Security C2/H2/L1 substrate); the
+     * engine re-clamps each at runtime (defense-in-depth, never trust config
+     * alone). A misconfig can NEVER disable the overall cap or the token ceiling.
+     */
+    orchestrator: z.object({
+      /** Kill-switch: false → POST /api/runs/orchestrator returns 503. */
+      enabled: z.boolean().default(false),
+      /** Max steps in a plan. 1..20. */
+      maxSteps: z.coerce.number().int().min(1).max(20).default(8),
+      /** Max debate rounds per debate step. 1..5 (matches validateDebateStrategy). */
+      maxDebateRounds: z.coerce.number().int().min(1).max(5).default(3),
+      /** Max research sources fanned out per research step. 1..50. */
+      maxResearchSources: z.coerce.number().int().min(1).max(50).default(12),
+      /** Max concurrent research fetches. 1..10. */
+      maxResearchConcurrency: z.coerce.number().int().min(1).max(10).default(4),
+      /** Per-source byte cap into synthesis (H2). 4KiB..1MiB. */
+      maxResearchSourceBytes: z.coerce.number().int().min(4096).max(1_048_576).default(262_144),
+      /** Aggregate research byte cap into one synthesis prompt (H2). 4KiB..64MiB. */
+      maxResearchTotalBytes: z.coerce.number().int().min(4096).max(67_108_864).default(1_048_576),
+      /** Token ceiling checked BEFORE each LLM call (C2). 1000..2M. */
+      maxTotalTokens: z.coerce.number().int().min(1000).max(2_000_000).default(400_000),
+      /** Wall-clock cap for the whole run. 10s..1h (30min default). */
+      overallTimeoutMs: z.coerce.number().int().min(10_000).max(3_600_000).default(1_800_000),
+      /** Per-step persisted output byte cap (storage DoS). 4KiB..1MiB. */
+      stepOutputMaxBytes: z.coerce.number().int().min(4096).max(1_048_576).default(100_000),
+      /** Per-Gemini-debate-turn timeout (Lead Q1). 1s..10min (90s default). */
+      geminiTurnTimeoutMs: z.coerce.number().int().min(1_000).max(600_000).default(90_000),
+    }).default({}),
   }).default({}),
 });
 
