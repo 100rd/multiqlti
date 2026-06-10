@@ -719,6 +719,12 @@ export interface StageContext {
   // filesystem path for tool convenience.
   workspaceId?: string;
   workspacePath?: string;
+  /**
+   * Stage streaming controls (streaming-stage-execution). Populated by the
+   * pipeline-controller: the run AbortSignal, a coalesced WS-progress onDelta,
+   * and the resolved idle/overall/byte limits. Absent → blocking fallback.
+   */
+  streaming?: StreamingStageOptions;
 }
 
 export interface TeamResult {
@@ -752,6 +758,22 @@ export interface ILLMProviderOptions {
   tools?: ToolDefinition[];
   /** How the model chooses tools. */
   toolChoice?: 'auto' | 'none' | 'required';
+  /**
+   * Abort signal for mid-stream cancellation. Providers MUST terminate the
+   * underlying child/request and stop yielding when this fires.
+   */
+  signal?: AbortSignal;
+  /**
+   * Idle (inactivity) timeout in ms for streaming calls: reset on every
+   * received chunk. Fires only when NO output has arrived for this window.
+   * Independent of timeoutMs (which is the overall cap on the stream path).
+   */
+  idleTimeoutMs?: number;
+  /**
+   * Cumulative output byte cap for streaming calls. When exceeded the child is
+   * killed and the call fails. Bounds in-memory accumulation (DoS guard).
+   */
+  maxOutputBytes?: number;
 }
 
 export interface ILLMProvider {
@@ -766,13 +788,56 @@ export interface ILLMProvider {
 
   /**
    * Streaming completion. Yields text delta chunks as they arrive.
-   * The generator MUST be exhaustible — callers do not cancel mid-stream.
+   *
+   * Cancellation contract (changed for streaming-stage-execution): callers MAY
+   * abort mid-stream via options.signal. Providers MUST terminate the
+   * underlying child/request and stop yielding when the signal fires. The
+   * generator is otherwise exhaustible.
    */
   stream(
     modelId: string,
     messages: ProviderMessage[],
     options?: ILLMProviderOptions,
   ): AsyncGenerator<string>;
+}
+
+// ─── Streaming Provider Events (streaming-stage-execution) ───────────────────
+
+/**
+ * Discriminated event emitted by a provider's optional streamEvents() channel.
+ * Lets the gateway run a tool loop while streaming: text deltas arrive
+ * incrementally, tool-use blocks surface as discrete calls, and a terminal
+ * 'done' carries usage + the model's stop reason.
+ */
+export type ProviderStreamEvent =
+  | { kind: 'text-delta'; text: string }
+  | { kind: 'tool-call'; call: ToolCall }
+  | { kind: 'done'; tokensUsed: number; finishReason: 'stop' | 'tool_use' };
+
+/**
+ * Optional provider capability (duck-typed). A provider that emits
+ * ProviderStreamEvent supports the streamed tool loop. Providers without it
+ * (e.g. emulated one-shot streams) fall back to the blocking tool path.
+ */
+export interface IStreamingToolProvider {
+  streamEvents(
+    modelId: string,
+    messages: ProviderMessage[],
+    options?: ILLMProviderOptions,
+  ): AsyncGenerator<ProviderStreamEvent>;
+}
+
+/**
+ * Stage-streaming options threaded controller → BaseTeam → gateway → provider.
+ * onDelta receives the coalesced/raw delta plus cumulative char count so the
+ * controller can emit bounded WS progress without shipping the whole buffer.
+ */
+export interface StreamingStageOptions {
+  signal?: AbortSignal;
+  onDelta?: (deltaText: string, cumulativeChars: number) => void;
+  idleTimeoutMs?: number;
+  overallTimeoutMs?: number;
+  maxOutputBytes?: number;
 }
 
 // ─── Strategy Preset (existing usage in constants.ts) ────────────────────────

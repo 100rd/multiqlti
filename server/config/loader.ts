@@ -134,6 +134,18 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { envKey: "MULTI_MEMORY_RETRIEVAL_OMNISCIENCE_TOKEN_ENV",    configPath: ["memory", "retrieval", "omniscience", "tokenEnv"],          kind: "string"  },
   { envKey: "MULTI_MEMORY_RETRIEVAL_OMNISCIENCE_STRATEGY",     configPath: ["memory", "retrieval", "omniscience", "retrievalStrategy"], kind: "string"  },
   { envKey: "MULTI_MEMORY_RETRIEVAL_OMNISCIENCE_TIMEOUT_MS",   configPath: ["memory", "retrieval", "omniscience", "timeoutMs"],         kind: "number"  },
+
+  // Pipeline stage streaming (streaming-stage-execution).
+  { envKey: "PIPELINE_STREAMING_ENABLED",              configPath: ["pipeline", "streaming", "enabled"],          kind: "boolean" },
+  { envKey: "PIPELINE_STREAMING_IDLE_TIMEOUT_MS",      configPath: ["pipeline", "streaming", "idleTimeoutMs"],    kind: "number"  },
+  { envKey: "PIPELINE_STREAMING_OVERALL_TIMEOUT_MS",   configPath: ["pipeline", "streaming", "overallTimeoutMs"], kind: "number"  },
+  { envKey: "PIPELINE_STREAMING_MAX_OUTPUT_BYTES",     configPath: ["pipeline", "streaming", "maxOutputBytes"],   kind: "number"  },
+  { envKey: "PIPELINE_STREAMING_WS_PROGRESS_FLUSH_MS", configPath: ["pipeline", "streaming", "wsProgressFlushMs"],kind: "number"  },
+  { envKey: "MULTI_PIPELINE_STREAMING_ENABLED",              configPath: ["pipeline", "streaming", "enabled"],          kind: "boolean" },
+  { envKey: "MULTI_PIPELINE_STREAMING_IDLE_TIMEOUT_MS",      configPath: ["pipeline", "streaming", "idleTimeoutMs"],    kind: "number"  },
+  { envKey: "MULTI_PIPELINE_STREAMING_OVERALL_TIMEOUT_MS",   configPath: ["pipeline", "streaming", "overallTimeoutMs"], kind: "number"  },
+  { envKey: "MULTI_PIPELINE_STREAMING_MAX_OUTPUT_BYTES",     configPath: ["pipeline", "streaming", "maxOutputBytes"],   kind: "number"  },
+  { envKey: "MULTI_PIPELINE_STREAMING_WS_PROGRESS_FLUSH_MS", configPath: ["pipeline", "streaming", "wsProgressFlushMs"],kind: "number"  },
 ];
 
 /**

@@ -3,6 +3,7 @@ import type { Gateway } from "../gateway/index";
 import type { WsManager } from "../ws/manager";
 import type { TeamConfig, StageContext, TeamResult, ExecutionStrategy, ProviderMessage, TeamId } from "@shared/types";
 import { StrategyExecutor } from "../services/strategy-executor";
+import { configLoader } from "../config/loader";
 
 const CONTEXT_STAGES_TO_SHOW = 3;
 const CONTEXT_TRUNCATE_CHARS = 500;
@@ -75,14 +76,14 @@ export abstract class BaseTeam {
       );
 
       if (tools.length > 0) {
-        const result = await this.gateway.completeWithTools({
+        const toolParams = {
           modelSlug: context.modelSlug || this.config.defaultModelSlug,
           messages,
           tools,
           options: {
             temperature: context.temperature,
             maxTokens: context.maxTokens,
-            toolChoice: toolConfig?.toolChoice ?? 'auto',
+            toolChoice: toolConfig?.toolChoice ?? 'auto' as const,
           },
           maxIterations: toolConfig?.maxToolCalls ?? 10,
           // Workspace binding (issue #343). When a run is bound to a workspace,
@@ -95,7 +96,14 @@ export abstract class BaseTeam {
                 workspacePath: context.workspacePath,
               }
             : undefined,
-        });
+        };
+        // Streaming stage path (streaming-stage-execution): when enabled and the
+        // controller supplied a streaming block, stream the tool turns under the
+        // idle/overall budget. Any stream error/timeout/abort REJECTS — the
+        // stage must throw, never return a partial TeamResult (H3).
+        const result = this.useStreaming(context)
+          ? await this.gateway.completeWithToolsStreaming(toolParams, context.streaming)
+          : await this.gateway.completeWithTools(toolParams);
 
         const parsed = this.parseOutput(result.content);
         const questions = this.extractQuestions(parsed);
@@ -110,22 +118,23 @@ export abstract class BaseTeam {
       }
     }
 
-    const response = await this.gateway.complete(
-      {
-        modelSlug: context.modelSlug || this.config.defaultModelSlug,
-        messages,
-        temperature: context.temperature,
-        maxTokens: context.maxTokens,
-      },
-      context.privacySettings
-        ? { privacy: context.privacySettings, sessionId: context.sessionId }
-        : undefined,
-      {
-        runId: context.runId,
-        stageExecutionId: context.stageExecutionId,
-        teamId: this.config.id,
-      },
-    );
+    const request = {
+      modelSlug: context.modelSlug || this.config.defaultModelSlug,
+      messages,
+      temperature: context.temperature,
+      maxTokens: context.maxTokens,
+    };
+    const privacyOpts = context.privacySettings
+      ? { privacy: context.privacySettings, sessionId: context.sessionId }
+      : undefined;
+    const loggingOpts = {
+      runId: context.runId,
+      stageExecutionId: context.stageExecutionId,
+      teamId: this.config.id,
+    };
+    const response = this.useStreaming(context)
+      ? await this.gateway.completeStreaming(request, privacyOpts, loggingOpts, context.streaming)
+      : await this.gateway.complete(request, privacyOpts, loggingOpts);
 
     const parsed = this.parseOutput(response.content);
     const questions = this.extractQuestions(parsed);
@@ -136,6 +145,21 @@ export abstract class BaseTeam {
       raw: response.content,
       questions: questions.length > 0 ? questions : undefined,
     };
+  }
+
+  /**
+   * Stage-streaming gate (streaming-stage-execution kill-switch). Streaming is
+   * used only when BOTH the controller supplied a `context.streaming` block
+   * AND `pipeline.streaming.enabled` is true. When false → the blocking
+   * complete/completeWithTools path is used unchanged (instant revert).
+   */
+  private useStreaming(context: StageContext): boolean {
+    if (!context.streaming) return false;
+    try {
+      return configLoader.get().pipeline.streaming.enabled === true;
+    } catch {
+      return false;
+    }
   }
 
   private async executeWithStrategy(

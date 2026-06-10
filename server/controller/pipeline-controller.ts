@@ -25,6 +25,10 @@ import type { ManagerConfig } from "@shared/types";
 import type { Tracer } from "../tracing/tracer";
 import { exportTrace } from "../tracing/otlp-exporter";
 import { isQueueEnabled, StageQueueProducer, getRedisConnection } from "../queue/index.js";
+import { StageProgressCoalescer, isAbortError } from "./stage-progress.js";
+import { scrubAndTruncate } from "../gateway/secret-scrub.js";
+import { configLoader } from "../config/loader.js";
+import type { StreamingStageOptions } from "@shared/types";
 
 interface ApprovalHandle {
   resolve: (approved: boolean) => void;
@@ -165,7 +169,7 @@ export class PipelineController {
 
     if (dag != null) {
       // ── DAG mode ──
-      const executeStage = this.makeDAGStageExecuteFn(run);
+      const executeStage = this.makeDAGStageExecuteFn(run, abortController.signal);
       this.dagExecutor
         .executeDAG(run, dag, abortController.signal, executeStage)
         .then(() => this.finishDAGRun(run.id, abortController.signal))
@@ -198,7 +202,7 @@ export class PipelineController {
    * Creates a StageExecuteFn bound to this controller for use by DAGExecutor.
    * The DAG executor calls this for each stage it wants to run.
    */
-  private makeDAGStageExecuteFn(run: PipelineRun): StageExecuteFn {
+  private makeDAGStageExecuteFn(run: PipelineRun, signal: AbortSignal): StageExecuteFn {
     return async (
       _run: PipelineRun,
       dagStage: DAGStage,
@@ -237,6 +241,7 @@ export class PipelineController {
         ? this.tracer?.startSpan(traceId, `${dagStage.id ?? dagStage.teamId}.execute`)
         : undefined;
 
+      let stageCoalescer: StageProgressCoalescer | undefined;
       try {
         const team = this.teamRegistry.getTeam(dagStage.teamId);
         const numericRunId = this.hashRunId(run.id);
@@ -257,6 +262,9 @@ export class PipelineController {
           ? (await this.storage.getWorkspace(runWorkspaceId))?.path ?? null
           : null;
 
+        const streamingBlock = this.buildStreamingBlock(run.id, stageIndex, dagStage.teamId, stageExec.id, signal);
+        stageCoalescer = streamingBlock.coalescer;
+
         const context = {
           runId: run.id,
           stageIndex,
@@ -273,11 +281,17 @@ export class PipelineController {
           // Workspace binding for the run (issue #343).
           workspaceId: runWorkspaceId ?? undefined,
           workspacePath: runWorkspacePath ?? undefined,
+          // Streaming stage execution (undefined when kill-switch off).
+          streaming: streamingBlock.streaming,
         };
 
         const result = dagStage.remoteAgent
           ? await this.executeRemoteStage(dagStage.remoteAgent, stageInput, run.id, stageExec.id)
           : await team.execute(stageInput, context, dagStage.executionStrategy);
+
+        // Stage produced a result — flush+close the WS-progress coalescer (B1:
+        // mirror the linear success path so the coalescer's timer never leaks).
+        stageCoalescer?.close();
 
         const newMemories = await this.memoryExtractor.extractFromStageResult(
           dagStage.teamId,
@@ -320,23 +334,32 @@ export class PipelineController {
 
         return { output: result.output, failed: false };
       } catch (error) {
-        const errMsg = error instanceof Error ? error.message : "Unknown error";
+        // B1: flush+close the coalescer on the error path too (no leaked timer).
+        stageCoalescer?.close();
+        // Scrub secret env values + keep the 256-char truncation before the
+        // error reaches storage, the WS payload, or the tracer (M2).
+        const errMsg = scrubAndTruncate(error instanceof Error ? error.message : "Unknown error");
+        // A deliberate cancel/abort maps to "cancelled", not "failed" (H3) —
+        // mirror the linear path. Partial streamed output is never promoted.
+        const aborted = isAbortError(error);
 
         await this.storage.updateStageExecution(stageExec.id, {
-          status: "failed",
+          status: aborted ? "cancelled" : "failed",
           completedAt: new Date(),
           error: errMsg,
         });
 
         this.broadcast(run.id, {
-          type: "stage:failed",
+          type: aborted ? "pipeline:cancelled" : "stage:failed",
           runId: run.id,
           stageExecutionId: stageExec.id,
-          payload: { error: errMsg, stageIndex, dagStageId },
+          payload: aborted
+            ? { reason: errMsg, cancelledStageIndex: stageIndex, dagStageId }
+            : { error: errMsg, stageIndex, dagStageId },
           timestamp: new Date().toISOString(),
         });
 
-        // Tracing: end stage span on error (security: truncate error to 256 chars)
+        // Tracing: end stage span on error (already scrubbed + truncated).
         if (stageSpanId) {
           this.tracer?.endSpan(stageSpanId, "error", {
             errorMessage: errMsg.slice(0, 256),
@@ -633,6 +656,7 @@ export class PipelineController {
         ? this.tracer?.startSpan(linearTraceId, `${stage.teamId}.execute`)
         : undefined;
 
+      let stageCoalescer: StageProgressCoalescer | undefined;
       try {
         const team = this.teamRegistry.getTeam(stage.teamId);
 
@@ -661,6 +685,9 @@ export class PipelineController {
         // Apply skill settings (if a skill is assigned to this stage)
         const resolvedStage = await this.applySkill(stage);
 
+        const streamingBlock = this.buildStreamingBlock(run.id, i, stage.teamId, stageExec.id, signal);
+        stageCoalescer = streamingBlock.coalescer;
+
         const context = {
           runId: run.id,
           stageIndex: i,
@@ -684,6 +711,9 @@ export class PipelineController {
           // workspace when their input doesn't supply one.
           workspaceId: runWorkspaceId ?? undefined,
           workspacePath: runWorkspacePath ?? undefined,
+          // Streaming stage execution: run AbortSignal + coalesced WS progress
+          // + resolved idle/overall/byte limits (undefined when kill-switch off).
+          streaming: streamingBlock.streaming,
         };
 
         // Pass execution strategy (undefined = single, handled in BaseTeam)
@@ -774,6 +804,10 @@ export class PipelineController {
             : await team.execute(stageInput, context, resolvedStage.executionStrategy);
         }
         }
+
+        // Flush + close the WS-progress coalescer now the stage produced a
+        // result (no further deltas). Idempotent; also closed in catch.
+        stageCoalescer?.close();
 
         // Collect thought tree from stage output
         const collector = new ThoughtTreeCollector();
@@ -975,39 +1009,57 @@ export class PipelineController {
           });
         }
       } catch (error) {
-        const errMsg =
-          error instanceof Error ? error.message : "Unknown error";
+        // Flush+close any progress coalescer (idempotent) before settling.
+        stageCoalescer?.close();
+        // Scrub secret env values from the error before it reaches storage, WS,
+        // logs, or the tracer (Security M2); keep the 256-char truncation.
+        const errMsg = scrubAndTruncate(error instanceof Error ? error.message : "Unknown error");
+        // A deliberate cancel/abort maps to "cancelled", not "failed" (H3). The
+        // partial streamed output is NOT promoted as an authoritative result.
+        const aborted = isAbortError(error);
+        const stageStatus = aborted ? "cancelled" : "failed";
+        const runStatus = aborted ? "cancelled" : "failed";
 
         await this.storage.updateStageExecution(stageExec.id, {
-          status: "failed",
+          status: stageStatus,
           completedAt: new Date(),
           error: errMsg,
         });
         await this.storage.updatePipelineRun(run.id, {
-          status: "failed",
+          status: runStatus,
           completedAt: new Date(),
           // Promote the failing stage's error into the run output when the run
-          // has none yet, so the run row is self-explaining (issue #342).
+          // has none yet, so the run row is self-explaining (issue #342). For a
+          // cancel we still record the scrubbed reason (never partial output).
           ...(run.output == null ? { output: errMsg } : {}),
         });
 
         await this.captureStageLesson(stageExec.id);
 
-        this.broadcast(run.id, {
-          type: "stage:failed",
-          runId: run.id,
-          stageExecutionId: stageExec.id,
-          payload: { error: errMsg, stageIndex: i },
-          timestamp: new Date().toISOString(),
-        });
-        this.broadcast(run.id, {
-          type: "pipeline:failed",
-          runId: run.id,
-          payload: { error: errMsg, failedStageIndex: i },
-          timestamp: new Date().toISOString(),
-        });
+        if (aborted) {
+          this.broadcast(run.id, {
+            type: "pipeline:cancelled",
+            runId: run.id,
+            payload: { reason: errMsg, cancelledStageIndex: i },
+            timestamp: new Date().toISOString(),
+          });
+        } else {
+          this.broadcast(run.id, {
+            type: "stage:failed",
+            runId: run.id,
+            stageExecutionId: stageExec.id,
+            payload: { error: errMsg, stageIndex: i },
+            timestamp: new Date().toISOString(),
+          });
+          this.broadcast(run.id, {
+            type: "pipeline:failed",
+            runId: run.id,
+            payload: { error: errMsg, failedStageIndex: i },
+            timestamp: new Date().toISOString(),
+          });
+        }
 
-        // Tracing: end stage span on error (security: truncate to 256 chars)
+        // Tracing: end stage span on error (already scrubbed + truncated).
         if (linearStageSpanId) {
           this.tracer?.endSpan(linearStageSpanId, "error", {
             errorMessage: errMsg.slice(0, 256),
@@ -1162,6 +1214,53 @@ export class PipelineController {
 
   private broadcast(runId: string, event: WsEvent): void {
     this.wsManager.broadcastToRun(runId, event);
+  }
+
+  /**
+   * Build the per-stage streaming block (streaming-stage-execution). Returns the
+   * StreamingStageOptions threaded into the stage call (run AbortSignal +
+   * coalesced onDelta + resolved idle/overall/byte limits) plus the coalescer
+   * so the caller can flush+close it when the stage settles. Returns undefined
+   * when the kill-switch (pipeline.streaming.enabled) is off → blocking path.
+   *
+   * The onDelta path is run-scoped: it broadcasts `stage:progress` via the
+   * existing run-scoped `broadcast(runId, ...)` (wsManager.broadcastToRun),
+   * coalesced and secret-scrubbed, sending the delta SLICE + cumulativeChars
+   * (never the full buffer).
+   */
+  private buildStreamingBlock(
+    runId: string,
+    stageIndex: number,
+    teamId: string,
+    stageExecutionId: string | undefined,
+    signal: AbortSignal,
+  ): { streaming?: StreamingStageOptions; coalescer?: StageProgressCoalescer } {
+    let cfg;
+    try {
+      cfg = configLoader.get().pipeline.streaming;
+    } catch {
+      return {};
+    }
+    if (!cfg.enabled) return {};
+
+    const coalescer = new StageProgressCoalescer(cfg.wsProgressFlushMs, (deltaText, cumulativeChars) => {
+      this.broadcast(runId, {
+        type: "stage:progress",
+        runId,
+        stageExecutionId,
+        payload: { stageIndex, teamId, deltaText, cumulativeChars },
+        timestamp: new Date().toISOString(),
+      });
+    });
+
+    const streaming: StreamingStageOptions = {
+      signal,
+      onDelta: (delta, cumulativeChars) => coalescer.push(delta, cumulativeChars),
+      idleTimeoutMs: cfg.idleTimeoutMs,
+      overallTimeoutMs: cfg.overallTimeoutMs,
+      maxOutputBytes: cfg.maxOutputBytes,
+    };
+    return { streaming, coalescer };
   }
 
     private buildDelegateFn(

@@ -327,6 +327,115 @@ describe("ClaudeCliProvider — stream()", () => {
   });
 });
 
+// ─── streamEvents() — text-delta / tool-call / done (streaming-stage-execution) ─
+
+describe("ClaudeCliProvider — streamEvents()", () => {
+  let provider: ClaudeCliProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new ClaudeCliProvider();
+  });
+
+  function assistantTextLine(text: string): string {
+    return JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text }] } }) + "\n";
+  }
+  function assistantToolLine(id: string, name: string, input: Record<string, unknown>): string {
+    return JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id, name, input }] } }) + "\n";
+  }
+  function resultLine(reason: "stop" | "tool_use", inTok = 10, outTok = 5): string {
+    return JSON.stringify({ type: "result", subtype: reason === "tool_use" ? "tool_use" : "success", stop_reason: reason, usage: { input_tokens: inTok, output_tokens: outTok } }) + "\n";
+  }
+
+  async function collectEvents(messages: ProviderMessage[]) {
+    const events = [];
+    for await (const ev of provider.streamEvents("claude-sonnet", messages)) events.push(ev);
+    return events;
+  }
+
+  it("emits incremental text deltas then a done(stop) with parsed usage", async () => {
+    const child = makeChild();
+    spawnMock.mockImplementation(() => {
+      setImmediate(() => {
+        child.stdout.emit("data", Buffer.from(assistantTextLine("Hello")));
+        child.stdout.emit("data", Buffer.from(assistantTextLine("Hello world")));
+        child.stdout.emit("data", Buffer.from(resultLine("stop", 12, 8)));
+        child.emit("close", 0);
+      });
+      return child;
+    });
+
+    const events = await collectEvents(USER_MSG);
+    const deltas = events.filter((e) => e.kind === "text-delta").map((e) => (e as { text: string }).text);
+    expect(deltas.join("")).toBe("Hello world");
+    const done = events.find((e) => e.kind === "done") as { kind: "done"; tokensUsed: number; finishReason: string };
+    expect(done.finishReason).toBe("stop");
+    expect(done.tokensUsed).toBe(20);
+  });
+
+  it("surfaces tool_use blocks as tool-call events then done(tool_use)", async () => {
+    const child = makeChild();
+    spawnMock.mockImplementation(() => {
+      setImmediate(() => {
+        child.stdout.emit("data", Buffer.from(assistantTextLine("calling a tool")));
+        child.stdout.emit("data", Buffer.from(assistantToolLine("call-1", "web_search", { query: "x" })));
+        child.stdout.emit("data", Buffer.from(resultLine("tool_use")));
+        child.emit("close", 0);
+      });
+      return child;
+    });
+
+    const events = await collectEvents(USER_MSG);
+    const toolCalls = events.filter((e) => e.kind === "tool-call");
+    expect(toolCalls).toHaveLength(1);
+    const call = (toolCalls[0] as { call: { id: string; name: string; arguments: Record<string, unknown> } }).call;
+    expect(call.id).toBe("call-1");
+    expect(call.name).toBe("web_search");
+    expect(call.arguments).toEqual({ query: "x" });
+    const done = events.find((e) => e.kind === "done") as { kind: "done"; finishReason: string };
+    expect(done.finishReason).toBe("tool_use");
+  });
+
+  it("skips malformed JSONL lines without throwing", async () => {
+    const child = makeChild();
+    spawnMock.mockImplementation(() => {
+      setImmediate(() => {
+        child.stdout.emit("data", Buffer.from("not-json\n"));
+        child.stdout.emit("data", Buffer.from(assistantTextLine("ok")));
+        child.stdout.emit("data", Buffer.from(resultLine("stop")));
+        child.emit("close", 0);
+      });
+      return child;
+    });
+
+    const events = await collectEvents(USER_MSG);
+    const deltas = events.filter((e) => e.kind === "text-delta").map((e) => (e as { text: string }).text);
+    expect(deltas.join("")).toBe("ok");
+  });
+
+  it("threads idleTimeoutMs / maxOutputBytes / signal into the spawn request", async () => {
+    const child = makeChild();
+    spawnMock.mockImplementation(() => {
+      setImmediate(() => child.emit("close", 0));
+      return child;
+    });
+    const controller = new AbortController();
+    const events = [];
+    for await (const ev of provider.streamEvents("claude-sonnet", USER_MSG, {
+      idleTimeoutMs: 1234,
+      maxOutputBytes: 4096,
+      timeoutMs: 99999,
+      signal: controller.signal,
+    })) {
+      events.push(ev);
+    }
+    // The spawn happened (args build) and verbose stream-json was requested.
+    const [, args] = spawnMock.mock.calls[0] as [string, string[]];
+    expect(args).toContain("--verbose");
+    expect(args[args.indexOf("--output-format") + 1]).toBe("stream-json");
+  });
+});
+
 // ─── Anthropic SDK guarantee ─────────────────────────────────────────────────
 
 describe("CLI mode — 0 Anthropic API usage", () => {
