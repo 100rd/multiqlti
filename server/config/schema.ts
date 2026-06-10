@@ -174,6 +174,28 @@ export const ConfigSchema = z.object({
       wsProgressFlushMs: z.coerce.number().int().min(50).max(5_000).default(250),
     }).default({}),
     /**
+     * Opt-in streaming for the ORCHESTRATOR debate turns (debate-streaming-
+     * termination). When enabled, DebateRunner routes each turn through
+     * gateway.completeStreaming so "end of reasoning" is the stream's terminal
+     * event, not a per-turn wall-clock — a long PRODUCTIVE Opus turn survives
+     * (idle timer resets per delta) while a STALLED turn trips idleTimeoutMs.
+     * SDLC presets never pass through DebateRunner, so they are unaffected.
+     * Bounds (.min/.max) are enforced at load so a misconfig can NEVER disable
+     * the per-turn overall cap; the overallTimeoutMs floor (10s) and default
+     * (300s) keep it >= the old 90s so a real Opus reasoning turn is not
+     * regressed (Risk R1).
+     */
+    debateStreaming: z.object({
+      /** Kill-switch: false → debate turns use the blocking complete() path. */
+      enabled: z.boolean().default(true),
+      /** Idle (inactivity) timeout per turn; reset on each delta. 1s..10min. */
+      idleTimeoutMs: z.coerce.number().int().min(1_000).max(600_000).default(60_000),
+      /** Overall wall-clock backstop per turn (NOT per-chunk). 10s..1h (5min default). */
+      overallTimeoutMs: z.coerce.number().int().min(10_000).max(3_600_000).default(300_000),
+      /** Cumulative output byte cap per turn. 64KiB..64MiB (default 8MiB). */
+      maxOutputBytes: z.coerce.number().int().min(65_536).max(67_108_864).default(8_388_608),
+    }).default({}),
+    /**
      * Debate-research orchestrator (additive 3rd run mode). Kill-switch default
      * FALSE. Every cap is bounded at load (Security C2/H2/L1 substrate); the
      * engine re-clamps each at runtime (defense-in-depth, never trust config
@@ -202,6 +224,13 @@ export const ConfigSchema = z.object({
       stepOutputMaxBytes: z.coerce.number().int().min(4096).max(1_048_576).default(100_000),
       /** Per-Gemini-debate-turn timeout (Lead Q1). 1s..10min (90s default). */
       geminiTurnTimeoutMs: z.coerce.number().int().min(1_000).max(600_000).default(90_000),
+      /**
+       * Dry-streak patience: stop the debate after K consecutive rounds with no
+       * NEW argument (novelty-based early termination). 1..5. Re-clamped HARD at
+       * runtime in resolveCaps (defense-in-depth). Novelty can only SHORTEN; the
+       * round hard-cap + token budget + abort remain absolute backstops.
+       */
+      debateNoveltyPatience: z.coerce.number().int().min(1).max(5).default(1),
     }).default({}),
   }).default({}),
 });

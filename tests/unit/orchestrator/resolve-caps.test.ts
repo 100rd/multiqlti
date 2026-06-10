@@ -25,6 +25,7 @@ function cfg(orch: Partial<AppConfig["pipeline"]["orchestrator"]>): AppConfig {
         overallTimeoutMs: 1_800_000,
         stepOutputMaxBytes: 100_000,
         geminiTurnTimeoutMs: 90_000,
+        debateNoveltyPatience: 1,
         ...orch,
       },
     },
@@ -37,6 +38,11 @@ describe("resolveCaps — defaults pass through", () => {
     expect(caps.maxSteps).toBe(8);
     expect(caps.maxTotalTokens).toBe(400_000);
     expect(caps.overallTimeoutMs).toBe(1_800_000);
+  });
+
+  it("passes through the configured debateNoveltyPatience (default 1)", () => {
+    expect(resolveCaps(cfg({})).debateNoveltyPatience).toBe(1);
+    expect(resolveCaps(cfg({ debateNoveltyPatience: 3 })).debateNoveltyPatience).toBe(3);
   });
 });
 
@@ -67,5 +73,21 @@ describe("resolveCaps — hard-max re-clamp (config bypass guard)", () => {
     const caps = resolveCaps(cfg({ maxResearchSources: -1, maxResearchConcurrency: 0 }));
     expect(caps.maxResearchSources).toBeGreaterThanOrEqual(1);
     expect(caps.maxResearchConcurrency).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("resolveCaps — debateNoveltyPatience HARD re-clamp (M-1, never trust config)", () => {
+  it("clamps an oversized patience down to the hard maximum (5)", () => {
+    // A bypassed/oversized config value must NEVER push the dry-streak past the
+    // round hard-cap; resolveCaps re-clamps to [1, 5] independently of zod.
+    expect(resolveCaps(cfg({ debateNoveltyPatience: 9999 })).debateNoveltyPatience).toBe(5);
+  });
+
+  it("floors a non-positive / non-finite patience to the minimum (1)", () => {
+    expect(resolveCaps(cfg({ debateNoveltyPatience: 0 })).debateNoveltyPatience).toBe(1);
+    expect(resolveCaps(cfg({ debateNoveltyPatience: -3 })).debateNoveltyPatience).toBe(1);
+    expect(
+      resolveCaps(cfg({ debateNoveltyPatience: Number.NaN })).debateNoveltyPatience,
+    ).toBe(1);
   });
 });

@@ -19,6 +19,9 @@ const HARD = {
   overallTimeoutMs: 3_600_000,
   stepOutputMaxBytes: 1_048_576,
   geminiTurnTimeoutMs: 600_000,
+  // M-1: novelty patience is structural control — re-clamp HARD at runtime so a
+  // bypassed/oversized config can never push the dry-streak past the round cap.
+  debateNoveltyPatience: 5,
 } as const;
 
 export interface OrchestratorCaps {
@@ -32,6 +35,8 @@ export interface OrchestratorCaps {
   overallTimeoutMs: number;
   stepOutputMaxBytes: number;
   geminiTurnTimeoutMs: number;
+  /** Stop the debate after K consecutive no-new-argument rounds (HARD-clamped 1..5). */
+  debateNoveltyPatience: number;
 }
 
 /** Optional per-run overrides (already zod-bounded at the route). */
@@ -75,6 +80,8 @@ export function resolveCaps(config: AppConfig, overrides: CapOverrides = {}): Or
     overallTimeoutMs: clamp(o.overallTimeoutMs, 10_000, HARD.overallTimeoutMs),
     stepOutputMaxBytes: clamp(o.stepOutputMaxBytes, 1, HARD.stepOutputMaxBytes),
     geminiTurnTimeoutMs: clamp(o.geminiTurnTimeoutMs, 1_000, HARD.geminiTurnTimeoutMs),
+    // M-1: HARD re-clamp to [1, 5] regardless of config (never trust config alone).
+    debateNoveltyPatience: clamp(o.debateNoveltyPatience, 1, HARD.debateNoveltyPatience),
   };
 }
 

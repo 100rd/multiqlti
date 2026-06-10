@@ -40,6 +40,8 @@ export interface StepExecutorDeps {
   groundingStep: GroundingStep;
   models: OrchestratorModels;
   streamingConfig: AppConfig["pipeline"]["streaming"];
+  /** Opt-in streaming for orchestrator debate turns (debate-streaming-termination). */
+  debateStreamingConfig: AppConfig["pipeline"]["debateStreaming"];
   /** Optional workspace code-search (analyze-code step). Absent → step no-ops. */
   codeSearch?: CodeSearchFn;
 }
@@ -94,12 +96,17 @@ export function buildStepExecutors(deps: StepExecutorDeps): StepExecutors {
         budget: ctx.budget,
         geminiTurnTimeoutMs: ctx.caps.geminiTurnTimeoutMs,
         signal: ctx.signal,
+        // Novelty early-termination patience (resolveCaps HARD-clamped, M-1).
+        noveltyPatience: ctx.caps.debateNoveltyPatience,
+        // Opt-in streaming for the orchestrator's debate turns.
+        streamingDebate: deps.debateStreamingConfig,
       });
 
       await deps.storage.createOrchestratorDebate({
         runId: ctx.runId,
         stepId: ctx.stepId,
         question: args.question,
+        // C-1: rounds are already novelty-marker-free (stripped in the decorator).
         rounds: scrubValue(res.details.rounds),
         judgeVerdict: scrubSecrets(res.verdict),
         providerDiversityScore: res.details.providerDiversityScore ?? null,

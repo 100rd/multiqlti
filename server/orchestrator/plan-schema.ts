@@ -107,13 +107,31 @@ export function validateSteps(steps: unknown, maxSteps: number): ParsedPlan {
 }
 
 /**
+ * Extract the JSON payload from a raw LLM response. Real CLI models (claude -p)
+ * commonly wrap JSON in a ```json fence or surround it with prose, so a naive
+ * JSON.parse fails. We strip a fenced code block if present, then fall back to
+ * the outermost brace-delimited object. This only LOCATES the JSON — the payload
+ * is still fully validated by zod afterwards, so leniency here never relaxes the
+ * security bounds on the plan.
+ */
+function extractJsonPayload(raw: string): string {
+  let s = raw.trim();
+  const fence = s.match(/```(?:json)?\s*\n?([\s\S]*?)```/i);
+  if (fence && fence[1]) s = fence[1].trim();
+  const first = s.indexOf("{");
+  const last = s.lastIndexOf("}");
+  if (first !== -1 && last > first) s = s.slice(first, last + 1);
+  return s;
+}
+
+/**
  * Safely parse a raw LLM JSON plan string. Wraps JSON.parse so malformed input
  * yields a typed error result and NEVER throws. Validates + clamps via zod.
  */
 export function parsePlan(raw: string, maxSteps: number): ParsedPlan {
   let payload: unknown;
   try {
-    payload = JSON.parse(raw);
+    payload = JSON.parse(extractJsonPayload(raw));
   } catch {
     return { ok: false, error: "plan is not valid JSON" };
   }
