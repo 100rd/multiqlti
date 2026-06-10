@@ -104,3 +104,31 @@ describe("plan-schema — validateSteps (already-parsed edited plan)", () => {
     expect(result.ok).toBe(false);
   });
 });
+
+describe("plan-schema — parsePlan tolerant extraction (CLI prose/fence wrappers)", () => {
+  const inner = JSON.stringify({
+    steps: [{ type: "debate", question: "Karpenter vs CA?", rounds: 2 }],
+  });
+
+  it("extracts JSON from a \`\`\`json fenced code block (claude -p style)", () => {
+    const raw = "Here is the plan:\n\`\`\`json\n" + inner + "\n\`\`\`\n";
+    const result = parsePlan(raw, 8);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.steps[0].type).toBe("debate");
+  });
+
+  it("extracts JSON surrounded by prose (outermost brace fallback)", () => {
+    const raw = "Sure! " + inner + " — let me know if you want changes.";
+    const result = parsePlan(raw, 8);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.steps).toHaveLength(1);
+  });
+
+  it("still validates after extraction (leniency never relaxes the security bounds)", () => {
+    // Fenced, but an unknown step type inside → still rejected by zod.
+    const bad = "\`\`\`json\n" + JSON.stringify({ steps: [{ type: "exfiltrate" }] }) + "\n\`\`\`";
+    const result = parsePlan(bad, 8);
+    expect(result.ok).toBe(false);
+  });
+});
+

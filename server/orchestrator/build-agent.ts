@@ -58,6 +58,7 @@ export function buildOrchestratorAgent(
     groundingStep,
     models,
     streamingConfig: configLoader.get().pipeline.streaming,
+    debateStreamingConfig: configLoader.get().pipeline.debateStreaming,
   });
 
   return new OrchestratorAgent({ storage, wsManager, gateway, stepExecutors, models });

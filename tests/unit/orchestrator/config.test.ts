@@ -25,6 +25,7 @@ describe("pipeline.orchestrator config schema — defaults", () => {
       overallTimeoutMs: 1_800_000,
       stepOutputMaxBytes: 100_000,
       geminiTurnTimeoutMs: 90_000,
+      debateNoveltyPatience: 1,
     });
   });
 

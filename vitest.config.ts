@@ -81,6 +81,7 @@ export default defineConfig({
         "server/orchestrator/orchestrator-config.ts",
         "server/orchestrator/orchestrator-agent.ts",
         "server/orchestrator/debate-runner.ts",
+        "server/orchestrator/novelty-marker.ts",
         "server/orchestrator/research-service.ts",
         "server/orchestrator/grounding-step.ts",
         "server/orchestrator/steps/index.ts",

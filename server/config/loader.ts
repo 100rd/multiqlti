@@ -159,6 +159,17 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { envKey: "MULTI_PIPELINE_ORCHESTRATOR_OVERALL_TIMEOUT_MS",       configPath: ["pipeline", "orchestrator", "overallTimeoutMs"],       kind: "number"  },
   { envKey: "MULTI_PIPELINE_ORCHESTRATOR_STEP_OUTPUT_MAX_BYTES",    configPath: ["pipeline", "orchestrator", "stepOutputMaxBytes"],     kind: "number"  },
   { envKey: "MULTI_PIPELINE_ORCHESTRATOR_GEMINI_TURN_TIMEOUT_MS",   configPath: ["pipeline", "orchestrator", "geminiTurnTimeoutMs"],    kind: "number"  },
+  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_DEBATE_NOVELTY_PATIENCE",  configPath: ["pipeline", "orchestrator", "debateNoveltyPatience"], kind: "number"  },
+
+  // Opt-in streaming for orchestrator debate turns (debate-streaming-termination).
+  { envKey: "PIPELINE_DEBATE_STREAMING_ENABLED",              configPath: ["pipeline", "debateStreaming", "enabled"],          kind: "boolean" },
+  { envKey: "PIPELINE_DEBATE_STREAMING_IDLE_TIMEOUT_MS",      configPath: ["pipeline", "debateStreaming", "idleTimeoutMs"],    kind: "number"  },
+  { envKey: "PIPELINE_DEBATE_STREAMING_OVERALL_TIMEOUT_MS",   configPath: ["pipeline", "debateStreaming", "overallTimeoutMs"], kind: "number"  },
+  { envKey: "PIPELINE_DEBATE_STREAMING_MAX_OUTPUT_BYTES",     configPath: ["pipeline", "debateStreaming", "maxOutputBytes"],   kind: "number"  },
+  { envKey: "MULTI_PIPELINE_DEBATE_STREAMING_ENABLED",              configPath: ["pipeline", "debateStreaming", "enabled"],          kind: "boolean" },
+  { envKey: "MULTI_PIPELINE_DEBATE_STREAMING_IDLE_TIMEOUT_MS",      configPath: ["pipeline", "debateStreaming", "idleTimeoutMs"],    kind: "number"  },
+  { envKey: "MULTI_PIPELINE_DEBATE_STREAMING_OVERALL_TIMEOUT_MS",   configPath: ["pipeline", "debateStreaming", "overallTimeoutMs"], kind: "number"  },
+  { envKey: "MULTI_PIPELINE_DEBATE_STREAMING_MAX_OUTPUT_BYTES",     configPath: ["pipeline", "debateStreaming", "maxOutputBytes"],   kind: "number"  },
 ];
 
 /**
