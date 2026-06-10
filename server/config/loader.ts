@@ -161,6 +161,18 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { envKey: "MULTI_PIPELINE_ORCHESTRATOR_GEMINI_TURN_TIMEOUT_MS",   configPath: ["pipeline", "orchestrator", "geminiTurnTimeoutMs"],    kind: "number"  },
   { envKey: "MULTI_PIPELINE_ORCHESTRATOR_DEBATE_NOVELTY_PATIENCE",  configPath: ["pipeline", "orchestrator", "debateNoveltyPatience"], kind: "number"  },
 
+  // Adaptive-stability deliberation engine (shared min-rounds floor).
+  { envKey: "PIPELINE_DELIBERATION_MIN_ROUNDS",        configPath: ["pipeline", "deliberation", "minRounds"], kind: "number" },
+  { envKey: "MULTI_PIPELINE_DELIBERATION_MIN_ROUNDS",  configPath: ["pipeline", "deliberation", "minRounds"], kind: "number" },
+
+  // /consensus run mode (decision verdict). Kill-switch default FALSE.
+  { envKey: "MULTI_PIPELINE_CONSENSUS_ENABLED",            configPath: ["pipeline", "consensus", "enabled"],          kind: "boolean" },
+  { envKey: "MULTI_PIPELINE_CONSENSUS_MAX_ROUNDS",         configPath: ["pipeline", "consensus", "maxRounds"],        kind: "number"  },
+  { envKey: "MULTI_PIPELINE_CONSENSUS_VOTER_COUNT",        configPath: ["pipeline", "consensus", "voterCount"],       kind: "number"  },
+  { envKey: "MULTI_PIPELINE_CONSENSUS_MAX_TOTAL_TOKENS",   configPath: ["pipeline", "consensus", "maxTotalTokens"],   kind: "number"  },
+  { envKey: "MULTI_PIPELINE_CONSENSUS_OVERALL_TIMEOUT_MS", configPath: ["pipeline", "consensus", "overallTimeoutMs"], kind: "number"  },
+  { envKey: "MULTI_PIPELINE_CONSENSUS_VOTER_TIMEOUT_MS",   configPath: ["pipeline", "consensus", "voterTimeoutMs"],   kind: "number"  },
+
   // Opt-in streaming for orchestrator debate turns (debate-streaming-termination).
   { envKey: "PIPELINE_DEBATE_STREAMING_ENABLED",              configPath: ["pipeline", "debateStreaming", "enabled"],          kind: "boolean" },
   { envKey: "PIPELINE_DEBATE_STREAMING_IDLE_TIMEOUT_MS",      configPath: ["pipeline", "debateStreaming", "idleTimeoutMs"],    kind: "number"  },

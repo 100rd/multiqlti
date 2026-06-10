@@ -232,6 +232,36 @@ export const ConfigSchema = z.object({
        */
       debateNoveltyPatience: z.coerce.number().int().min(1).max(5).default(1),
     }).default({}),
+    /**
+     * Shared min-rounds floor for the unified adaptive-stability deliberation
+     * engine (debate + /consensus). A stability/consensus stop can NEVER fire
+     * before this many rounds — the structural ANTI-PREMATURE-convergence
+     * guarantee. resolveCaps re-clamps it to [2, hardCap] at runtime.
+     */
+    deliberation: z.object({
+      /** Min rounds before any stability/consensus stop can fire. 2..5. */
+      minRounds: z.coerce.number().int().min(2).max(5).default(2),
+    }).default({}),
+    /**
+     * The /consensus run mode (decision VERDICT via blind verdict → independent
+     * voters → adjudication → 4-condition AND). Kill-switch default FALSE. Every
+     * cap is bounded at load; the engine re-clamps each at runtime
+     * (defense-in-depth, never trust config alone).
+     */
+    consensus: z.object({
+      /** Kill-switch: false → POST /api/runs/consensus returns 503. */
+      enabled: z.boolean().default(false),
+      /** Max consensus rounds before "unresolved". 1..5 (matches HARD cap). */
+      maxRounds: z.coerce.number().int().min(1).max(5).default(3),
+      /** Independent external voters per round (ensemble 5-7). */
+      voterCount: z.coerce.number().int().min(5).max(7).default(5),
+      /** Token ceiling for the whole cycle (C2). 1000..2M. */
+      maxTotalTokens: z.coerce.number().int().min(1000).max(2_000_000).default(400_000),
+      /** Wall-clock cap for the whole cycle. 10s..1h (30min default). */
+      overallTimeoutMs: z.coerce.number().int().min(10_000).max(3_600_000).default(1_800_000),
+      /** Per-voter / per-turn timeout. 1s..10min (90s default). */
+      voterTimeoutMs: z.coerce.number().int().min(1_000).max(600_000).default(90_000),
+    }).default({}),
   }).default({}),
 });
 

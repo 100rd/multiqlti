@@ -96,8 +96,10 @@ export function buildStepExecutors(deps: StepExecutorDeps): StepExecutors {
         budget: ctx.budget,
         geminiTurnTimeoutMs: ctx.caps.geminiTurnTimeoutMs,
         signal: ctx.signal,
-        // Novelty early-termination patience (resolveCaps HARD-clamped, M-1).
-        noveltyPatience: ctx.caps.debateNoveltyPatience,
+        // Adaptive-stability deliberation engine: anti-premature min-rounds floor
+        // (resolveCaps HARD-clamped to [2, hardCap], M-3) + overall wall-clock cap.
+        minRounds: ctx.caps.deliberationMinRounds,
+        overallTimeoutMs: ctx.caps.overallTimeoutMs,
         // Opt-in streaming for the orchestrator's debate turns.
         streamingDebate: deps.debateStreamingConfig,
       });
@@ -106,12 +108,15 @@ export function buildStepExecutors(deps: StepExecutorDeps): StepExecutors {
         runId: ctx.runId,
         stepId: ctx.stepId,
         question: args.question,
-        // C-1: rounds are already novelty-marker-free (stripped in the decorator).
+        // C-1: rounds are already stability-marker-free (stripped in the decorator).
         rounds: scrubValue(res.details.rounds),
         judgeVerdict: scrubSecrets(res.verdict),
         providerDiversityScore: res.details.providerDiversityScore ?? null,
         degraded: res.degraded,
         totalTokensUsed: res.totalTokensUsed,
+        // Persist the engine's stop reason + confidence-by-convergence-speed.
+        stopReason: res.stopReason,
+        stopConfidence: res.confidence,
       });
 
       return {

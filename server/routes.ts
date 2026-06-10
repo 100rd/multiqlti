@@ -30,6 +30,8 @@ import { DelegationService } from "./pipeline/delegation-service";
 import { ManagerAgent } from "./pipeline/manager-agent";
 import { buildOrchestratorAgent } from "./orchestrator/build-agent";
 import { registerOrchestratorRoutes } from "./routes/orchestrator";
+import { registerConsensusRoutes } from "./routes/consensus";
+import { ConsensusController } from "./consensus/consensus-controller";
 import { registerDAGRoutes } from "./routes/dag";
 import { registerTraceRoutes } from "./routes/traces";
 import { registerTriggerRoutes } from "./routes/triggers";
@@ -100,6 +102,9 @@ export async function registerRoutes(
   const managerAgent = new ManagerAgent(storage, teamRegistry, wsManager, gateway, delegationService);
   const orchestratorAgent = buildOrchestratorAgent(storage, gateway, wsManager);
   const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService, managerAgent, tracer, undefined, orchestratorAgent);
+  const consensusController = new ConsensusController(storage, gateway, {
+    claudeModelSlug: process.env.CONSENSUS_CLAUDE_MODEL ?? "claude-opus",
+  });
 
   // Register public routes (no auth required) — must come before requireAuth middleware
   registerHealthRoutes(app);
@@ -147,6 +152,7 @@ export async function registerRoutes(
   registerModelRoutes(app, storage);
   registerPipelineRoutes(app, storage, gateway);
   registerOrchestratorRoutes(app, storage, controller);
+  registerConsensusRoutes(app, storage, consensusController);
   registerRunRoutes(app, storage, controller);
   registerChatRoutes(app, storage, gateway, wsManager);
   registerGatewayRoutes(app, gateway);

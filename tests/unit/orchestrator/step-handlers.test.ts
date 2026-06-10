@@ -30,6 +30,7 @@ function caps(overrides: Partial<OrchestratorCaps> = {}): OrchestratorCaps {
     stepOutputMaxBytes: 100_000,
     geminiTurnTimeoutMs: 90_000,
     debateNoveltyPatience: 2,
+    deliberationMinRounds: 2,
     ...overrides,
   };
 }
@@ -82,6 +83,8 @@ function makeDeps(storage: MemStorage, overrides: Record<string, unknown> = {}) 
         totalTokensUsed: 12,
         degraded: false,
         roundsRun: 1,
+        stopReason: "hard-cap",
+        confidence: "low",
       })),
     },
     groundingStep: { run: vi.fn(async () => ({ grounded: false })) },
@@ -142,7 +145,7 @@ describe("buildStepExecutors — debate", () => {
     expect(rows[0].degraded).toBe(false);
   });
 
-  it("forwards the resolved noveltyPatience + streamingDebate config to DebateRunner", async () => {
+  it("forwards the resolved minRounds + overallTimeoutMs + streamingDebate to DebateRunner", async () => {
     const storage = new MemStorage();
     const deps = makeDeps(storage);
     const ex = buildStepExecutors(deps);
@@ -152,7 +155,8 @@ describe("buildStepExecutors — debate", () => {
     const runMock = (deps as { debateRunner: { run: ReturnType<typeof vi.fn> } }).debateRunner.run;
     expect(runMock).toHaveBeenCalledTimes(1);
     const arg = runMock.mock.calls[0][0];
-    expect(arg.noveltyPatience).toBe(2); // from caps.debateNoveltyPatience
+    expect(arg.minRounds).toBe(2); // from caps.deliberationMinRounds (M-3)
+    expect(arg.overallTimeoutMs).toBe(1_800_000); // from caps.overallTimeoutMs
     expect(arg.streamingDebate).toEqual({
       enabled: true,
       idleTimeoutMs: 60_000,
@@ -161,7 +165,7 @@ describe("buildStepExecutors — debate", () => {
     });
   });
 
-  it("persists a transcript with NO <<<NOVELTY>>> marker (C-1 hygiene)", async () => {
+  it("persists the engine stop reason + confidence on the debate row", async () => {
     const storage = new MemStorage();
     const deps = makeDeps(storage);
     const ex = buildStepExecutors(deps);
@@ -169,7 +173,19 @@ describe("buildStepExecutors — debate", () => {
     await ex.debate({ type: "debate", question: "Which?", rounds: 1 }, ctx(storage));
 
     const rows = await storage.getOrchestratorDebates("run-1");
-    expect(JSON.stringify(rows[0])).not.toContain("<<<NOVELTY>>>");
+    expect(rows[0].stopReason).toBe("hard-cap");
+    expect(rows[0].stopConfidence).toBe("low");
+  });
+
+  it("persists a transcript with NO <<<STABILITY>>> marker (C-1 hygiene)", async () => {
+    const storage = new MemStorage();
+    const deps = makeDeps(storage);
+    const ex = buildStepExecutors(deps);
+
+    await ex.debate({ type: "debate", question: "Which?", rounds: 1 }, ctx(storage));
+
+    const rows = await storage.getOrchestratorDebates("run-1");
+    expect(JSON.stringify(rows[0])).not.toContain("<<<STABILITY>>>");
   });
 });
 

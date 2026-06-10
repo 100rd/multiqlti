@@ -3053,3 +3053,26 @@ export interface ResearchFinding {
   sourceUrl: string;
   snippet: string;
 }
+
+
+// ─── Adaptive-Stability Deliberation Engine + /consensus ─────────────────────
+
+/** Why a deliberation (debate or consensus) stopped. */
+export type StopReason = "stable" | "hard-cap" | "budget" | "timeout" | "aborted";
+
+/** Confidence in a stable stop, derived only from convergence speed. */
+export type Confidence = "high" | "medium" | "low";
+
+/** A decision verdict emitted by a voter, the blind judge, or the adjudicator. */
+export type ConsensusVerdict = "APPROVE" | "REQUEST_CHANGES" | "REJECT";
+
+/** Lifecycle status of a /consensus run. */
+export type ConsensusRunStatus =
+  | "deliberating"
+  | "resolved"
+  | "unresolved"
+  | "failed"
+  | "cancelled";
+
+/** Phase of a single consensus round row. */
+export type ConsensusRoundPhase = "blind" | "review" | "adjudication";
