@@ -91,3 +91,45 @@ describe("resolveCaps — debateNoveltyPatience HARD re-clamp (M-1, never trust 
     ).toBe(1);
   });
 });
+
+describe("resolveCaps — M-3 deliberationMinRounds floor (anti-premature, min <= cap)", () => {
+  function cfgMin(
+    minRounds: number | undefined,
+    orch: Partial<AppConfig["pipeline"]["orchestrator"]> = {},
+  ): AppConfig {
+    const base = cfg(orch) as unknown as { pipeline: Record<string, unknown> };
+    return {
+      pipeline: {
+        ...base.pipeline,
+        deliberation: minRounds === undefined ? {} : { minRounds },
+      },
+    } as unknown as AppConfig;
+  }
+
+  it("defaults to 2 when no deliberation block is present", () => {
+    expect(resolveCaps(cfg({})).deliberationMinRounds).toBe(2);
+  });
+
+  it("clamps a sub-floor minRounds (1) up to 2", () => {
+    expect(resolveCaps(cfgMin(1)).deliberationMinRounds).toBe(2);
+  });
+
+  it("clamps an oversized minRounds (9999) down to the hard ceiling, then to the round cap", () => {
+    // maxDebateRounds default 3 → floor can never exceed 3.
+    expect(resolveCaps(cfgMin(9999, { maxDebateRounds: 3 })).deliberationMinRounds).toBe(3);
+  });
+
+  it("NaN floors to 2", () => {
+    expect(resolveCaps(cfgMin(Number.NaN)).deliberationMinRounds).toBe(2);
+  });
+
+  it("minRounds NEVER exceeds maxDebateRounds (maxRounds=1 + minRounds=2 → floor 1)", () => {
+    // The dangerous misconfig the security review called out: a 1-round cap with a
+    // 2-round floor would make a stable stop unreachable. min(floor, cap) = 1.
+    expect(resolveCaps(cfgMin(2, { maxDebateRounds: 1 })).deliberationMinRounds).toBe(1);
+  });
+
+  it("respects a valid in-range minRounds", () => {
+    expect(resolveCaps(cfgMin(3, { maxDebateRounds: 5 })).deliberationMinRounds).toBe(3);
+  });
+});

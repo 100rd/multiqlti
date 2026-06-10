@@ -31,6 +31,12 @@ import {
   type OrchestratorDebateRow,
   type InsertOrchestratorResearch,
   type OrchestratorResearchRow,
+  type InsertConsensusRun,
+  type ConsensusRunRow,
+  type InsertConsensusRound,
+  type ConsensusRoundRow,
+  type InsertConsensusCriticalIssue,
+  type ConsensusCriticalIssueRow,
   type TriggerRow,
   type InsertTrace,
   type TraceRow,
@@ -315,6 +321,18 @@ export interface IStorage {
   getOrchestratorDebates(runId: string): Promise<OrchestratorDebateRow[]>;
   createOrchestratorResearch(data: InsertOrchestratorResearch): Promise<OrchestratorResearchRow>;
   getOrchestratorResearch(runId: string): Promise<OrchestratorResearchRow[]>;
+
+  // /consensus run mode (adaptive-stability deliberation engine)
+  createConsensusRun(data: InsertConsensusRun): Promise<ConsensusRunRow>;
+  getConsensusRun(runId: string): Promise<ConsensusRunRow | undefined>;
+  updateConsensusRun(
+    runId: string,
+    updates: Partial<Omit<ConsensusRunRow, "id" | "runId" | "createdAt">>,
+  ): Promise<void>;
+  createConsensusRound(data: InsertConsensusRound): Promise<ConsensusRoundRow>;
+  getConsensusRounds(runId: string): Promise<ConsensusRoundRow[]>;
+  upsertConsensusIssue(data: InsertConsensusCriticalIssue): Promise<ConsensusCriticalIssueRow>;
+  getConsensusIssues(runId: string): Promise<ConsensusCriticalIssueRow[]>;
 
   // Triggers (Phase 6.3)
   getTriggers(pipelineId: string): Promise<TriggerRow[]>;
@@ -1600,6 +1618,8 @@ export class MemStorage implements IStorage {
       dissent: data.dissent ?? null,
       degraded: data.degraded ?? false,
       totalTokensUsed: data.totalTokensUsed ?? 0,
+      stopReason: data.stopReason ?? null,
+      stopConfidence: data.stopConfidence ?? null,
       createdAt: new Date(),
     };
     this.orchestratorDebatesMap.set(row.id, row);
@@ -1632,6 +1652,108 @@ export class MemStorage implements IStorage {
 
   async getOrchestratorResearch(runId: string): Promise<OrchestratorResearchRow[]> {
     return Array.from(this.orchestratorResearchMap.values())
+      .filter((r) => r.runId === runId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  }
+
+  // ─── /consensus run mode ──────────────────────────────────────────────────
+
+  private consensusRunsMap: Map<string, ConsensusRunRow> = new Map();
+  private consensusRoundsMap: Map<string, ConsensusRoundRow> = new Map();
+  private consensusIssuesMap: Map<string, ConsensusCriticalIssueRow> = new Map();
+
+  async createConsensusRun(data: InsertConsensusRun): Promise<ConsensusRunRow> {
+    const row: ConsensusRunRow = {
+      id: crypto.randomUUID(),
+      runId: data.runId,
+      decisionText: data.decisionText,
+      subjectKind: data.subjectKind ?? "freeform",
+      subjectRef: data.subjectRef ?? null,
+      status: data.status ?? "deliberating",
+      roundsRun: data.roundsRun ?? 0,
+      stopReason: data.stopReason ?? null,
+      confidence: data.confidence ?? null,
+      finalVerdict: data.finalVerdict ?? null,
+      voterCount: data.voterCount ?? 0,
+      totalTokensUsed: data.totalTokensUsed ?? 0,
+      error: data.error ?? null,
+      createdAt: new Date(),
+      completedAt: data.completedAt ?? null,
+    };
+    this.consensusRunsMap.set(row.runId, row);
+    return row;
+  }
+
+  async getConsensusRun(runId: string): Promise<ConsensusRunRow | undefined> {
+    return this.consensusRunsMap.get(runId);
+  }
+
+  async updateConsensusRun(
+    runId: string,
+    updates: Partial<Omit<ConsensusRunRow, "id" | "runId" | "createdAt">>,
+  ): Promise<void> {
+    const existing = this.consensusRunsMap.get(runId);
+    if (!existing) return;
+    this.consensusRunsMap.set(runId, { ...existing, ...updates });
+  }
+
+  async createConsensusRound(data: InsertConsensusRound): Promise<ConsensusRoundRow> {
+    // MF-5: enforce the (run_id, round, phase) uniqueness in-memory too — a
+    // duplicate blind row THROWS (the engine must never back-edit a blind row).
+    for (const r of this.consensusRoundsMap.values()) {
+      if (r.runId === data.runId && r.round === data.round && r.phase === data.phase) {
+        throw new Error(
+          `consensus_rounds duplicate (run_id, round, phase): ${data.runId}/${data.round}/${data.phase}`,
+        );
+      }
+    }
+    const row: ConsensusRoundRow = {
+      id: crypto.randomUUID(),
+      runId: data.runId,
+      round: data.round,
+      phase: data.phase,
+      claudeVerdict: data.claudeVerdict ?? null,
+      claudeRationale: data.claudeRationale ?? null,
+      voterReviews: data.voterReviews ?? null,
+      adjudication: data.adjudication ?? null,
+      tokensUsed: data.tokensUsed ?? 0,
+      createdAt: new Date(),
+    };
+    this.consensusRoundsMap.set(row.id, row);
+    return row;
+  }
+
+  async getConsensusRounds(runId: string): Promise<ConsensusRoundRow[]> {
+    return Array.from(this.consensusRoundsMap.values())
+      .filter((r) => r.runId === runId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  }
+
+  async upsertConsensusIssue(
+    data: InsertConsensusCriticalIssue,
+  ): Promise<ConsensusCriticalIssueRow> {
+    const existing = Array.from(this.consensusIssuesMap.values()).find(
+      (r) => r.runId === data.runId && r.issueKey === data.issueKey,
+    );
+    const row: ConsensusCriticalIssueRow = {
+      id: existing?.id ?? crypto.randomUUID(),
+      runId: data.runId,
+      issueKey: data.issueKey,
+      raisedBy: data.raisedBy,
+      summary: data.summary,
+      status: data.status ?? "open",
+      resolution: data.resolution ?? null,
+      dismissalJustification: data.dismissalJustification ?? null,
+      openedRound: data.openedRound,
+      closedRound: data.closedRound ?? null,
+      createdAt: existing?.createdAt ?? new Date(),
+    };
+    this.consensusIssuesMap.set(row.id, row);
+    return row;
+  }
+
+  async getConsensusIssues(runId: string): Promise<ConsensusCriticalIssueRow[]> {
+    return Array.from(this.consensusIssuesMap.values())
       .filter((r) => r.runId === runId)
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }

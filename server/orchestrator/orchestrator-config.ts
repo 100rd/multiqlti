@@ -22,6 +22,16 @@ const HARD = {
   // M-1: novelty patience is structural control — re-clamp HARD at runtime so a
   // bypassed/oversized config can never push the dry-streak past the round cap.
   debateNoveltyPatience: 5,
+  // M-3: min-rounds floor is structural anti-premature control. HARD ceiling is
+  // the round cap; the runtime clamp also enforces minRounds <= hardCap.
+  deliberationMinRounds: 5,
+  // /consensus HARD ceilings (match schema .max()).
+  consensusMaxRounds: 5,
+  consensusVoterCountMax: 7,
+  consensusVoterCountMin: 5,
+  consensusMaxTotalTokens: 2_000_000,
+  consensusOverallTimeoutMs: 3_600_000,
+  consensusVoterTimeoutMs: 600_000,
 } as const;
 
 export interface OrchestratorCaps {
@@ -37,6 +47,8 @@ export interface OrchestratorCaps {
   geminiTurnTimeoutMs: number;
   /** Stop the debate after K consecutive no-new-argument rounds (HARD-clamped 1..5). */
   debateNoveltyPatience: number;
+  /** Min rounds before a stability stop can fire (HARD-clamped to [2, maxDebateRounds]). */
+  deliberationMinRounds: number;
 }
 
 /** Optional per-run overrides (already zod-bounded at the route). */
@@ -65,9 +77,10 @@ function tighten(configVal: number, override: number | undefined, hardMax: numbe
  */
 export function resolveCaps(config: AppConfig, overrides: CapOverrides = {}): OrchestratorCaps {
   const o = config.pipeline.orchestrator;
+  const maxDebateRounds = tighten(o.maxDebateRounds, overrides.maxDebateRounds, HARD.maxDebateRounds);
   return {
     maxSteps: tighten(o.maxSteps, overrides.maxSteps, HARD.maxSteps),
-    maxDebateRounds: tighten(o.maxDebateRounds, overrides.maxDebateRounds, HARD.maxDebateRounds),
+    maxDebateRounds,
     maxResearchSources: tighten(
       o.maxResearchSources,
       overrides.maxResearchSources,
@@ -82,6 +95,72 @@ export function resolveCaps(config: AppConfig, overrides: CapOverrides = {}): Or
     geminiTurnTimeoutMs: clamp(o.geminiTurnTimeoutMs, 1_000, HARD.geminiTurnTimeoutMs),
     // M-1: HARD re-clamp to [1, 5] regardless of config (never trust config alone).
     debateNoveltyPatience: clamp(o.debateNoveltyPatience, 1, HARD.debateNoveltyPatience),
+    // M-3: floor clamped to [2, hardCap]. min can NEVER exceed the round cap, so a
+    // maxDebateRounds=1 + minRounds=2 misconfig resolves to floor=1 (== cap), not 2.
+    deliberationMinRounds: resolveMinRounds(config, maxDebateRounds),
+  };
+}
+
+/**
+ * Resolve the deliberation min-rounds floor (M-3). Clamp the configured value to
+ * [2, HARD.deliberationMinRounds], then HARD-cap it to the resolved debate round
+ * cap so `minRounds <= hardCap` ALWAYS holds at runtime (a stability stop can
+ * never be made unreachable, and the floor can never exceed the cap).
+ */
+function resolveMinRounds(config: AppConfig, hardCap: number): number {
+  const configured = config.pipeline.deliberation?.minRounds ?? 2;
+  const floor = clamp(configured, 2, HARD.deliberationMinRounds);
+  return Math.min(floor, hardCap);
+}
+
+/** Effective caps for a /consensus run (HARD re-clamped at runtime). */
+export interface ConsensusCaps {
+  maxRounds: number;
+  voterCount: number;
+  maxTotalTokens: number;
+  overallTimeoutMs: number;
+  voterTimeoutMs: number;
+  /** Shared min-rounds floor (anti-premature). Clamped to [2, maxRounds]. */
+  minRounds: number;
+}
+
+/** Optional per-run consensus overrides (already zod-bounded at the route). */
+export interface ConsensusCapOverrides {
+  maxRounds?: number;
+  voterCount?: number;
+  maxTotalTokens?: number;
+}
+
+/**
+ * Resolve effective caps for a /consensus run. Every value is HARD re-clamped
+ * even if config was bypassed; overrides only TIGHTEN. voterCount is clamped to
+ * [5, 7]; minRounds is clamped to [2, maxRounds] so the floor can never exceed
+ * the round cap (M-3 parity with the debate path).
+ */
+export function resolveConsensusCaps(
+  config: AppConfig,
+  overrides: ConsensusCapOverrides = {},
+): ConsensusCaps {
+  const c = config.pipeline.consensus;
+  const maxRounds = tighten(c.maxRounds, overrides.maxRounds, HARD.consensusMaxRounds);
+  // voterCount: tighten toward the config value but never below the HARD min (5).
+  const baseVoters = clamp(c.voterCount, HARD.consensusVoterCountMin, HARD.consensusVoterCountMax);
+  const voterCount =
+    overrides.voterCount === undefined
+      ? baseVoters
+      : Math.max(
+          HARD.consensusVoterCountMin,
+          Math.min(baseVoters, clamp(overrides.voterCount, HARD.consensusVoterCountMin, HARD.consensusVoterCountMax)),
+        );
+  const configuredMin = config.pipeline.deliberation?.minRounds ?? 2;
+  const minRounds = Math.min(clamp(configuredMin, 2, HARD.deliberationMinRounds), maxRounds);
+  return {
+    maxRounds,
+    voterCount,
+    maxTotalTokens: tighten(c.maxTotalTokens, overrides.maxTotalTokens, HARD.consensusMaxTotalTokens),
+    overallTimeoutMs: clamp(c.overallTimeoutMs, 10_000, HARD.consensusOverallTimeoutMs),
+    voterTimeoutMs: clamp(c.voterTimeoutMs, 1_000, HARD.consensusVoterTimeoutMs),
+    minRounds,
   };
 }
 

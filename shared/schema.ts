@@ -15,7 +15,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider, DebateDetails, ArbitratorVerdict, OrchestratorStepType, OrchestratorStepArgs, ResearchFinding, OrchestratorRunStatus, OrchestratorStepStatus } from "./types.js";
+import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider, DebateDetails, ArbitratorVerdict, OrchestratorStepType, OrchestratorStepArgs, ResearchFinding, OrchestratorRunStatus, OrchestratorStepStatus, StopReason, Confidence, ConsensusVerdict, ConsensusRunStatus, ConsensusRoundPhase } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -832,6 +832,10 @@ export const orchestratorDebates = pgTable(
     dissent: jsonb("dissent").$type<string[]>(),
     degraded: boolean("degraded").notNull().default(false),
     totalTokensUsed: integer("total_tokens_used").notNull().default(0),
+    // Adaptive-stability deliberation engine: why the debate stopped + the
+    // confidence-by-convergence-speed of that stop. Additive (nullable).
+    stopReason: text("stop_reason").$type<StopReason | null>(),
+    stopConfidence: text("stop_confidence").$type<Confidence | null>(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
@@ -876,6 +880,127 @@ export const insertOrchestratorResearchSchema = createInsertSchema(orchestratorR
 });
 export type InsertOrchestratorResearch = typeof orchestratorResearch.$inferInsert;
 export type OrchestratorResearchRow = typeof orchestratorResearch.$inferSelect;
+
+// ─── /consensus run mode (adaptive-stability deliberation engine) ────────────
+
+/** A persisted voter review row inside consensus_rounds.voter_reviews jsonb. */
+export interface ConsensusVoterReviewJson {
+  voterSlug: string;
+  verdict: ConsensusVerdict;
+  criticalIssues: Array<{ key: string; summary: string }>;
+  parseError?: string;
+}
+
+/** The adjudication record inside consensus_rounds.adjudication jsonb. */
+export interface ConsensusAdjudicationJson {
+  verdict: ConsensusVerdict;
+  rationale?: string;
+  fixed: string[];
+  dismissals: Array<{ issueKey: string; justification: string }>;
+  revisedPlan?: string;
+}
+
+export const consensusRuns = pgTable(
+  "consensus_runs",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    runId: varchar("run_id")
+      .notNull()
+      .references(() => pipelineRuns.id, { onDelete: "cascade" }),
+    decisionText: text("decision_text").notNull(),
+    subjectKind: text("subject_kind").notNull().default("freeform"),
+    subjectRef: text("subject_ref"),
+    status: text("status").notNull().default("deliberating").$type<ConsensusRunStatus>(),
+    roundsRun: integer("rounds_run").notNull().default(0),
+    stopReason: text("stop_reason").$type<StopReason | null>(),
+    confidence: text("confidence").$type<Confidence | null>(),
+    finalVerdict: text("final_verdict").$type<ConsensusVerdict | null>(),
+    voterCount: integer("voter_count").notNull().default(0),
+    totalTokensUsed: integer("total_tokens_used").notNull().default(0),
+    error: text("error"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    completedAt: timestamp("completed_at"),
+  },
+  (table) => ({
+    runIdUnique: unique("consensus_runs_run_id_unique").on(table.runId),
+    runIdIdx: index("consensus_runs_run_id_idx").on(table.runId),
+  }),
+);
+
+export const insertConsensusRunSchema = createInsertSchema(consensusRuns).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertConsensusRun = typeof consensusRuns.$inferInsert;
+export type ConsensusRunRow = typeof consensusRuns.$inferSelect;
+
+export const consensusRounds = pgTable(
+  "consensus_rounds",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    runId: varchar("run_id")
+      .notNull()
+      .references(() => pipelineRuns.id, { onDelete: "cascade" }),
+    round: integer("round").notNull(),
+    phase: text("phase").notNull().$type<ConsensusRoundPhase>(),
+    claudeVerdict: text("claude_verdict").$type<ConsensusVerdict | null>(),
+    claudeRationale: text("claude_rationale"),
+    voterReviews: jsonb("voter_reviews").$type<ConsensusVoterReviewJson[] | null>(),
+    adjudication: jsonb("adjudication").$type<ConsensusAdjudicationJson | null>(),
+    tokensUsed: integer("tokens_used").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    runIdIdx: index("consensus_rounds_run_id_idx").on(table.runId),
+    // MF-5: a (run_id, round, phase) is UNIQUE — the blind row can never be
+    // duplicated/back-edited after the voters have run.
+    roundPhaseUnique: unique("consensus_rounds_run_round_phase_unique").on(
+      table.runId,
+      table.round,
+      table.phase,
+    ),
+  }),
+);
+
+export const insertConsensusRoundSchema = createInsertSchema(consensusRounds).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertConsensusRound = typeof consensusRounds.$inferInsert;
+export type ConsensusRoundRow = typeof consensusRounds.$inferSelect;
+
+export const consensusCriticalIssues = pgTable(
+  "consensus_critical_issues",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    runId: varchar("run_id")
+      .notNull()
+      .references(() => pipelineRuns.id, { onDelete: "cascade" }),
+    issueKey: text("issue_key").notNull(),
+    raisedBy: text("raised_by").notNull(),
+    summary: text("summary").notNull(),
+    status: text("status").notNull().default("open"),
+    resolution: text("resolution"),
+    dismissalJustification: text("dismissal_justification"),
+    openedRound: integer("opened_round").notNull(),
+    closedRound: integer("closed_round"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    runIdIdx: index("consensus_critical_issues_run_id_idx").on(table.runId),
+    runIssueUnique: unique("consensus_critical_issues_run_issue_unique").on(
+      table.runId,
+      table.issueKey,
+    ),
+  }),
+);
+
+export const insertConsensusCriticalIssueSchema = createInsertSchema(consensusCriticalIssues).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertConsensusCriticalIssue = typeof consensusCriticalIssues.$inferInsert;
+export type ConsensusCriticalIssueRow = typeof consensusCriticalIssues.$inferSelect;
 
 // ─── Traces (Phase 6.5) ──────────────────────────────────────────────────────
 

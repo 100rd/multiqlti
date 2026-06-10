@@ -21,6 +21,9 @@ import {
   orchestratorSteps,
   orchestratorDebates,
   orchestratorResearch,
+  consensusRuns,
+  consensusRounds,
+  consensusCriticalIssues,
   traces,
   argoCdConfig,
   workspaces,
@@ -63,6 +66,9 @@ import {
   type InsertOrchestratorStep, type OrchestratorStepRow,
   type InsertOrchestratorDebate, type OrchestratorDebateRow,
   type InsertOrchestratorResearch, type OrchestratorResearchRow,
+  type InsertConsensusRun, type ConsensusRunRow,
+  type InsertConsensusRound, type ConsensusRoundRow,
+  type InsertConsensusCriticalIssue, type ConsensusCriticalIssueRow,
   type TriggerRow,
   type InsertTrace,
   type TraceRow,
@@ -1144,6 +1150,68 @@ export class PgStorage implements IStorage {
       .from(orchestratorResearch)
       .where(eq(orchestratorResearch.runId, runId))
       .orderBy(asc(orchestratorResearch.createdAt));
+  }
+
+  // ─── /consensus run mode ──────────────────────────────────────────────────
+
+  async createConsensusRun(data: InsertConsensusRun): Promise<ConsensusRunRow> {
+    const [row] = await db.insert(consensusRuns).values(data).returning();
+    return row;
+  }
+
+  async getConsensusRun(runId: string): Promise<ConsensusRunRow | undefined> {
+    const [row] = await db.select().from(consensusRuns).where(eq(consensusRuns.runId, runId));
+    return row;
+  }
+
+  async updateConsensusRun(
+    runId: string,
+    updates: Partial<Omit<ConsensusRunRow, "id" | "runId" | "createdAt">>,
+  ): Promise<void> {
+    await db.update(consensusRuns).set(updates).where(eq(consensusRuns.runId, runId));
+  }
+
+  async createConsensusRound(data: InsertConsensusRound): Promise<ConsensusRoundRow> {
+    // MF-5: the (run_id, round, phase) unique constraint guarantees a blind row
+    // can never be duplicated; the insert throws on a duplicate.
+    const [row] = await db.insert(consensusRounds).values(data).returning();
+    return row;
+  }
+
+  async getConsensusRounds(runId: string): Promise<ConsensusRoundRow[]> {
+    return db
+      .select()
+      .from(consensusRounds)
+      .where(eq(consensusRounds.runId, runId))
+      .orderBy(asc(consensusRounds.createdAt));
+  }
+
+  async upsertConsensusIssue(
+    data: InsertConsensusCriticalIssue,
+  ): Promise<ConsensusCriticalIssueRow> {
+    const [row] = await db
+      .insert(consensusCriticalIssues)
+      .values(data)
+      .onConflictDoUpdate({
+        target: [consensusCriticalIssues.runId, consensusCriticalIssues.issueKey],
+        set: {
+          status: data.status ?? "open",
+          resolution: data.resolution ?? null,
+          dismissalJustification: data.dismissalJustification ?? null,
+          summary: data.summary,
+          closedRound: data.closedRound ?? null,
+        },
+      })
+      .returning();
+    return row;
+  }
+
+  async getConsensusIssues(runId: string): Promise<ConsensusCriticalIssueRow[]> {
+    return db
+      .select()
+      .from(consensusCriticalIssues)
+      .where(eq(consensusCriticalIssues.runId, runId))
+      .orderBy(asc(consensusCriticalIssues.createdAt));
   }
 
   // ─── Triggers (Phase 6.3) ─────────────────────────────────────────────────
