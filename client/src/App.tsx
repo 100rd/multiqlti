@@ -24,6 +24,7 @@ import Memory from "@/pages/Memory";
 import Knowledge from "@/pages/Knowledge";
 import KnowledgeBase from "@/pages/KnowledgeBase";
 import MorningBrief from "@/pages/MorningBrief";
+import Orchestrator from "@/pages/Orchestrator";
 import WorkspaceList from "@/pages/WorkspaceList";
 import Workspace from "@/pages/Workspace";
 import Connections from "@/pages/Connections";
@@ -110,6 +111,12 @@ function ProtectedRouter() {
         )} />
         <Route path="/workspaces/:id/morning-brief" component={() => (
           <ErrorBoundary><MorningBrief /></ErrorBoundary>
+        )} />
+        <Route path="/workspaces/:id/orchestrator/:runId" component={() => (
+          <ErrorBoundary><Orchestrator /></ErrorBoundary>
+        )} />
+        <Route path="/workspaces/:id/orchestrator" component={() => (
+          <ErrorBoundary><Orchestrator /></ErrorBoundary>
         )} />
         <Route path="/workspaces/:id/knowledge-base" component={() => (
           <ErrorBoundary><KnowledgeBase /></ErrorBoundary>

@@ -28,6 +28,11 @@ const ALLOWED_HOSTS: readonly string[] = [
   "kubernetes.io",
   "cncf.io",
   "hashicorp.com",
+  // ── Debate-research orchestrator curated research hosts (Q3, Security
+  // APPROVED WITH CONSTRAINTS). Host-level medium.com only; same strict gate
+  // (https-only, exact host or dot-boundary subdomain, no ports/userinfo/
+  // punycode). NO host-level github (see GITHUB_ALLOWED_PATH_PREFIXES). ──
+  "medium.com",
 ] as const;
 
 /**
@@ -38,6 +43,13 @@ const GITHUB_HOST = "github.com";
 const GITHUB_ALLOWED_PATH_PREFIXES: readonly string[] = [
   "/hashicorp/terraform",
   "/opentofu/opentofu",
+  // ── Q3 curated research org/repo prefixes (path-scoped only; NO host-level
+  // github). Each is a trusted, code-reviewed org we survey for the
+  // orchestrator research step. Add ONLY after security review. ──
+  "/hashicorp",     // HashiCorp org (terraform, vault, consul, ...)
+  "/aws-samples",   // AWS official sample repos
+  "/kubernetes",    // Kubernetes org
+  "/opentofu",      // OpenTofu org
 ] as const;
 
 /** True if `host` equals `allowed` or is a subdomain of it on a dot boundary. */

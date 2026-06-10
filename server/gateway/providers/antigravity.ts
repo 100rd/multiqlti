@@ -99,6 +99,9 @@ export class AntigravityProvider implements ILLMProvider {
       model: this.resolveModel(modelId),
       binPath: this.binPath,
       timeoutMs: options?.timeoutMs ?? this.timeoutMs,
+      // Security H1: forward the caller abort signal so an aborted debate/
+      // orchestrator turn kills the CLI child (the CLI adapter honors signal).
+      signal: options?.signal,
     });
 
     return {

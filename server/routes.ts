@@ -28,6 +28,8 @@ import { registerGuardrailRoutes } from "./routes/guardrails";
 import { registerDelegationRoutes } from "./routes/delegations";
 import { DelegationService } from "./pipeline/delegation-service";
 import { ManagerAgent } from "./pipeline/manager-agent";
+import { buildOrchestratorAgent } from "./orchestrator/build-agent";
+import { registerOrchestratorRoutes } from "./routes/orchestrator";
 import { registerDAGRoutes } from "./routes/dag";
 import { registerTraceRoutes } from "./routes/traces";
 import { registerTriggerRoutes } from "./routes/triggers";
@@ -96,7 +98,8 @@ export async function registerRoutes(
   const teamRegistry = new TeamRegistry(gateway, wsManager);
   const delegationService = new DelegationService(storage, teamRegistry, wsManager, gateway);
   const managerAgent = new ManagerAgent(storage, teamRegistry, wsManager, gateway, delegationService);
-  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService, managerAgent, tracer);
+  const orchestratorAgent = buildOrchestratorAgent(storage, gateway, wsManager);
+  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService, managerAgent, tracer, undefined, orchestratorAgent);
 
   // Register public routes (no auth required) — must come before requireAuth middleware
   registerHealthRoutes(app);
@@ -143,6 +146,7 @@ export async function registerRoutes(
   // Register route implementations
   registerModelRoutes(app, storage);
   registerPipelineRoutes(app, storage, gateway);
+  registerOrchestratorRoutes(app, storage, controller);
   registerRunRoutes(app, storage, controller);
   registerChatRoutes(app, storage, gateway, wsManager);
   registerGatewayRoutes(app, gateway);

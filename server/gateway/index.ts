@@ -324,6 +324,10 @@ export class Gateway {
         result = await provider.complete(modelId, messages, {
           maxTokens: request.maxTokens,
           temperature: request.temperature,
+          // Security C1: forward abort signal + per-call timeout so a hung/aborted
+          // turn (debate, orchestrator) actually cancels the underlying request.
+          signal: request.signal,
+          timeoutMs: request.timeoutMs,
         });
       } else {
         result = await this.mockProvider.complete(messages, {

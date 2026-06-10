@@ -15,7 +15,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider } from "./types.js";
+import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider, DebateDetails, ArbitratorVerdict, OrchestratorStepType, OrchestratorStepArgs, ResearchFinding, OrchestratorRunStatus, OrchestratorStepStatus } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -743,6 +743,139 @@ export const insertManagerIterationSchema = createInsertSchema(managerIterations
 
 export type InsertManagerIteration = z.infer<typeof insertManagerIterationSchema>;
 export type ManagerIterationRow = typeof managerIterations.$inferSelect;
+
+// ─── Debate-Research Orchestrator (additive 3rd run mode) ───────────────────────
+// All tables key on runId → pipelineRuns.id ON DELETE cascade; ownership +
+// workspace scoping inherited from the parent run (triggeredBy + workspaceId).
+
+export const orchestratorRuns = pgTable(
+  "orchestrator_runs",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    runId: varchar("run_id")
+      .notNull()
+      .references(() => pipelineRuns.id, { onDelete: "cascade" }),
+    task: text("task").notNull(),
+    needs: text("needs"),
+    workspaceId: varchar("workspace_id"),
+    status: text("status").notNull().default("planning").$type<OrchestratorRunStatus>(),
+    planApprovedAt: timestamp("plan_approved_at"),
+    planApprovedBy: text("plan_approved_by"),
+    totalTokensUsed: integer("total_tokens_used").notNull().default(0),
+    stepCount: integer("step_count").notNull().default(0),
+    output: jsonb("output"),
+    error: text("error"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    completedAt: timestamp("completed_at"),
+  },
+  (table) => ({
+    runIdUnique: unique("orchestrator_runs_run_id_unique").on(table.runId),
+    runIdIdx: index("orchestrator_runs_run_id_idx").on(table.runId),
+  }),
+);
+
+export const insertOrchestratorRunSchema = createInsertSchema(orchestratorRuns).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertOrchestratorRun = typeof orchestratorRuns.$inferInsert;
+export type OrchestratorRunRow = typeof orchestratorRuns.$inferSelect;
+
+export const orchestratorSteps = pgTable(
+  "orchestrator_steps",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    runId: varchar("run_id")
+      .notNull()
+      .references(() => pipelineRuns.id, { onDelete: "cascade" }),
+    stepIndex: integer("step_index").notNull(),
+    type: text("type").notNull().$type<OrchestratorStepType>(),
+    args: jsonb("args").notNull().$type<OrchestratorStepArgs>(),
+    status: text("status").notNull().default("pending").$type<OrchestratorStepStatus>(),
+    output: jsonb("output"),
+    tokensUsed: integer("tokens_used").notNull().default(0),
+    error: text("error"),
+    startedAt: timestamp("started_at"),
+    completedAt: timestamp("completed_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    runIdIdx: index("orchestrator_steps_run_id_idx").on(table.runId),
+    runStepUnique: unique("orchestrator_steps_run_step_unique").on(table.runId, table.stepIndex),
+  }),
+);
+
+export const insertOrchestratorStepSchema = createInsertSchema(orchestratorSteps).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertOrchestratorStep = typeof orchestratorSteps.$inferInsert;
+export type OrchestratorStepRow = typeof orchestratorSteps.$inferSelect;
+
+export const orchestratorDebates = pgTable(
+  "orchestrator_debates",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    runId: varchar("run_id")
+      .notNull()
+      .references(() => pipelineRuns.id, { onDelete: "cascade" }),
+    stepId: varchar("step_id")
+      .notNull()
+      .references(() => orchestratorSteps.id, { onDelete: "cascade" }),
+    question: text("question").notNull(),
+    rounds: jsonb("rounds").notNull().$type<DebateDetails["rounds"]>(),
+    judgeVerdict: text("judge_verdict").notNull(),
+    arbitratorVerdict: jsonb("arbitrator_verdict").$type<ArbitratorVerdict | null>(),
+    providerDiversityScore: real("provider_diversity_score"),
+    recommendation: text("recommendation"),
+    confidence: real("confidence"),
+    dissent: jsonb("dissent").$type<string[]>(),
+    degraded: boolean("degraded").notNull().default(false),
+    totalTokensUsed: integer("total_tokens_used").notNull().default(0),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    runIdIdx: index("orchestrator_debates_run_id_idx").on(table.runId),
+    stepIdIdx: index("orchestrator_debates_step_id_idx").on(table.stepId),
+  }),
+);
+
+export const insertOrchestratorDebateSchema = createInsertSchema(orchestratorDebates).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertOrchestratorDebate = typeof orchestratorDebates.$inferInsert;
+export type OrchestratorDebateRow = typeof orchestratorDebates.$inferSelect;
+
+export const orchestratorResearch = pgTable(
+  "orchestrator_research",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    runId: varchar("run_id")
+      .notNull()
+      .references(() => pipelineRuns.id, { onDelete: "cascade" }),
+    stepId: varchar("step_id")
+      .notNull()
+      .references(() => orchestratorSteps.id, { onDelete: "cascade" }),
+    query: text("query").notNull(),
+    findings: jsonb("findings").notNull().$type<ResearchFinding[]>(),
+    sourcesFetched: integer("sources_fetched").notNull().default(0),
+    sourcesSkipped: integer("sources_skipped").notNull().default(0),
+    workspaceEvidence: jsonb("workspace_evidence"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    runIdIdx: index("orchestrator_research_run_id_idx").on(table.runId),
+    stepIdIdx: index("orchestrator_research_step_id_idx").on(table.stepId),
+  }),
+);
+
+export const insertOrchestratorResearchSchema = createInsertSchema(orchestratorResearch).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertOrchestratorResearch = typeof orchestratorResearch.$inferInsert;
+export type OrchestratorResearchRow = typeof orchestratorResearch.$inferSelect;
 
 // ─── Traces (Phase 6.5) ──────────────────────────────────────────────────────
 

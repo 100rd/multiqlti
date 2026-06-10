@@ -27,6 +27,7 @@ import {
   DollarSign,
   Radio,
   Newspaper,
+  Bot,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -92,6 +93,12 @@ export default function MainLayout({ children }: MainLayoutProps) {
             icon: Newspaper,
             label: "Morning Brief",
             href: `/workspaces/${currentWorkspaceId}/morning-brief`,
+            indent: true,
+          },
+          {
+            icon: Bot,
+            label: "Orchestrator",
+            href: `/workspaces/${currentWorkspaceId}/orchestrator`,
             indent: true,
           },
           {

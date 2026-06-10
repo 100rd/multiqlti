@@ -23,6 +23,14 @@ import {
   type InsertSkill,
   type InsertManagerIteration,
   type ManagerIterationRow,
+  type InsertOrchestratorRun,
+  type OrchestratorRunRow,
+  type InsertOrchestratorStep,
+  type OrchestratorStepRow,
+  type InsertOrchestratorDebate,
+  type OrchestratorDebateRow,
+  type InsertOrchestratorResearch,
+  type OrchestratorResearchRow,
   type TriggerRow,
   type InsertTrace,
   type TraceRow,
@@ -289,6 +297,24 @@ export interface IStorage {
   ): Promise<void>;
   getManagerIterations(runId: string, offset?: number, limit?: number): Promise<ManagerIterationRow[]>;
   countManagerIterations(runId: string): Promise<number>;
+
+  // Debate-Research Orchestrator (additive 3rd run mode)
+  createOrchestratorRun(data: InsertOrchestratorRun): Promise<OrchestratorRunRow>;
+  getOrchestratorRun(runId: string): Promise<OrchestratorRunRow | undefined>;
+  updateOrchestratorRun(
+    runId: string,
+    updates: Partial<Omit<OrchestratorRunRow, "id" | "runId" | "createdAt">>,
+  ): Promise<void>;
+  createOrchestratorStep(data: InsertOrchestratorStep): Promise<OrchestratorStepRow>;
+  updateOrchestratorStep(
+    stepId: string,
+    updates: Partial<Omit<OrchestratorStepRow, "id" | "runId" | "createdAt">>,
+  ): Promise<void>;
+  getOrchestratorSteps(runId: string): Promise<OrchestratorStepRow[]>;
+  createOrchestratorDebate(data: InsertOrchestratorDebate): Promise<OrchestratorDebateRow>;
+  getOrchestratorDebates(runId: string): Promise<OrchestratorDebateRow[]>;
+  createOrchestratorResearch(data: InsertOrchestratorResearch): Promise<OrchestratorResearchRow>;
+  getOrchestratorResearch(runId: string): Promise<OrchestratorResearchRow[]>;
 
   // Triggers (Phase 6.3)
   getTriggers(pipelineId: string): Promise<TriggerRow[]>;
@@ -1482,6 +1508,132 @@ export class MemStorage implements IStorage {
     if (!this.managerIterationsMap) return 0;
     return Array.from(this.managerIterationsMap.values()).filter((r) => r.runId === runId)
       .length;
+  }
+
+  // ─── Debate-Research Orchestrator ───────────────────────────────────────────
+
+  private orchestratorRunsMap: Map<string, OrchestratorRunRow> = new Map();
+  private orchestratorStepsMap: Map<string, OrchestratorStepRow> = new Map();
+  private orchestratorDebatesMap: Map<string, OrchestratorDebateRow> = new Map();
+  private orchestratorResearchMap: Map<string, OrchestratorResearchRow> = new Map();
+
+  async createOrchestratorRun(data: InsertOrchestratorRun): Promise<OrchestratorRunRow> {
+    const row: OrchestratorRunRow = {
+      id: crypto.randomUUID(),
+      runId: data.runId,
+      task: data.task,
+      needs: data.needs ?? null,
+      workspaceId: data.workspaceId ?? null,
+      status: data.status ?? "planning",
+      planApprovedAt: data.planApprovedAt ?? null,
+      planApprovedBy: data.planApprovedBy ?? null,
+      totalTokensUsed: data.totalTokensUsed ?? 0,
+      stepCount: data.stepCount ?? 0,
+      output: data.output ?? null,
+      error: data.error ?? null,
+      createdAt: new Date(),
+      completedAt: data.completedAt ?? null,
+    };
+    this.orchestratorRunsMap.set(row.runId, row);
+    return row;
+  }
+
+  async getOrchestratorRun(runId: string): Promise<OrchestratorRunRow | undefined> {
+    return this.orchestratorRunsMap.get(runId);
+  }
+
+  async updateOrchestratorRun(
+    runId: string,
+    updates: Partial<Omit<OrchestratorRunRow, "id" | "runId" | "createdAt">>,
+  ): Promise<void> {
+    const existing = this.orchestratorRunsMap.get(runId);
+    if (!existing) return;
+    this.orchestratorRunsMap.set(runId, { ...existing, ...updates });
+  }
+
+  async createOrchestratorStep(data: InsertOrchestratorStep): Promise<OrchestratorStepRow> {
+    const row: OrchestratorStepRow = {
+      id: crypto.randomUUID(),
+      runId: data.runId,
+      stepIndex: data.stepIndex,
+      type: data.type,
+      args: data.args,
+      status: data.status ?? "pending",
+      output: data.output ?? null,
+      tokensUsed: data.tokensUsed ?? 0,
+      error: data.error ?? null,
+      startedAt: data.startedAt ?? null,
+      completedAt: data.completedAt ?? null,
+      createdAt: new Date(),
+    };
+    this.orchestratorStepsMap.set(row.id, row);
+    return row;
+  }
+
+  async updateOrchestratorStep(
+    stepId: string,
+    updates: Partial<Omit<OrchestratorStepRow, "id" | "runId" | "createdAt">>,
+  ): Promise<void> {
+    const existing = this.orchestratorStepsMap.get(stepId);
+    if (!existing) return;
+    this.orchestratorStepsMap.set(stepId, { ...existing, ...updates });
+  }
+
+  async getOrchestratorSteps(runId: string): Promise<OrchestratorStepRow[]> {
+    return Array.from(this.orchestratorStepsMap.values())
+      .filter((r) => r.runId === runId)
+      .sort((a, b) => a.stepIndex - b.stepIndex);
+  }
+
+  async createOrchestratorDebate(data: InsertOrchestratorDebate): Promise<OrchestratorDebateRow> {
+    const row: OrchestratorDebateRow = {
+      id: crypto.randomUUID(),
+      runId: data.runId,
+      stepId: data.stepId,
+      question: data.question,
+      rounds: data.rounds,
+      judgeVerdict: data.judgeVerdict,
+      arbitratorVerdict: data.arbitratorVerdict ?? null,
+      providerDiversityScore: data.providerDiversityScore ?? null,
+      recommendation: data.recommendation ?? null,
+      confidence: data.confidence ?? null,
+      dissent: data.dissent ?? null,
+      degraded: data.degraded ?? false,
+      totalTokensUsed: data.totalTokensUsed ?? 0,
+      createdAt: new Date(),
+    };
+    this.orchestratorDebatesMap.set(row.id, row);
+    return row;
+  }
+
+  async getOrchestratorDebates(runId: string): Promise<OrchestratorDebateRow[]> {
+    return Array.from(this.orchestratorDebatesMap.values())
+      .filter((r) => r.runId === runId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  }
+
+  async createOrchestratorResearch(
+    data: InsertOrchestratorResearch,
+  ): Promise<OrchestratorResearchRow> {
+    const row: OrchestratorResearchRow = {
+      id: crypto.randomUUID(),
+      runId: data.runId,
+      stepId: data.stepId,
+      query: data.query,
+      findings: data.findings,
+      sourcesFetched: data.sourcesFetched ?? 0,
+      sourcesSkipped: data.sourcesSkipped ?? 0,
+      workspaceEvidence: data.workspaceEvidence ?? null,
+      createdAt: new Date(),
+    };
+    this.orchestratorResearchMap.set(row.id, row);
+    return row;
+  }
+
+  async getOrchestratorResearch(runId: string): Promise<OrchestratorResearchRow[]> {
+    return Array.from(this.orchestratorResearchMap.values())
+      .filter((r) => r.runId === runId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }
 
   // ─── Triggers (Phase 6.3) ─────────────────────────────────────────────────

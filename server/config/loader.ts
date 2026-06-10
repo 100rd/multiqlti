@@ -146,6 +146,19 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { envKey: "MULTI_PIPELINE_STREAMING_OVERALL_TIMEOUT_MS",   configPath: ["pipeline", "streaming", "overallTimeoutMs"], kind: "number"  },
   { envKey: "MULTI_PIPELINE_STREAMING_MAX_OUTPUT_BYTES",     configPath: ["pipeline", "streaming", "maxOutputBytes"],   kind: "number"  },
   { envKey: "MULTI_PIPELINE_STREAMING_WS_PROGRESS_FLUSH_MS", configPath: ["pipeline", "streaming", "wsProgressFlushMs"],kind: "number"  },
+
+  // Debate-research orchestrator (additive 3rd run mode).
+  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_ENABLED",                  configPath: ["pipeline", "orchestrator", "enabled"],                kind: "boolean" },
+  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_MAX_STEPS",                configPath: ["pipeline", "orchestrator", "maxSteps"],               kind: "number"  },
+  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_MAX_DEBATE_ROUNDS",        configPath: ["pipeline", "orchestrator", "maxDebateRounds"],        kind: "number"  },
+  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_MAX_RESEARCH_SOURCES",     configPath: ["pipeline", "orchestrator", "maxResearchSources"],     kind: "number"  },
+  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_MAX_RESEARCH_CONCURRENCY", configPath: ["pipeline", "orchestrator", "maxResearchConcurrency"], kind: "number"  },
+  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_MAX_RESEARCH_SOURCE_BYTES",configPath: ["pipeline", "orchestrator", "maxResearchSourceBytes"], kind: "number"  },
+  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_MAX_RESEARCH_TOTAL_BYTES", configPath: ["pipeline", "orchestrator", "maxResearchTotalBytes"],  kind: "number"  },
+  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_MAX_TOTAL_TOKENS",         configPath: ["pipeline", "orchestrator", "maxTotalTokens"],         kind: "number"  },
+  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_OVERALL_TIMEOUT_MS",       configPath: ["pipeline", "orchestrator", "overallTimeoutMs"],       kind: "number"  },
+  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_STEP_OUTPUT_MAX_BYTES",    configPath: ["pipeline", "orchestrator", "stepOutputMaxBytes"],     kind: "number"  },
+  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_GEMINI_TURN_TIMEOUT_MS",   configPath: ["pipeline", "orchestrator", "geminiTurnTimeoutMs"],    kind: "number"  },
 ];
 
 /**

@@ -532,6 +532,12 @@ export interface GatewayRequest {
   /** Per-request timeout override in milliseconds */
   timeoutMs?: number;
   /**
+   * Abort signal forwarded to provider.complete options (Security C1). When it
+   * fires, the provider MUST terminate the in-flight request/child. The gateway
+   * forwards BOTH this and timeoutMs into provider.complete.
+   */
+  signal?: AbortSignal;
+  /**
    * Explicit provider key (e.g. "antigravity", "anthropic"). When set, it wins
    * over the DB model lookup — used by live-discovered models that are not
    * persisted in the `models` table.
@@ -3005,3 +3011,45 @@ export interface CRDTPeerEntry {
 
 /** Response from GET /api/sessions/:id/crdt-peers */
 export type CRDTPeersResponse = CRDTPeerEntry[];
+
+// ─── Debate-Research Orchestrator (additive 3rd run mode) ───────────────────────
+
+/** The typed step kinds Opus may place in an orchestrator plan. */
+export type OrchestratorStepType =
+  | "research"
+  | "analyze-code"
+  | "debate"
+  | "ground"
+  | "synthesize";
+
+/** Lifecycle status of an orchestrator run. */
+export type OrchestratorRunStatus =
+  | "planning"
+  | "awaiting_plan_approval"
+  | "executing"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+/** Lifecycle status of a single orchestrator step. */
+export type OrchestratorStepStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "skipped";
+
+/** Per-step arguments. Discriminated on `type`; validated by plan-schema.ts. */
+export type OrchestratorStepArgs =
+  | { type: "research"; query: string; candidateUrls: string[] }
+  | { type: "analyze-code"; query: string; paths?: string[] }
+  | { type: "debate"; question: string; rounds?: number }
+  | { type: "ground"; query: string }
+  | { type: "synthesize"; instruction?: string };
+
+/** A single cited research finding. */
+export interface ResearchFinding {
+  claim: string;
+  sourceUrl: string;
+  snippet: string;
+}
