@@ -62,6 +62,7 @@ export default defineConfig({
         "server/knowledge/safe-fetch.ts",
         "server/knowledge/practice-card-service.ts",
         "server/routes/practice-cards.ts",
+        "server/routes/knowledge.ts",
         "server/knowledge/diff-engine.ts",
         "server/knowledge/compliance-mapper.ts",
         "server/knowledge/refresh-scheduler.ts",

@@ -170,7 +170,7 @@ export async function registerRoutes(
   registerCostRoutes(app, storage);
   registerWorkspaceToolRoutes(app, storage);
   registerMcpRoutes(app as unknown as Router, storage, controller);
-  registerKnowledgeRoutes(app as unknown as Router);  // Bug #309: was imported but not called
+  registerKnowledgeRoutes(app as unknown as Router, storage);  // Bug #309: was imported but not called; #358: workspace-scoped
   const knowledgeRefreshScheduler = initRefreshScheduler(storage);
   registerPracticeCardRoutes(
     app as unknown as Router,
