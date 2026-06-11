@@ -15,7 +15,8 @@
  *   - unresolved-at-cap (never auto-approve on exhaustion);
  *   - dismissal-without-justification keeps the issue OPEN (fail-closed);
  *   - poisoned decisionText (forged sentinel / END delimiter) leaves the
- *     structural control unmoved.
+ *     structural control unmoved;
+ *   - wall-clock timeout backstop on a round boundary (no TokenCeilingError throw).
  */
 import { describe, it, expect } from "vitest";
 import { MemStorage } from "../../../server/storage.js";
@@ -353,5 +354,41 @@ describe("ConsensusEngine — poisoned decisionText (structural control unmoved)
     });
     expect(outcome.status).toBe("unresolved");
     expect(outcome.finalVerdict).toBeNull();
+  });
+});
+
+describe("ConsensusEngine — wall-clock timeout stop on a round boundary (no throw)", () => {
+  // The overall-timeout backstop is decideStop precedence step 3 — above the
+  // min-rounds floor and the stability stop. It fires on the round boundary
+  // WITHOUT any TokenCeilingError throw (TokenBudget is nowhere near its ceiling).
+  // A negative overallTimeoutMs makes `elapsedMs (>=0) > overallTimeoutMs` hold
+  // deterministically regardless of execution speed — exercising the engine's
+  // `reason:"timeout"` → unresolved branch (never auto-approve; no partial verdict).
+  it('settles unresolved with stopReason "timeout" and finalVerdict null (no TokenCeilingError)', async () => {
+    const storage = new MemStorage();
+    const runId = await seedRun(storage);
+    const hooks: ScriptHooks = {
+      trace: [],
+      // All four structural conditions WOULD otherwise resolve — proving the
+      // timeout backstop pre-empts a would-be APPROVE rather than promoting it.
+      voterVerdict: () => "APPROVE",
+      blind: "APPROVE",
+      adjudication: () => ({ verdict: "APPROVE" }),
+    };
+    const budget = new TokenBudget(1_000_000);
+    const outcome = await makeEngine(makeScriptedGateway(hooks), storage).run({
+      runId,
+      decisionText: "d",
+      caps: caps({ minRounds: 2, maxRounds: 3, overallTimeoutMs: -1 }),
+      budget,
+    });
+
+    expect(outcome.status).toBe("unresolved");
+    expect(outcome.stopReason).toBe("timeout");
+    expect(outcome.confidence).toBe("low");
+    expect(outcome.finalVerdict).toBeNull();
+    expect(outcome.roundsRun).toBe(1); // step-3 backstop fires above the min-rounds floor
+    // No TokenCeilingError path was taken — the budget barely moved.
+    expect(budget.total).toBeLessThan(1_000_000);
   });
 });
