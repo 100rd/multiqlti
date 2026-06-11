@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server, IncomingMessage } from "http";
-import type { WsEvent } from "@shared/types";
+import type { WsEvent, User } from "@shared/types";
+import type { IStorage } from "../storage";
 import { authService } from "../auth/service";
 
 function extractTokenFromRequest(req: IncomingMessage): string | null {
@@ -14,15 +15,26 @@ function extractTokenFromRequest(req: IncomingMessage): string | null {
   return null;
 }
 
+/** A socket that carries its authenticated user (set on connection). */
+type AuthedSocket = WebSocket & { user?: User };
+
 export class WsManager {
   private wss: WebSocketServer;
   private subscriptions: Map<string, Set<WebSocket>>;
+  private storage?: IStorage;
 
-  constructor(httpServer: Server) {
+  /**
+   * @param storage Optional storage used to enforce per-run ownership on
+   *   `subscribe` messages (IDOR hardening). When omitted (e.g. some unit
+   *   tests), the low-level subscribe registry still works but the ownership
+   *   gate cannot resolve a run → it fails closed (denies).
+   */
+  constructor(httpServer: Server, storage?: IStorage) {
     this.wss = new WebSocketServer({ server: httpServer, path: "/ws" });
     this.subscriptions = new Map();
+    this.storage = storage;
 
-    this.wss.on("connection", async (ws, req) => {
+    this.wss.on("connection", async (ws: AuthedSocket, req) => {
       const token = extractTokenFromRequest(req);
       if (!token) {
         ws.close(4001, "Unauthorized");
@@ -34,22 +46,27 @@ export class WsManager {
         ws.close(4001, "Unauthorized");
         return;
       }
+      // Pin the authed user to the socket so subscribe can authorize per-run.
+      ws.user = user;
 
       ws.on("message", (data) => {
+        let msg: { type: string; runId?: string };
         try {
-          const msg = JSON.parse(data.toString()) as {
-            type: string;
-            runId?: string;
-          };
-
-          if (msg.type === "subscribe" && msg.runId) {
-            this.subscribe(ws, msg.runId);
-          }
-          if (msg.type === "unsubscribe" && msg.runId) {
-            this.unsubscribe(ws, msg.runId);
-          }
+          msg = JSON.parse(data.toString()) as { type: string; runId?: string };
         } catch {
           // ignore malformed messages
+          return;
+        }
+
+        if (msg.type === "subscribe" && msg.runId) {
+          // IDOR hardening: a socket may only subscribe to a run it owns (or
+          // any run if admin). Async ownership check; never throws to the loop.
+          void this.authorizeAndSubscribe(ws, ws.user, msg.runId).catch(() => {
+            /* fail closed — never crash the socket on an authz error */
+          });
+        }
+        if (msg.type === "unsubscribe" && msg.runId) {
+          this.unsubscribe(ws, msg.runId);
         }
       });
 
@@ -57,6 +74,31 @@ export class WsManager {
         this.removeClient(ws);
       });
     });
+  }
+
+  /**
+   * Ownership-gated subscribe (the only path the live socket uses). Resolves the
+   * run via pipeline_runs.triggeredBy — the single ownership source for ALL run
+   * modes — and registers the socket only when the user is the owner or an
+   * admin. Ownerless runs are denied to non-admins. Returns whether it
+   * subscribed. Fails closed when storage/user are unavailable.
+   */
+  async authorizeAndSubscribe(
+    ws: WebSocket,
+    user: User | undefined,
+    runId: string,
+  ): Promise<boolean> {
+    if (!user?.id || !this.storage) return false;
+
+    const run = await this.storage.getPipelineRun(runId);
+    if (!run) return false;
+
+    const isAdmin = user.role === "admin";
+    const isOwner = run.triggeredBy != null && run.triggeredBy === user.id;
+    if (!isAdmin && !isOwner) return false;
+
+    this.subscribe(ws, runId);
+    return true;
   }
 
   subscribe(ws: WebSocket, runId: string): void {

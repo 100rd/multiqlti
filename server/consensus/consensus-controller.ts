@@ -146,6 +146,14 @@ export class ConsensusController {
   cancel(runId: string): void {
     this.activeRuns.get(runId)?.abort();
   }
+
+  /**
+   * Read-only snapshot of the active consensus run ids. Used by the
+   * /api/activity observability lens. Does not expose the AbortControllers.
+   */
+  getActiveRunIds(): string[] {
+    return [...this.activeRuns.keys()];
+  }
 }
 
 /**

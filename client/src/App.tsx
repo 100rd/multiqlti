@@ -44,6 +44,7 @@ import TaskGroupTrace from "@/pages/TaskGroupTrace";
 import { WorkspaceTracesPage, WorkspaceTraceDetailPage } from "@/pages/WorkspaceTraces";
 import Costs from "@/pages/Costs";
 import ConfigSync from "@/pages/ConfigSync";
+import Activity from "@/pages/Activity";
 
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
@@ -150,6 +151,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/privacy" component={() => (
           <ErrorBoundary><Privacy /></ErrorBoundary>
+        )} />
+        <Route path="/activity" component={() => (
+          <ErrorBoundary><Activity /></ErrorBoundary>
         )} />
         <Route path="/stats" component={() => (
           <ErrorBoundary><Statistics /></ErrorBoundary>

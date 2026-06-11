@@ -97,6 +97,11 @@ export default defineConfig({
         "server/consensus/consensus-engine.ts",
         "server/consensus/consensus-controller.ts",
         "server/routes/consensus.ts",
+        // live-run-activity-ui (new modules ≥80%).
+        "server/routes/activity.ts",
+        "server/routes/activity-model-map.ts",
+        "server/routes/authorize-run.ts",
+        "server/ws/manager.ts",
       ],
       exclude: ["server/**/*.test.ts", "server/index.ts", "server/vite.ts"],
     },

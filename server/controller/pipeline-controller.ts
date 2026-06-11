@@ -268,7 +268,7 @@ export class PipelineController {
           ? (await this.storage.getWorkspace(runWorkspaceId))?.path ?? null
           : null;
 
-        const streamingBlock = this.buildStreamingBlock(run.id, stageIndex, dagStage.teamId, stageExec.id, signal);
+        const streamingBlock = this.buildStreamingBlock(run.id, stageIndex, dagStage.teamId, dagStage.modelSlug, stageExec.id, signal);
         stageCoalescer = streamingBlock.coalescer;
 
         const context = {
@@ -691,7 +691,7 @@ export class PipelineController {
         // Apply skill settings (if a skill is assigned to this stage)
         const resolvedStage = await this.applySkill(stage);
 
-        const streamingBlock = this.buildStreamingBlock(run.id, i, stage.teamId, stageExec.id, signal);
+        const streamingBlock = this.buildStreamingBlock(run.id, i, stage.teamId, resolvedStage.modelSlug, stageExec.id, signal);
         stageCoalescer = streamingBlock.coalescer;
 
         const context = {
@@ -1378,6 +1378,15 @@ export class PipelineController {
     return this.activeRuns.has(runId);
   }
 
+  /**
+   * Read-only snapshot of the active run ids (pipeline + manager + orchestrator
+   * all register here). Used by the /api/activity observability lens. Does not
+   * mutate or expose the AbortControllers.
+   */
+  getActiveRunIds(): string[] {
+    return [...this.activeRuns.keys()];
+  }
+
   private broadcast(runId: string, event: WsEvent): void {
     this.wsManager.broadcastToRun(runId, event);
   }
@@ -1398,6 +1407,7 @@ export class PipelineController {
     runId: string,
     stageIndex: number,
     teamId: string,
+    modelSlug: string,
     stageExecutionId: string | undefined,
     signal: AbortSignal,
   ): { streaming?: StreamingStageOptions; coalescer?: StageProgressCoalescer } {
@@ -1414,7 +1424,7 @@ export class PipelineController {
         type: "stage:progress",
         runId,
         stageExecutionId,
-        payload: { stageIndex, teamId, deltaText, cumulativeChars },
+        payload: { stageIndex, teamId, modelSlug, deltaText, cumulativeChars },
         timestamp: new Date().toISOString(),
       });
     });

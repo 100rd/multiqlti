@@ -22,6 +22,7 @@ import { validateBody } from "../middleware/validate.js";
 import { checkManagerRunRateLimit } from "./runs.js";
 import { configLoader } from "../config/loader.js";
 import { StepSchema } from "../orchestrator/plan-schema.js";
+import { authorizeRun as sharedAuthorizeRun } from "./authorize-run.js";
 
 const CapsSchema = z
   .object({
@@ -46,38 +47,18 @@ const ApprovePlanSchema = z.object({
 });
 
 /**
- * Resolve auth for an orchestrator run. Returns the run owner on success, or
- * sends the correct status (401/404/403) and returns null. STRICTER than the
- * manager idiom: triggeredBy == null is DENIED (unless admin).
+ * Resolve auth for an orchestrator run via the shared helper, also requiring the
+ * orchestrator_runs row to exist (404 otherwise). Behavior-preserving wrapper.
  */
-async function authorizeRun(
+function authorizeRun(
   req: Request,
   res: Response,
   storage: IStorage,
   runId: string,
 ): Promise<{ ownerId: string | null } | null> {
-  // 401 first — unauth takes precedence over existence.
-  if (!req.user?.id) {
-    res.status(401).json({ error: "Authentication required" });
-    return null;
-  }
-
-  const run = await storage.getPipelineRun(runId);
-  const orch = run ? await storage.getOrchestratorRun(runId) : undefined;
-  if (!run || !orch) {
-    res.status(404).json({ error: "Run not found" });
-    return null;
-  }
-
-  const isAdmin = req.user.role === "admin";
-  const isOwner = run.triggeredBy != null && run.triggeredBy === req.user.id;
-  // Deny when ownerless (stricter than manager) unless admin.
-  if (!isAdmin && !isOwner) {
-    res.status(403).json({ error: "Forbidden" });
-    return null;
-  }
-
-  return { ownerId: run.triggeredBy };
+  return sharedAuthorizeRun(req, res, storage, runId, {
+    requireModeRow: (s, id) => s.getOrchestratorRun(id),
+  });
 }
 
 export function registerOrchestratorRoutes(

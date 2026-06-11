@@ -22,7 +22,7 @@
 import type { IStorage } from "../storage";
 import type { WsManager } from "../ws/manager";
 import type { Gateway } from "../gateway/index";
-import type { OrchestratorStepArgs, ProviderMessage } from "@shared/types";
+import type { OrchestratorStepArgs, OrchestratorStepStatus, OrchestratorStepType, ProviderMessage } from "@shared/types";
 import { isAbortError } from "../controller/stage-progress.js";
 import { scrubAndTruncate, scrubSecrets } from "../gateway/secret-scrub.js";
 import { parsePlan } from "./plan-schema.js";
@@ -219,7 +219,7 @@ export class OrchestratorAgent {
 
   private async runStep(
     runId: string,
-    step: { id: string; type: string; args: OrchestratorStepArgs },
+    step: { id: string; stepIndex: number; type: OrchestratorStepType; args: OrchestratorStepArgs },
     caps: OrchestratorCaps,
     budget: TokenBudget,
     signal: AbortSignal,
@@ -228,6 +228,9 @@ export class OrchestratorAgent {
       status: "running",
       startedAt: new Date(),
     });
+    // O-1: surface a lightweight, metadata-only per-step event for the Activity
+    // lens (the only orchestrator WS events otherwise are run-lifecycle).
+    this.broadcastStep(runId, step.stepIndex, step.type, "running");
 
     const ctx: StepContext = { runId, stepId: step.id, caps, budget, signal };
 
@@ -241,14 +244,32 @@ export class OrchestratorAgent {
         completedAt: new Date(),
       });
       await this.deps.storage.updateOrchestratorRun(runId, { totalTokensUsed: budget.total });
+      this.broadcastStep(runId, step.stepIndex, step.type, "completed");
     } catch (err) {
       await this.deps.storage.updateOrchestratorStep(step.id, {
         status: "failed",
         error: scrubAndTruncate(String(err)),
         completedAt: new Date(),
       });
+      this.broadcastStep(runId, step.stepIndex, step.type, "failed");
       throw err;
     }
+  }
+
+  /**
+   * O-1: emit the metadata-only `orchestrator:step` event. The model is the
+   * fixed slug for the step's type (debate → proposer; everything else →
+   * synthesize-class). Never carries step args/output.
+   */
+  private broadcastStep(
+    runId: string,
+    stepIndex: number,
+    type: OrchestratorStepType,
+    status: OrchestratorStepStatus,
+  ): void {
+    const modelSlug =
+      type === "debate" ? this.deps.models.proposerModelSlug : this.deps.models.synthesizeModelSlug;
+    this.broadcast(runId, "orchestrator:step", { stepIndex, type, status, modelSlug });
   }
 
   private dispatch(args: OrchestratorStepArgs, ctx: StepContext): Promise<StepResult> {
