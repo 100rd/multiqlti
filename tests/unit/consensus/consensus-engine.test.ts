@@ -16,7 +16,10 @@
  *   - dismissal-without-justification keeps the issue OPEN (fail-closed);
  *   - poisoned decisionText (forged sentinel / END delimiter) leaves the
  *     structural control unmoved;
- *   - wall-clock timeout backstop on a round boundary (no TokenCeilingError throw).
+ *   - wall-clock timeout backstop on a round boundary (no TokenCeilingError throw);
+ *   - issue→ledger→adjudication-close happy path: voters raise keyed issues round 1,
+ *     adjudication FIXES them by key + round-2 external APPROVE ⇒ RESOLVED (proves
+ *     the previously-stuck `unresolved` drift path now completes).
  */
 import { describe, it, expect } from "vitest";
 import { MemStorage } from "../../../server/storage.js";
@@ -329,6 +332,76 @@ describe("ConsensusEngine — dismissal fail-closed + unresolved-at-cap", () => 
     expect(outcome.roundsRun).toBe(3);
     expect(outcome.stopReason).toBe("hard-cap");
     expect(outcome.finalVerdict).toBeNull();
+  });
+});
+
+describe("ConsensusEngine — issue→ledger→adjudication-close happy path (drift fix)", () => {
+  // Proves the previously-stuck path now completes: round 1 voters return
+  // REQUEST_CHANGES with a keyed critical_issue (wrapped in markdown fences, the
+  // real gemini shape). The engine folds those into the ledger keyed by `key`;
+  // round-1 adjudication FIXES that key (closing the ledger row) and round-2
+  // voters APPROVE → all 4 conditions hold above the min-rounds floor → RESOLVED.
+  it("voters raise a fenced keyed issue round 1; adjudication fixes it by key + round-2 APPROVE → RESOLVED", async () => {
+    const storage = new MemStorage();
+    const runId = await seedRun(storage);
+
+    let voterTurn = 0; // increments once per voter call across the run
+    let adjTurn = 0;
+    const ROSTER_N = 5;
+
+    const gateway = {
+      async complete(req: GatewayRequest): Promise<GatewayResponse> {
+        if (req.provider === "antigravity") {
+          voterTurn += 1;
+          const isRound1 = voterTurn <= ROSTER_N;
+          // Round 1: REQUEST_CHANGES with a keyed issue, fence/prose-wrapped (the
+          // real gemini shape the old extractor fail-closed on). Round 2: APPROVE.
+          const content = isRound1
+            ? "Reviewing the `{ retries: 3 }` block:\n```json\n" +
+              '{"verdict":"REQUEST_CHANGES","critical_issues":[{"key":"missing-rollback","summary":"no rollback path"}]}' +
+              "\n```"
+            : '{"verdict":"APPROVE","critical_issues":[]}';
+          return { content, tokensUsed: 1, modelSlug: req.modelSlug, finishReason: "stop" };
+        }
+        const sys = req.messages.find((m) => m.role === "system")?.content ?? "";
+        if (sys.includes("BEFORE seeing any other reviewer")) {
+          return { content: verdictJson("APPROVE"), tokensUsed: 1, modelSlug: CLAUDE, finishReason: "stop" };
+        }
+        adjTurn += 1;
+        // Round 1 adjudication: FIX the issue by its stable key + revise the plan
+        // (closing the ledger row). Round 2: APPROVE with nothing open.
+        const content =
+          adjTurn === 1
+            ? JSON.stringify({
+                verdict: "REQUEST_CHANGES",
+                fixed: ["missing-rollback"],
+                revised_plan: "added a rollback step",
+              })
+            : JSON.stringify({ verdict: "APPROVE", fixed: [], dismissals: [] });
+        return { content, tokensUsed: 1, modelSlug: CLAUDE, finishReason: "stop" };
+      },
+    } as unknown as Gateway;
+
+    const engine = makeEngine(gateway, storage);
+    const outcome = await engine.run({
+      runId,
+      decisionText: "d",
+      caps: caps({ minRounds: 2, maxRounds: 5 }),
+      budget: new TokenBudget(1_000_000),
+    });
+
+    // The stuck path now completes: the keyed issue was raised, closed by key,
+    // and round-2 external APPROVE + Claude APPROVE satisfied the 4-condition AND.
+    expect(outcome.status).toBe("resolved");
+    expect(outcome.finalVerdict).toBe("APPROVE");
+    expect(outcome.roundsRun).toBe(2);
+
+    // The ledger row was raised under the voter `key` and ended CLOSED/fixed.
+    const issues = await storage.getConsensusIssues(runId);
+    const row = issues.find((i) => i.issueKey === "missing-rollback");
+    expect(row).toBeDefined();
+    expect(row?.status).toBe("closed");
+    expect(row?.resolution).toBe("fixed");
   });
 });
 

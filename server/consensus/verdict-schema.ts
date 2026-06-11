@@ -10,6 +10,14 @@
  *   - the stability marker (debate) fails OPEN — but that lives in
  *     stability-judge.ts, not here.
  *
+ * JSON extraction is fence/prose TOLERANT (mirrors orchestrator/plan-schema.ts
+ * `extractJsonPayload`): real gemini/agy wraps the JSON object in ```json fences
+ * and/or narrates a `{ ... }` snippet in prose BEFORE the verdict. We strip an
+ * outer code fence first, then slice the outermost `{`..`}`, then fall back to the
+ * first balanced object. This is extraction tolerance ONLY — the zod `.strict()`
+ * parse + the asymmetric fail-CLOSED direction are unchanged: a genuinely
+ * malformed / wrong-shape payload still throws/fails → REQUEST_CHANGES.
+ *
  * Adjudication dismissals (MF-3): closing an OPEN critical issue as "dismissed"
  * REQUIRES a non-empty, trimmed `dismissal_justification`. The zod `.refine`
  * rejects a blank/whitespace justification at the parse boundary; the ledger
@@ -112,10 +120,35 @@ export type ParsedAdjudication =
   | { ok: false; verdict: "REQUEST_CHANGES"; parseError: VerdictParseError };
 
 /**
- * Locate the first balanced JSON object in free text (fence/prose tolerant).
- * String-literal aware. Returns the object substring or null.
+ * Strip a leading/wrapping markdown code fence (```json ... ``` or ``` ... ```),
+ * returning the fenced body trimmed, or the trimmed input when there is no fence.
+ * Mirrors the fence step of orchestrator/plan-schema.ts `extractJsonPayload`.
  */
-function extractJsonObject(text: string): string | null {
+function stripFence(text: string): string {
+  const s = text.trim();
+  const fence = s.match(/```(?:json)?\s*\n?([\s\S]*?)```/i);
+  return fence && fence[1] ? fence[1].trim() : s;
+}
+
+/**
+ * Narrow to the OUTERMOST `{`..`}` of `s`. Mirrors the brace step of
+ * `extractJsonPayload` so a body preceded by a narrated `{ ... }` prose snippet
+ * still yields the real verdict object. Returns the candidate or null.
+ */
+function outermostBraceCandidate(s: string): string | null {
+  const first = s.indexOf("{");
+  const last = s.lastIndexOf("}");
+  if (first === -1 || last <= first) return null;
+  return s.slice(first, last + 1);
+}
+
+/**
+ * Locate the FIRST balanced JSON object in free text (string-literal aware).
+ * Fallback for when the outermost-brace candidate fails to JSON.parse (e.g. a
+ * complete object followed by trailing prose braces). Returns the object
+ * substring or null.
+ */
+function firstBalancedObject(text: string): string | null {
   const open = text.indexOf("{");
   if (open === -1) return null;
   let depth = 0;
@@ -139,14 +172,28 @@ function extractJsonObject(text: string): string | null {
   return null;
 }
 
+/**
+ * Parse the first JSON object out of free text. Fence/prose TOLERANT but fail-
+ * CLOSED: tries the fence-stripped outermost-brace candidate first, then the
+ * first balanced object (post-fence-strip, then raw). A candidate that does not
+ * JSON.parse is rejected → { ok: false } (the caller maps that to REQUEST_CHANGES).
+ */
 function parseJsonObject(text: string): { ok: true; value: unknown } | { ok: false } {
-  const json = extractJsonObject(text);
-  if (json === null) return { ok: false };
-  try {
-    return { ok: true, value: JSON.parse(json) };
-  } catch {
-    return { ok: false };
+  const body = stripFence(text);
+  const candidates = [
+    outermostBraceCandidate(body),
+    firstBalancedObject(body),
+    firstBalancedObject(text),
+  ];
+  for (const json of candidates) {
+    if (json === null) continue;
+    try {
+      return { ok: true, value: JSON.parse(json) };
+    } catch {
+      // Try the next, more conservative candidate before giving up (fail-closed).
+    }
   }
+  return { ok: false };
 }
 
 /**

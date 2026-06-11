@@ -15,6 +15,7 @@ import {
   ConsensusVoters,
   VOTER_ROSTER,
   resolveVoterSlugs,
+  buildVoterMessages,
 } from "../../../server/consensus/consensus-voters.js";
 import { TokenBudget } from "../../../server/orchestrator/orchestrator-config.js";
 import type { GatewayRequest, GatewayResponse } from "../../../shared/types.js";
@@ -61,6 +62,42 @@ describe("resolveVoterSlugs — bounded to min(count, roster∩live)", () => {
 
   it("empty live roster → empty fan-out (no Claude/mock substitution)", () => {
     expect(resolveVoterSlugs(7, [])).toEqual([]);
+  });
+});
+
+describe("buildVoterMessages — explicit + exemplified structured-issue prompt", () => {
+  const messages = buildVoterMessages("FRAMED", "PLAN");
+  const system = messages.find((m) => m.role === "system")?.content ?? "";
+
+  it("instructs the EXACT JSON shape including verdict + critical_issues[{key,summary}]", () => {
+    expect(system).toContain('"verdict"');
+    expect(system).toContain('"critical_issues"');
+    expect(system).toContain('"key"');
+    expect(system).toContain('"summary"');
+    expect(system).toContain("APPROVE");
+    expect(system).toContain("REQUEST_CHANGES");
+    expect(system).toContain("REJECT");
+  });
+
+  it("mandates >=1 critical_issue with a stable key for REQUEST_CHANGES or REJECT", () => {
+    const lc = system.toLowerCase();
+    expect(lc).toMatch(/request_changes|reject/i);
+    expect(lc).toMatch(/at least one|>=\s*1|one\s+critical|must (?:include|raise)/);
+    expect(lc).toContain("stable");
+  });
+
+  it("instructs APPROVE → empty critical_issues", () => {
+    expect(system.toLowerCase()).toMatch(/approve[^.]*empty|empty[^.]*approve/);
+  });
+
+  it("includes a concrete worked example object", () => {
+    expect(system).toMatch(/example/i);
+    // The example carries a kebab-case stable key sample.
+    expect(system).toMatch(/[a-z]+-[a-z]/);
+  });
+
+  it("instructs the voter to reuse the SAME key for the same concern across rounds", () => {
+    expect(system.toLowerCase()).toMatch(/same (?:key|concern|issue)|reuse|across rounds/);
   });
 });
 
@@ -133,6 +170,36 @@ describe("ConsensusVoters.fanOut — fail-CLOSED (T-CONS-FANOUT-3)", () => {
     const garbage = results[0];
     expect(garbage.verdict).toBe("REQUEST_CHANGES");
     expect(garbage.parseError).toBeDefined();
+    // fail-closed must NOT fabricate issues.
+    expect(garbage.criticalIssues).toEqual([]);
+  });
+
+  it("a REQUEST_CHANGES voter wrapped in markdown fences yields its parsed critical_issues (the live drift fix)", async () => {
+    const fenced =
+      "Reviewing the `{ timeout: 30 }` block:\n```json\n" +
+      '{"verdict":"REQUEST_CHANGES","critical_issues":[{"key":"unbounded-retry","summary":"retry has no ceiling"}]}' +
+      "\n```";
+    const { gateway } = makeGateway(() => ({
+      content: fenced,
+      tokensUsed: 7,
+      modelSlug: "x",
+      finishReason: "stop",
+    }));
+    const voters = new ConsensusVoters(gateway, liveAll);
+    const results = await voters.fanOut({
+      framedDecision: "d",
+      planRevision: "p",
+      voterCount: 5,
+      budget: new TokenBudget(1_000_000),
+      voterTimeoutMs: 90_000,
+    });
+    expect(results).toHaveLength(5);
+    for (const r of results) {
+      expect(r.verdict).toBe("REQUEST_CHANGES");
+      expect(r.parseError).toBeUndefined();
+      expect(r.criticalIssues).toHaveLength(1);
+      expect(r.criticalIssues[0].key).toBe("unbounded-retry");
+    }
   });
 
   it("a rejected voter promise does NOT sink the round (recorded REQUEST_CHANGES)", async () => {
