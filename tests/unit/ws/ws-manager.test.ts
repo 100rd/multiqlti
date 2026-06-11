@@ -16,19 +16,21 @@
  *   - emitted event shape is preserved exactly (JSON.stringify matches)
  *   - subscriber for a different runId does not receive the event
  *   - closed/closing WebSocket stubs are skipped during broadcast
+ *   - authorizeAndSubscribe enforces owner/admin ownership (IDOR hardening)
  */
 import { describe, it, expect, vi } from "vitest";
 import { createServer } from "http";
+import type { IStorage } from "../../../server/storage.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
  * Create a WsManager with a real (non-listening) HTTP server.
  */
-async function createManager() {
+async function createManager(storage?: IStorage) {
   const { WsManager } = await import("../../../server/ws/manager.js");
   const httpServer = createServer();
-  const manager = new WsManager(httpServer);
+  const manager = new WsManager(httpServer, storage);
   return { manager, httpServer };
 }
 
@@ -48,6 +50,13 @@ function makeEvent(runId: string) {
     payload: {},
     timestamp: new Date().toISOString(),
   };
+}
+
+/** A storage double exposing only getPipelineRun for ownership checks. */
+function storageWithRun(triggeredBy: string | null): IStorage {
+  return {
+    getPipelineRun: vi.fn(async () => ({ id: "r", triggeredBy })),
+  } as unknown as IStorage;
 }
 
 // ─── subscribe + broadcastToRun ───────────────────────────────────────────────
@@ -205,5 +214,55 @@ describe("WsManager — non-OPEN WebSocket states are skipped", () => {
 
     expect(openWs.send).toHaveBeenCalledTimes(1);
     expect(closedWs.send).toHaveBeenCalledTimes(0);
+  });
+});
+
+// ─── authorizeAndSubscribe — ownership gate (IDOR hardening) ──────────────────
+
+describe("WsManager.authorizeAndSubscribe — ownership gate", () => {
+  const owner = { id: "owner", role: "user" } as never;
+  const intruder = { id: "intruder", role: "user" } as never;
+  const admin = { id: "boss", role: "admin" } as never;
+
+  it("allows the owner to subscribe to their own run", async () => {
+    const { manager } = await createManager(storageWithRun("owner"));
+    const ws = makeFakeWs();
+    const ok = await manager.authorizeAndSubscribe(ws as never, owner, "run-x");
+    expect(ok).toBe(true);
+    manager.broadcastToRun("run-x", makeEvent("run-x"));
+    expect(ws.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("REJECTS a non-owner subscribing to another user's run (and does not register)", async () => {
+    const { manager } = await createManager(storageWithRun("owner"));
+    const ws = makeFakeWs();
+    const ok = await manager.authorizeAndSubscribe(ws as never, intruder, "run-x");
+    expect(ok).toBe(false);
+    manager.broadcastToRun("run-x", makeEvent("run-x"));
+    expect(ws.send).toHaveBeenCalledTimes(0);
+  });
+
+  it("allows an admin to subscribe to any run", async () => {
+    const { manager } = await createManager(storageWithRun("owner"));
+    const ws = makeFakeWs();
+    const ok = await manager.authorizeAndSubscribe(ws as never, admin, "run-x");
+    expect(ok).toBe(true);
+    manager.broadcastToRun("run-x", makeEvent("run-x"));
+    expect(ws.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("REJECTS subscribing to an ownerless run as a non-admin", async () => {
+    const { manager } = await createManager(storageWithRun(null));
+    const ws = makeFakeWs();
+    const ok = await manager.authorizeAndSubscribe(ws as never, owner, "run-x");
+    expect(ok).toBe(false);
+  });
+
+  it("REJECTS subscribing to a missing run", async () => {
+    const storage = { getPipelineRun: vi.fn(async () => undefined) } as unknown as IStorage;
+    const { manager } = await createManager(storage);
+    const ws = makeFakeWs();
+    const ok = await manager.authorizeAndSubscribe(ws as never, owner, "missing");
+    expect(ok).toBe(false);
   });
 });

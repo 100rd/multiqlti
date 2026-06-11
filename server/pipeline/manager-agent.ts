@@ -388,6 +388,11 @@ Respond ONLY with the JSON object. No markdown, no explanation outside the JSON.
     decision: ManagerDecision,
     tokensUsed: number,
   ): void {
+    // M-1: best-effort model for the dispatched team (Activity lens). The manager
+    // does not persist a per-iteration model; resolve the team's SDLC default.
+    const modelSlug = decision.teamId
+      ? SDLC_TEAMS[decision.teamId as keyof typeof SDLC_TEAMS]?.defaultModelSlug ?? null
+      : null;
     this.wsManager.broadcastToRun(runId, {
       type: "manager:decision",
       runId,
@@ -395,6 +400,7 @@ Respond ONLY with the JSON object. No markdown, no explanation outside the JSON.
         iterationNumber: decision.iterationNumber,
         action: decision.action,
         teamId: decision.teamId,
+        modelSlug,
         task: decision.task,
         reasoning: decision.reasoning,
         tokensUsed,

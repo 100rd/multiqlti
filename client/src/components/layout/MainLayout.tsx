@@ -28,6 +28,7 @@ import {
   Radio,
   Newspaper,
   Bot,
+  Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -66,6 +67,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
     },
     { icon: ListChecks, label: "Task Groups", href: "/task-groups" },
     { icon: Zap, label: "Triggers", href: "/triggers" },
+    { icon: Activity, label: "Live Activity", href: "/activity" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
     // Show "Connections", "Inventory", "Knowledge Base", and "Traces" sub-items
     // when inside a workspace

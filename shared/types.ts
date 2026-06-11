@@ -479,6 +479,12 @@ export type WsEventType =
   | "manager:decision"
   | "manager:complete"
   | "manager:error"
+  // ─── Orchestrator (debate-research) run-mode events ──────────────────
+  | "orchestrator:plan"
+  | "orchestrator:step"
+  | "orchestrator:completed"
+  | "orchestrator:failed"
+  | "orchestrator:cancelled"
   | "workspace:index_start"
   | "workspace:index_progress"
   | "workspace:index_complete"
@@ -3076,3 +3082,57 @@ export type ConsensusRunStatus =
 
 /** Phase of a single consensus round row. */
 export type ConsensusRoundPhase = "blind" | "review" | "adjudication";
+
+
+// ─── Live Run Activity (read-only observability lens) ───────────────
+//
+// The /api/activity snapshot + the WS events that keep it live. STRICTLY
+// METADATA-ONLY: these shapes intentionally carry no transcript, prompt, task
+// text, decision text, step output, or reasoning. Every string is either an
+// id, an enum-derived label, or a model slug.
+
+/** Which run mode an active run belongs to. */
+export type ActivityMode = "pipeline" | "manager" | "orchestrator" | "consensus";
+
+/** The current unit of work inside a run (stage / iteration / step / round). */
+export interface ActivityUnit {
+  /** Human label of the current unit, e.g. "Stage 3", "Step 2", "Round 1 · review". */
+  label: string;
+  /** Agent/team/role/phase identifier — ENUM-derived, never untrusted text. */
+  agent: string;
+  /** Model slug for this unit (best-effort / null for manager mode when unknown). */
+  modelSlug: string | null;
+  /** Status of this unit (StageStatus | OrchestratorStepStatus | phase-derived). */
+  status: string;
+}
+
+/** One active run as seen through the Activity lens. Metadata only. */
+export interface ActivityRun {
+  runId: string;
+  mode: ActivityMode;
+  /** Run-level label (mode name / pipeline name). NEVER the raw task text. */
+  title: string;
+  status: RunStatus | string;
+  workspaceId: string | null;
+  currentUnit: ActivityUnit | null;
+  startedAt: string | null;
+  /** Owner id — present for admins only (so admins can attribute runs). */
+  ownerId?: string | null;
+}
+
+/** The /api/activity response payload. */
+export interface ActivitySnapshot {
+  runs: ActivityRun[];
+  /** Whether the caller is admin (FE shows the owner column). */
+  isAdmin: boolean;
+  /** True iff the row count was capped (the FE can surface a "showing N of more"). */
+  truncated: boolean;
+}
+
+/** Payload of the new `orchestrator:step` WS event (O-1). Metadata only. */
+export interface OrchestratorStepEventPayload {
+  stepIndex: number;
+  type: OrchestratorStepType;
+  status: OrchestratorStepStatus;
+  modelSlug: string | null;
+}

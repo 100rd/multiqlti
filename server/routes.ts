@@ -31,6 +31,7 @@ import { ManagerAgent } from "./pipeline/manager-agent";
 import { buildOrchestratorAgent } from "./orchestrator/build-agent";
 import { registerOrchestratorRoutes } from "./routes/orchestrator";
 import { registerConsensusRoutes } from "./routes/consensus";
+import { registerActivityRoutes } from "./routes/activity";
 import { ConsensusController } from "./consensus/consensus-controller";
 import { registerDAGRoutes } from "./routes/dag";
 import { registerTraceRoutes } from "./routes/traces";
@@ -95,7 +96,8 @@ export async function registerRoutes(
   app: Express,
 ): Promise<Server> {
   // Initialize core systems
-  const wsManager = new WsManager(httpServer);
+  // Pass storage so WsManager.subscribe can enforce per-run ownership (IDOR fix).
+  const wsManager = new WsManager(httpServer, storage);
   const gateway = new Gateway(storage);
   const teamRegistry = new TeamRegistry(gateway, wsManager);
   const delegationService = new DelegationService(storage, teamRegistry, wsManager, gateway);
@@ -115,6 +117,7 @@ export async function registerRoutes(
   // Register protected route groups — all require authentication
   app.use("/api/pipelines", requireAuth);
   app.use("/api/runs", requireAuth);
+  app.use("/api/activity", requireAuth);
   app.use("/api/models", requireAuth);
   app.use("/api/gateway", requireAuth);
   app.use("/api/settings", requireAuth);
@@ -153,6 +156,20 @@ export async function registerRoutes(
   registerPipelineRoutes(app, storage, gateway);
   registerOrchestratorRoutes(app, storage, controller);
   registerConsensusRoutes(app, storage, consensusController);
+  // Live Activity observability lens (read-only, owner/admin-scoped, metadata-only).
+  // Model slugs mirror buildOrchestratorAgent + the consensus controller wiring.
+  registerActivityRoutes(app, storage, {
+    pipelineController: controller,
+    consensusController,
+    orchestratorModels: {
+      planModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
+      synthesizeModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
+      proposerModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
+      criticModelSlug: process.env.ORCHESTRATOR_CRITIC_MODEL ?? "gemini-flash",
+      judgeModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
+    },
+    consensusClaudeModelSlug: process.env.CONSENSUS_CLAUDE_MODEL ?? "claude-opus",
+  });
   registerRunRoutes(app, storage, controller);
   registerChatRoutes(app, storage, gateway, wsManager);
   registerGatewayRoutes(app, gateway);
