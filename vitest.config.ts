@@ -102,6 +102,11 @@ export default defineConfig({
         "server/routes/activity-model-map.ts",
         "server/routes/authorize-run.ts",
         "server/ws/manager.ts",
+        // task-groups edit + history + live-activity history (new modules >=80%).
+        "server/routes/authorize-task-group.ts",
+        "server/routes/task-groups.ts",
+        "server/services/task-graph.ts",
+        "server/services/task-group-editor.ts",
       ],
       exclude: ["server/**/*.test.ts", "server/index.ts", "server/vite.ts"],
     },

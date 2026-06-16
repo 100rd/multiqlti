@@ -282,11 +282,19 @@ describe("SkillEditor component — team dropdown (PR #171)", () => {
 
 describe("CreateTaskGroup page (PR #167)", () => {
   const source = readSource("client/src/pages/CreateTaskGroup.tsx");
+  // The shared task-form bits were extracted into a reusable module (used by
+  // BOTH CreateTaskGroup and the TaskGroup edit mode). emptyTask/validate/the
+  // dependsOn toggle now live in task-form-logic; the TaskRow + execution-mode
+  // options live in task-form.tsx. CreateTaskGroup imports + uses them.
+  const formLogic = readSource("client/src/components/task-groups/task-form-logic.ts");
+  const formRow = readSource("client/src/components/task-groups/task-form.tsx");
 
-  it("has emptyTask helper that creates a task draft with default values", () => {
-    expect(source).toContain("function emptyTask");
-    expect(source).toContain("executionMode");
-    expect(source).toContain("dependsOn");
+  it("imports the shared emptyTask helper (extracted to task-form-logic)", () => {
+    expect(source).toContain("emptyTask");
+    expect(source).toContain("@/components/task-groups/task-form");
+    expect(formLogic).toContain("function emptyTask");
+    expect(formLogic).toContain("executionMode");
+    expect(formLogic).toContain("dependsOn");
   });
 
   it("supports both manual and submit-work view modes", () => {
@@ -304,14 +312,14 @@ describe("CreateTaskGroup page (PR #167)", () => {
     expect(source).toContain("trackerUrl");
   });
 
-  it("supports both pipeline_run and direct_llm execution modes", () => {
-    expect(source).toContain('"pipeline_run"');
-    expect(source).toContain('"direct_llm"');
+  it("supports both pipeline_run and direct_llm execution modes (shared TaskRow)", () => {
+    expect(formRow).toContain('"pipeline_run"');
+    expect(formRow).toContain('"direct_llm"');
   });
 
-  it("has task dependency management (toggleDep)", () => {
-    expect(source).toContain("toggleDep");
-    expect(source).toContain("dependsOn");
+  it("has task dependency management (shared toggleDependency)", () => {
+    expect(formLogic).toContain("toggleDependency");
+    expect(formLogic).toContain("dependsOn");
   });
 
   it("navigates back on success", () => {

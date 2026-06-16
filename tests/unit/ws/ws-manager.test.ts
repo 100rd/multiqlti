@@ -56,6 +56,7 @@ function makeEvent(runId: string) {
 function storageWithRun(triggeredBy: string | null): IStorage {
   return {
     getPipelineRun: vi.fn(async () => ({ id: "r", triggeredBy })),
+    getTaskGroup: vi.fn(async () => undefined),
   } as unknown as IStorage;
 }
 
@@ -259,7 +260,10 @@ describe("WsManager.authorizeAndSubscribe — ownership gate", () => {
   });
 
   it("REJECTS subscribing to a missing run", async () => {
-    const storage = { getPipelineRun: vi.fn(async () => undefined) } as unknown as IStorage;
+    const storage = {
+      getPipelineRun: vi.fn(async () => undefined),
+      getTaskGroup: vi.fn(async () => undefined),
+    } as unknown as IStorage;
     const { manager } = await createManager(storage);
     const ws = makeFakeWs();
     const ok = await manager.authorizeAndSubscribe(ws as never, owner, "missing");

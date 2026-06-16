@@ -1,7 +1,7 @@
 import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, inArray, sql as drizzleSql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db } from "./db";
-import type { IStorage, PracticeCardFilters, MorningBriefFilters, NewsItemFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint } from "./storage";
+import type { IStorage, PracticeCardFilters, MorningBriefFilters, NewsItemFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint, RunHistoryQuery, PipelineRunHistoryRow, TaskGroupHistoryRow } from "./storage";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
 import {
   users, models, pipelines, pipelineRuns,
@@ -233,6 +233,45 @@ export class PgStorage implements IStorage {
         .orderBy(desc(pipelineRuns.createdAt));
     }
     return db.select().from(pipelineRuns).orderBy(desc(pipelineRuns.createdAt));
+  }
+
+  async listPipelineRunHistory(query: RunHistoryQuery): Promise<PipelineRunHistoryRow[]> {
+    const conditions: SQL[] = [
+      inArray(pipelineRuns.status, ["completed", "failed", "cancelled", "rejected"]),
+    ];
+    if (query.ownerId != null) conditions.push(eq(pipelineRuns.triggeredBy, query.ownerId));
+    if (query.cursor) {
+      const c = new Date(query.cursor.completedAt);
+      conditions.push(
+        or(
+          lt(pipelineRuns.completedAt, c),
+          and(eq(pipelineRuns.completedAt, c), lt(pipelineRuns.id, query.cursor.id)),
+        )!,
+      );
+    }
+    const rows = await db
+      .select({
+        id: pipelineRuns.id,
+        status: pipelineRuns.status,
+        workspaceId: pipelineRuns.workspaceId,
+        triggeredBy: pipelineRuns.triggeredBy,
+        startedAt: pipelineRuns.startedAt,
+        completedAt: pipelineRuns.completedAt,
+        currentStageIndex: pipelineRuns.currentStageIndex,
+      })
+      .from(pipelineRuns)
+      .where(and(...conditions))
+      .orderBy(desc(pipelineRuns.completedAt), desc(pipelineRuns.id))
+      .limit(query.limit);
+    return rows.map((r) => ({
+      id: r.id,
+      status: r.status,
+      workspaceId: r.workspaceId ?? null,
+      triggeredBy: r.triggeredBy ?? null,
+      startedAt: r.startedAt ?? null,
+      completedAt: r.completedAt ?? null,
+      currentStageIndex: r.currentStageIndex ?? 0,
+    }));
   }
 
   async getPipelineRun(id: string): Promise<PipelineRun | undefined> {
@@ -1350,6 +1389,45 @@ export class PgStorage implements IStorage {
     return db.select().from(tasks)
       .where(and(eq(tasks.groupId, groupId), eq(tasks.status, "blocked")))
       .orderBy(asc(tasks.sortOrder));
+  }
+
+  async deleteTask(id: string): Promise<void> {
+    await db.delete(tasks).where(eq(tasks.id, id));
+  }
+
+  async listTaskGroupHistory(query: RunHistoryQuery): Promise<TaskGroupHistoryRow[]> {
+    const conditions: SQL[] = [
+      inArray(taskGroups.status, ["completed", "failed", "cancelled"]),
+    ];
+    if (query.ownerId != null) conditions.push(eq(taskGroups.createdBy, query.ownerId));
+    if (query.cursor) {
+      const c = new Date(query.cursor.completedAt);
+      conditions.push(
+        or(
+          lt(taskGroups.completedAt, c),
+          and(eq(taskGroups.completedAt, c), lt(taskGroups.id, query.cursor.id)),
+        )!,
+      );
+    }
+    const rows = await db
+      .select({
+        id: taskGroups.id,
+        status: taskGroups.status,
+        createdBy: taskGroups.createdBy,
+        startedAt: taskGroups.startedAt,
+        completedAt: taskGroups.completedAt,
+      })
+      .from(taskGroups)
+      .where(and(...conditions))
+      .orderBy(desc(taskGroups.completedAt), desc(taskGroups.id))
+      .limit(query.limit);
+    return rows.map((r) => ({
+      id: r.id,
+      status: r.status,
+      createdBy: r.createdBy ?? null,
+      startedAt: r.startedAt ?? null,
+      completedAt: r.completedAt ?? null,
+    }));
   }
 
   // ─── Task Traces (End-to-End Request Observability) ──────────────────────────

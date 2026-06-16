@@ -1,5 +1,6 @@
 import type { Express } from "express";
 import type { IStorage } from "../storage";
+import { authorizeTaskGroup } from "./authorize-task-group.js";
 
 // ─── Route Registration ─────────────────────────────────────────────────────
 
@@ -11,6 +12,13 @@ export function registerTaskTraceRoutes(app: Express, storage: IStorage): void {
       if (!groupId) {
         return res.status(400).json({ error: "Missing group id" });
       }
+
+      // Owner-or-admin gate (same IDOR class closed on the other task-group
+      // routes): the trace exposes the span tree, durations, token/cost, and
+      // error strings — must not be readable cross-tenant. authorizeTaskGroup
+      // writes 401/404/403 + returns null on failure.
+      const auth = await authorizeTaskGroup(req, res, storage, groupId);
+      if (!auth) return;
 
       const trace = await storage.getTaskTrace(groupId);
       if (!trace) {

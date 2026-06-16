@@ -156,20 +156,6 @@ export async function registerRoutes(
   registerPipelineRoutes(app, storage, gateway);
   registerOrchestratorRoutes(app, storage, controller);
   registerConsensusRoutes(app, storage, consensusController);
-  // Live Activity observability lens (read-only, owner/admin-scoped, metadata-only).
-  // Model slugs mirror buildOrchestratorAgent + the consensus controller wiring.
-  registerActivityRoutes(app, storage, {
-    pipelineController: controller,
-    consensusController,
-    orchestratorModels: {
-      planModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
-      synthesizeModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
-      proposerModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
-      criticModelSlug: process.env.ORCHESTRATOR_CRITIC_MODEL ?? "gemini-flash",
-      judgeModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
-    },
-    consensusClaudeModelSlug: process.env.CONSENSUS_CLAUDE_MODEL ?? "claude-opus",
-  });
   registerRunRoutes(app, storage, controller);
   registerChatRoutes(app, storage, gateway, wsManager);
   registerGatewayRoutes(app, gateway);
@@ -255,6 +241,24 @@ export async function registerRoutes(
   const taskOrchestrator = new TaskOrchestrator(storage, wsManager, controller, gateway);
   taskOrchestrator.setTracer(taskTracer);
   registerTaskGroupRoutes(app, storage, taskOrchestrator);
+
+  // Live Activity observability lens (read-only, owner/admin-scoped, metadata-only).
+  // Registered AFTER the task orchestrator so task-groups can join the live snapshot
+  // (and the History tab) as the fifth mode. Model slugs mirror buildOrchestratorAgent
+  // + the consensus controller wiring.
+  registerActivityRoutes(app, storage, {
+    pipelineController: controller,
+    consensusController,
+    taskOrchestrator,
+    orchestratorModels: {
+      planModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
+      synthesizeModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
+      proposerModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
+      criticModelSlug: process.env.ORCHESTRATOR_CRITIC_MODEL ?? "gemini-flash",
+      judgeModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
+    },
+    consensusClaudeModelSlug: process.env.CONSENSUS_CLAUDE_MODEL ?? "claude-opus",
+  });
   registerSkillTeamRoutes(app, storage);
   registerGitSkillSourceRoutes(app);
   registerTaskTraceRoutes(app, storage);

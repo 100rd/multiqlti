@@ -10,27 +10,24 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Plus, Trash2, Wand2, ExternalLink } from "lucide-react";
+import { ArrowLeft, Plus, Wand2, ExternalLink } from "lucide-react";
 import { Link } from "wouter";
+import {
+  TaskRow,
+  emptyTask,
+  validate,
+  hasErrors,
+  addTaskToList,
+  removeTaskFromList,
+  updateTaskInList,
+  type TaskDraft,
+  type GroupDraft,
+  type SiblingOption,
+} from "@/components/task-groups/task-form";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type ExecutionMode = "direct_llm" | "pipeline_run";
 type ViewMode = "manual" | "submit-work";
-
-interface TaskDraft {
-  id: string;
-  name: string;
-  description: string;
-  executionMode: ExecutionMode;
-  dependsOn: string[];
-}
-
-interface GroupDraft {
-  name: string;
-  description: string;
-  input: string;
-}
 
 interface SplitTaskPreview {
   name: string;
@@ -38,166 +35,6 @@ interface SplitTaskPreview {
   conditionsOfDone: string[];
   tests: string[];
   dependsOn?: string[];
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function emptyTask(): TaskDraft {
-  return {
-    id: crypto.randomUUID(),
-    name: "",
-    description: "",
-    executionMode: "direct_llm",
-    dependsOn: [],
-  };
-}
-
-// ─── Sub-component: single task row ──────────────────────────────────────────
-
-interface TaskRowProps {
-  task: TaskDraft;
-  index: number;
-  siblingNames: string[];
-  onChange: (updated: TaskDraft) => void;
-  onRemove: () => void;
-}
-
-function TaskRow({ task, index, siblingNames, onChange, onRemove }: TaskRowProps) {
-  function toggleDep(name: string) {
-    const next = task.dependsOn.includes(name)
-      ? task.dependsOn.filter((d) => d !== name)
-      : [...task.dependsOn, name];
-    onChange({ ...task, dependsOn: next });
-  }
-
-  return (
-    <Card className="relative">
-      <CardHeader className="pb-2 flex flex-row items-center justify-between">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          Task {index + 1}
-        </CardTitle>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7 text-muted-foreground hover:text-red-500"
-          onClick={onRemove}
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div className="space-y-1">
-            <Label htmlFor={`task-name-${task.id}`}>Name *</Label>
-            <Input
-              id={`task-name-${task.id}`}
-              placeholder="e.g. Summarise input"
-              value={task.name}
-              onChange={(e) => onChange({ ...task, name: e.target.value })}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor={`task-mode-${task.id}`}>Execution mode *</Label>
-            <Select
-              value={task.executionMode}
-              onValueChange={(v) =>
-                onChange({ ...task, executionMode: v as ExecutionMode })
-              }
-            >
-              <SelectTrigger id={`task-mode-${task.id}`}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="direct_llm">Direct LLM</SelectItem>
-                <SelectItem value="pipeline_run">Pipeline run</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-
-        <div className="space-y-1">
-          <Label htmlFor={`task-desc-${task.id}`}>Description *</Label>
-          <Textarea
-            id={`task-desc-${task.id}`}
-            placeholder="What should this task do?"
-            rows={2}
-            value={task.description}
-            onChange={(e) => onChange({ ...task, description: e.target.value })}
-          />
-        </div>
-
-        {siblingNames.length > 0 && (
-          <div className="space-y-1">
-            <Label>Depends on</Label>
-            <div className="flex flex-wrap gap-2">
-              {siblingNames.map((name) => {
-                const active = task.dependsOn.includes(name);
-                return (
-                  <button
-                    key={name}
-                    type="button"
-                    onClick={() => toggleDep(name)}
-                    className="focus:outline-none"
-                  >
-                    <Badge
-                      className={
-                        active
-                          ? "bg-primary text-primary-foreground cursor-pointer"
-                          : "bg-muted text-muted-foreground cursor-pointer hover:bg-muted/70"
-                      }
-                    >
-                      {name}
-                    </Badge>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ─── Validation ───────────────────────────────────────────────────────────────
-
-interface ValidationErrors {
-  name?: string;
-  description?: string;
-  input?: string;
-  tasks?: string;
-  taskErrors?: Record<string, { name?: string; description?: string }>;
-}
-
-function validate(group: GroupDraft, tasks: TaskDraft[]): ValidationErrors {
-  const errors: ValidationErrors = {};
-
-  if (!group.name.trim()) errors.name = "Name is required.";
-  if (!group.description.trim()) errors.description = "Description is required.";
-  if (!group.input.trim()) errors.input = "Input is required.";
-  if (tasks.length === 0) errors.tasks = "Add at least one task.";
-
-  const taskErrors: Record<string, { name?: string; description?: string }> = {};
-  tasks.forEach((t) => {
-    const te: { name?: string; description?: string } = {};
-    if (!t.name.trim()) te.name = "Task name is required.";
-    if (!t.description.trim()) te.description = "Task description is required.";
-    if (Object.keys(te).length > 0) taskErrors[t.id] = te;
-  });
-  if (Object.keys(taskErrors).length > 0) errors.taskErrors = taskErrors;
-
-  return errors;
-}
-
-function hasErrors(errors: ValidationErrors): boolean {
-  return (
-    !!errors.name ||
-    !!errors.description ||
-    !!errors.input ||
-    !!errors.tasks ||
-    (errors.taskErrors != null && Object.keys(errors.taskErrors).length > 0)
-  );
 }
 
 // ─── Submit Work sub-component ────────────────────────────────────────────────
@@ -485,17 +322,21 @@ export default function CreateTaskGroup() {
   const errors = validate(group, tasks);
 
   function updateTask(id: string, updated: TaskDraft) {
-    setTasks((prev) => prev.map((t) => (t.id === id ? updated : t)));
+    setTasks((prev) => updateTaskInList(prev, id, updated));
   }
 
   function removeTask(id: string) {
+    // In CREATE mode dependsOn is keyed by NAME, so re-key the removed task's
+    // name out of siblings (the shared reducer strips by the same key it removes).
     setTasks((prev) => {
-      const remaining = prev.filter((t) => t.id !== id);
       const removedName = prev.find((t) => t.id === id)?.name ?? "";
-      return remaining.map((t) => ({
-        ...t,
-        dependsOn: t.dependsOn.filter((d) => d !== removedName),
-      }));
+      const remaining = removeTaskFromList(prev, id);
+      return removedName
+        ? remaining.map((t) => ({
+            ...t,
+            dependsOn: t.dependsOn.filter((d) => d !== removedName),
+          }))
+        : remaining;
     });
   }
 
@@ -629,7 +470,7 @@ export default function CreateTaskGroup() {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => setTasks((prev) => [...prev, emptyTask()])}
+                onClick={() => setTasks((prev) => addTaskToList(prev))}
               >
                 <Plus className="h-4 w-4 mr-2" />
                 Add task
@@ -641,9 +482,11 @@ export default function CreateTaskGroup() {
             )}
 
             {tasks.map((task, index) => {
-              const siblingNames = tasks
+              // CREATE mode: dependsOn is keyed by NAME, so the sibling id is the
+              // sibling's name (chip shows the same name). Only named siblings.
+              const siblings: SiblingOption[] = tasks
                 .filter((t) => t.id !== task.id && t.name.trim() !== "")
-                .map((t) => t.name.trim());
+                .map((t) => ({ id: t.name.trim(), name: t.name.trim() }));
 
               const taskErr = errors.taskErrors?.[task.id];
 
@@ -652,7 +495,7 @@ export default function CreateTaskGroup() {
                   <TaskRow
                     task={task}
                     index={index}
-                    siblingNames={siblingNames}
+                    siblings={siblings}
                     onChange={(updated) => updateTask(task.id, updated)}
                     onRemove={() => removeTask(task.id)}
                   />
