@@ -137,6 +137,27 @@ interface IterationDetailViewProps {
 }
 
 /**
+ * Render an execution's raw `output` as inert text for the collapsible "raw
+ * reasoning" block: a plain string as-is, the non-JSON `{ raw }` fallback shape
+ * unwrapped, anything else pretty-printed JSON. Returns null when there's
+ * nothing to show. Never uses dangerouslySetInnerHTML — the caller puts this in
+ * a <pre> as text.
+ */
+function formatExecutionOutput(output: unknown): string | null {
+  if (output == null) return null;
+  if (typeof output === "string") return output.trim() || null;
+  if (typeof output === "object" && "raw" in output) {
+    const raw = (output as { raw?: unknown }).raw;
+    if (typeof raw === "string") return raw.trim() || null;
+  }
+  try {
+    return JSON.stringify(output, null, 2);
+  } catch {
+    return String(output);
+  }
+}
+
+/**
  * The selected iteration's per-task execution history: a reused timeline built
  * from the iteration's executions, plus per-task summary/error cards. The Trace
  * button targets the per-iteration trace route.
@@ -230,6 +251,19 @@ export function IterationDetailView({
                       {exec.errorMessage}
                     </div>
                   )}
+                  {(() => {
+                    const raw = formatExecutionOutput(exec?.output);
+                    return raw ? (
+                      <details className="mt-2">
+                        <summary className="cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+                          Raw output / reasoning
+                        </summary>
+                        <pre className="mt-1 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2 font-mono text-xs">
+                          {raw}
+                        </pre>
+                      </details>
+                    ) : null;
+                  })()}
                 </CardContent>
               </Card>
             );

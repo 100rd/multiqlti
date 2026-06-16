@@ -545,6 +545,14 @@ export default function TaskGroupPage() {
     latestIteration && latestIteration.status === "running"
       ? latestIteration.iterationNumber
       : null;
+  // The left column shows EXECUTIONS (status/summary/raw output), not the bare
+  // task DEFINITIONS (which stay `pending` forever in v2). Default to the latest
+  // iteration so a finished/running group shows real per-task results + live
+  // status (the detail polls every 3s); the definition view is only the
+  // never-run fallback. A user-picked older iteration overrides the default.
+  const shownIteration = selectedIteration ?? latestIteration?.iterationNumber ?? null;
+  const viewingOlderIteration =
+    selectedIteration !== null && selectedIteration !== latestIteration?.iterationNumber;
   const runEnabled = isRunEnabled(iterationItems, liveStatus);
   const editEnabled = isEditEnabled(iterationItems, liveStatus);
   const canCancel = effectiveStatus === "running" || activeIterationNumber !== null;
@@ -571,7 +579,10 @@ export default function TaskGroupPage() {
   const timeline = buildTimeline(group.tasks);
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-6">
+    // h-full + overflow-y-auto: MainLayout's <main> clips overflow, so the page
+    // owns its own scroll (otherwise long task groups get cut off, e.g. task 3+).
+    <div className="h-full overflow-y-auto">
+      <div className="p-6 max-w-6xl mx-auto space-y-6">
       {/* Header */}
       <div className="flex items-center gap-4">
         <Link href="/task-groups">
@@ -632,20 +643,22 @@ export default function TaskGroupPage() {
           {/* Left column: either the selected iteration's execution history, or
               the live definition/run view when no iteration is selected. */}
           <div className="lg:col-span-2 space-y-3">
-            {selectedIteration !== null ? (
+            {shownIteration !== null ? (
               <>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="-ml-2 text-xs text-muted-foreground"
-                  onClick={() => setSelectedIteration(null)}
-                >
-                  <ArrowLeft className="h-3 w-3 mr-1" />
-                  Back to current run
-                </Button>
+                {viewingOlderIteration && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="-ml-2 text-xs text-muted-foreground"
+                    onClick={() => setSelectedIteration(null)}
+                  >
+                    <ArrowLeft className="h-3 w-3 mr-1" />
+                    Back to latest run
+                  </Button>
+                )}
                 <IterationDetailView
                   groupId={id}
-                  iterationNumber={selectedIteration}
+                  iterationNumber={shownIteration}
                   StatusBadge={StatusBadge}
                 />
               </>
@@ -706,7 +719,7 @@ export default function TaskGroupPage() {
           <div className="space-y-3">
             <IterationsPanel
               groupId={id}
-              selected={selectedIteration}
+              selected={shownIteration}
               onSelect={setSelectedIteration}
               StatusBadge={StatusBadge}
               activeNumber={activeIterationNumber}
@@ -773,6 +786,7 @@ export default function TaskGroupPage() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
