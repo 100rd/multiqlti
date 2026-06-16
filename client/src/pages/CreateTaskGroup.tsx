@@ -528,6 +528,7 @@ export default function CreateTaskGroup() {
   }
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="p-6 max-w-3xl mx-auto space-y-6">
       {/* Header */}
       <div className="flex items-center gap-4">
@@ -690,6 +691,7 @@ export default function CreateTaskGroup() {
           </div>
         </form>
       )}
+    </div>
     </div>
   );
 }
