@@ -19,16 +19,23 @@
  * The merge/grouping/subscription logic is pure (see @/lib/activity) and unit
  * tested; this hook is the thin React/WS wiring.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { wsClient } from "@/lib/websocket";
-import type { WsEvent } from "@shared/types";
+import type { WsEvent, ActivityMode } from "@shared/types";
 import {
   mergeWsEvent,
   snapshotRunIds,
+  appendHistoryPage,
+  buildHistoryQuery,
+  emptyHistoryState,
+  hasMoreHistory,
   type ActivitySnapshot,
   type LiveActivityRun,
+  type ActivityHistoryPage,
+  type ActivityHistoryRow,
+  type HistoryState,
 } from "@/lib/activity";
 
 /** Snapshot poll interval (fallback refresh; also reconciles WS drift). */
@@ -114,5 +121,83 @@ export function useActivity(): UseActivityResult {
     isLoading: query.isLoading,
     error: query.error,
     isConnected,
+  };
+}
+
+// ─── Activity History (terminal runs, keyset-paginated) ────────────────────────
+/**
+ * useActivityHistory — manual keyset pagination over GET /api/activity/history.
+ *
+ * The snapshot lens (useActivity) shows what's running NOW; this shows past
+ * (terminal) runs across all modes. We page by cursor: the first request carries
+ * no cursor (newest page), and "Load more" re-queries with the previous page's
+ * nextCursor. Each fetched page is folded onto the accumulated list by the pure
+ * appendHistoryPage reducer (de-duped by mode:runId). The page rendering reuses
+ * the SAME row shape as the live tab (mode group, currentUnit, status badge,
+ * owner column for admins).
+ *
+ * The fetch/merge logic is pure (see @/lib/activity); this hook is the thin wiring.
+ */
+/** Default page size; the server clamps to ≤100 and buildHistoryQuery mirrors it. */
+export const ACTIVITY_HISTORY_PAGE_SIZE = 25;
+
+export interface UseActivityHistoryResult {
+  items: ActivityHistoryRow[];
+  isAdmin: boolean;
+  hasMore: boolean;
+  isLoading: boolean;
+  isFetchingMore: boolean;
+  error: unknown;
+  loadMore: () => void;
+}
+
+export function useActivityHistory(
+  mode: ActivityMode | null = null,
+): UseActivityHistoryResult {
+  // The cursor currently being requested. `null` = first/newest page.
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [state, setState] = useState<HistoryState>(emptyHistoryState);
+
+  const queryString = useMemo(
+    () =>
+      buildHistoryQuery({
+        limit: ACTIVITY_HISTORY_PAGE_SIZE,
+        cursor,
+        mode,
+      }),
+    [cursor, mode],
+  );
+
+  const query = useQuery<ActivityHistoryPage>({
+    // The mode is part of the key so switching mode refetches a fresh first page.
+    queryKey: ["/api/activity/history", mode, cursor],
+    queryFn: async () => {
+      const page = (await apiRequest(
+        "GET",
+        `/api/activity/history${queryString}`,
+      ).then((r) => r.json())) as ActivityHistoryPage;
+      // Fold synchronously so items/cursor stay consistent with this page.
+      setState((prev) => appendHistoryPage(prev, page, cursor === null));
+      return page;
+    },
+    // Each (mode,cursor) pair is fetched exactly once; pages are immutable.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+
+  const loadMore = useCallback(() => {
+    if (state.nextCursor) setCursor(state.nextCursor);
+  }, [state.nextCursor]);
+
+  const isFirstPagePending = query.isLoading && cursor === null;
+
+  return {
+    items: state.items,
+    isAdmin: state.isAdmin,
+    hasMore: hasMoreHistory(state),
+    isLoading: isFirstPagePending,
+    isFetchingMore: query.isFetching && cursor !== null,
+    error: query.error,
+    loadMore,
   };
 }

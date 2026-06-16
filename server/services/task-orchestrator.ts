@@ -52,6 +52,15 @@ export class TaskOrchestrator {
   }
 
   /**
+   * The ids of the task groups currently in flight (between startGroup and group
+   * settle). Backed by the activeGroupTraces map keys. Sibling of the
+   * controllers' getActiveRunIds(); used by the live /api/activity snapshot.
+   */
+  getActiveGroupIds(): string[] {
+    return [...this.activeGroupTraces.keys()];
+  }
+
+  /**
    * Create a task group with tasks. Resolves task name references in
    * dependsOn to IDs and computes initial statuses (ready / blocked).
    */

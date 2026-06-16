@@ -3,6 +3,7 @@ import type { Server, IncomingMessage } from "http";
 import type { WsEvent, User } from "@shared/types";
 import type { IStorage } from "../storage";
 import { authService } from "../auth/service";
+import { isVisible } from "../routes/authorize-run.js";
 
 function extractTokenFromRequest(req: IncomingMessage): string | null {
   const url = req.url ?? "";
@@ -77,11 +78,17 @@ export class WsManager {
   }
 
   /**
-   * Ownership-gated subscribe (the only path the live socket uses). Resolves the
-   * run via pipeline_runs.triggeredBy — the single ownership source for ALL run
-   * modes — and registers the socket only when the user is the owner or an
-   * admin. Ownerless runs are denied to non-admins. Returns whether it
-   * subscribed. Fails closed when storage/user are unavailable.
+   * Ownership-gated subscribe (the only path the live socket uses). A `runId`
+   * may name TWO id-spaces:
+   *   1. pipeline_runs.id   — owner via pipeline_runs.triggeredBy (pipeline /
+   *      manager / orchestrator / consensus). Checked FIRST (unchanged path).
+   *   2. task_groups.id     — owner via task_groups.createdBy (H3 fallback).
+   *      Task-group events broadcast on broadcastToRun(groupId,…) which has no
+   *      pipeline_runs row, so without this fallback the subscribe was rejected
+   *      (the TaskGroup live stream was dead).
+   *
+   * Ownerless rows are denied to non-admins (the strict isVisible posture);
+   * unknown ids in BOTH spaces fail closed. Returns whether it subscribed.
    */
   async authorizeAndSubscribe(
     ws: WebSocket,
@@ -90,12 +97,18 @@ export class WsManager {
   ): Promise<boolean> {
     if (!user?.id || !this.storage) return false;
 
+    // 1) Pipeline-family path (unchanged, checked first).
     const run = await this.storage.getPipelineRun(runId);
-    if (!run) return false;
+    if (run) {
+      if (!isVisible(run.triggeredBy, user)) return false;
+      this.subscribe(ws, runId);
+      return true;
+    }
 
-    const isAdmin = user.role === "admin";
-    const isOwner = run.triggeredBy != null && run.triggeredBy === user.id;
-    if (!isAdmin && !isOwner) return false;
+    // 2) Task-group fallback (H3) — gate on task_groups.createdBy.
+    const group = await this.storage.getTaskGroup(runId);
+    if (!group) return false; // unknown in both spaces → fail closed.
+    if (!isVisible(group.createdBy, user)) return false;
 
     this.subscribe(ws, runId);
     return true;

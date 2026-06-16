@@ -3092,7 +3092,7 @@ export type ConsensusRoundPhase = "blind" | "review" | "adjudication";
 // id, an enum-derived label, or a model slug.
 
 /** Which run mode an active run belongs to. */
-export type ActivityMode = "pipeline" | "manager" | "orchestrator" | "consensus";
+export type ActivityMode = "pipeline" | "manager" | "orchestrator" | "consensus" | "task_group";
 
 /** The current unit of work inside a run (stage / iteration / step / round). */
 export interface ActivityUnit {
@@ -3135,4 +3135,34 @@ export interface OrchestratorStepEventPayload {
   type: OrchestratorStepType;
   status: OrchestratorStepStatus;
   modelSlug: string | null;
+}
+
+// ─── Activity History (terminal runs, DB-backed, metadata-only) ──────────────
+// METADATA-ONLY: built by an explicit allowlist, NEVER by spreading a DB row.
+// NO output / input / summary / errorMessage / decisionText / transcript.
+
+/** One past (terminal) run as seen through the Activity History tab. */
+export interface ActivityHistoryRow {
+  /** runId for pipeline-family modes; groupId for task_group mode. */
+  runId: string;
+  mode: ActivityMode;
+  /** FIXED mode label — NEVER the user's group/run name (no free-text leak). */
+  title: string;
+  status: RunStatus | string;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** Enum-derived last/current unit summary, or null. Metadata only. */
+  currentUnit: ActivityUnit | null;
+  workspaceId: string | null;
+  /** Owner id — present for admins only (attribution). */
+  ownerId?: string | null;
+}
+
+/** The /api/activity/history response payload (keyset-paginated). */
+export interface ActivityHistoryPage {
+  items: ActivityHistoryRow[];
+  /** Opaque base64 keyset cursor for the next page, or null at the end. */
+  nextCursor: string | null;
+  /** Whether the caller is admin (FE shows the owner column). */
+  isAdmin: boolean;
 }

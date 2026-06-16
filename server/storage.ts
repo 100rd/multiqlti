@@ -185,6 +185,67 @@ export interface PracticeCardFilters {
   offset?: number;
 }
 
+/**
+ * In-memory keyset pagination over `(completedAt desc, id desc)` for the history
+ * finders. A null completedAt sorts LAST (treated as -Infinity). The cursor is
+ * exclusive: only rows strictly older than (cursor.completedAt, cursor.id) are
+ * returned. Returns at most `query.limit` rows.
+ */
+function keysetPage<T extends { id: string; completedAt: Date | null }>(
+  rows: T[],
+  query: RunHistoryQuery,
+): T[] {
+  const ts = (d: Date | null): number => (d ? d.getTime() : -Infinity);
+  const sorted = [...rows].sort((a, b) => {
+    const ta = ts(a.completedAt);
+    const tb = ts(b.completedAt);
+    if (ta !== tb) return tb - ta; // completedAt desc
+    return b.id.localeCompare(a.id); // id desc
+  });
+  let filtered = sorted;
+  if (query.cursor) {
+    const cTs = new Date(query.cursor.completedAt).getTime();
+    const cId = query.cursor.id;
+    filtered = sorted.filter((r) => {
+      const rt = ts(r.completedAt);
+      if (rt < cTs) return true;
+      if (rt > cTs) return false;
+      return r.id.localeCompare(cId) < 0; // same ts, strictly smaller id
+    });
+  }
+  return filtered.slice(0, query.limit);
+}
+
+/** Keyset-paginated history finder options (terminal-status runs only). */
+export interface RunHistoryQuery {
+  /** When set, restrict to runs owned by this user (non-admin scoping). Admins omit it. */
+  ownerId?: string;
+  /** Max rows to return (the caller clamps to <=100). */
+  limit: number;
+  /** Keyset cursor: only rows strictly older than (completedAt, id) are returned. */
+  cursor?: { completedAt: string; id: string };
+}
+
+/** One row of pipeline-family run history (terminal). Metadata is classified by the route. */
+export interface PipelineRunHistoryRow {
+  id: string;
+  status: string;
+  workspaceId: string | null;
+  triggeredBy: string | null;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  currentStageIndex: number;
+}
+
+/** One row of task-group history (terminal). */
+export interface TaskGroupHistoryRow {
+  id: string;
+  status: string;
+  createdBy: string | null;
+  startedAt: Date | null;
+  completedAt: Date | null;
+}
+
 export interface IStorage {
   // Users (legacy scaffold — auth handled by AuthService)
   getUser(id: string): Promise<UserRow | undefined>;
@@ -211,6 +272,8 @@ export interface IStorage {
 
   // Pipeline Runs
   getPipelineRuns(pipelineId?: string): Promise<PipelineRun[]>;
+  /** Terminal-status pipeline-family runs, owner-filtered, keyset-paginated (completedAt desc, id desc). */
+  listPipelineRunHistory(query: RunHistoryQuery): Promise<PipelineRunHistoryRow[]>;
   getPipelineRun(id: string): Promise<PipelineRun | undefined>;
   createPipelineRun(run: InsertPipelineRun): Promise<PipelineRun>;
   updatePipelineRun(id: string, updates: Partial<PipelineRun>): Promise<PipelineRun>;
@@ -384,6 +447,10 @@ export interface IStorage {
   getTask(id: string): Promise<TaskRow | undefined>;
   createTask(data: InsertTask): Promise<TaskRow>;
   updateTask(id: string, updates: Partial<TaskRow>): Promise<TaskRow>;
+  /** Hard-delete a single task by id (used by task-group edit). */
+  deleteTask(id: string): Promise<void>;
+  /** Terminal-status task groups, owner-filtered, keyset-paginated (completedAt desc, id desc). */
+  listTaskGroupHistory(query: RunHistoryQuery): Promise<TaskGroupHistoryRow[]>;
   getReadyTasks(groupId: string): Promise<TaskRow[]>;
   getBlockedTasks(groupId: string): Promise<TaskRow[]>;
 
@@ -667,6 +734,23 @@ export class MemStorage implements IStorage {
     const all = Array.from(this.runs.values());
     if (pipelineId) return all.filter((r) => r.pipelineId === pipelineId);
     return all;
+  }
+
+  async listPipelineRunHistory(query: RunHistoryQuery): Promise<PipelineRunHistoryRow[]> {
+    const terminal = new Set(["completed", "failed", "cancelled", "rejected"]);
+    const rows = Array.from(this.runs.values())
+      .filter((r) => terminal.has(r.status))
+      .filter((r) => (query.ownerId == null ? true : r.triggeredBy === query.ownerId))
+      .map((r) => ({
+        id: r.id,
+        status: r.status,
+        workspaceId: r.workspaceId ?? null,
+        triggeredBy: r.triggeredBy ?? null,
+        startedAt: r.startedAt ?? null,
+        completedAt: r.completedAt ?? null,
+        currentStageIndex: r.currentStageIndex ?? 0,
+      }));
+    return keysetPage(rows, query);
   }
 
   async getPipelineRun(id: string): Promise<PipelineRun | undefined> {
@@ -1944,6 +2028,25 @@ export class MemStorage implements IStorage {
     return Array.from(this.tasksMap.values())
       .filter((t) => t.groupId === groupId && t.status === "blocked")
       .sort((a, b) => a.sortOrder - b.sortOrder);
+  }
+
+  async deleteTask(id: string): Promise<void> {
+    this.tasksMap.delete(id);
+  }
+
+  async listTaskGroupHistory(query: RunHistoryQuery): Promise<TaskGroupHistoryRow[]> {
+    const terminal = new Set(["completed", "failed", "cancelled"]);
+    const rows = Array.from(this.taskGroupsMap.values())
+      .filter((g) => terminal.has(g.status))
+      .filter((g) => (query.ownerId == null ? true : g.createdBy === query.ownerId))
+      .map((g) => ({
+        id: g.id,
+        status: g.status,
+        createdBy: g.createdBy ?? null,
+        startedAt: g.startedAt ?? null,
+        completedAt: g.completedAt ?? null,
+      }));
+    return keysetPage(rows, query);
   }
 
   // ─── Task Traces (End-to-End Request Observability) ──────────────────────────
