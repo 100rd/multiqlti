@@ -107,6 +107,33 @@ export default defineConfig({
         "server/routes/task-groups.ts",
         "server/services/task-graph.ts",
         "server/services/task-group-editor.ts",
+        // task-groups-v2 BE1/BE2 — schema + storage (Mem + Pg, lockstep). The
+        // coverage.include list is an ALLOWLIST: a new module is unmeasured
+        // unless named here. storage.ts + storage-pg.ts carry the BE2 impls.
+        "server/storage.ts",
+        "server/storage-pg.ts",
+        "server/storage-task-groups-v2.ts",
+        // task-groups-v2 Wave 2 — BE3 orchestrator, BE4 tracer, BE5 editor,
+        // BE6 iteration routes + legacy-trace alias (new modules >=80%).
+        "server/services/task-orchestrator.ts",
+        "server/services/task-tracer.ts",
+        // task-groups-v2 regression-fix wave — extracted orchestrator helpers.
+        "server/services/orchestrator/execution-claims.ts",
+        "server/services/orchestrator/direct-llm-prompt.ts",
+        "server/services/orchestrator/iteration-tracing.ts",
+        "server/services/orchestrator/errors.ts",
+        "server/routes/task-iterations.ts",
+        "server/routes/task-traces.ts",
+        // task-groups-v2 Wave 3 — BE7 template authz + CRUD routes, BE8 compose.
+        "server/routes/authorize-task-template.ts",
+        "server/routes/task-templates.ts",
+        "server/services/task-template-compose.ts",
+        // task-groups-v2 FE pure modules (node-testable, no DOM): iteration
+        // shaping/gating + the shared task-form logic + the timeline (incl. the
+        // new execution-row adapter). Listed so they're measured (allowlist).
+        "client/src/lib/task-iterations.ts",
+        "client/src/components/task-groups/task-form-logic.ts",
+        "client/src/components/task-groups/timeline.ts",
       ],
       exclude: ["server/**/*.test.ts", "server/index.ts", "server/vite.ts"],
     },

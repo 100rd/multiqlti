@@ -55,6 +55,8 @@ import { registerSkillTeamRoutes } from "./routes/skill-teams";
 import { registerModelSkillBindingRoutes } from "./routes/model-skill-bindings";
 import { registerGitSkillSourceRoutes } from "./routes/git-skill-sources";
 import { registerTaskTraceRoutes } from "./routes/task-traces";
+import { registerTaskIterationRoutes } from "./routes/task-iterations";
+import { registerTaskTemplateRoutes } from "./routes/task-templates";
 import { registerTrackerRoutes } from "./routes/tracker";
 import { TaskOrchestrator } from "./services/task-orchestrator";
 import { TaskTracer } from "./services/task-tracer";
@@ -142,6 +144,7 @@ export async function registerRoutes(
   app.use("/api/triggers", requireAuth);
   app.use("/api/traces", requireAuth);
   app.use("/api/task-groups", requireAuth);
+  app.use("/api/task-templates", requireAuth);
   app.use("/api/library", requireAuth);
   app.use("/api/lmstudio", requireAuth);
   app.use("/api/skill-teams", requireAuth);
@@ -241,6 +244,8 @@ export async function registerRoutes(
   const taskOrchestrator = new TaskOrchestrator(storage, wsManager, controller, gateway);
   taskOrchestrator.setTracer(taskTracer);
   registerTaskGroupRoutes(app, storage, taskOrchestrator);
+  registerTaskIterationRoutes(app as unknown as Router, storage);
+  registerTaskTemplateRoutes(app as unknown as Router, storage);
 
   // Live Activity observability lens (read-only, owner/admin-scoped, metadata-only).
   // Registered AFTER the task orchestrator so task-groups can join the live snapshot

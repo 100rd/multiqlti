@@ -9,6 +9,11 @@ import type { TaskTraceRow } from "@shared/schema";
 // TaskGroup → Task → Pipeline Run → Stage → LLM Call.
 // Each call returns a spanId that the caller stores and passes back
 // when completing or failing the span.
+//
+// v2: a trace is keyed to a specific ITERATION (task_traces.iteration_id). Use
+// startIterationTrace once the iteration row exists; the legacy startGroupTrace
+// remains for pre-v2 callers (iteration_id null). getTrace(groupId) aliases the
+// LATEST iteration's trace.
 
 export class TaskTracer {
   /** In-memory buffer of active traces keyed by traceId. Flushed to DB on each mutation. */
@@ -22,11 +27,27 @@ export class TaskTracer {
   // ─── Lifecycle: start spans ──────────────────────────────────────────────
 
   async startGroupTrace(groupId: string, name: string): Promise<string> {
+    return this.openTrace(groupId, null, name);
+  }
+
+  /**
+   * Start a trace bound to a specific ITERATION (BE4). Sets
+   * `task_traces.iteration_id` so per-iteration trace reads
+   * (`getTaskTraceByIteration`) resolve, while the group still mirrors the
+   * latest trace id.
+   */
+  async startIterationTrace(groupId: string, iterationId: string, name: string): Promise<string> {
+    return this.openTrace(groupId, iterationId, name);
+  }
+
+  /** Shared trace-open path: create the root span + trace row, link the group. */
+  private async openTrace(groupId: string, iterationId: string | null, name: string): Promise<string> {
     const traceId = randomUUID();
     const rootSpan = this.makeSpan(null, name, "task_group", {});
 
     const row = await this.storage.createTaskTrace({
       groupId,
+      iterationId,
       traceId,
       rootSpan,
       spans: [rootSpan],
@@ -35,7 +56,7 @@ export class TaskTracer {
       totalCostUsd: 0,
     });
 
-    // Link trace to group
+    // Link trace to group (latest-trace mirror).
     await this.storage.updateTaskGroup(groupId, { traceId } as Record<string, unknown>);
 
     this.activeTraces.set(traceId, { dbId: row.id, groupId, spans: [rootSpan] });

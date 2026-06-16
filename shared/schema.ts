@@ -1132,6 +1132,10 @@ export const tasks = pgTable(
     pipelineRunId: varchar("pipeline_run_id"),
     modelSlug: text("model_slug"),
     teamId: text("team_id"),
+    // v2 (task-groups-v2 §3.3): organizational labels (array, not a join table —
+    // mirrors library_items.tags) + provenance of a copied-in template definition.
+    labels: jsonb("labels").notNull().default(sql`'[]'::jsonb`).$type<string[]>(),
+    templateId: varchar("template_id").references(() => taskTemplates.id, { onDelete: "set null" }),
     input: jsonb("input").notNull().default(sql`'{}'::jsonb`),
     output: jsonb("output"),
     summary: text("summary"),
@@ -1156,6 +1160,159 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
 
 export type InsertTask = z.infer<typeof insertTaskSchema>;
 export type TaskRow = typeof tasks.$inferSelect;
+
+// ─── Task Templates (Library — task-groups-v2 §3.5) ─────────────────────────
+// Standalone, owner-scoped reusable single-task recipes + labels. No group_id /
+// dependsOn (dependencies are a group-graph concept resolved at compose time).
+// Composition is COPY-IN (§6): fields are snapshotted into a `tasks` definition
+// at compose time; `tasks.template_id` records provenance (set-null on delete).
+// Defined before `task_traces` so the forward reference from `tasks.templateId`
+// resolves; Drizzle .references() is a lazy thunk regardless of textual order.
+
+export const taskTemplates = pgTable(
+  "task_templates",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    name: text("name").notNull(),
+    description: text("description").notNull(),
+    executionMode: text("execution_mode").notNull().default("direct_llm").$type<TaskExecutionMode>(),
+    pipelineId: varchar("pipeline_id"),
+    modelSlug: text("model_slug"),
+    teamId: text("team_id"),
+    input: jsonb("input").notNull().default(sql`'{}'::jsonb`).$type<Record<string, unknown>>(),
+    labels: jsonb("labels").notNull().default(sql`'[]'::jsonb`).$type<string[]>(),
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    createdByIdx: index("task_templates_created_by_idx").on(table.createdBy),
+  }),
+);
+
+export const insertTaskTemplateSchema = createInsertSchema(taskTemplates).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  executionMode: z.enum(TASK_EXECUTION_MODES).optional(),
+  labels: z.array(z.string()).optional(),
+});
+
+export type InsertTaskTemplate = z.infer<typeof insertTaskTemplateSchema>;
+export type TaskTemplateRow = typeof taskTemplates.$inferSelect;
+
+// ─── Task Group Iterations (task-groups-v2 §3.1) ────────────────────────────
+// One row per RUN of a group. status/timing/output projects onto the group row
+// (latest-iteration mirror). UNIQUE(group_id, iteration_number) is the DB-level
+// concurrency backstop for two concurrent `start` calls computing the same max+1.
+
+export const taskGroupIterations = pgTable(
+  "task_group_iterations",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    groupId: varchar("group_id")
+      .notNull()
+      .references(() => taskGroups.id, { onDelete: "cascade" }),
+    iterationNumber: integer("iteration_number").notNull(),
+    status: text("status").notNull().default("running").$type<TaskGroupStatus>(),
+    // Immutable snapshot of group.input at run time — what actually ran.
+    input: text("input").notNull(),
+    output: jsonb("output").$type<Record<string, unknown>>(),
+    traceId: text("trace_id"),
+    triggeredBy: text("triggered_by").references(() => users.id, { onDelete: "set null" }),
+    startedAt: timestamp("started_at"),
+    completedAt: timestamp("completed_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    groupIdIdx: index("iterations_group_id_idx").on(table.groupId),
+    groupNumberUnique: unique("iterations_group_number_uq").on(
+      table.groupId,
+      table.iterationNumber,
+    ),
+  }),
+);
+
+export const insertTaskGroupIterationSchema = createInsertSchema(taskGroupIterations).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  status: z.enum(TASK_GROUP_STATUSES).optional(),
+});
+
+export type InsertTaskGroupIteration = z.infer<typeof insertTaskGroupIterationSchema>;
+export type TaskGroupIterationRow = typeof taskGroupIterations.$inferSelect;
+
+// ─── Task Executions (task-groups-v2 §3.2) ──────────────────────────────────
+// One row per DEFINITION × ITERATION: the result of running a task definition in
+// one iteration. group_id is denormalized for the owner-join + activity scope
+// (MF-1: the group is a mandatory scope key on every execution read).
+// model_slug records the RESOLVED model actually used (the #375 default result),
+// not just the (possibly-null/later-changed) definition pin. UNIQUE(iteration_id,
+// task_id) enforces one execution per definition per iteration.
+
+export const taskExecutions = pgTable(
+  "task_executions",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    iterationId: varchar("iteration_id")
+      .notNull()
+      .references(() => taskGroupIterations.id, { onDelete: "cascade" }),
+    // SEC1 (history integrity): `set null` (not cascade) so removing a task
+    // DEFINITION between runs never destroys that task's historical executions
+    // across prior iterations (immutable iteration history, §6/R2). Nullable
+    // column: a historical row whose definition was deleted keeps task_name.
+    taskId: varchar("task_id")
+      .references(() => tasks.id, { onDelete: "set null" }),
+    // Denormalized definition name captured at execution-creation time. Survives
+    // a later definition delete (task_id → null) so the FE timeline + history
+    // stay readable, and pairs with the null-task_id rows above.
+    taskName: text("task_name"),
+    groupId: varchar("group_id")
+      .notNull()
+      .references(() => taskGroups.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("pending").$type<TaskStatus>(),
+    output: jsonb("output"),
+    summary: text("summary"),
+    artifacts: jsonb("artifacts").$type<Record<string, unknown>[]>(),
+    decisions: jsonb("decisions").$type<string[]>(),
+    errorMessage: text("error_message"),
+    modelSlug: text("model_slug"),
+    pipelineRunId: varchar("pipeline_run_id"),
+    startedAt: timestamp("started_at"),
+    completedAt: timestamp("completed_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    iterationIdIdx: index("executions_iteration_id_idx").on(table.iterationId),
+    taskIdIdx: index("executions_task_id_idx").on(table.taskId),
+    // UNIQUE(iteration_id, task_id) still holds: live rows have a non-null
+    // task_id (one execution per definition per iteration); historical rows whose
+    // definition was deleted carry task_id NULL, and PG treats NULLs as DISTINCT,
+    // so they never collide with each other or with live rows.
+    iterTaskUnique: unique("executions_iter_task_uq").on(
+      table.iterationId,
+      table.taskId,
+    ),
+  }),
+);
+
+export const insertTaskExecutionSchema = createInsertSchema(taskExecutions).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  status: z.enum(TASK_STATUSES).optional(),
+});
+
+export type InsertTaskExecution = z.infer<typeof insertTaskExecutionSchema>;
+export type TaskExecutionRow = typeof taskExecutions.$inferSelect;
 
 // ─── Library Channels (Phase 7) ─────────────────────────────────────────────
 
@@ -1238,6 +1395,9 @@ export const taskTraces = pgTable(
     groupId: varchar("group_id")
       .notNull()
       .references(() => taskGroups.id, { onDelete: "cascade" }),
+    // v2 (task-groups-v2 §3.4): a trace now belongs to a specific iteration.
+    // groupId retained for back-compat single-trace reads.
+    iterationId: varchar("iteration_id").references(() => taskGroupIterations.id, { onDelete: "cascade" }),
     traceId: text("trace_id").notNull().unique(),
     rootSpan: jsonb("root_span").$type<TaskTraceSpan>(),
     spans: jsonb("spans").notNull().default(sql`'[]'::jsonb`).$type<TaskTraceSpan[]>(),
@@ -1249,6 +1409,7 @@ export const taskTraces = pgTable(
   },
   (table) => ({
     groupIdIdx: index("task_traces_group_id_idx").on(table.groupId),
+    iterationIdIdx: index("task_traces_iteration_id_idx").on(table.iterationId),
     traceIdIdx: index("task_traces_trace_id_idx").on(table.traceId),
   }),
 );

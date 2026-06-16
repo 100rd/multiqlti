@@ -21,7 +21,6 @@
 import { useRoute } from "wouter";
 import {
   useTaskGroup,
-  useStartTaskGroup,
   useCancelTaskGroup,
   useRetryTask,
   useUpdateTaskGroup,
@@ -29,7 +28,23 @@ import {
   useAddTask,
   useDeleteTask,
   editErrorMessage,
+  TaskGroupApiError,
 } from "@/hooks/use-task-groups";
+import {
+  useTaskGroupIterations,
+  useStartTaskGroupRun,
+} from "@/hooks/use-task-iterations";
+import {
+  isRunEnabled,
+  isEditEnabled,
+  runButtonLabel,
+  startErrorMessage,
+} from "@/lib/task-iterations";
+import {
+  IterationsPanel,
+  IterationDetailView,
+} from "@/components/task-groups/iterations-panel";
+import { useToast } from "@/hooks/use-toast";
 import { useTaskGroupEvents } from "@/hooks/use-task-events";
 import { useActiveModels } from "@/hooks/use-pipeline";
 import { Button } from "@/components/ui/button";
@@ -52,6 +67,7 @@ import {
   Pencil,
   Plus,
   Save,
+  BookMarked,
 } from "lucide-react";
 import { Link } from "wouter";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -62,6 +78,7 @@ import {
   addTaskToList,
   removeTaskFromList,
   updateTaskInList,
+  seedTasksFromTemplates,
   validate,
   hasErrors,
   type TaskDraft,
@@ -69,7 +86,9 @@ import {
   type SiblingOption,
   type ExecutionMode,
   type ModelOption,
+  type TemplateSeed,
 } from "@/components/task-groups/task-form";
+import { TemplatePicker } from "@/components/task-groups/template-picker";
 import {
   buildTimeline,
   formatDuration,
@@ -115,6 +134,8 @@ interface ServerTask {
   sortOrder?: number | null;
   startedAt?: string | null;
   completedAt?: string | null;
+  labels?: string[] | null;
+  templateId?: string | null;
 }
 
 interface ServerGroup {
@@ -220,6 +241,8 @@ function EditForm({ groupId, group, fullEdit, onDone }: EditFormProps) {
         executionMode: asExecutionMode(t.executionMode),
         dependsOn: t.dependsOn ?? [],
         modelSlug: t.modelSlug ?? null,
+        labels: t.labels ?? [],
+        templateId: t.templateId ?? null,
       })),
   );
   // Track which task ids existed on the server so we PATCH vs POST correctly.
@@ -230,6 +253,12 @@ function EditForm({ groupId, group, fullEdit, onDone }: EditFormProps) {
 
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  function seedFromLibrary(templates: TemplateSeed[]) {
+    setTasks((prev) => seedTasksFromTemplates(prev, templates));
+    setPickerOpen(false);
+  }
 
   const errors = validate(draft, tasks, {
     requireInput: fullEdit,
@@ -289,7 +318,11 @@ function EditForm({ groupId, group, fullEdit, onDone }: EditFormProps) {
           if (serverTaskIds.has(t.id)) {
             await updateTask.mutateAsync({ taskId: t.id, ...payload });
           } else {
-            await addTask.mutateAsync(payload);
+            // New row: carry templateId so the server copies the template's
+            // fields in authoritatively (PATCH omits it; only add accepts it).
+            await addTask.mutateAsync(
+              t.templateId ? { ...payload, templateId: t.templateId } : payload,
+            );
           }
         }
       }
@@ -370,16 +403,35 @@ function EditForm({ groupId, group, fullEdit, onDone }: EditFormProps) {
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold">Tasks</h2>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setTasks((prev) => addTaskToList(prev))}
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              Add task
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setPickerOpen((v) => !v)}
+                aria-expanded={pickerOpen}
+              >
+                <BookMarked className="h-4 w-4 mr-2" />
+                Add from library
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setTasks((prev) => addTaskToList(prev))}
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Add task
+              </Button>
+            </div>
           </div>
+
+          {pickerOpen && (
+            <TemplatePicker
+              onAdd={seedFromLibrary}
+              onClose={() => setPickerOpen(false)}
+            />
+          )}
 
           {submitted && errors.tasks && (
             <p className="text-xs text-red-500">{errors.tasks}</p>
@@ -449,11 +501,15 @@ export default function TaskGroupPage() {
 
   const { data, isLoading } = useTaskGroup(id);
   const events = useTaskGroupEvents(id);
-  const startMutation = useStartTaskGroup();
+  const iterations = useTaskGroupIterations(id);
+  const startMutation = useStartTaskGroupRun(id);
   const cancelMutation = useCancelTaskGroup();
   const retryMutation = useRetryTask();
+  const { toast } = useToast();
   const activityEndRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState(false);
+  // The iteration the user is browsing in the Iterations panel (null → none yet).
+  const [selectedIteration, setSelectedIteration] = useState<number | null>(null);
 
   // Auto-scroll activity stream
   useEffect(() => {
@@ -478,13 +534,39 @@ export default function TaskGroupPage() {
     };
   });
 
-  const effectiveStatus =
-    events.groupStatus !== "pending" ? events.groupStatus : group.status;
-  const canStart = effectiveStatus === "pending";
-  const canCancel = effectiveStatus === "running";
-  const fullEdit = isGroupEditable(effectiveStatus);
-  const relabelOnly = isGroupRelabelOnly(effectiveStatus);
-  const canEdit = fullEdit || relabelOnly;
+  // v2 gating is iteration-driven (§4.1/§4.2): Run + Edit are enabled whenever NO
+  // iteration is running; the live WS group status annotates the active iteration
+  // faster than the polled list. The server stays authoritative (409 on a race).
+  const liveStatus = events.groupStatus !== "pending" ? events.groupStatus : null;
+  const effectiveStatus = liveStatus ?? group.status;
+  const iterationItems = iterations.items;
+  const latestIteration = iterationItems[0] ?? null;
+  const activeIterationNumber =
+    latestIteration && latestIteration.status === "running"
+      ? latestIteration.iterationNumber
+      : null;
+  const runEnabled = isRunEnabled(iterationItems, liveStatus);
+  const editEnabled = isEditEnabled(iterationItems, liveStatus);
+  const canCancel = effectiveStatus === "running" || activeIterationNumber !== null;
+  const runLabel = runButtonLabel(iterationItems);
+  // Full task edit whenever not running (definitions are reconfigurable between
+  // runs, §4.2). The server enforces the not-running window at persist time.
+  const fullEdit = editEnabled;
+
+  async function handleRun() {
+    try {
+      await startMutation.mutateAsync();
+    } catch (err) {
+      const status = err instanceof TaskGroupApiError ? err.status : 500;
+      const message =
+        err instanceof TaskGroupApiError ? err.message : undefined;
+      toast({
+        variant: "destructive",
+        title: "Could not start the run",
+        description: startErrorMessage(status, message),
+      });
+    }
+  }
 
   const timeline = buildTimeline(group.tasks);
 
@@ -505,16 +587,20 @@ export default function TaskGroupPage() {
           <p className="text-sm text-muted-foreground mt-1">{group.description}</p>
         </div>
         <div className="flex gap-2">
-          {!editing && canEdit && (
+          {!editing && editEnabled && (
             <Button variant="outline" onClick={() => setEditing(true)}>
               <Pencil className="h-4 w-4 mr-2" />
               Edit
             </Button>
           )}
-          {!editing && canStart && (
-            <Button onClick={() => startMutation.mutate(id)} disabled={startMutation.isPending}>
-              <Play className="h-4 w-4 mr-2" />
-              Start
+          {!editing && (
+            <Button onClick={handleRun} disabled={!runEnabled || startMutation.isPending}>
+              {runLabel === "Run again" ? (
+                <RotateCcw className="h-4 w-4 mr-2" />
+              ) : (
+                <Play className="h-4 w-4 mr-2" />
+              )}
+              {startMutation.isPending ? "Starting…" : runLabel}
             </Button>
           )}
           {!editing && canCancel && (
@@ -523,7 +609,7 @@ export default function TaskGroupPage() {
               Cancel
             </Button>
           )}
-          {!editing && effectiveStatus !== "pending" && (
+          {!editing && (effectiveStatus !== "pending" || iterationItems.length > 0) && (
             <Link href={`/task-groups/${id}/trace`}>
               <Button variant="outline">
                 <Activity className="h-4 w-4 mr-2" />
@@ -543,8 +629,28 @@ export default function TaskGroupPage() {
         />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Tasks panel */}
+          {/* Left column: either the selected iteration's execution history, or
+              the live definition/run view when no iteration is selected. */}
           <div className="lg:col-span-2 space-y-3">
+            {selectedIteration !== null ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="-ml-2 text-xs text-muted-foreground"
+                  onClick={() => setSelectedIteration(null)}
+                >
+                  <ArrowLeft className="h-3 w-3 mr-1" />
+                  Back to current run
+                </Button>
+                <IterationDetailView
+                  groupId={id}
+                  iterationNumber={selectedIteration}
+                  StatusBadge={StatusBadge}
+                />
+              </>
+            ) : (
+              <>
             <h2 className="text-lg font-semibold">Tasks</h2>
             {mergedTasks.map((t) => (
               <Card key={t.id} className={t.status === "running" ? "border-blue-500/50" : ""}>
@@ -592,10 +698,19 @@ export default function TaskGroupPage() {
                 </CardContent>
               </Card>
             ))}
+              </>
+            )}
           </div>
 
-          {/* Right column: Timeline + Activity stream */}
+          {/* Right column: Iterations + Timeline + Activity stream */}
           <div className="space-y-3">
+            <IterationsPanel
+              groupId={id}
+              selected={selectedIteration}
+              onSelect={setSelectedIteration}
+              StatusBadge={StatusBadge}
+              activeNumber={activeIterationNumber}
+            />
             <TimelinePanel entries={timeline} />
 
             <h2 className="text-lg font-semibold">Activity</h2>

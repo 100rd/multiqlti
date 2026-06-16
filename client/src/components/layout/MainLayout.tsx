@@ -66,6 +66,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
       badge: pendingCount > 0 ? pendingCount : undefined,
     },
     { icon: ListChecks, label: "Task Groups", href: "/task-groups" },
+    { icon: BookMarked, label: "Task Library", href: "/task-library" },
     { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: Activity, label: "Live Activity", href: "/activity" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },

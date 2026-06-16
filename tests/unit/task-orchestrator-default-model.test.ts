@@ -129,7 +129,7 @@ describe("TaskOrchestrator direct_llm model resolution", () => {
     expect(spy.calls[0].modelSlug).toBe("mock");
   });
 
-  it("persists the task summary from the real gateway response (not the canned stub)", async () => {
+  it("persists the execution summary from the real gateway response (latest iteration)", async () => {
     const { orchestrator, storage } = makeOrchestrator(spy.gateway);
 
     const { group, tasks } = await orchestrator.createTaskGroup({
@@ -139,10 +139,92 @@ describe("TaskOrchestrator direct_llm model resolution", () => {
       tasks: [{ name: "T1", description: "summarise", executionMode: "direct_llm" }],
     });
 
+    const { iteration } = await orchestrator.startGroup(group.id);
+
+    // v2: status/summary live on the EXECUTION (latest iteration), not the
+    // definition row (QA assertion inversion).
+    const executions = await storage.getExecutionsByIteration(group.id, iteration.id);
+    const ex = executions.find((e) => e.taskId === tasks[0].id);
+    expect(ex?.summary).toBe("real model summary");
+    expect(ex?.status).toBe("completed");
+  });
+
+  it("persists the RESOLVED default slug on the execution (#375) on first run", async () => {
+    const { orchestrator, storage } = makeOrchestrator(spy.gateway);
+
+    const { group, tasks } = await orchestrator.createTaskGroup({
+      name: "G",
+      description: "d",
+      input: "do work",
+      tasks: [{ name: "T1", description: "summarise", executionMode: "direct_llm" }],
+    });
+
+    const { iteration } = await orchestrator.startGroup(group.id);
+    const ex = (await storage.getExecutionsByIteration(group.id, iteration.id)).find(
+      (e) => e.taskId === tasks[0].id,
+    );
+    expect(ex?.modelSlug).toBe(DEFAULT_TASK_MODEL);
+    expect(ex?.modelSlug).not.toBe("mock");
+  });
+
+  it("re-run (iteration 2) of a model-less task still resolves the real default (never mock)", async () => {
+    const { orchestrator, storage } = makeOrchestrator(spy.gateway);
+
+    const { group } = await orchestrator.createTaskGroup({
+      name: "G",
+      description: "d",
+      input: "do work",
+      tasks: [{ name: "T1", description: "summarise", executionMode: "direct_llm" }],
+    });
+
+    await orchestrator.startGroup(group.id); // iteration 1 (auto-completes)
+    const second = await orchestrator.startGroup(group.id); // iteration 2
+
+    expect(second.iteration.iterationNumber).toBe(2);
+    // Two gateway calls total (one per iteration), both resolved, never mock.
+    expect(spy.calls).toHaveLength(2);
+    expect(spy.calls[1].modelSlug).toBe(DEFAULT_TASK_MODEL);
+    expect(spy.calls[1].modelSlug).not.toBe("mock");
+
+    const ex2 = (await storage.getExecutionsByIteration(group.id, second.iteration.id))[0];
+    expect(ex2.modelSlug).toBe(DEFAULT_TASK_MODEL);
+  });
+
+  it("explicit modelSlug still wins on re-run", async () => {
+    const { orchestrator } = makeOrchestrator(spy.gateway);
+
+    const { group } = await orchestrator.createTaskGroup({
+      name: "G",
+      description: "d",
+      input: "do work",
+      tasks: [
+        { name: "T1", description: "summarise", executionMode: "direct_llm", modelSlug: "claude-haiku" },
+      ],
+    });
+
+    await orchestrator.startGroup(group.id);
     await orchestrator.startGroup(group.id);
 
-    const persisted = await storage.getTask(tasks[0].id);
-    expect(persisted?.summary).toBe("real model summary");
-    expect(persisted?.status).toBe("completed");
+    expect(spy.calls).toHaveLength(2);
+    expect(spy.calls[1].modelSlug).toBe("claude-haiku");
+  });
+
+  it("explicit mock is still honoured on re-run", async () => {
+    const { orchestrator } = makeOrchestrator(spy.gateway);
+
+    const { group } = await orchestrator.createTaskGroup({
+      name: "G",
+      description: "d",
+      input: "do work",
+      tasks: [
+        { name: "T1", description: "summarise", executionMode: "direct_llm", modelSlug: "mock" },
+      ],
+    });
+
+    await orchestrator.startGroup(group.id);
+    await orchestrator.startGroup(group.id);
+
+    expect(spy.calls).toHaveLength(2);
+    expect(spy.calls[1].modelSlug).toBe("mock");
   });
 });

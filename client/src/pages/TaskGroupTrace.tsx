@@ -202,9 +202,17 @@ function SpanDetail({ span }: { span: TaskTraceSpan }) {
 // ─── Main Page ──────────────────────────────────────────────────────────────
 
 export default function TaskGroupTrace() {
-  const [, params] = useRoute("/task-groups/:id/trace");
-  const groupId = params?.id ?? "";
-  const { data: trace, isLoading, error } = useTaskTrace(groupId);
+  // Two routes share this page: the legacy group-level trace (latest iteration)
+  // and the per-iteration trace `…/iterations/:n/trace`. Match the iteration
+  // route first; fall back to the group route. Waterfall rendering is identical.
+  const [, iterParams] = useRoute("/task-groups/:id/iterations/:n/trace");
+  const [, groupParams] = useRoute("/task-groups/:id/trace");
+  const groupId = iterParams?.id ?? groupParams?.id ?? "";
+  const iterationNumber = iterParams?.n ? Number(iterParams.n) : null;
+  const { data: trace, isLoading, error } = useTaskTrace(
+    groupId,
+    iterationNumber,
+  );
   const [expandedSpanId, setExpandedSpanId] = useState<string | null>(null);
 
   const flatSpans = useMemo(() => {
@@ -258,7 +266,9 @@ export default function TaskGroupTrace() {
           </Button>
         </Link>
         <div className="flex-1">
-          <h1 className="text-2xl font-bold">Request Trace</h1>
+          <h1 className="text-2xl font-bold">
+            Request Trace{iterationNumber !== null ? ` — Iteration #${iterationNumber}` : ""}
+          </h1>
           <p className="text-sm text-muted-foreground">
             End-to-end observability for task group execution
           </p>

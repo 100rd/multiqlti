@@ -8,6 +8,12 @@
  *  - EDIT: tasks exist on the server, so dependsOn is keyed by task ID.
  * Either way `dependsOn` holds the same key as the surface's `task.id`, so the
  * reducers below work for both.
+ *
+ * task-groups-v2 (FE5): TaskDraft gains `labels: string[]` (organizational tags,
+ * mirroring the server `tasks.labels` array) and `templateId` (copy-in provenance
+ * when a row was seeded from a library template — the SERVER re-copies the
+ * template authoritatively via templateId; the client copy is for display +
+ * payload). The reducers preserve both through every edit.
  */
 import type { TaskGroupStatus } from "@shared/types";
 
@@ -31,6 +37,14 @@ export interface TaskDraft {
   dependsOn: string[];
   /** Pinned model slug, or null to use the server's real default. */
   modelSlug: string | null;
+  /** Organizational labels (free-text tags). Empty by default. */
+  labels: string[];
+  /**
+   * Library provenance: the template id this row was seeded from, or null for an
+   * ad-hoc/manual row. The server re-copies the template authoritatively when
+   * this is present (§5.3 copy-in).
+   */
+  templateId: string | null;
 }
 
 export interface GroupDraft {
@@ -53,6 +67,8 @@ export function emptyTask(): TaskDraft {
     executionMode: "direct_llm",
     dependsOn: [],
     modelSlug: null,
+    labels: [],
+    templateId: null,
   };
 }
 
@@ -121,6 +137,82 @@ export function removeTaskFromList(
 /** Append a fresh empty task, immutably. */
 export function addTaskToList(tasks: readonly TaskDraft[]): TaskDraft[] {
   return [...tasks, emptyTask()];
+}
+
+// ─── Labels (chip editor reducer, FE3/FE5) ──────────────────────────────────────
+
+/**
+ * Add a label to a list, immutably. Trims surrounding whitespace, rejects an
+ * empty/whitespace-only value (returns the list unchanged), and de-dupes (a label
+ * already present is a no-op). Insertion order is preserved — a new label is
+ * appended at the end. Never mutates its input.
+ */
+export function addLabel(labels: readonly string[], raw: string): string[] {
+  const value = raw.trim();
+  if (!value) return labels.slice();
+  if (labels.includes(value)) return labels.slice();
+  return [...labels, value];
+}
+
+/** Remove a label by value, immutably (no-op when absent). Preserves order. */
+export function removeLabel(labels: readonly string[], value: string): string[] {
+  return labels.filter((l) => l !== value);
+}
+
+/** Set a task's labels, immutably (used by the per-task chip control). */
+export function setTaskLabels(task: TaskDraft, labels: string[]): TaskDraft {
+  return { ...task, labels };
+}
+
+// ─── Seed-from-template reducer (FE4) ────────────────────────────────────────────
+
+/** The library template fields a seeded row copies in (subset of TaskTemplateRow). */
+export interface TemplateSeed {
+  id: string;
+  name: string;
+  description: string;
+  executionMode?: ExecutionMode | string | null;
+  modelSlug?: string | null;
+  input?: Record<string, unknown> | null;
+  labels?: string[] | null;
+}
+
+/** Normalize an arbitrary execution-mode value to the two supported modes. */
+function asExecutionMode(value: ExecutionMode | string | null | undefined): ExecutionMode {
+  return value === "pipeline_run" ? "pipeline_run" : "direct_llm";
+}
+
+/**
+ * Build a TaskDraft row from a library template (copy-in snapshot). Copies the
+ * template's name/description/mode/model/labels and stamps `templateId` for
+ * provenance (so the SERVER re-copies it authoritatively at compose time). The
+ * new row gets a FRESH client id (never the template id) and an empty dependsOn
+ * (dependencies are a group-graph concept, resolved on this surface). Pure.
+ */
+export function seedTaskFromTemplate(template: TemplateSeed): TaskDraft {
+  return {
+    id: crypto.randomUUID(),
+    name: template.name,
+    description: template.description,
+    executionMode: asExecutionMode(template.executionMode),
+    dependsOn: [],
+    modelSlug: template.modelSlug ?? null,
+    labels: template.labels ? template.labels.slice() : [],
+    templateId: template.id,
+  };
+}
+
+/**
+ * Seed one or more template rows onto the end of the existing task list,
+ * immutably. Manual/existing rows are preserved verbatim and stay BEFORE the
+ * seeded rows; the seeded rows append in the templates' order. Never mutates its
+ * inputs. Used by the composer's "Add from library" affordance.
+ */
+export function seedTasksFromTemplates(
+  tasks: readonly TaskDraft[],
+  templates: readonly TemplateSeed[],
+): TaskDraft[] {
+  return [...tasks, ...templates.map(seedTaskFromTemplate)];
 }
 
 // ─── Validation ────────────────────────────────────────────────────────────────

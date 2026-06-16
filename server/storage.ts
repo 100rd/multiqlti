@@ -48,6 +48,15 @@ import {
   type InsertTask,
   type TaskTraceRow,
   type InsertTaskTrace,
+  type TaskGroupIterationRow,
+  type InsertTaskGroupIteration,
+  type TaskExecutionRow,
+  type InsertTaskExecution,
+  type TaskTemplateRow,
+  type InsertTaskTemplate,
+  type TaskStatus,
+  type TaskGroupStatus,
+  type TaskExecutionMode,
   type TrackerConnectionRow,
   type InsertTrackerConnection,
   type SkillTeam,
@@ -245,6 +254,30 @@ export interface TaskGroupHistoryRow {
   startedAt: Date | null;
   completedAt: Date | null;
 }
+
+import {
+  TASK_GROUP_V2_MAX_LIMIT,
+  IterationConflictError,
+  buildVirtualIteration,
+  type IterationListQuery,
+  type TaskTemplateListQuery,
+  type IterationExecutionSeed,
+  type IterationStartInput,
+  type VirtualIteration,
+} from "./storage-task-groups-v2";
+// Re-export the v2 storage contracts so existing consumers that import from
+// `./storage` keep working (tests + routes reference these from here).
+export {
+  TASK_GROUP_V2_MAX_LIMIT,
+  IterationConflictError,
+} from "./storage-task-groups-v2";
+export type {
+  IterationListQuery,
+  TaskTemplateListQuery,
+  IterationExecutionSeed,
+  IterationStartInput,
+  VirtualIteration,
+} from "./storage-task-groups-v2";
 
 export interface IStorage {
   // Users (legacy scaffold — auth handled by AuthService)
@@ -458,6 +491,56 @@ export interface IStorage {
   createTaskTrace(data: InsertTaskTrace): Promise<TaskTraceRow>;
   getTaskTrace(groupId: string): Promise<TaskTraceRow | null>;
   updateTaskTrace(id: string, updates: Partial<TaskTraceRow>): Promise<TaskTraceRow>;
+
+  // ─── Task Group Iterations (task-groups-v2 §3.1 / BE2) ──────────────────────
+  /** Insert one iteration; throws IterationConflictError on UNIQUE(group,number). */
+  createIteration(data: InsertTaskGroupIteration): Promise<TaskGroupIterationRow>;
+  /** Iterations for a group, keyset-paginated `iteration_number desc`. */
+  getIterations(groupId: string, query: IterationListQuery): Promise<TaskGroupIterationRow[]>;
+  /** A single iteration by (group, number); group is the mandatory scope key. */
+  getIteration(groupId: string, iterationNumber: number): Promise<TaskGroupIterationRow | undefined>;
+  /** The highest-numbered iteration for a group (the "current" run), if any. */
+  getLatestIteration(groupId: string): Promise<TaskGroupIterationRow | undefined>;
+  updateIteration(id: string, updates: Partial<TaskGroupIterationRow>): Promise<TaskGroupIterationRow>;
+  /**
+   * Atomically insert an iteration + all its seed executions (SF-1). Either all
+   * rows commit or none do. Throws IterationConflictError on UNIQUE(group,number).
+   */
+  createIterationWithExecutions(
+    groupId: string,
+    start: IterationStartInput,
+    seeds: IterationExecutionSeed[],
+  ): Promise<{ iteration: TaskGroupIterationRow; executions: TaskExecutionRow[] }>;
+
+  // ─── Task Executions (task-groups-v2 §3.2 / BE2 — MF-1 group-scoped) ────────
+  createExecution(data: InsertTaskExecution): Promise<TaskExecutionRow>;
+  /** Executions for an iteration, scoped to `groupId` (MF-1: mandatory scope key). */
+  getExecutionsByIteration(groupId: string, iterationId: string): Promise<TaskExecutionRow[]>;
+  /** A single execution by id, scoped to `groupId` (MF-1: never a bare child id). */
+  getExecution(groupId: string, executionId: string): Promise<TaskExecutionRow | undefined>;
+  updateExecution(id: string, updates: Partial<TaskExecutionRow>): Promise<TaskExecutionRow>;
+
+  /**
+   * Lazy virtual-iteration adapter (§8, MF-5): for a pre-v2 group with ZERO real
+   * iteration rows, synthesize a read-only iteration 1 + executions from the
+   * legacy `tasks` execution columns. Returns null if the group already has real
+   * iterations (callers should read those) or the group does not exist. The route
+   * MUST invoke this only inside an already-authorized handler.
+   */
+  getVirtualIteration(groupId: string): Promise<VirtualIteration | null>;
+
+  // ─── Per-iteration trace (task-groups-v2 §3.4 / MF-3 group-scoped) ──────────
+  /** The trace for a specific iteration, scoped to `groupId` (MF-3). */
+  getTaskTraceByIteration(groupId: string, iterationId: string): Promise<TaskTraceRow | null>;
+
+  // ─── Task Templates (Library — task-groups-v2 §3.5 / BE2) ───────────────────
+  /** Templates list: owner filter applied BEFORE label match (MF-4), keyset-paged. */
+  getTaskTemplates(query: TaskTemplateListQuery): Promise<TaskTemplateRow[]>;
+  getTaskTemplate(id: string): Promise<TaskTemplateRow | undefined>;
+  createTaskTemplate(data: InsertTaskTemplate): Promise<TaskTemplateRow>;
+  updateTaskTemplate(id: string, updates: Partial<TaskTemplateRow>): Promise<TaskTemplateRow>;
+  deleteTaskTemplate(id: string): Promise<void>;
+
 
   // Tracker Connections (Issue Tracker Integration)
   getTrackerConnectionsByGroup(taskGroupId: string): Promise<TrackerConnectionRow[]>;
@@ -1969,6 +2052,19 @@ export class MemStorage implements IStorage {
     for (const [tid, t] of this.tasksMap) {
       if (t.groupId === id) this.tasksMap.delete(tid);
     }
+    // Cascade (emulates ON DELETE cascade): iterations + executions + traces.
+    for (const [iid, it] of this.iterationsMap) {
+      if (it.groupId === id) this.iterationsMap.delete(iid);
+    }
+    for (const [eid, ex] of this.executionsMap) {
+      if (ex.groupId === id) this.executionsMap.delete(eid);
+    }
+    for (const [trid, tr] of this.taskTracesMap) {
+      if (tr.groupId === id) {
+        this.taskTracesMap.delete(trid);
+        this.taskTracesByGroupId.delete(tr.groupId);
+      }
+    }
   }
 
   async getTasksByGroup(groupId: string): Promise<TaskRow[]> {
@@ -1997,6 +2093,8 @@ export class MemStorage implements IStorage {
       pipelineRunId: data.pipelineRunId ?? null,
       modelSlug: data.modelSlug ?? null,
       teamId: data.teamId ?? null,
+      labels: (data.labels as string[]) ?? [],
+      templateId: data.templateId ?? null,
       output: data.output ?? null,
       summary: data.summary ?? null,
       artifacts: data.artifacts ?? null,
@@ -2032,6 +2130,13 @@ export class MemStorage implements IStorage {
 
   async deleteTask(id: string): Promise<void> {
     this.tasksMap.delete(id);
+    // SEC1: emulate ON DELETE SET NULL on task_executions.task_id — historical
+    // executions SURVIVE (immutable iteration history, §6/R2); only the now-
+    // dangling task_id is nulled. task_name was denormalized at seed time so the
+    // history stays readable after the definition is gone.
+    for (const [eid, ex] of this.executionsMap) {
+      if (ex.taskId === id) this.executionsMap.set(eid, { ...ex, taskId: null });
+    }
   }
 
   async listTaskGroupHistory(query: RunHistoryQuery): Promise<TaskGroupHistoryRow[]> {
@@ -2060,6 +2165,7 @@ export class MemStorage implements IStorage {
     const row: TaskTraceRow = {
       id,
       groupId: data.groupId,
+      iterationId: data.iterationId ?? null,
       traceId: data.traceId,
       rootSpan: (data.rootSpan as TaskTraceSpan) ?? null,
       spans: (data.spans as TaskTraceSpan[]) ?? [],
@@ -2912,6 +3018,269 @@ export class MemStorage implements IStorage {
     if (filters.readState) items = items.filter((i) => i.readState === filters.readState);
     items.sort((a, b) => b.relevanceScore - a.relevanceScore);
     return items;
+  }
+
+  // ─── Task Groups v2 — iterations / executions / templates (BE2) ─────────────
+  // MemStorage EMULATES the DB constraints so unit tests are meaningful:
+  //  - UNIQUE(group_id, iteration_number) and UNIQUE(iteration_id, task_id) throw
+  //  - cascade deletes remove children (group -> iterations -> executions/traces;
+  //    task -> executions). See deleteTaskGroup / deleteTask below.
+
+  private iterationsMap = new Map<string, TaskGroupIterationRow>();
+  private executionsMap = new Map<string, TaskExecutionRow>();
+  private taskTemplatesMap = new Map<string, TaskTemplateRow>();
+
+  private iterationExists(groupId: string, iterationNumber: number): boolean {
+    for (const it of this.iterationsMap.values()) {
+      if (it.groupId === groupId && it.iterationNumber === iterationNumber) return true;
+    }
+    return false;
+  }
+
+  private executionExists(iterationId: string, taskId: string): boolean {
+    for (const ex of this.executionsMap.values()) {
+      if (ex.iterationId === iterationId && ex.taskId === taskId) return true;
+    }
+    return false;
+  }
+
+  private buildIterationRow(data: InsertTaskGroupIteration): TaskGroupIterationRow {
+    return {
+      id: randomUUID(),
+      groupId: data.groupId,
+      iterationNumber: data.iterationNumber,
+      status: (data.status as TaskGroupStatus) ?? "running",
+      input: data.input,
+      output: (data.output as Record<string, unknown>) ?? null,
+      traceId: data.traceId ?? null,
+      triggeredBy: data.triggeredBy ?? null,
+      startedAt: data.startedAt ?? null,
+      completedAt: data.completedAt ?? null,
+      createdAt: new Date(),
+    };
+  }
+
+  async createIteration(data: InsertTaskGroupIteration): Promise<TaskGroupIterationRow> {
+    if (this.iterationExists(data.groupId, data.iterationNumber)) {
+      throw new IterationConflictError(data.groupId, data.iterationNumber);
+    }
+    const row = this.buildIterationRow(data);
+    this.iterationsMap.set(row.id, row);
+    return row;
+  }
+
+  async getIterations(groupId: string, query: IterationListQuery): Promise<TaskGroupIterationRow[]> {
+    const limit = Math.min(query.limit, TASK_GROUP_V2_MAX_LIMIT);
+    const sorted = Array.from(this.iterationsMap.values())
+      .filter((it) => it.groupId === groupId)
+      .sort((a, b) => b.iterationNumber - a.iterationNumber); // desc
+    const filtered = query.cursor
+      ? sorted.filter((it) => it.iterationNumber < query.cursor!.iterationNumber)
+      : sorted;
+    return filtered.slice(0, limit);
+  }
+
+  async getIteration(groupId: string, iterationNumber: number): Promise<TaskGroupIterationRow | undefined> {
+    for (const it of this.iterationsMap.values()) {
+      if (it.groupId === groupId && it.iterationNumber === iterationNumber) return it;
+    }
+    return undefined;
+  }
+
+  async getLatestIteration(groupId: string): Promise<TaskGroupIterationRow | undefined> {
+    let latest: TaskGroupIterationRow | undefined;
+    for (const it of this.iterationsMap.values()) {
+      if (it.groupId !== groupId) continue;
+      if (!latest || it.iterationNumber > latest.iterationNumber) latest = it;
+    }
+    return latest;
+  }
+
+  async updateIteration(id: string, updates: Partial<TaskGroupIterationRow>): Promise<TaskGroupIterationRow> {
+    const existing = this.iterationsMap.get(id);
+    if (!existing) throw new Error(`Iteration ${id} not found`);
+    const updated = { ...existing, ...updates };
+    this.iterationsMap.set(id, updated);
+    return updated;
+  }
+
+  async createIterationWithExecutions(
+    groupId: string,
+    start: IterationStartInput,
+    seeds: IterationExecutionSeed[],
+  ): Promise<{ iteration: TaskGroupIterationRow; executions: TaskExecutionRow[] }> {
+    // All-or-nothing: reject the duplicate-N race BEFORE writing anything.
+    if (this.iterationExists(groupId, start.iterationNumber)) {
+      throw new IterationConflictError(groupId, start.iterationNumber);
+    }
+    const iteration = this.buildIterationRow({
+      groupId,
+      iterationNumber: start.iterationNumber,
+      status: "running",
+      input: start.input,
+      triggeredBy: start.triggeredBy ?? null,
+      traceId: start.traceId ?? null,
+      startedAt: new Date(),
+    });
+    const executions: TaskExecutionRow[] = seeds.map((seed) =>
+      this.buildExecutionRow({
+        iterationId: iteration.id,
+        taskId: seed.taskId,
+        taskName: seed.taskName,
+        groupId,
+        status: seed.status,
+        modelSlug: seed.modelSlug ?? null,
+      }),
+    );
+    // Commit only after every row is built (no partial state on a build throw).
+    this.iterationsMap.set(iteration.id, iteration);
+    for (const ex of executions) this.executionsMap.set(ex.id, ex);
+    return { iteration, executions };
+  }
+
+  private buildExecutionRow(data: InsertTaskExecution): TaskExecutionRow {
+    return {
+      id: randomUUID(),
+      iterationId: data.iterationId,
+      taskId: data.taskId ?? null,
+      taskName: data.taskName ?? null,
+      groupId: data.groupId,
+      status: (data.status as TaskStatus) ?? "pending",
+      output: data.output ?? null,
+      summary: data.summary ?? null,
+      artifacts: (data.artifacts as Record<string, unknown>[]) ?? null,
+      decisions: (data.decisions as string[]) ?? null,
+      errorMessage: data.errorMessage ?? null,
+      modelSlug: data.modelSlug ?? null,
+      pipelineRunId: data.pipelineRunId ?? null,
+      startedAt: data.startedAt ?? null,
+      completedAt: data.completedAt ?? null,
+      createdAt: new Date(),
+    };
+  }
+
+  async createExecution(data: InsertTaskExecution): Promise<TaskExecutionRow> {
+    // Null task_id rows are historical (definition deleted) — PG treats nulls as
+    // DISTINCT, so they never collide; only dedup live (non-null) definitions.
+    if (data.taskId != null && this.executionExists(data.iterationId, data.taskId)) {
+      throw new Error(
+        `Execution already exists for iteration ${data.iterationId} task ${data.taskId}`,
+      );
+    }
+    const row = this.buildExecutionRow(data);
+    this.executionsMap.set(row.id, row);
+    return row;
+  }
+
+  async getExecutionsByIteration(groupId: string, iterationId: string): Promise<TaskExecutionRow[]> {
+    // MF-1: group is a mandatory scope key — never trust a bare iterationId.
+    return Array.from(this.executionsMap.values())
+      .filter((ex) => ex.iterationId === iterationId && ex.groupId === groupId)
+      .sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0));
+  }
+
+  async getExecution(groupId: string, executionId: string): Promise<TaskExecutionRow | undefined> {
+    // MF-1: a row whose groupId !== the authorized group is invisible (no leak).
+    const row = this.executionsMap.get(executionId);
+    if (!row || row.groupId !== groupId) return undefined;
+    return row;
+  }
+
+  async updateExecution(id: string, updates: Partial<TaskExecutionRow>): Promise<TaskExecutionRow> {
+    const existing = this.executionsMap.get(id);
+    if (!existing) throw new Error(`Execution ${id} not found`);
+    const updated = { ...existing, ...updates };
+    this.executionsMap.set(id, updated);
+    return updated;
+  }
+
+  async getVirtualIteration(groupId: string): Promise<VirtualIteration | null> {
+    const group = this.taskGroupsMap.get(groupId);
+    if (!group) return null;
+    // Only synthesize when there are NO real iterations (MF-5 / §8 lazy adapter).
+    for (const it of this.iterationsMap.values()) {
+      if (it.groupId === groupId) return null;
+    }
+    return buildVirtualIteration(group, await this.getTasksByGroup(groupId));
+  }
+
+  async getTaskTraceByIteration(groupId: string, iterationId: string): Promise<TaskTraceRow | null> {
+    // MF-3: scope by group AND iteration; the trace must belong to both.
+    for (const tr of this.taskTracesMap.values()) {
+      if (tr.iterationId === iterationId && tr.groupId === groupId) return tr;
+    }
+    return null;
+  }
+
+  // ─── Task Templates (Library) ───────────────────────────────────────────────
+
+  async getTaskTemplates(query: TaskTemplateListQuery): Promise<TaskTemplateRow[]> {
+    const limit = Math.min(query.limit, TASK_GROUP_V2_MAX_LIMIT);
+    let rows = Array.from(this.taskTemplatesMap.values());
+    // MF-4: apply the ownership filter BEFORE the label match.
+    if (!query.isAdmin && query.ownerId != null) {
+      rows = rows.filter((t) => t.createdBy === query.ownerId);
+    }
+    if (query.label != null) {
+      rows = rows.filter((t) => t.labels.includes(query.label!));
+    }
+    rows.sort((a, b) => {
+      const ta = a.createdAt?.getTime() ?? 0;
+      const tb = b.createdAt?.getTime() ?? 0;
+      if (ta !== tb) return tb - ta; // createdAt desc
+      return b.id.localeCompare(a.id); // id desc
+    });
+    if (query.cursor) {
+      const cTs = new Date(query.cursor.createdAt).getTime();
+      const cId = query.cursor.id;
+      rows = rows.filter((t) => {
+        const rt = t.createdAt?.getTime() ?? 0;
+        if (rt < cTs) return true;
+        if (rt > cTs) return false;
+        return t.id.localeCompare(cId) < 0;
+      });
+    }
+    return rows.slice(0, limit);
+  }
+
+  async getTaskTemplate(id: string): Promise<TaskTemplateRow | undefined> {
+    return this.taskTemplatesMap.get(id);
+  }
+
+  async createTaskTemplate(data: InsertTaskTemplate): Promise<TaskTemplateRow> {
+    const now = new Date();
+    const row: TaskTemplateRow = {
+      id: randomUUID(),
+      name: data.name,
+      description: data.description,
+      executionMode: (data.executionMode as TaskExecutionMode) ?? "direct_llm",
+      pipelineId: data.pipelineId ?? null,
+      modelSlug: data.modelSlug ?? null,
+      teamId: data.teamId ?? null,
+      input: (data.input as Record<string, unknown>) ?? {},
+      labels: (data.labels as string[]) ?? [],
+      createdBy: data.createdBy ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.taskTemplatesMap.set(row.id, row);
+    return row;
+  }
+
+  async updateTaskTemplate(id: string, updates: Partial<TaskTemplateRow>): Promise<TaskTemplateRow> {
+    const existing = this.taskTemplatesMap.get(id);
+    if (!existing) throw new Error(`TaskTemplate ${id} not found`);
+    const updated: TaskTemplateRow = { ...existing, ...updates, updatedAt: new Date() };
+    this.taskTemplatesMap.set(id, updated);
+    return updated;
+  }
+
+  async deleteTaskTemplate(id: string): Promise<void> {
+    this.taskTemplatesMap.delete(id);
+    // FK set-null: a copied-in definition keeps living, provenance soft-cleared.
+    for (const [tid, t] of this.tasksMap) {
+      if (t.templateId === id) this.tasksMap.set(tid, { ...t, templateId: null });
+    }
   }
 
 }

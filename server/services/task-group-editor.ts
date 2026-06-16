@@ -6,15 +6,20 @@
  * validateBody → delegate). Mirrors how create/start/cancel delegate to the
  * orchestrator.
  *
- * Edit matrix (H2):
- *   pending   → name/description/input + tasks (add/remove/patch) all editable;
- *   running   → every edit 409 (mutating mid-run corrupts the execution record);
- *   terminal  → only name/description relabel; input + tasks 409.
+ * Edit matrix (task-groups-v2 §4.2 — "editable when NO iteration is running"):
+ *   not running → name/description/input + tasks (add/remove/patch) all editable
+ *                 (a terminal group is editable again to set up the next run;
+ *                 input edits affect the NEXT iteration, which snapshots it);
+ *   running     → every edit 409 (mutating mid-run corrupts the execution record).
  *
- * TOCTOU: each method RE-READS the group immediately before persisting and
- * re-checks `status === "pending"` (for task/input edits). The route authorizes
- * then delegates synchronously, so this re-read is the persist-time guard
- * against a concurrent `startGroup` flipping the status between auth and write.
+ * "running" = the LATEST iteration's status === "running"; for a pre-v2 group with
+ * no iteration rows it falls back to the group row's own status (legacy parity).
+ *
+ * TOCTOU: each mutating method RE-READS the group + latest iteration immediately
+ * before persisting and re-checks running-ness. The route authorizes then
+ * delegates synchronously, so this re-read is the persist-time guard against a
+ * concurrent `startGroup` flipping the latest iteration to running between auth
+ * and write.
  *
  * Errors are thrown as `TaskGroupEditError` carrying an HTTP status so the route
  * maps them generically (404 missing / 409 not-pending / 400 invalid graph).
@@ -24,6 +29,8 @@
 import type { IStorage } from "../storage";
 import type { TaskGroupRow, TaskRow, InsertTask } from "@shared/schema";
 import { validateTaskGraph } from "./task-graph.js";
+import type { VisibilityUser } from "../routes/authorize-run";
+import { composeTemplateFields } from "./task-template-compose.js";
 
 /** An edit-layer error that maps to a specific HTTP status in the route. */
 export class TaskGroupEditError extends Error {
@@ -64,6 +71,10 @@ export interface NewTaskInput {
   teamId?: string;
   input?: Record<string, unknown>;
   sortOrder?: number;
+  /** Add-from-template (§5.3/§6 COPY-IN): copy this template's fields into the new task. */
+  templateId?: string;
+  /** The caller, used to owner-check the composed template ONCE at compose time. */
+  composeUser?: VisibilityUser;
 }
 
 export class TaskGroupEditor {
@@ -91,19 +102,13 @@ export class TaskGroupEditor {
    */
   async updateGroup(groupId: string, patch: GroupPatch): Promise<TaskGroupRow> {
     const group = await this.requireGroup(groupId);
-    const wantsInput = patch.input !== undefined;
-
-    if (group.status === "running") {
-      throw new TaskGroupEditError(409, "Cannot edit a running task group");
-    }
-    if (group.status !== "pending" && wantsInput) {
-      throw new TaskGroupEditError(409, "Cannot edit input after the group has started");
-    }
+    // v2: input is editable between runs (the next iteration snapshots it).
+    await this.assertNotRunning(group);
 
     const updates: Partial<TaskGroupRow> = {};
     if (patch.name !== undefined) updates.name = patch.name;
     if (patch.description !== undefined) updates.description = patch.description;
-    if (wantsInput) updates.input = patch.input;
+    if (patch.input !== undefined) updates.input = patch.input;
 
     return this.storage.updateTaskGroup(groupId, updates);
   }
@@ -112,7 +117,7 @@ export class TaskGroupEditor {
   async updateTask(groupId: string, taskId: string, patch: TaskPatch): Promise<TaskRow> {
     const group = await this.requireGroup(groupId);
     await this.requireTaskInGroup(groupId, taskId);
-    this.assertPending(group);
+    await this.assertNotRunning(group);
 
     const updates: Partial<TaskRow> = {};
     if (patch.name !== undefined) updates.name = patch.name;
@@ -135,10 +140,15 @@ export class TaskGroupEditor {
     return this.storage.updateTask(taskId, updates);
   }
 
-  /** POST a new task — pending-only, DAG-validated, sortOrder = max+1 default. */
+  /**
+   * POST a new task — pending-only, DAG-validated, sortOrder = max+1 default.
+   * When `templateId` is set, COPY-IN the template's fields (§5.3/§6): the
+   * template is owner-checked ONCE here at compose time and `template_id` records
+   * provenance; explicit per-task fields override the template's where provided.
+   */
   async addTask(groupId: string, input: NewTaskInput): Promise<TaskRow> {
     const group = await this.requireGroup(groupId);
-    this.assertPending(group);
+    await this.assertNotRunning(group);
 
     const dependsOn = [...(input.dependsOn ?? [])];
     const siblings = await this.storage.getTasksByGroup(groupId);
@@ -154,20 +164,59 @@ export class TaskGroupEditor {
 
     const maxSort = siblings.reduce((m, s) => Math.max(m, s.sortOrder), -1);
     const status = dependsOn.length === 0 ? "ready" : "blocked";
+    const fields = await this.resolveTaskFields(input);
 
     return this.storage.createTask({
       groupId,
       name: input.name,
       description: input.description,
-      executionMode: input.executionMode ?? "direct_llm",
+      executionMode: fields.executionMode,
       dependsOn,
-      pipelineId: input.pipelineId ?? null,
-      modelSlug: input.modelSlug ?? null,
-      teamId: input.teamId ?? null,
-      input: input.input ?? {},
+      pipelineId: fields.pipelineId,
+      modelSlug: fields.modelSlug,
+      teamId: fields.teamId,
+      input: fields.input,
+      labels: fields.labels,
+      templateId: fields.templateId,
       sortOrder: input.sortOrder ?? maxSort + 1,
       status,
     } as InsertTask);
+  }
+
+  /**
+   * Resolve a new task's copy-in fields. No `templateId` → manual fields verbatim.
+   * Otherwise COPY-IN the template (owner-checked once); explicit fields win.
+   */
+  private async resolveTaskFields(input: NewTaskInput): Promise<{
+    executionMode: "pipeline_run" | "direct_llm";
+    pipelineId: string | null;
+    modelSlug: string | null;
+    teamId: string | null;
+    input: Record<string, unknown>;
+    labels: string[];
+    templateId: string | null;
+  }> {
+    if (!input.templateId) {
+      return {
+        executionMode: input.executionMode ?? "direct_llm",
+        pipelineId: input.pipelineId ?? null,
+        modelSlug: input.modelSlug ?? null,
+        teamId: input.teamId ?? null,
+        input: input.input ?? {},
+        labels: [],
+        templateId: null,
+      };
+    }
+    const tpl = await composeTemplateFields(this.storage, input.templateId, input.composeUser);
+    return {
+      executionMode: input.executionMode ?? tpl.executionMode,
+      pipelineId: input.pipelineId ?? tpl.pipelineId,
+      modelSlug: input.modelSlug ?? tpl.modelSlug,
+      teamId: input.teamId ?? tpl.teamId,
+      input: input.input ?? tpl.input,
+      labels: tpl.labels,
+      templateId: tpl.templateId,
+    };
   }
 
   /**
@@ -177,7 +226,7 @@ export class TaskGroupEditor {
   async removeTask(groupId: string, taskId: string): Promise<void> {
     const group = await this.requireGroup(groupId);
     await this.requireTaskInGroup(groupId, taskId);
-    this.assertPending(group);
+    await this.assertNotRunning(group);
 
     await this.storage.deleteTask(taskId);
 
@@ -206,9 +255,18 @@ export class TaskGroupEditor {
 
   // ─── internals ────────────────────────────────────────────────────────────
 
-  private assertPending(group: TaskGroupRow): void {
-    if (group.status !== "pending") {
-      throw new TaskGroupEditError(409, "Task group can only be edited while pending");
+  /**
+   * Throw 409 iff an iteration is actively running (task-groups-v2 §4.2). This is
+   * the persist-time TOCTOU guard: it RE-READS the latest iteration immediately
+   * before the caller writes, so a concurrent `startGroup` between auth and write
+   * is caught. Falls back to the group row\'s own status for pre-v2 groups that
+   * have no iteration rows yet (legacy parity).
+   */
+  private async assertNotRunning(group: TaskGroupRow): Promise<void> {
+    const latest = await this.storage.getLatestIteration(group.id);
+    const effectiveStatus = latest?.status ?? group.status;
+    if (effectiveStatus === "running") {
+      throw new TaskGroupEditError(409, "Cannot edit while an iteration is running");
     }
   }
 

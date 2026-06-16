@@ -41,10 +41,28 @@ export interface TaskTraceData {
   updatedAt: string;
 }
 
-export function useTaskTrace(groupId: string) {
+/**
+ * Fetch a task-group trace. When `iterationNumber` is provided, target the
+ * per-iteration trace (`…/iterations/:n/trace`, owner-gated + cross-group
+ * re-checked); otherwise the legacy group-level trace (`…/trace`, which aliases
+ * the latest iteration server-side). The waterfall rendering is identical for
+ * both — only the source endpoint differs (FE1/FE2).
+ */
+export function useTaskTrace(
+  groupId: string,
+  iterationNumber?: number | null,
+) {
+  const hasIteration =
+    typeof iterationNumber === "number" && iterationNumber >= 1;
+  const url = hasIteration
+    ? `/api/task-groups/${groupId}/iterations/${iterationNumber}/trace`
+    : `/api/task-groups/${groupId}/trace`;
+
   return useQuery<TaskTraceData>({
-    queryKey: ["/api/task-groups", groupId, "trace"],
-    queryFn: () => apiRequest("GET", `/api/task-groups/${groupId}/trace`),
+    queryKey: hasIteration
+      ? ["/api/task-groups", groupId, "iterations", iterationNumber, "trace"]
+      : ["/api/task-groups", groupId, "trace"],
+    queryFn: () => apiRequest("GET", url) as Promise<TaskTraceData>,
     enabled: !!groupId,
     refetchInterval: 3000,
   });

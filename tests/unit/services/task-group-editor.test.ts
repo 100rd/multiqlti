@@ -1,7 +1,9 @@
 /**
- * Unit tests for server/services/task-group-editor.ts — the pending-only edit
- * orchestration (group fields, per-task fields, add/remove, dependsOn rewrite +
- * status recompute), DAG-validated and TOCTOU-guarded against a concurrent start.
+ * Unit tests for server/services/task-group-editor.ts — the v2 editable-when-not-
+ * running edit orchestration (group fields, per-task fields, add/remove, dependsOn
+ * rewrite + status recompute), DAG-validated and TOCTOU-guarded against a
+ * concurrent start. A group is editable unless its latest iteration (or, for
+ * pre-v2 groups with none, the group row) is running.
  */
 import { describe, it, expect, beforeEach } from "vitest";
 import { MemStorage } from "../../../server/storage.js";
@@ -65,11 +67,10 @@ describe("TaskGroupEditor.updateGroup", () => {
     expect(updated.name).toBe("relabel");
   });
 
-  it("409s when editing input on a completed group", async () => {
+  it("v2: allows editing input on a completed group (configurable between runs)", async () => {
     const g = await seedGroup(storage, "completed");
-    await expect(editor.updateGroup(g.id, { input: "nope" })).rejects.toMatchObject({
-      status: 409,
-    });
+    const updated = await editor.updateGroup(g.id, { input: "next-run" });
+    expect(updated.input).toBe("next-run");
   });
 
   it("409s for ANY field when the group is running", async () => {
@@ -167,8 +168,14 @@ describe("TaskGroupEditor.addTask", () => {
     expect(created.status).toBe("blocked");
   });
 
-  it("409s when the group is not pending", async () => {
+  it("v2: allows adding a task on a completed group (editable between runs)", async () => {
     const g = await seedGroup(storage, "completed");
+    const task = await editor.addTask(g.id, { name: "c", description: "d" });
+    expect(task.status).toBe("ready");
+  });
+
+  it("409s when adding a task while the group is running", async () => {
+    const g = await seedGroup(storage, "running");
     await expect(editor.addTask(g.id, { name: "c", description: "d" })).rejects.toMatchObject({
       status: 409,
     });

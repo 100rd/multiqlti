@@ -14,6 +14,9 @@ import type { Router } from "express";
 import { MemStorage } from "../../server/storage.js";
 import { TaskOrchestrator } from "../../server/services/task-orchestrator.js";
 import { registerTaskGroupRoutes } from "../../server/routes/task-groups.js";
+import { registerTaskIterationRoutes } from "../../server/routes/task-iterations.js";
+import { registerTaskTemplateRoutes } from "../../server/routes/task-templates.js";
+import { registerTaskTraceRoutes } from "../../server/routes/task-traces.js";
 import type { WsManager } from "../../server/ws/manager.js";
 import type { PipelineController } from "../../server/controller/pipeline-controller.js";
 import type { Gateway } from "../../server/gateway/index.js";
@@ -82,6 +85,9 @@ export function createTaskGroupTestApp(opts: TaskGroupTestAppOptions = {}): Task
   });
 
   registerTaskGroupRoutes(app as unknown as Router, storage, orchestrator);
+  registerTaskIterationRoutes(app as unknown as Router, storage);
+  registerTaskTemplateRoutes(app as unknown as Router, storage);
+  registerTaskTraceRoutes(app as unknown as import("express").Express, storage);
 
   return { app, storage, orchestrator, userId };
 }

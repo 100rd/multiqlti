@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Plus, Wand2, ExternalLink } from "lucide-react";
+import { ArrowLeft, Plus, Wand2, ExternalLink, BookMarked } from "lucide-react";
 import { Link } from "wouter";
 import {
   TaskRow,
@@ -20,11 +20,14 @@ import {
   addTaskToList,
   removeTaskFromList,
   updateTaskInList,
+  seedTasksFromTemplates,
   type TaskDraft,
   type GroupDraft,
   type SiblingOption,
   type ModelOption,
+  type TemplateSeed,
 } from "@/components/task-groups/task-form";
+import { TemplatePicker } from "@/components/task-groups/template-picker";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -322,6 +325,11 @@ export default function CreateTaskGroup() {
   const [tasks, setTasks] = useState<TaskDraft[]>([emptyTask()]);
   const [submitted, setSubmitted] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  function seedFromLibrary(templates: TemplateSeed[]) {
+    setTasks((prev) => seedTasksFromTemplates(prev, templates));
+  }
 
   const errors = validate(group, tasks);
 
@@ -364,6 +372,9 @@ export default function CreateTaskGroup() {
           // Omit modelSlug when unset so the SERVER applies its real default
           // (pipeline.taskGroups.defaultModel) — never coerce to "mock".
           ...(t.modelSlug ? { modelSlug: t.modelSlug } : {}),
+          // COPY-IN provenance: when seeded from a template the server re-copies
+          // the template's fields authoritatively and stamps tasks.template_id.
+          ...(t.templateId ? { templateId: t.templateId } : {}),
         })),
       });
       const created = result as { id: string };
@@ -473,16 +484,35 @@ export default function CreateTaskGroup() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="text-base font-semibold">Tasks</h2>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setTasks((prev) => addTaskToList(prev))}
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                Add task
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPickerOpen((v) => !v)}
+                  aria-expanded={pickerOpen}
+                >
+                  <BookMarked className="h-4 w-4 mr-2" />
+                  Add from library
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setTasks((prev) => addTaskToList(prev))}
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add task
+                </Button>
+              </div>
             </div>
+
+            {pickerOpen && (
+              <TemplatePicker
+                onAdd={seedFromLibrary}
+                onClose={() => setPickerOpen(false)}
+              />
+            )}
 
             {submitted && errors.tasks && (
               <p className="text-xs text-red-500">{errors.tasks}</p>

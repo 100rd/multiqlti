@@ -131,3 +131,63 @@ export function formatDuration(ms: number | null): string {
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${(ms / 60_000).toFixed(1)}m`;
 }
+
+// ─── Execution-row adapter (task-groups-v2 FE5) ────────────────────────────────
+/**
+ * The per-iteration execution shape returned by `GET …/iterations/:n`
+ * (`executions: TaskExecutionRow[]`, JSON-serialized). One row per task DEFINITION
+ * × iteration. It carries the RESOLVED model slug (the #375 default result) and a
+ * denormalized `taskName` that survives a later definition delete (task_id → null),
+ * so the timeline stays readable for historical iterations. Unlike a `tasks`
+ * definition row it has no `executionMode`/`teamId`/`sortOrder`.
+ */
+export interface ExecutionRowInput {
+  /** Execution id (stable per definition × iteration). */
+  id: string;
+  /** The DEFINITION id this execution ran (null once the definition was deleted). */
+  taskId?: string | null;
+  /** Denormalized definition name, captured at execution-creation time. */
+  taskName?: string | null;
+  status: string;
+  modelSlug?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
+/** Fallback label when an execution's definition was deleted and carried no name. */
+const UNNAMED_EXECUTION = "(removed task)";
+
+/**
+ * Adapt one execution row to the timeline's task-input shape so iteration
+ * executions render through the SAME `buildTimeline` as today's definition rows.
+ * The execution id is the stable timeline key; `taskName` becomes the row name
+ * (falling back to a placeholder for a deleted definition). Executions have no
+ * sortOrder, so unstarted executions fall back to authored order 0 (the started
+ * ones still sort by startedAt). Pure; never mutates its input.
+ */
+export function executionToTimelineInput(
+  exec: ExecutionRowInput,
+): TimelineTaskInput {
+  return {
+    id: exec.id,
+    name: exec.taskName?.trim() || UNNAMED_EXECUTION,
+    status: exec.status,
+    executionMode: null,
+    modelSlug: exec.modelSlug ?? null,
+    teamId: null,
+    sortOrder: 0,
+    startedAt: exec.startedAt ?? null,
+    completedAt: exec.completedAt ?? null,
+  };
+}
+
+/**
+ * Build the timeline directly from iteration executions. A thin convenience over
+ * `buildTimeline(executions.map(executionToTimelineInput))` so the page can point
+ * the existing timeline at an iteration's executions verbatim.
+ */
+export function buildTimelineFromExecutions(
+  executions: readonly ExecutionRowInput[],
+): TimelineEntry[] {
+  return buildTimeline(executions.map(executionToTimelineInput));
+}

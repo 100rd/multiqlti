@@ -284,6 +284,12 @@ export const ConfigSchema = z.object({
     taskGroups: z.object({
       /** Real default model for model-less direct_llm tasks. NEVER "mock". */
       defaultModel: z.string().min(1).default(DEFAULT_TASK_MODEL),
+      /**
+       * Soft cost cap (R3/SF-3): max iterations a single group may run. `0` =
+       * unlimited (the local single-user MVP default; re-runs are deliberate
+       * clicks). When >0, `POST /:id/start` returns 409 once the cap is reached.
+       */
+      maxIterationsPerGroup: z.number().int().min(0).default(0),
     }).default({}),
   }).default({}),
 });
