@@ -1,5 +1,16 @@
 import { z } from "zod";
 
+/**
+ * Default model slug for direct_llm task-group tasks created WITHOUT an explicit
+ * model. Must be a REAL, active subscription-CLI slug — NEVER "mock". A "mock"
+ * default makes task groups "complete" instantly with canned garbage at cost 0
+ * (fix/task-group-real-model-execution); kept in sync with the pipeline defaults
+ * re-pointed off the disabled local models in PR #363 (claude-sonnet). Used as
+ * the zod default for `pipeline.taskGroups.defaultModel` below so the orchestrator
+ * resolves a working model when a task has no `modelSlug`.
+ */
+export const DEFAULT_TASK_MODEL = "claude-sonnet";
+
 export const ConfigSchema = z.object({
   server: z.object({
     port: z.number().int().min(1).max(65535).default(5000),
@@ -261,6 +272,18 @@ export const ConfigSchema = z.object({
       overallTimeoutMs: z.coerce.number().int().min(10_000).max(3_600_000).default(1_800_000),
       /** Per-voter / per-turn timeout. 1s..10min (90s default). */
       voterTimeoutMs: z.coerce.number().int().min(1_000).max(600_000).default(90_000),
+    }).default({}),
+    /**
+     * Task-group (multi-task) execution. `defaultModel` is the slug applied to a
+     * `direct_llm` task created WITHOUT an explicit `modelSlug`. It MUST resolve
+     * to a real, active model — NEVER "mock" — otherwise the group "completes"
+     * instantly with the MockProvider canned stub at cost 0
+     * (fix/task-group-real-model-execution). Defaults to the same working
+     * subscription CLI the pipeline defaults use (PR #363).
+     */
+    taskGroups: z.object({
+      /** Real default model for model-less direct_llm tasks. NEVER "mock". */
+      defaultModel: z.string().min(1).default(DEFAULT_TASK_MODEL),
     }).default({}),
   }).default({}),
 });

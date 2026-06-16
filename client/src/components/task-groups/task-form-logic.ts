@@ -13,12 +13,24 @@ import type { TaskGroupStatus } from "@shared/types";
 
 export type ExecutionMode = "direct_llm" | "pipeline_run";
 
+/**
+ * Sentinel for "no explicit model" in the per-task model picker. Empty string
+ * (Radix Select cannot use "" as an item value) would be ambiguous, so the
+ * unset state is carried as `null` on the draft and rendered as the
+ * DEFAULT_MODEL_OPTION item. On submit, a `null` modelSlug is omitted from the
+ * payload so the SERVER applies its real default (pipeline.taskGroups.defaultModel)
+ * — it must NEVER coerce to "mock".
+ */
+export const DEFAULT_MODEL_OPTION = "__default__";
+
 export interface TaskDraft {
   id: string;
   name: string;
   description: string;
   executionMode: ExecutionMode;
   dependsOn: string[];
+  /** Pinned model slug, or null to use the server's real default. */
+  modelSlug: string | null;
 }
 
 export interface GroupDraft {
@@ -40,6 +52,7 @@ export function emptyTask(): TaskDraft {
     description: "",
     executionMode: "direct_llm",
     dependsOn: [],
+    modelSlug: null,
   };
 }
 
@@ -71,6 +84,15 @@ export function toggleDependency(task: TaskDraft, depId: string): TaskDraft {
     ? task.dependsOn.filter((d) => d !== depId)
     : [...task.dependsOn, depId];
   return { ...task, dependsOn: next };
+}
+
+/**
+ * Set a task's pinned model slug, immutably. The DEFAULT_MODEL_OPTION sentinel
+ * (or any falsy value) clears the pin back to `null` so the server default wins.
+ */
+export function setTaskModel(task: TaskDraft, slug: string): TaskDraft {
+  const next = !slug || slug === DEFAULT_MODEL_OPTION ? null : slug;
+  return { ...task, modelSlug: next };
 }
 
 /** Replace one task in the list by id, immutably. */

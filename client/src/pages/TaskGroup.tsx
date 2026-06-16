@@ -31,6 +31,7 @@ import {
   editErrorMessage,
 } from "@/hooks/use-task-groups";
 import { useTaskGroupEvents } from "@/hooks/use-task-events";
+import { useActiveModels } from "@/hooks/use-pipeline";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -67,6 +68,7 @@ import {
   type GroupDraft,
   type SiblingOption,
   type ExecutionMode,
+  type ModelOption,
 } from "@/components/task-groups/task-form";
 import {
   buildTimeline,
@@ -198,6 +200,8 @@ function EditForm({ groupId, group, fullEdit, onDone }: EditFormProps) {
   const updateTask = useUpdateTask(groupId);
   const addTask = useAddTask(groupId);
   const deleteTask = useDeleteTask(groupId);
+  const modelsQuery = useActiveModels();
+  const models = (modelsQuery.data ?? []) as ModelOption[];
 
   const [draft, setDraft] = useState<GroupDraft>({
     name: group.name,
@@ -215,6 +219,7 @@ function EditForm({ groupId, group, fullEdit, onDone }: EditFormProps) {
         description: t.description,
         executionMode: asExecutionMode(t.executionMode),
         dependsOn: t.dependsOn ?? [],
+        modelSlug: t.modelSlug ?? null,
       })),
   );
   // Track which task ids existed on the server so we PATCH vs POST correctly.
@@ -278,6 +283,8 @@ function EditForm({ groupId, group, fullEdit, onDone }: EditFormProps) {
             // final graph (cycle / dangling → 400).
             dependsOn: t.dependsOn,
             sortOrder: i,
+            // null clears any pin so the server applies its real default (never "mock").
+            modelSlug: t.modelSlug,
           };
           if (serverTaskIds.has(t.id)) {
             await updateTask.mutateAsync({ taskId: t.id, ...payload });
@@ -392,6 +399,7 @@ function EditForm({ groupId, group, fullEdit, onDone }: EditFormProps) {
                   task={task}
                   index={index}
                   siblings={siblings}
+                  models={models}
                   onChange={(updated) => changeTask(task.id, updated)}
                   onRemove={() => removeTask(task.id)}
                   disabled={anyPending}

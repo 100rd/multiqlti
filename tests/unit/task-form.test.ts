@@ -15,6 +15,8 @@ import {
   isGroupEditable,
   isGroupRelabelOnly,
   toggleDependency,
+  setTaskModel,
+  DEFAULT_MODEL_OPTION,
   addTaskToList,
   removeTaskFromList,
   updateTaskInList,
@@ -40,6 +42,7 @@ function task(overrides: Partial<TaskDraft> = {}): TaskDraft {
     description: overrides.description ?? "Do a thing",
     executionMode: overrides.executionMode ?? "direct_llm",
     dependsOn: overrides.dependsOn ?? [],
+    modelSlug: overrides.modelSlug ?? null,
   };
 }
 
@@ -93,6 +96,72 @@ describe("toggleDependency", () => {
     const t = task({ dependsOn: ["a", "b"] });
     expect(toggleDependency(t, "a").dependsOn).toEqual(["b"]);
     expect(toggleDependency(t, "c").dependsOn).toEqual(["a", "b", "c"]);
+  });
+});
+
+// ─── per-task model (setTaskModel + emptyTask default + reducer preservation) ───
+
+describe("emptyTask", () => {
+  it("starts with no pinned model (null → server default, never mock)", () => {
+    expect(emptyTask().modelSlug).toBeNull();
+  });
+});
+
+describe("setTaskModel", () => {
+  it("pins an explicit slug immutably", () => {
+    const t = task({ modelSlug: null });
+    const next = setTaskModel(t, "claude-sonnet");
+    expect(next.modelSlug).toBe("claude-sonnet");
+    expect(t.modelSlug).toBeNull(); // original untouched
+  });
+
+  it("clears the pin back to null on the DEFAULT_MODEL_OPTION sentinel", () => {
+    const t = task({ modelSlug: "claude-opus" });
+    expect(setTaskModel(t, DEFAULT_MODEL_OPTION).modelSlug).toBeNull();
+  });
+
+  it("treats an empty slug as 'unset' (null, never coerced to mock)", () => {
+    const t = task({ modelSlug: "claude-haiku" });
+    expect(setTaskModel(t, "").modelSlug).toBeNull();
+  });
+
+  it("preserves all other task fields", () => {
+    const t = task({ id: "x", name: "N", dependsOn: ["d1"] });
+    const next = setTaskModel(t, "claude-sonnet");
+    expect(next.id).toBe("x");
+    expect(next.name).toBe("N");
+    expect(next.dependsOn).toEqual(["d1"]);
+  });
+});
+
+describe("reducers preserve modelSlug", () => {
+  it("addTaskToList keeps existing pins and adds an unpinned task", () => {
+    const list = [task({ id: "a", modelSlug: "claude-opus" })];
+    const next = addTaskToList(list);
+    expect(next[0].modelSlug).toBe("claude-opus");
+    expect(next[1].modelSlug).toBeNull();
+  });
+
+  it("updateTaskInList carries the updated task's pinned model", () => {
+    const list = [task({ id: "a", modelSlug: null }), task({ id: "b" })];
+    const next = updateTaskInList(list, "a", setTaskModel(list[0], "claude-sonnet"));
+    expect(next[0].modelSlug).toBe("claude-sonnet");
+    expect(next[1].modelSlug).toBeNull();
+  });
+
+  it("toggleDependency does not disturb the pinned model", () => {
+    const t = task({ modelSlug: "claude-sonnet", dependsOn: [] });
+    expect(toggleDependency(t, "d1").modelSlug).toBe("claude-sonnet");
+  });
+
+  it("removeTaskFromList preserves surviving siblings' pins", () => {
+    const list = [
+      task({ id: "a", modelSlug: "claude-opus" }),
+      task({ id: "b", modelSlug: "claude-haiku", dependsOn: ["a"] }),
+    ];
+    const next = removeTaskFromList(list, "a");
+    expect(next).toHaveLength(1);
+    expect(next[0].modelSlug).toBe("claude-haiku");
   });
 });
 

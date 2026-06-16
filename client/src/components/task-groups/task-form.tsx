@@ -23,6 +23,8 @@ import { Badge } from "@/components/ui/badge";
 import { Trash2 } from "lucide-react";
 import {
   toggleDependency,
+  setTaskModel,
+  DEFAULT_MODEL_OPTION,
   type TaskDraft,
   type SiblingOption,
   type ExecutionMode,
@@ -34,6 +36,8 @@ export {
   isGroupEditable,
   isGroupRelabelOnly,
   toggleDependency,
+  setTaskModel,
+  DEFAULT_MODEL_OPTION,
   updateTaskInList,
   removeTaskFromList,
   addTaskToList,
@@ -50,6 +54,12 @@ export type {
   TaskGroupStatus,
 } from "./task-form-logic";
 
+/** A selectable model for the per-task model picker. */
+export interface ModelOption {
+  slug: string;
+  name: string;
+}
+
 // ─── TaskRow (presentational) ────────────────────────────────────────────────
 
 interface TaskRowProps {
@@ -57,6 +67,8 @@ interface TaskRowProps {
   index: number;
   /** Sibling options for the dependsOn picker (chip = name, toggles id). */
   siblings: readonly SiblingOption[];
+  /** Active models for the per-task model picker (slug → label). */
+  models: readonly ModelOption[];
   onChange: (updated: TaskDraft) => void;
   onRemove: () => void;
   /** When true the row is read-only (no inputs, no remove). */
@@ -67,6 +79,7 @@ export function TaskRow({
   task,
   index,
   siblings,
+  models,
   onChange,
   onRemove,
   disabled = false,
@@ -121,6 +134,31 @@ export function TaskRow({
             </Select>
           </div>
         </div>
+
+        {task.executionMode === "direct_llm" && (
+          <div className="space-y-1">
+            <Label htmlFor={`task-model-${task.id}`}>Model</Label>
+            <Select
+              value={task.modelSlug ?? DEFAULT_MODEL_OPTION}
+              disabled={disabled}
+              onValueChange={(v) => onChange(setTaskModel(task, v))}
+            >
+              <SelectTrigger id={`task-model-${task.id}`} aria-label="Model">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={DEFAULT_MODEL_OPTION}>
+                  Default (server picks an active model)
+                </SelectItem>
+                {models.map((m) => (
+                  <SelectItem key={m.slug} value={m.slug}>
+                    {m.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
 
         <div className="space-y-1">
           <Label htmlFor={`task-desc-${task.id}`}>Description *</Label>
