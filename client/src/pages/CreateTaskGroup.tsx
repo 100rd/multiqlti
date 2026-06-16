@@ -23,6 +23,7 @@ import {
   type TaskDraft,
   type GroupDraft,
   type SiblingOption,
+  type ModelOption,
 } from "@/components/task-groups/task-form";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -308,7 +309,10 @@ function SubmitWorkForm() {
 export default function CreateTaskGroup() {
   const [, navigate] = useLocation();
   const createMutation = useCreateTaskGroup();
+  const modelsQuery = useActiveModels();
   const [viewMode, setViewMode] = useState<ViewMode>("manual");
+
+  const models = (modelsQuery.data ?? []) as ModelOption[];
 
   const [group, setGroup] = useState<GroupDraft>({
     name: "",
@@ -357,6 +361,9 @@ export default function CreateTaskGroup() {
           executionMode: t.executionMode,
           dependsOn: t.dependsOn,
           sortOrder: i,
+          // Omit modelSlug when unset so the SERVER applies its real default
+          // (pipeline.taskGroups.defaultModel) — never coerce to "mock".
+          ...(t.modelSlug ? { modelSlug: t.modelSlug } : {}),
         })),
       });
       const created = result as { id: string };
@@ -496,6 +503,7 @@ export default function CreateTaskGroup() {
                     task={task}
                     index={index}
                     siblings={siblings}
+                    models={models}
                     onChange={(updated) => updateTask(task.id, updated)}
                     onRemove={() => removeTask(task.id)}
                   />

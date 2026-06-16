@@ -5,6 +5,8 @@ import type { Gateway } from "../gateway/index";
 import type { TaskGroupRow, TaskRow, InsertTaskGroup, InsertTask } from "@shared/schema";
 import type { WsEvent, TaskResult } from "@shared/types";
 import type { TaskTracer } from "./task-tracer";
+import { configLoader } from "../config/loader.js";
+import { DEFAULT_TASK_MODEL } from "../config/schema.js";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -300,7 +302,12 @@ export class TaskOrchestrator {
     const traceCtx = this.activeGroupTraces.get(group.id);
     const taskSpanId = traceCtx?.taskSpanIds.get(task.id) ?? "";
     let llmSpanId = "";
-    const modelSlug = task.modelSlug ?? "mock";
+    // A model-less direct_llm task MUST resolve to a REAL model — NEVER "mock"
+    // (a "mock" default makes the group "complete" instantly with canned garbage
+    // at cost 0; fix/task-group-real-model-execution). The default comes from the
+    // pipeline.taskGroups.defaultModel config knob (DEFAULT_TASK_MODEL fallback).
+    const configuredDefault = configLoader.get().pipeline.taskGroups.defaultModel;
+    const modelSlug = task.modelSlug ?? configuredDefault ?? DEFAULT_TASK_MODEL;
 
     if (this.tracer && traceCtx && taskSpanId) {
       try {
