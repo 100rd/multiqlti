@@ -290,6 +290,15 @@ export const ConfigSchema = z.object({
        * clicks). When >0, `POST /:id/start` returns 409 once the cap is reached.
        */
       maxIterationsPerGroup: z.number().int().min(0).default(0),
+      /**
+       * Overall wall-clock cap (ms) for a direct_llm task's gateway call, which
+       * runs via the STREAMING path (deltas drained incrementally). The provider
+       * CLIs default to 120s, far too tight for a strong model (Opus) doing
+       * extended-thinking over a large dependency-output context (a debate round
+       * that sees prior rounds can think ~100s silently before emitting). Default
+       * 10 min; raise for deeper chains. 10s..30min.
+       */
+      taskTimeoutMs: z.coerce.number().int().min(10_000).max(1_800_000).default(600_000),
     }).default({}),
   }).default({}),
 });

@@ -22,15 +22,15 @@ import type { PipelineController } from "../../../server/controller/pipeline-con
 import { MemStorage } from "../../../server/storage.js";
 
 function okGateway(): Gateway {
+  const respond = async (): Promise<GatewayResponse> => ({
+    content: JSON.stringify({ summary: "ok", output: { ok: true } }),
+    tokensUsed: 1,
+    modelSlug: "claude-sonnet",
+    finishReason: "stop",
+  });
   return {
-    async complete(): Promise<GatewayResponse> {
-      return {
-        content: JSON.stringify({ summary: "ok", output: { ok: true } }),
-        tokensUsed: 1,
-        modelSlug: "claude-sonnet",
-        finishReason: "stop",
-      };
-    },
+    complete: respond,
+    completeStreaming: respond,
   } as unknown as Gateway;
 }
 

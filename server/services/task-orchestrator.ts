@@ -518,15 +518,27 @@ export class TaskOrchestrator {
     const systemPrompt = buildSystemPrompt(task, group, iteration, depOutputs);
     const inputContent = typeof task.input === "string" ? task.input : JSON.stringify(task.input);
 
-    const response = await this.gateway.complete({
-      modelSlug,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: inputContent },
-      ],
-      temperature: 0.7,
-      maxTokens: 4096,
-    });
+    // Run via the STREAMING path: a strong model (Opus) reasoning over a large
+    // dependency-output context (a debate round seeing prior rounds) can think
+    // ~100s silently then emit a long answer; the non-streaming CLI buffers the
+    // whole response and gets killed by the wall-clock cap, whereas streaming
+    // drains deltas incrementally. Overall cap is the configurable per-task
+    // timeout; no idle cap so a long initial think is not mistaken for a stall.
+    const taskTimeoutMs = configLoader.get().pipeline.taskGroups.taskTimeoutMs;
+    const response = await this.gateway.completeStreaming(
+      {
+        modelSlug,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: inputContent },
+        ],
+        temperature: 0.7,
+        maxTokens: 4096,
+      },
+      undefined,
+      undefined,
+      { overallTimeoutMs: taskTimeoutMs },
+    );
 
     this.tracing.completeLlmSpan(group.id, llmSpanId, { response, modelSlug, inputContent });
     return parseDirectLlmResponse(response.content);

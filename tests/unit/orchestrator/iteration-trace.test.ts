@@ -17,15 +17,15 @@ import type { Gateway } from "../../../server/gateway/index.js";
 import type { GatewayRequest, GatewayResponse } from "../../../shared/types.js";
 
 function okGateway(): Gateway {
+  const respond = async (request: GatewayRequest): Promise<GatewayResponse> => ({
+    content: JSON.stringify({ summary: "ok", output: {} }),
+    tokensUsed: 1,
+    modelSlug: request.modelSlug,
+    finishReason: "stop",
+  });
   return {
-    async complete(request: GatewayRequest): Promise<GatewayResponse> {
-      return {
-        content: JSON.stringify({ summary: "ok", output: {} }),
-        tokensUsed: 1,
-        modelSlug: request.modelSlug,
-        finishReason: "stop",
-      };
-    },
+    complete: respond,
+    completeStreaming: respond,
   } as unknown as Gateway;
 }
 

@@ -29,23 +29,29 @@ interface SpyGateway {
   calls: GatewayRequest[];
 }
 
-/** A gateway double whose complete() records the request and returns valid JSON. */
+/**
+ * A gateway double that records the request and returns valid JSON. Direct_llm
+ * tasks run via completeStreaming (the streaming path), so both entry points
+ * share one implementation and record into the same `calls` array.
+ */
 function makeSpyGateway(): SpyGateway {
   const calls: GatewayRequest[] = [];
+  const respond = async (request: GatewayRequest): Promise<GatewayResponse> => {
+    calls.push(request);
+    return {
+      content: JSON.stringify({
+        summary: "real model summary",
+        output: { ok: true },
+        decisions: ["did the thing"],
+      }),
+      tokensUsed: 42,
+      modelSlug: request.modelSlug,
+      finishReason: "stop",
+    };
+  };
   const gateway = {
-    async complete(request: GatewayRequest): Promise<GatewayResponse> {
-      calls.push(request);
-      return {
-        content: JSON.stringify({
-          summary: "real model summary",
-          output: { ok: true },
-          decisions: ["did the thing"],
-        }),
-        tokensUsed: 42,
-        modelSlug: request.modelSlug,
-        finishReason: "stop",
-      };
-    },
+    complete: respond,
+    completeStreaming: respond,
   } as unknown as Gateway;
   return { gateway, calls };
 }

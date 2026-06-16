@@ -29,16 +29,18 @@ type GatewayBehaviour = "ok" | "fail";
 
 /** A gateway whose complete() returns valid JSON, or throws when scripted to. */
 function makeGateway(behaviour: () => GatewayBehaviour): Gateway {
+  const respond = async (request: GatewayRequest): Promise<GatewayResponse> => {
+    if (behaviour() === "fail") throw new Error("scripted gateway failure");
+    return {
+      content: JSON.stringify({ summary: `did ${request.messages.length}`, output: { ok: true } }),
+      tokensUsed: 1,
+      modelSlug: request.modelSlug,
+      finishReason: "stop",
+    };
+  };
   return {
-    async complete(request: GatewayRequest): Promise<GatewayResponse> {
-      if (behaviour() === "fail") throw new Error("scripted gateway failure");
-      return {
-        content: JSON.stringify({ summary: `did ${request.messages.length}`, output: { ok: true } }),
-        tokensUsed: 1,
-        modelSlug: request.modelSlug,
-        finishReason: "stop",
-      };
-    },
+    complete: respond,
+    completeStreaming: respond,
   } as unknown as Gateway;
 }
 

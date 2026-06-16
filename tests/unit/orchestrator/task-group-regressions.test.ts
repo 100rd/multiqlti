@@ -46,24 +46,27 @@ function makeGatewayGate(): GatewayGate {
   const counts = new Map<string, number>();
   const pending = new Map<string, Array<() => void>>();
 
+  const respond = async (request: GatewayRequest): Promise<GatewayResponse> => {
+    const sys = request.messages.find((m) => m.role === "system")?.content ?? "";
+    const match = /Your specific task: (.+)/.exec(sys);
+    const name = match?.[1]?.trim() ?? "?";
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+    await new Promise<void>((resolve) => {
+      const queue = pending.get(name) ?? [];
+      queue.push(resolve);
+      pending.set(name, queue);
+    });
+    return {
+      content: JSON.stringify({ summary: `did ${name}`, output: { ok: true } }),
+      tokensUsed: 1,
+      modelSlug: request.modelSlug,
+      finishReason: "stop",
+    };
+  };
+
   const gateway = {
-    async complete(request: GatewayRequest): Promise<GatewayResponse> {
-      const sys = request.messages.find((m) => m.role === "system")?.content ?? "";
-      const match = /Your specific task: (.+)/.exec(sys);
-      const name = match?.[1]?.trim() ?? "?";
-      counts.set(name, (counts.get(name) ?? 0) + 1);
-      await new Promise<void>((resolve) => {
-        const queue = pending.get(name) ?? [];
-        queue.push(resolve);
-        pending.set(name, queue);
-      });
-      return {
-        content: JSON.stringify({ summary: `did ${name}`, output: { ok: true } }),
-        tokensUsed: 1,
-        modelSlug: request.modelSlug,
-        finishReason: "stop",
-      };
-    },
+    complete: respond,
+    completeStreaming: respond,
   } as unknown as Gateway;
 
   return {
@@ -237,10 +240,12 @@ describe("H2 — pollRunCompletion that throws settles the execution failed", ()
 
 describe("M2 — downstream of a failed dependency is cancelled", () => {
   it("B dependsOn A; A fails → B execution is cancelled, iteration failed", async () => {
+    const failImpl = async (): Promise<GatewayResponse> => {
+      throw new Error("scripted failure");
+    };
     const failingGateway = {
-      async complete(): Promise<GatewayResponse> {
-        throw new Error("scripted failure");
-      },
+      complete: failImpl,
+      completeStreaming: failImpl,
     } as unknown as Gateway;
 
     const { orchestrator, storage } = makeOrchestrator(failingGateway);
@@ -298,10 +303,12 @@ describe("M1 — getActiveGroupIds tracks running groups without a tracer", () =
 
 describe("L1 — a pipeline_run task without a pipelineId fails explicitly", () => {
   it("does NOT silently route to direct_llm; the execution fails", async () => {
+    const failGatewayImpl = async (): Promise<GatewayResponse> => {
+      throw new Error("direct_llm should not be reached for a pipeline_run task");
+    };
     const failGateway = {
-      async complete(): Promise<GatewayResponse> {
-        throw new Error("direct_llm should not be reached for a pipeline_run task");
-      },
+      complete: failGatewayImpl,
+      completeStreaming: failGatewayImpl,
     } as unknown as Gateway;
     const { orchestrator, storage } = makeOrchestrator(failGateway);
 
