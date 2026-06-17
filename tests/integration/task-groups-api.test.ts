@@ -63,7 +63,14 @@ function makeMockOrchestrator(storage: MemStorage) {
       },
     ),
     startGroup: vi.fn(async (groupId: string) => {
-      await storage.updateTaskGroup(groupId, { status: "running" });
+      const group = await storage.updateTaskGroup(groupId, { status: "running" });
+      const iteration = await storage.createIteration({
+        groupId,
+        iterationNumber: 1,
+        status: "running",
+        input: group.input,
+      });
+      return { group, iteration };
     }),
     cancelGroup: vi.fn(async (groupId: string) => {
       await storage.updateTaskGroup(groupId, { status: "cancelled" });
@@ -244,7 +251,9 @@ describe("Task Groups API", () => {
 
       const res = await request(app).post(`/api/task-groups/${group.id}/start`);
       expect(res.status).toBe(200);
-      expect(orchestrator.startGroup).toHaveBeenCalledWith(group.id);
+      expect(orchestrator.startGroup).toHaveBeenCalledWith(group.id, {
+        triggeredBy: TEST_ADMIN.id,
+      });
     });
 
     it("returns 400 when orchestrator throws (e.g. already running)", async () => {
@@ -318,6 +327,13 @@ describe("Task Groups API", () => {
         sortOrder: 0,
       });
       await storage.updateTask(task.id, { status: "failed" });
+      // Wave-2 guard: the task must have an execution in the latest iteration.
+      const it = await storage.createIteration({
+        groupId: group.id, iterationNumber: 1, status: "failed", input: group.input,
+      });
+      await storage.createExecution({
+        iterationId: it.id, taskId: task.id, groupId: group.id, status: "failed",
+      });
 
       const res = await request(app).post(`/api/task-groups/${group.id}/tasks/${task.id}/retry`);
       expect(res.status).toBe(200);
@@ -338,6 +354,13 @@ describe("Task Groups API", () => {
         name: "Pending task",
         description: "pending",
         sortOrder: 0,
+      });
+      // Wave-2 guard: seed the latest-iteration execution so the route reaches the orchestrator.
+      const it = await storage.createIteration({
+        groupId: group.id, iterationNumber: 1, status: "running", input: group.input,
+      });
+      await storage.createExecution({
+        iterationId: it.id, taskId: task.id, groupId: group.id, status: "failed",
       });
 
       const res = await request(app).post(`/api/task-groups/${group.id}/tasks/${task.id}/retry`);

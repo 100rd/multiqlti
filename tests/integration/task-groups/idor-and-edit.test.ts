@@ -212,11 +212,14 @@ describe("edit guard — PATCH group", () => {
     expect(res.body.tasks).toBeDefined();
   });
 
-  it("409 editing input on a completed group, but name/desc relabel OK", async () => {
+  it("v2: editing input on a completed group is ALLOWED (configurable between runs)", async () => {
     const { app, storage } = createTaskGroupTestApp({ userId: "me" });
     const g = await seedGroup(storage, "me", "completed");
-    const blocked = await request(app).patch(`/api/task-groups/${g.id}`).send({ input: "x" });
-    expect(blocked.status).toBe(409);
+    // v2 inversion (was 409 under PR #374): a terminal group is editable again
+    // to set up the next iteration; input edits affect the NEXT run.
+    const edit = await request(app).patch(`/api/task-groups/${g.id}`).send({ input: "next-run" });
+    expect(edit.status).toBe(200);
+    expect(edit.body.input).toBe("next-run");
     const relabel = await request(app).patch(`/api/task-groups/${g.id}`).send({ name: "relabel" });
     expect(relabel.status).toBe(200);
     expect(relabel.body.name).toBe("relabel");
@@ -237,35 +240,53 @@ describe("edit guard — PATCH group", () => {
   });
 });
 
-describe("edit guard — task routes 409 on non-pending", () => {
-  for (const status of ["running", "completed"] as const) {
-    it(`PATCH task → 409 when group is ${status}`, async () => {
-      const { app, storage } = createTaskGroupTestApp({ userId: "me" });
-      const g = await seedGroup(storage, "me", status);
-      const t = await seedTask(storage, g.id);
-      const res = await request(app)
-        .patch(`/api/task-groups/${g.id}/tasks/${t.id}`)
-        .send({ name: "x" });
-      expect(res.status).toBe(409);
-    });
+describe("edit guard — task routes 409 only when RUNNING (v2)", () => {
+  it("PATCH task → 409 when the group is running", async () => {
+    const { app, storage } = createTaskGroupTestApp({ userId: "me" });
+    const g = await seedGroup(storage, "me", "running");
+    const t = await seedTask(storage, g.id);
+    const res = await request(app).patch(`/api/task-groups/${g.id}/tasks/${t.id}`).send({ name: "x" });
+    expect(res.status).toBe(409);
+  });
 
-    it(`POST task → 409 when group is ${status}`, async () => {
-      const { app, storage } = createTaskGroupTestApp({ userId: "me" });
-      const g = await seedGroup(storage, "me", status);
-      const res = await request(app)
-        .post(`/api/task-groups/${g.id}/tasks`)
-        .send({ name: "c", description: "d" });
-      expect(res.status).toBe(409);
-    });
+  it("POST task → 409 when the group is running", async () => {
+    const { app, storage } = createTaskGroupTestApp({ userId: "me" });
+    const g = await seedGroup(storage, "me", "running");
+    const res = await request(app).post(`/api/task-groups/${g.id}/tasks`).send({ name: "c", description: "d" });
+    expect(res.status).toBe(409);
+  });
 
-    it(`DELETE task → 409 when group is ${status}`, async () => {
-      const { app, storage } = createTaskGroupTestApp({ userId: "me" });
-      const g = await seedGroup(storage, "me", status);
-      const t = await seedTask(storage, g.id);
-      const res = await request(app).delete(`/api/task-groups/${g.id}/tasks/${t.id}`);
-      expect(res.status).toBe(409);
-    });
-  }
+  it("DELETE task → 409 when the group is running", async () => {
+    const { app, storage } = createTaskGroupTestApp({ userId: "me" });
+    const g = await seedGroup(storage, "me", "running");
+    const t = await seedTask(storage, g.id);
+    const res = await request(app).delete(`/api/task-groups/${g.id}/tasks/${t.id}`);
+    expect(res.status).toBe(409);
+  });
+
+  // v2 inversion: a COMPLETED group is editable again (set up the next run).
+  it("PATCH task → 200 when the group is completed (editable between runs)", async () => {
+    const { app, storage } = createTaskGroupTestApp({ userId: "me" });
+    const g = await seedGroup(storage, "me", "completed");
+    const t = await seedTask(storage, g.id);
+    const res = await request(app).patch(`/api/task-groups/${g.id}/tasks/${t.id}`).send({ name: "x" });
+    expect(res.status).toBe(200);
+  });
+
+  it("POST task → 201 when the group is completed (editable between runs)", async () => {
+    const { app, storage } = createTaskGroupTestApp({ userId: "me" });
+    const g = await seedGroup(storage, "me", "completed");
+    const res = await request(app).post(`/api/task-groups/${g.id}/tasks`).send({ name: "c", description: "d" });
+    expect(res.status).toBe(201);
+  });
+
+  it("DELETE task → 204 when the group is completed (editable between runs)", async () => {
+    const { app, storage } = createTaskGroupTestApp({ userId: "me" });
+    const g = await seedGroup(storage, "me", "completed");
+    const t = await seedTask(storage, g.id);
+    const res = await request(app).delete(`/api/task-groups/${g.id}/tasks/${t.id}`);
+    expect(res.status).toBe(204);
+  });
 });
 
 describe("edit happy paths on pending groups", () => {

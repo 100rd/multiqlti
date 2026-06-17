@@ -41,6 +41,7 @@ import TaskGroupPage from "@/pages/TaskGroup";
 import Library from "@/pages/Library";
 import CreateTaskGroup from "@/pages/CreateTaskGroup";
 import TaskGroupTrace from "@/pages/TaskGroupTrace";
+import TaskLibrary from "@/pages/TaskLibrary";
 import { WorkspaceTracesPage, WorkspaceTraceDetailPage } from "@/pages/WorkspaceTraces";
 import Costs from "@/pages/Costs";
 import ConfigSync from "@/pages/ConfigSync";
@@ -164,6 +165,9 @@ function ProtectedRouter() {
         <Route path="/task-groups/new" component={() => (
           <ErrorBoundary><CreateTaskGroup /></ErrorBoundary>
         )} />
+        <Route path="/task-groups/:id/iterations/:n/trace" component={() => (
+          <ErrorBoundary><TaskGroupTrace /></ErrorBoundary>
+        )} />
         <Route path="/task-groups/:id/trace" component={() => (
           <ErrorBoundary><TaskGroupTrace /></ErrorBoundary>
         )} />
@@ -172,6 +176,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/task-groups" component={() => (
           <ErrorBoundary><TaskGroupList /></ErrorBoundary>
+        )} />
+        <Route path="/task-library" component={() => (
+          <ErrorBoundary><TaskLibrary /></ErrorBoundary>
         )} />
         <Route path="/maintenance" component={() => (
           <ErrorBoundary><Maintenance /></ErrorBoundary>

@@ -2,6 +2,18 @@ import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, inArray, sql a
 import type { SQL } from "drizzle-orm";
 import { db } from "./db";
 import type { IStorage, PracticeCardFilters, MorningBriefFilters, NewsItemFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint, RunHistoryQuery, PipelineRunHistoryRow, TaskGroupHistoryRow } from "./storage";
+import {
+  TASK_GROUP_V2_MAX_LIMIT,
+  IterationConflictError,
+  buildVirtualIteration,
+} from "./storage-task-groups-v2";
+import type {
+  IterationListQuery,
+  TaskTemplateListQuery,
+  IterationExecutionSeed,
+  IterationStartInput,
+  VirtualIteration,
+} from "./storage-task-groups-v2";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
 import {
   users, models, pipelines, pipelineRuns,
@@ -75,6 +87,9 @@ import {
   taskGroups,
   tasks,
   taskTraces,
+  taskGroupIterations,
+  taskExecutions,
+  taskTemplates,
   trackerConnections,
   type TaskGroupRow,
   type InsertTaskGroup,
@@ -82,6 +97,12 @@ import {
   type InsertTask,
   type TaskTraceRow,
   type InsertTaskTrace,
+  type TaskGroupIterationRow,
+  type InsertTaskGroupIteration,
+  type TaskExecutionRow,
+  type InsertTaskExecution,
+  type TaskTemplateRow,
+  type InsertTaskTemplate,
   type TrackerConnectionRow,
   type InsertTrackerConnection,
   type ModelSkillBinding,
@@ -2414,6 +2435,239 @@ export class PgStorage implements IStorage {
       .from(newsItem)
       .where(and(...conditions))
       .orderBy(desc(newsItem.relevanceScore));
+  }
+
+  // ─── Task Groups v2 — iterations / executions / templates (BE2) ─────────────
+
+  async createIteration(data: InsertTaskGroupIteration): Promise<TaskGroupIterationRow> {
+    // UNIQUE(group_id, iteration_number) is the race backstop: insert-or-detect.
+    const [row] = await db
+      .insert(taskGroupIterations)
+      .values(data as typeof taskGroupIterations.$inferInsert)
+      .onConflictDoNothing({
+        target: [taskGroupIterations.groupId, taskGroupIterations.iterationNumber],
+      })
+      .returning();
+    if (!row) throw new IterationConflictError(data.groupId, data.iterationNumber);
+    return row;
+  }
+
+  async getIterations(groupId: string, query: IterationListQuery): Promise<TaskGroupIterationRow[]> {
+    const limit = Math.min(query.limit, TASK_GROUP_V2_MAX_LIMIT);
+    const conditions: SQL[] = [eq(taskGroupIterations.groupId, groupId)];
+    if (query.cursor) {
+      conditions.push(lt(taskGroupIterations.iterationNumber, query.cursor.iterationNumber));
+    }
+    return db
+      .select()
+      .from(taskGroupIterations)
+      .where(and(...conditions))
+      .orderBy(desc(taskGroupIterations.iterationNumber))
+      .limit(limit);
+  }
+
+  async getIteration(groupId: string, iterationNumber: number): Promise<TaskGroupIterationRow | undefined> {
+    const [row] = await db
+      .select()
+      .from(taskGroupIterations)
+      .where(
+        and(
+          eq(taskGroupIterations.groupId, groupId),
+          eq(taskGroupIterations.iterationNumber, iterationNumber),
+        ),
+      );
+    return row;
+  }
+
+  async getLatestIteration(groupId: string): Promise<TaskGroupIterationRow | undefined> {
+    const [row] = await db
+      .select()
+      .from(taskGroupIterations)
+      .where(eq(taskGroupIterations.groupId, groupId))
+      .orderBy(desc(taskGroupIterations.iterationNumber))
+      .limit(1);
+    return row;
+  }
+
+  async updateIteration(id: string, updates: Partial<TaskGroupIterationRow>): Promise<TaskGroupIterationRow> {
+    const [row] = await db
+      .update(taskGroupIterations)
+      .set(updates)
+      .where(eq(taskGroupIterations.id, id))
+      .returning();
+    return row;
+  }
+
+  async createIterationWithExecutions(
+    groupId: string,
+    start: IterationStartInput,
+    seeds: IterationExecutionSeed[],
+  ): Promise<{ iteration: TaskGroupIterationRow; executions: TaskExecutionRow[] }> {
+    // SF-1: iteration + all executions commit atomically or roll back together.
+    return db.transaction(async (tx) => {
+      const [iteration] = await tx
+        .insert(taskGroupIterations)
+        .values({
+          groupId,
+          iterationNumber: start.iterationNumber,
+          status: "running",
+          input: start.input,
+          triggeredBy: start.triggeredBy ?? null,
+          traceId: start.traceId ?? null,
+          startedAt: new Date(),
+        })
+        .onConflictDoNothing({
+          target: [taskGroupIterations.groupId, taskGroupIterations.iterationNumber],
+        })
+        .returning();
+      if (!iteration) throw new IterationConflictError(groupId, start.iterationNumber);
+      if (seeds.length === 0) return { iteration, executions: [] };
+      const executions = await tx
+        .insert(taskExecutions)
+        .values(
+          seeds.map((seed) => ({
+            iterationId: iteration.id,
+            taskId: seed.taskId,
+            taskName: seed.taskName,
+            groupId,
+            status: seed.status,
+            modelSlug: seed.modelSlug ?? null,
+          })),
+        )
+        .returning();
+      return { iteration, executions };
+    });
+  }
+
+  async createExecution(data: InsertTaskExecution): Promise<TaskExecutionRow> {
+    const [row] = await db
+      .insert(taskExecutions)
+      .values(data as typeof taskExecutions.$inferInsert)
+      .returning();
+    return row;
+  }
+
+  async getExecutionsByIteration(groupId: string, iterationId: string): Promise<TaskExecutionRow[]> {
+    // MF-1: group is a mandatory scope key in the WHERE — never a bare child id.
+    return db
+      .select()
+      .from(taskExecutions)
+      .where(
+        and(
+          eq(taskExecutions.iterationId, iterationId),
+          eq(taskExecutions.groupId, groupId),
+        ),
+      )
+      .orderBy(asc(taskExecutions.createdAt));
+  }
+
+  async getExecution(groupId: string, executionId: string): Promise<TaskExecutionRow | undefined> {
+    // MF-1: filter by group in SQL so a cross-group id resolves to "not found".
+    const [row] = await db
+      .select()
+      .from(taskExecutions)
+      .where(
+        and(
+          eq(taskExecutions.id, executionId),
+          eq(taskExecutions.groupId, groupId),
+        ),
+      );
+    return row;
+  }
+
+  async updateExecution(id: string, updates: Partial<TaskExecutionRow>): Promise<TaskExecutionRow> {
+    const [row] = await db
+      .update(taskExecutions)
+      .set(updates)
+      .where(eq(taskExecutions.id, id))
+      .returning();
+    return row;
+  }
+
+  async getVirtualIteration(groupId: string): Promise<VirtualIteration | null> {
+    const group = await this.getTaskGroup(groupId);
+    if (!group) return null;
+    // Only synthesize when there are NO real iterations (MF-5 / §8 lazy adapter).
+    const [existing] = await db
+      .select({ id: taskGroupIterations.id })
+      .from(taskGroupIterations)
+      .where(eq(taskGroupIterations.groupId, groupId))
+      .limit(1);
+    if (existing) return null;
+    const groupTasks = await this.getTasksByGroup(groupId);
+    return buildVirtualIteration(group, groupTasks);
+  }
+
+  async getTaskTraceByIteration(groupId: string, iterationId: string): Promise<TaskTraceRow | null> {
+    // MF-3: trace must belong to BOTH the iteration and the authorized group.
+    const [row] = await db
+      .select()
+      .from(taskTraces)
+      .where(
+        and(
+          eq(taskTraces.iterationId, iterationId),
+          eq(taskTraces.groupId, groupId),
+        ),
+      );
+    return row ?? null;
+  }
+
+  async getTaskTemplates(query: TaskTemplateListQuery): Promise<TaskTemplateRow[]> {
+    const limit = Math.min(query.limit, TASK_GROUP_V2_MAX_LIMIT);
+    const conditions: SQL[] = [];
+    // MF-4: ownership filter applied BEFORE/with the label match in the same WHERE.
+    if (!query.isAdmin && query.ownerId != null) {
+      conditions.push(eq(taskTemplates.createdBy, query.ownerId));
+    }
+    if (query.label != null) {
+      // SF-2: jsonb containment via a Drizzle bind param (never interpolated).
+      conditions.push(
+        drizzleSql`${taskTemplates.labels} @> ${JSON.stringify([query.label])}::jsonb`,
+      );
+    }
+    if (query.cursor) {
+      const c = new Date(query.cursor.createdAt);
+      conditions.push(
+        or(
+          lt(taskTemplates.createdAt, c),
+          and(eq(taskTemplates.createdAt, c), lt(taskTemplates.id, query.cursor.id)),
+        )!,
+      );
+    }
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    return db
+      .select()
+      .from(taskTemplates)
+      .where(where)
+      .orderBy(desc(taskTemplates.createdAt), desc(taskTemplates.id))
+      .limit(limit);
+  }
+
+  async getTaskTemplate(id: string): Promise<TaskTemplateRow | undefined> {
+    const [row] = await db.select().from(taskTemplates).where(eq(taskTemplates.id, id));
+    return row;
+  }
+
+  async createTaskTemplate(data: InsertTaskTemplate): Promise<TaskTemplateRow> {
+    const [row] = await db
+      .insert(taskTemplates)
+      .values(data as typeof taskTemplates.$inferInsert)
+      .returning();
+    return row;
+  }
+
+  async updateTaskTemplate(id: string, updates: Partial<TaskTemplateRow>): Promise<TaskTemplateRow> {
+    const [row] = await db
+      .update(taskTemplates)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(taskTemplates.id, id))
+      .returning();
+    return row;
+  }
+
+  async deleteTaskTemplate(id: string): Promise<void> {
+    // FK onDelete:"set null" on tasks.template_id clears provenance automatically.
+    await db.delete(taskTemplates).where(eq(taskTemplates.id, id));
   }
 
 }

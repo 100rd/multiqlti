@@ -112,6 +112,9 @@ export function useCreateTaskGroup() {
         teamId?: string;
         input?: Record<string, unknown>;
         sortOrder?: number;
+        // COPY-IN provenance (§5.3): when present the server re-copies the
+        // template's fields into the new definition and stamps tasks.template_id.
+        templateId?: string;
       }>;
     }) => apiRequest("POST", "/api/task-groups", data),
     onSuccess: () => {
@@ -217,6 +220,8 @@ export interface AddTaskInput {
   teamId?: string | null;
   pipelineId?: string | null;
   sortOrder?: number;
+  /** COPY-IN provenance (§5.3): seed this task from a library template. */
+  templateId?: string;
 }
 
 export function useAddTask(groupId: string) {

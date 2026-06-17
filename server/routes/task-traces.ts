@@ -20,15 +20,23 @@ export function registerTaskTraceRoutes(app: Express, storage: IStorage): void {
       const auth = await authorizeTaskGroup(req, res, storage, groupId);
       if (!auth) return;
 
-      const trace = await storage.getTaskTrace(groupId);
+      // v2: this legacy endpoint ALIASES the LATEST iteration's trace. Resolve
+      // the latest iteration and read its iteration-scoped trace (MF-3); fall
+      // back to the legacy group-level trace for pre-v2 groups with none.
+      const latest = await storage.getLatestIteration(groupId);
+      const trace = latest
+        ? (await storage.getTaskTraceByIteration(groupId, latest.id)) ?? (await storage.getTaskTrace(groupId))
+        : await storage.getTaskTrace(groupId);
       if (!trace) {
         return res.status(404).json({ error: `No trace found for task group ${groupId}` });
       }
 
       res.json(trace);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Internal server error";
-      res.status(500).json({ error: msg });
+    } catch {
+      // SEC1-LOW: never leak err.message (matches the generic envelope used on
+      // every other task-group route). The detailed error is logged server-side
+      // by the upstream error middleware; the client sees a generic 500.
+      res.status(500).json({ error: "Failed to load task group trace" });
     }
   });
 }

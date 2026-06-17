@@ -41,6 +41,11 @@ export {
   updateTaskInList,
   removeTaskFromList,
   addTaskToList,
+  addLabel,
+  removeLabel,
+  setTaskLabels,
+  seedTaskFromTemplate,
+  seedTasksFromTemplates,
   validate,
   hasErrors,
 } from "./task-form-logic";
@@ -49,6 +54,7 @@ export type {
   TaskDraft,
   GroupDraft,
   SiblingOption,
+  TemplateSeed,
   ValidationErrors,
   ValidateOptions,
   TaskGroupStatus,
@@ -104,6 +110,25 @@ export function TaskRow({
         )}
       </CardHeader>
       <CardContent className="space-y-3">
+        {/* Library provenance: read-only label chips when seeded from a template. */}
+        {(task.templateId || task.labels.length > 0) && (
+          <div
+            className="flex flex-wrap items-center gap-1.5"
+            aria-label="Task labels"
+          >
+            {task.templateId && (
+              <Badge variant="outline" className="text-[10px] uppercase tracking-wide">
+                from library
+              </Badge>
+            )}
+            {task.labels.map((label) => (
+              <Badge key={label} variant="secondary" className="text-[10px]">
+                {label}
+              </Badge>
+            ))}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="space-y-1">
             <Label htmlFor={`task-name-${task.id}`}>Name *</Label>

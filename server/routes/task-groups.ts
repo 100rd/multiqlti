@@ -10,6 +10,14 @@ import {
   TaskGroupEditor,
   TaskGroupEditError,
 } from "../services/task-group-editor.js";
+import {
+  RunActiveError,
+  IterationCapError,
+  NoReadyTasksError,
+  InvalidTaskGraphError,
+} from "../services/task-orchestrator.js";
+import { IterationConflictError } from "../storage-task-groups-v2.js";
+import { TaskTemplateComposeError } from "../services/task-template-compose.js";
 
 // ─── Validation Schemas ─────────────────────────────────────────────────────
 
@@ -23,6 +31,9 @@ const TaskFieldsSchema = z.object({
   teamId: z.string().max(100).optional(),
   input: z.record(z.unknown()).optional(),
   sortOrder: z.number().int().min(0).max(1000).optional(),
+  // COPY-IN (§5.3/§6): when set, the template's fields are copied into this
+  // definition at compose time (owner-checked once); explicit fields override.
+  templateId: z.string().max(100).optional(),
 });
 
 const CreateTaskGroupSchema = z.object({
@@ -68,7 +79,12 @@ const AddTaskSchema = TaskFieldsSchema;
  * Edit-layer errors carry their HTTP status; everything else is a generic 500.
  */
 function sendError(res: Response, err: unknown, fallbackMessage: string): void {
-  if (err instanceof TaskGroupEditError) {
+  if (err instanceof TaskGroupEditError || err instanceof TaskTemplateComposeError) {
+    res.status(err.status).json({ error: err.message });
+    return;
+  }
+  // L2: a dangling/self/cyclic dependsOn from the create path → 400.
+  if (err instanceof InvalidTaskGraphError) {
     res.status(err.status).json({ error: err.message });
     return;
   }
@@ -128,23 +144,41 @@ export function registerTaskGroupRoutes(
     if (!req.user?.id) return res.status(401).json({ error: "Authentication required" });
     try {
       const body = req.body as z.infer<typeof CreateTaskGroupSchema>;
-      const result = await orchestrator.createTaskGroup({ ...body, createdBy: req.user.id });
+      const result = await orchestrator.createTaskGroup({
+        ...body,
+        createdBy: req.user.id,
+        composeUser: req.user,
+      });
       res.status(201).json({ ...result.group, tasks: result.tasks });
-    } catch {
-      res.status(500).json({ error: "Failed to create task group" });
+    } catch (err) {
+      // A composed template the caller cannot see / that is missing → 403/404.
+      sendError(res, err, "Failed to create task group");
     }
   });
 
-  // Start task group execution (C1 gated).
+  // Start (or re-run) a task group — creates a fresh iteration (C1 gated).
   router.post("/api/task-groups/:id/start", async (req: Request, res: Response) => {
     const auth = await authorizeTaskGroup(req, res, storage, String(req.params.id));
     if (!auth) return;
     try {
-      await orchestrator.startGroup(String(req.params.id));
-      const group = await storage.getTaskGroup(String(req.params.id));
-      res.json(group);
+      const { group, iteration } = await orchestrator.startGroup(String(req.params.id), {
+        triggeredBy: req.user?.id ?? null,
+      });
+      res.json({ group, iteration });
     } catch (err) {
-      // startGroup throws on non-pending — surface as a 400 with its safe message.
+      // 409 when a run is already active / the iteration cap is hit / the UNIQUE
+      // backstop catches a concurrent start; otherwise a generic 400.
+      if (
+        err instanceof RunActiveError ||
+        err instanceof IterationCapError ||
+        err instanceof IterationConflictError
+      ) {
+        return res.status(409).json({ error: err.message });
+      }
+      // H1: zero ready tasks (0-definition or all-blocked) → 400 (design §5.1).
+      if (err instanceof NoReadyTasksError) {
+        return res.status(400).json({ error: err.message });
+      }
       const message = err instanceof Error ? err.message : "Failed to start task group";
       res.status(400).json({ error: message });
     }
@@ -163,11 +197,17 @@ export function registerTaskGroupRoutes(
     }
   });
 
-  // Delete task group (C1 gated).
+  // Delete task group (C1 gated). Refuse while the latest iteration is running
+  // (DELETE-WHILE-RUNNING → 409; mirrors the assertNotRunning edit guard).
   router.delete("/api/task-groups/:id", async (req: Request, res: Response) => {
     const auth = await authorizeTaskGroup(req, res, storage, String(req.params.id));
     if (!auth) return;
     try {
+      const latest = await storage.getLatestIteration(String(req.params.id));
+      const effectiveStatus = latest?.status ?? auth.group.status;
+      if (effectiveStatus === "running") {
+        return res.status(409).json({ error: "Cancel the running iteration first" });
+      }
       await storage.deleteTaskGroup(String(req.params.id));
       res.status(204).end();
     } catch {
@@ -180,9 +220,19 @@ export function registerTaskGroupRoutes(
     const auth = await authorizeTaskGroup(req, res, storage, String(req.params.id));
     if (!auth) return;
     try {
-      // C2/M3: the task must belong to this group, else 404 (cross-group tamper).
+      // C2/M3: the definition must belong to this group AND have an execution in
+      // the latest iteration, else 404 (cross-group tamper / no run to retry).
       const task = await storage.getTask(String(req.params.taskId));
       if (!task || task.groupId !== String(req.params.id)) {
+        return res.status(404).json({ error: "Task not found" });
+      }
+      const iteration = await storage.getLatestIteration(String(req.params.id));
+      const hasExecution = iteration
+        ? (await storage.getExecutionsByIteration(String(req.params.id), iteration.id)).some(
+            (e) => e.taskId === String(req.params.taskId),
+          )
+        : false;
+      if (!hasExecution) {
         return res.status(404).json({ error: "Task not found" });
       }
       await orchestrator.retryTask(String(req.params.taskId));
@@ -240,7 +290,10 @@ export function registerTaskGroupRoutes(
       if (!auth) return;
       try {
         const body = req.body as z.infer<typeof AddTaskSchema>;
-        const task = await editor.addTask(String(req.params.id), body);
+        const task = await editor.addTask(String(req.params.id), {
+          ...body,
+          composeUser: req.user,
+        });
         res.status(201).json(task);
       } catch (err) {
         sendError(res, err, "Failed to add task");
