@@ -49,7 +49,17 @@ const ROLE_BADGE: Record<UserRole, { label: string; className: string }> = {
 export default function MainLayout({ children }: MainLayoutProps) {
   const [location, navigate] = useLocation();
   const { data: pendingQuestions } = usePendingQuestions();
-  const pendingCount = Array.isArray(pendingQuestions) ? pendingQuestions.length : 0;
+  const pendingList = Array.isArray(pendingQuestions)
+    ? (pendingQuestions as Array<{ runId?: string; pipelineName?: string | null }>)
+    : [];
+  const pendingCount = pendingList.length;
+  // Group pending questions by the pipeline they belong to, so the sidebar can
+  // show WHICH pipeline(s) are waiting — not just a bare count.
+  const pendingByPipeline = pendingList.reduce<Record<string, number>>((acc, q) => {
+    const key = q.pipelineName || "Unknown pipeline";
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
   const { user, logout } = useAuth();
 
   // Detect if we're inside a workspace so we can show the connections sub-item
@@ -196,9 +206,14 @@ export default function MainLayout({ children }: MainLayoutProps) {
                   {pendingCount} pending question{pendingCount !== 1 ? "s" : ""}
                 </span>
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1">
-                Agents are waiting for your input
-              </p>
+              <ul className="mt-1 space-y-0.5">
+                {Object.entries(pendingByPipeline).map(([name, count]) => (
+                  <li key={name} className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                    <span className="truncate">{name}</span>
+                    <span className="shrink-0 tabular-nums font-medium text-amber-600">{count}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
         </div>

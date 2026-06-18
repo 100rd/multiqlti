@@ -44,6 +44,7 @@ import {
   IterationsPanel,
   IterationDetailView,
 } from "@/components/task-groups/iterations-panel";
+import { VerdictPanel } from "@/components/task-groups/verdict-panel";
 import { useToast } from "@/hooks/use-toast";
 import { useTaskGroupEvents } from "@/hooks/use-task-events";
 import { useActiveModels } from "@/hooks/use-pipeline";
@@ -785,6 +786,18 @@ export default function TaskGroupPage() {
             )}
           </div>
         </div>
+      )}
+
+      {/* Structured planning verdict (verdict + pros/cons + action points table)
+          rendered BELOW the agents once a judge/synthesis task has produced it.
+          Self-hides when the latest iteration carries no structured output.
+          Its action points can be handed off to a pipeline (planning→execution). */}
+      {!editing && shownIteration !== null && (
+        <VerdictPanel
+          groupId={id}
+          iterationNumber={shownIteration}
+          groupName={group.name}
+        />
       )}
       </div>
     </div>

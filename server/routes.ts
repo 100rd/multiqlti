@@ -462,7 +462,53 @@ export async function registerRoutes(
   // Global pending questions endpoint (protected by /api/questions middleware above)
   app.get("/api/questions/pending", async (_req, res) => {
     const pending = await storage.getPendingQuestions();
-    res.json(pending);
+    if (pending.length === 0) {
+      res.json(pending);
+      return;
+    }
+    // Enrich each question with the pipeline it belongs to (question → run →
+    // pipeline) so the UI can say WHICH pipeline is waiting, not just a count.
+    const [runs, pipelines] = await Promise.all([
+      storage.getPipelineRuns(),
+      storage.getPipelines(),
+    ]);
+    const runToPipeline = new Map(runs.map((r) => [r.id, r.pipelineId]));
+    const pipelineName = new Map(pipelines.map((p) => [p.id, p.name]));
+    const enriched = pending.map((q) => {
+      const pid = q.runId ? runToPipeline.get(q.runId) : undefined;
+      return {
+        ...q,
+        pipelineId: pid ?? null,
+        pipelineName: pid ? pipelineName.get(pid) ?? null : null,
+      };
+    });
+    res.json(enriched);
+  });
+
+  // Per-pipeline run-status counts for the Pipelines list (succeeded / failed /
+  // running / queued), so each pipeline card can show its run health at a glance.
+  app.get("/api/pipeline-run-stats", async (_req, res) => {
+    const runs = await storage.getPipelineRuns();
+    const stats: Record<
+      string,
+      { succeeded: number; failed: number; running: number; queued: number; total: number }
+    > = {};
+    for (const r of runs) {
+      const s = (stats[r.pipelineId] ??= {
+        succeeded: 0,
+        failed: 0,
+        running: 0,
+        queued: 0,
+        total: 0,
+      });
+      s.total++;
+      if (r.status === "completed") s.succeeded++;
+      else if (r.status === "failed") s.failed++;
+      else if (r.status === "running") s.running++;
+      else if (r.status === "pending" || r.status === "paused") s.queued++;
+      // "cancelled" counts only toward total.
+    }
+    res.json(stats);
   });
 
   // Stats summary endpoint (protected by /api/stats middleware above)

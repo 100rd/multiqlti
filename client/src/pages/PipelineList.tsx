@@ -3,7 +3,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Plus, GitMerge, ChevronRight, Loader2 } from "lucide-react";
-import { usePipelines, useCreatePipeline, useDeletePipeline } from "@/hooks/use-pipeline";
+import { usePipelines, useCreatePipeline, useDeletePipeline, usePipelineRunStats } from "@/hooks/use-pipeline";
 import { DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import type { PipelineStageConfig } from "@shared/types";
 
@@ -18,10 +18,15 @@ interface Pipeline {
 export default function PipelineList() {
   const [, navigate] = useLocation();
   const { data: pipelines, isLoading } = usePipelines();
+  const { data: runStats } = usePipelineRunStats();
   const createPipeline = useCreatePipeline();
   const deletePipeline = useDeletePipeline();
 
   const pipelineList: Pipeline[] = Array.isArray(pipelines) ? pipelines : [];
+  const stats = (runStats ?? {}) as Record<
+    string,
+    { succeeded: number; failed: number; running: number; queued: number; total: number }
+  >;
 
   const handleCreate = () => {
     createPipeline.mutate(
@@ -109,13 +114,39 @@ export default function PipelineList() {
                           {pipeline.description}
                         </p>
                       )}
-                      <div className="flex items-center gap-2 mt-2">
+                      <div className="flex items-center flex-wrap gap-2 mt-2">
                         <Badge variant="outline" className="text-[10px] h-4 px-1.5">
                           {enabledStages}/{totalStages} stages active
                         </Badge>
                         <span className="text-[10px] text-muted-foreground font-mono">
                           {pipeline.id.slice(0, 8)}
                         </span>
+                        {(() => {
+                          const s = stats[pipeline.id];
+                          if (!s || s.total === 0) {
+                            return (
+                              <span className="text-[10px] text-muted-foreground">no runs</span>
+                            );
+                          }
+                          const chip = (n: number, cls: string, label: string) =>
+                            n > 0 ? (
+                              <span
+                                className={`inline-flex items-center gap-1 rounded px-1.5 h-4 text-[10px] font-medium ${cls}`}
+                                title={`${n} ${label}`}
+                              >
+                                <span className="h-1.5 w-1.5 rounded-full bg-current opacity-80" />
+                                {n}
+                              </span>
+                            ) : null;
+                          return (
+                            <span className="inline-flex items-center gap-1.5">
+                              {chip(s.succeeded, "bg-green-500/15 text-green-600 dark:text-green-400", "succeeded")}
+                              {chip(s.failed, "bg-red-500/15 text-red-600 dark:text-red-400", "failed")}
+                              {chip(s.running, "bg-blue-500/15 text-blue-600 dark:text-blue-400", "running")}
+                              {chip(s.queued, "bg-amber-500/15 text-amber-600 dark:text-amber-400", "queued")}
+                            </span>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>
