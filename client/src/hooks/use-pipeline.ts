@@ -185,6 +185,15 @@ export function usePendingQuestions() {
   });
 }
 
+/** Per-pipeline run-status counts (succeeded/failed/running/queued) for the list. */
+export function usePipelineRunStats() {
+  return useQuery({
+    queryKey: ["/api/pipeline-run-stats"],
+    queryFn: () => apiRequest("GET", "/api/pipeline-run-stats"),
+    refetchInterval: 5000,
+  });
+}
+
 export function useAnswerQuestion() {
   const qc = useQueryClient();
   return useMutation({

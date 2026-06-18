@@ -32,7 +32,10 @@ export default function TaskGroupList() {
   }>;
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6">
+    // MainLayout's <main> clips overflow, so this page owns its own vertical
+    // scroll — otherwise a long list of task groups gets cut off at the fold.
+    <div className="h-full overflow-y-auto">
+      <div className="p-6 max-w-5xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Task Groups</h1>
@@ -96,6 +99,7 @@ export default function TaskGroupList() {
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }
