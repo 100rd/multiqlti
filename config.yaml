@@ -6,6 +6,15 @@
 server:
   port: 5000
 
+pipeline:
+  streaming:
+    # Idle (no-output) window before a streaming CLI stage is killed. Bumped
+    # 60s→120s: slow-first-token CLIs (the `claude` CLI cold start / long
+    # pre-output reasoning) tripped the 60s default before emitting a first
+    # token, failing the stage with "CLI idle for 60000ms (no output)". The
+    # overall wall-clock cap (600s) is unchanged.
+    idleTimeoutMs: 120000
+
 features:
   sandbox:
     enabled: false

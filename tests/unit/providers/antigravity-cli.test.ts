@@ -54,6 +54,25 @@ function respondWith(err: NodeJS.ErrnoException | null, stdout: string, stderr =
   );
 }
 
+/**
+ * Retryable errors are re-attempted up to MAX_ATTEMPTS (3) in antigravity-cli.ts,
+ * so the mock must supply a response for EVERY attempt — otherwise attempt 2 hits
+ * an unmocked execFile that returns `undefined`, and `undefined.stdin.end()`
+ * throws a TypeError that MASKS the error under test. Register the same response
+ * for all 3 attempts. (Non-retryable cases — ENOENT, not-logged-in — fail fast
+ * after one attempt and keep the single-response respondWith.)
+ */
+function respondWithRetryable(
+  err: NodeJS.ErrnoException | null,
+  stdout: string,
+  stderr = "",
+): void {
+  // Exactly MAX_ATTEMPTS `…Once` responses (not a persistent mockImplementation,
+  // which `vi.clearAllMocks()` in beforeEach does NOT clear and would leak into
+  // the next test). Self-limiting + isolated, matching respondWith's pattern.
+  for (let i = 0; i < 3; i++) respondWith(err, stdout, stderr);
+}
+
 describe("invokeAntigravityCli", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -105,7 +124,8 @@ describe("invokeAntigravityCli", () => {
 
   it("maps a generic non-zero exit to a CLI failure error", async () => {
     const err = Object.assign(new Error("boom"), { code: 1 });
-    respondWith(err, "", "model unavailable");
+    // Retryable: supply a response for all 3 attempts (MAX_ATTEMPTS).
+    respondWithRetryable(err, "", "model unavailable");
 
     await expect(invokeAntigravityCli({ ...BASE_INPUT })).rejects.toThrow(
       /CLI failed: model unavailable/i,
@@ -113,7 +133,8 @@ describe("invokeAntigravityCli", () => {
   });
 
   it("rejects empty stdout as malformed output", async () => {
-    respondWith(null, "   \n  ");
+    // Retryable: empty output is re-attempted up to MAX_ATTEMPTS.
+    respondWithRetryable(null, "   \n  ");
 
     await expect(invokeAntigravityCli({ ...BASE_INPUT })).rejects.toThrow(
       /empty output/i,
@@ -121,7 +142,7 @@ describe("invokeAntigravityCli", () => {
   });
 
   it("throws AntigravityCliError instances (not bare Error)", async () => {
-    respondWith(null, "");
+    respondWithRetryable(null, "");
 
     await expect(invokeAntigravityCli({ ...BASE_INPUT })).rejects.toBeInstanceOf(
       AntigravityCliError,

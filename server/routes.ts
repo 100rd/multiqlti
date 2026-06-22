@@ -51,6 +51,8 @@ import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
 import { registerArgoCdSettingsRoutes, autoConnectArgoCdFromEnv } from "./routes/argocd-settings";
 import { registerTaskGroupRoutes } from "./routes/task-groups";
+import { registerConsiliumLoopRoutes } from "./routes/consilium-loops";
+import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consilium/consilium-loop-controller";
 import { registerSkillTeamRoutes } from "./routes/skill-teams";
 import { registerModelSkillBindingRoutes } from "./routes/model-skill-bindings";
 import { registerGitSkillSourceRoutes } from "./routes/git-skill-sources";
@@ -144,6 +146,7 @@ export async function registerRoutes(
   app.use("/api/triggers", requireAuth);
   app.use("/api/traces", requireAuth);
   app.use("/api/task-groups", requireAuth);
+  app.use("/api/consilium-loops", requireAuth);
   app.use("/api/task-templates", requireAuth);
   app.use("/api/library", requireAuth);
   app.use("/api/lmstudio", requireAuth);
@@ -246,6 +249,26 @@ export async function registerRoutes(
   registerTaskGroupRoutes(app, storage, taskOrchestrator);
   registerTaskIterationRoutes(app as unknown as Router, storage);
   registerTaskTemplateRoutes(app as unknown as Router, storage);
+
+  // Consilium Loop (Phase B — auto-versioned FSM). KILL-SWITCH default FALSE:
+  // the controller + routes + poller are only wired when explicitly enabled, so
+  // a normal boot is fully inert. Mirrors the cron-scheduler bootstrap below.
+  let consiliumLoopPoller: ConsiliumLoopPoller | null = null;
+  if (appConfigLoader.get().pipeline.consiliumLoop.enabled) {
+    const consiliumLoopController = new ConsiliumLoopController({
+      storage,
+      taskOrchestrator,
+      config: () => appConfigLoader.get(),
+    });
+    registerConsiliumLoopRoutes(app, storage, consiliumLoopController, () => appConfigLoader.get());
+    consiliumLoopPoller = new ConsiliumLoopPoller(
+      consiliumLoopController,
+      storage,
+      appConfigLoader.get().pipeline.consiliumLoop.pollIntervalMs,
+    );
+    consiliumLoopPoller.start();
+    log("[consilium-loop] enabled — controller + poller started", "consilium-loop");
+  }
 
   // Live Activity observability lens (read-only, owner/admin-scoped, metadata-only).
   // Registered AFTER the task orchestrator so task-groups can join the live snapshot
@@ -381,6 +404,7 @@ export async function registerRoutes(
   // Graceful shutdown
   httpServer.on("close", async () => {
     cronScheduler?.stopAll();
+    consiliumLoopPoller?.stop();
     fileWatcherService?.stopAll();
     getRefreshScheduler()?.stop();
     await newsLive.close();

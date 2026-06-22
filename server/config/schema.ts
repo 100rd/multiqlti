@@ -300,6 +300,33 @@ export const ConfigSchema = z.object({
        */
       taskTimeoutMs: z.coerce.number().int().min(10_000).max(1_800_000).default(600_000),
     }).default({}),
+    /**
+     * Consilium loop (design doc §8): the auto-versioned closed loop that
+     * re-runs a consilium group, builds a diff-context per round (A2), and
+     * decides convergence. Kill-switch default FALSE. Every numeric cap is
+     * bounded at load via `z.coerce.number().int().min/.max` — a NaN from a bad
+     * env/yaml value fails `.int()` and aborts load rather than silently
+     * defaulting (Security M-5). `allowedRepoPaths` is the fail-closed allowlist
+     * the diff-context builder re-validates against every round (Security H-1).
+     */
+    consiliumLoop: z.object({
+      /** Kill-switch: false → the loop controller/routes stay disabled (Phase B). */
+      enabled: z.boolean().default(false),
+      /** Hard round cap (design §1). 1..6 (6 default). */
+      maxRounds: z.coerce.number().int().min(1).max(6).default(6),
+      /** Backstop poller interval for non-terminal loops. 1s..60s. */
+      pollIntervalMs: z.coerce.number().int().min(1_000).max(60_000).default(5_000),
+      /** Hard byte cap on the per-round unified diff (A2 bound). 1KiB..2MB. */
+      maxDiffBytes: z.coerce.number().int().min(1_024).max(2_000_000).default(200_000),
+      /**
+       * Fail-closed repo allowlist. Empty ⇒ no repo path is permitted (the
+       * diff-context builder throws). config.yaml only — arrays are not
+       * env-mapped (matches the federation.peers / omniscience.args pattern).
+       */
+      allowedRepoPaths: z.array(z.string()).default([]),
+      /** Default DEV pipeline used for the loop's DEV handoff step (Phase B). */
+      devPipelineId: z.string().optional(),
+    }).default({}),
   }).default({}),
 });
 

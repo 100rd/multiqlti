@@ -182,6 +182,18 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { envKey: "MULTI_PIPELINE_DEBATE_STREAMING_IDLE_TIMEOUT_MS",      configPath: ["pipeline", "debateStreaming", "idleTimeoutMs"],    kind: "number"  },
   { envKey: "MULTI_PIPELINE_DEBATE_STREAMING_OVERALL_TIMEOUT_MS",   configPath: ["pipeline", "debateStreaming", "overallTimeoutMs"], kind: "number"  },
   { envKey: "MULTI_PIPELINE_DEBATE_STREAMING_MAX_OUTPUT_BYTES",     configPath: ["pipeline", "debateStreaming", "maxOutputBytes"],   kind: "number"  },
+
+  // Consilium loop (design §8). `allowedRepoPaths`/`devPipelineId` are NOT
+  // env-mapped — the allowlist is config.yaml-only (fail-closed) so it cannot
+  // be widened from the environment (Security H-1).
+  { envKey: "CONSILIUM_LOOP_ENABLED",          configPath: ["pipeline", "consiliumLoop", "enabled"],        kind: "boolean" },
+  { envKey: "CONSILIUM_LOOP_MAX_ROUNDS",       configPath: ["pipeline", "consiliumLoop", "maxRounds"],      kind: "number"  },
+  { envKey: "CONSILIUM_LOOP_POLL_INTERVAL_MS", configPath: ["pipeline", "consiliumLoop", "pollIntervalMs"], kind: "number"  },
+  { envKey: "CONSILIUM_LOOP_MAX_DIFF_BYTES",   configPath: ["pipeline", "consiliumLoop", "maxDiffBytes"],   kind: "number"  },
+  { envKey: "MULTI_PIPELINE_CONSILIUM_LOOP_ENABLED",          configPath: ["pipeline", "consiliumLoop", "enabled"],        kind: "boolean" },
+  { envKey: "MULTI_PIPELINE_CONSILIUM_LOOP_MAX_ROUNDS",       configPath: ["pipeline", "consiliumLoop", "maxRounds"],      kind: "number"  },
+  { envKey: "MULTI_PIPELINE_CONSILIUM_LOOP_POLL_INTERVAL_MS", configPath: ["pipeline", "consiliumLoop", "pollIntervalMs"], kind: "number"  },
+  { envKey: "MULTI_PIPELINE_CONSILIUM_LOOP_MAX_DIFF_BYTES",   configPath: ["pipeline", "consiliumLoop", "maxDiffBytes"],   kind: "number"  },
 ];
 
 /**

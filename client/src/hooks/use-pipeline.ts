@@ -124,14 +124,17 @@ export function useDeletePipeline() {
 // Polling removed: live run/stage data is delivered via WebSocket.
 // A single fetch fires on mount to hydrate the list; WS events keep it fresh.
 
-export function useRuns(pipelineId?: string) {
+export function useRuns(pipelineId?: string, opts?: { refetchInterval?: number }) {
   const url = pipelineId
     ? `/api/runs?pipelineId=${pipelineId}`
     : "/api/runs";
   return useQuery({
     queryKey: ["/api/runs", pipelineId],
     queryFn: () => apiRequest("GET", url),
-    // No refetchInterval — WS handles live updates; invalidate via mutation onSuccess
+    // No refetchInterval by default — WS handles live updates; invalidate via
+    // mutation onSuccess. Callers that render a standalone live list (e.g. the
+    // "current pipelines" rail) can opt into a light poll as a WS backstop.
+    refetchInterval: opts?.refetchInterval,
   });
 }
 

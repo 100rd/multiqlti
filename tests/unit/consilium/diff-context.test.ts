@@ -1,0 +1,206 @@
+/**
+ * Unit tests for server/services/consilium/diff-context.ts (Phase A2).
+ *
+ * Drives `buildDiffContext` with a FAKE GitDiffClient (no real repo) and an
+ * allowlist set to the real cwd so the H-1 path check passes. Covers:
+ *   - input assembly (objective + Changes + Test results sections)
+ *   - byte-bounding / truncated flag
+ *   - round-1 null baseline (objective only, no diff)
+ *   - git failure → GitFail (scrubbed)
+ *   - B-1 git arg-injection: --output=, --ext-diff, --no-index, leading-dash
+ *     refs are REJECTED before any diff runs; --end-of-options is always pinned
+ *   - H-2: resolved sha (not the raw input) is used downstream
+ *   - H-4: a planted secret in the diff is redacted before it enters the input
+ */
+import { describe, it, expect, vi } from "vitest";
+import { buildDiffContext, type GitDiffClient } from "../../../server/services/consilium/diff-context.js";
+
+const REPO = process.cwd();
+const ALLOW = [REPO];
+const HEAD_SHA = "a".repeat(40);
+const BASE_SHA = "b".repeat(40);
+
+/** A fake git that resolves HEAD + any valid hex ref, and returns canned diffs. */
+function fakeGit(overrides: Partial<GitDiffClient> = {}): GitDiffClient {
+  return {
+    revparse: vi.fn(async (args: string[]) => {
+      const ref = args[args.length - 1];
+      if (ref === "HEAD^{commit}") return HEAD_SHA + "\n";
+      if (ref.startsWith("b".repeat(7))) return BASE_SHA + "\n";
+      return ref.replace(/\^\{commit\}$/, "") + "\n";
+    }),
+    diff: vi.fn(async (args: string[]) =>
+      args.includes("--stat") ? " file.ts | 2 +-\n 1 file changed" : "diff --git a/file.ts b/file.ts\n+added line",
+    ),
+    ...overrides,
+  };
+}
+
+describe("buildDiffContext — assembly & rounds", () => {
+  it("round 1 (null baseline) → objective only, no diff section", async () => {
+    const git = fakeGit();
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: null, objective: "Build the thing", allowedRepoPaths: ALLOW, maxDiffBytes: 1000, gitClient: git });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.input).toBe("Build the thing");
+    expect(res.input).not.toContain("Changes since last review");
+    expect(res.baselineCommit).toBeNull();
+    expect(res.headCommit).toBe(HEAD_SHA);
+    expect(res.truncated).toBe(false);
+    expect(git.diff).not.toHaveBeenCalled();
+  });
+
+  it("assembles objective + Changes + Test results sections", async () => {
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, testSummary: "12 passed, 0 failed", gitClient: fakeGit() });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.input).toContain("Obj");
+    expect(res.input).toContain("## Changes since last review");
+    expect(res.input).toContain("```diff");
+    expect(res.input).toContain("## Test results");
+    expect(res.input).toContain("12 passed, 0 failed");
+  });
+
+  it("byte-bounds the diff and sets truncated", async () => {
+    const big = "x".repeat(5000);
+    const git = fakeGit({ diff: vi.fn(async (args: string[]) => (args.includes("--stat") ? "stat" : big)) });
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 1024, gitClient: git });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.truncated).toBe(true);
+    expect(Buffer.byteLength(res.input, "utf8")).toBeLessThan(2000);
+    expect(res.input).toContain("diff truncated");
+  });
+});
+
+describe("buildDiffContext — H-2 resolved sha downstream", () => {
+  it("uses the revparse-RESOLVED sha in the diff range, not the raw input", async () => {
+    const git = fakeGit();
+    await buildDiffContext({ repoPath: REPO, baselineCommit: "b".repeat(7), objective: "O", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, gitClient: git });
+    const diffCalls = (git.diff as ReturnType<typeof vi.fn>).mock.calls;
+    for (const [args] of diffCalls) {
+      expect(args).toContain(`${BASE_SHA}..${HEAD_SHA}`);
+      expect(args).not.toContain(`${"b".repeat(7)}..${HEAD_SHA}`);
+    }
+  });
+});
+
+describe("buildDiffContext — B-1 git argument injection (BINDING)", () => {
+  const injections = ["--output=/etc/cron.d/x", "--ext-diff", "--no-index", "-HEAD", "main", "v3..HEAD", "HEAD~1"];
+  for (const bad of injections) {
+    it(`rejects baselineCommit "${bad}" before any diff runs`, async () => {
+      const git = fakeGit();
+      const res = await buildDiffContext({ repoPath: REPO, baselineCommit: bad, objective: "O", allowedRepoPaths: ALLOW, maxDiffBytes: 1000, gitClient: git });
+      expect(res.ok).toBe(false);
+      expect(git.diff).not.toHaveBeenCalled();
+    });
+  }
+
+  it("pins --end-of-options before the range on every diff invocation", async () => {
+    const git = fakeGit();
+    await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "O", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, gitClient: git });
+    const diffCalls = (git.diff as ReturnType<typeof vi.fn>).mock.calls;
+    expect(diffCalls.length).toBeGreaterThan(0);
+    for (const [args] of diffCalls) {
+      const eoo = args.indexOf("--end-of-options");
+      const range = args.indexOf(`${BASE_SHA}..${HEAD_SHA}`);
+      expect(eoo).toBeGreaterThanOrEqual(0);
+      expect(eoo).toBeLessThan(range);
+    }
+  });
+
+  it("pins --end-of-options on the revparse verification too", async () => {
+    const git = fakeGit();
+    await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "O", allowedRepoPaths: ALLOW, maxDiffBytes: 1000, gitClient: git });
+    const calls = (git.revparse as ReturnType<typeof vi.fn>).mock.calls;
+    for (const [args] of calls) {
+      expect(args).toContain("--verify");
+      expect(args).toContain("--end-of-options");
+    }
+  });
+});
+
+describe("buildDiffContext — failures & H-1 allowlist", () => {
+  it("git failure → GitFail with scrubbed (no-path) message", async () => {
+    const git = fakeGit({ revparse: vi.fn(async () => { throw new Error("fatal: /home/secret/.git not a repository"); }) });
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: null, objective: "O", allowedRepoPaths: ALLOW, maxDiffBytes: 1000, gitClient: git });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.message).not.toContain("/home/secret");
+    expect(res.message).toContain("<path>");
+  });
+
+  it("empty allowlist → GitFail (fail-closed), no git call", async () => {
+    const git = fakeGit();
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: null, objective: "O", allowedRepoPaths: [], maxDiffBytes: 1000, gitClient: git });
+    expect(res.ok).toBe(false);
+    expect(git.revparse).not.toHaveBeenCalled();
+  });
+
+  it("repoPath outside the allowlist → GitFail", async () => {
+    const git = fakeGit();
+    const res = await buildDiffContext({ repoPath: "/tmp", baselineCommit: null, objective: "O", allowedRepoPaths: ALLOW, maxDiffBytes: 1000, gitClient: git });
+    expect(res.ok).toBe(false);
+    expect(git.revparse).not.toHaveBeenCalled();
+  });
+});
+
+describe("buildDiffContext — H-4 secret egress", () => {
+  it("redacts a planted AWS credential and private key from the diff body", async () => {
+    const leaky = [
+      "+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
+      "+-----BEGIN RSA PRIVATE KEY-----",
+      "+MIIEowIBAAKCAQEA1234567890abcdefXYZ",
+      "+-----END RSA PRIVATE KEY-----",
+      "+password=hunter2supersecretvalue",
+    ].join("\n");
+    const git = fakeGit({ diff: vi.fn(async (args: string[]) => (args.includes("--stat") ? "stat" : leaky)) });
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "O", allowedRepoPaths: ALLOW, maxDiffBytes: 100_000, gitClient: git });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.input).not.toContain("wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY");
+    expect(res.input).not.toContain("hunter2supersecretvalue");
+    expect(res.input).not.toContain("MIIEowIBAAKCAQEA");
+    expect(res.input).toContain("<REDACTED:aws-credential>");
+    expect(res.input).toContain("<REDACTED:private-key>");
+    expect(res.input).toContain("<REDACTED:password>");
+  });
+});
+
+describe("buildDiffContext — input bounds (testSummary + objective)", () => {
+  it("clips an oversized testSummary and sets the truncated flag", async () => {
+    const huge = "T".repeat(50_000); // > MAX_TEST_SUMMARY_CHARS (20_000)
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: null, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 1000, testSummary: huge, gitClient: fakeGit() });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.truncated).toBe(true);
+    // Section is present but clipped well below the 50k input.
+    expect(res.input).toContain("## Test results");
+    expect(res.input).toContain("test results truncated");
+    expect(res.input.length).toBeLessThan(25_000);
+  });
+
+  it("does NOT flag truncated for a small testSummary", async () => {
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: null, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 1000, testSummary: "3 passed", gitClient: fakeGit() });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.truncated).toBe(false);
+    expect(res.input).not.toContain("test results truncated");
+  });
+
+  it("rejects a whitespace-only objective on round 1 (no diff) → GitFail", async () => {
+    const git = fakeGit();
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: null, objective: "   \n\t  ", allowedRepoPaths: ALLOW, maxDiffBytes: 1000, gitClient: git });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.message).toMatch(/empty/i);
+  });
+
+  it("tolerates a blank objective WITH a diff (placeholder, diff carries content)", async () => {
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "  ", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, gitClient: fakeGit() });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.input).toContain("No objective supplied");
+    expect(res.input).toContain("## Changes since last review");
+  });
+});

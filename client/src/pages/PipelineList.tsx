@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Plus, GitMerge, ChevronRight, Loader2 } from "lucide-react";
 import { usePipelines, useCreatePipeline, useDeletePipeline, usePipelineRunStats } from "@/hooks/use-pipeline";
+import { CurrentRunsRail } from "@/components/pipeline/current-runs-rail";
 import { DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import type { PipelineStageConfig } from "@shared/types";
 
@@ -23,6 +24,9 @@ export default function PipelineList() {
   const deletePipeline = useDeletePipeline();
 
   const pipelineList: Pipeline[] = Array.isArray(pipelines) ? pipelines : [];
+  const pipelineNames: Record<string, string> = Object.fromEntries(
+    pipelineList.map((p) => [p.id, p.name]),
+  );
   const stats = (runStats ?? {}) as Record<
     string,
     { succeeded: number; failed: number; running: number; queued: number; total: number }
@@ -54,7 +58,12 @@ export default function PipelineList() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="flex h-full bg-background">
+      {/* Left rail — live pipeline RUNS (handoff targets land here) */}
+      <CurrentRunsRail pipelineNames={pipelineNames} />
+
+      {/* Right — pipeline definitions */}
+      <div className="flex flex-col h-full flex-1 min-w-0">
       {/* Header */}
       <div className="h-16 border-b border-border flex items-center justify-between px-6 bg-card shrink-0">
         <div>
@@ -167,6 +176,7 @@ export default function PipelineList() {
             );
           })}
         </div>
+      </div>
       </div>
     </div>
   );

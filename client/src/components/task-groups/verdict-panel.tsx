@@ -22,22 +22,20 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { Gavel, Send, ThumbsUp, ThumbsDown, Loader2 } from "lucide-react";
+import { copyText } from "@/lib/clipboard";
+import { Gavel, Send, ThumbsUp, ThumbsDown, Loader2, Copy, Check } from "lucide-react";
 import type { IterationExecution } from "@/lib/task-iterations";
-
-interface ActionPoint {
-  title: string;
-  priority?: string;
-  effort?: string;
-  rationale?: string;
-  tradeoff?: string;
-}
+import type { ActionPoint } from "@shared/types";
 
 interface VerdictOutput {
+  /** The judge's full markdown report — the canonical hand-off text. */
+  raw?: string;
   verdict?: string;
   pros: string[];
   cons: string[];
   action_points: ActionPoint[];
+  /** Open P0 count from the judge's machine convergence signal, when present. */
+  openP0?: number;
 }
 
 function asStringArray(v: unknown): string[] {
@@ -64,13 +62,22 @@ function extractVerdict(
       : [];
     const hasVerdict = typeof obj.verdict === "string";
     const hasProsCons = Array.isArray(obj.pros) || Array.isArray(obj.cons);
-    if (aps.length === 0 && !hasVerdict && !hasProsCons) continue;
+    const hasRaw = typeof obj.raw === "string" && obj.raw.trim().length > 0;
+    if (aps.length === 0 && !hasVerdict && !hasProsCons && !hasRaw) continue;
+
+    const conv =
+      obj.convergence && typeof obj.convergence === "object" && !Array.isArray(obj.convergence)
+        ? (obj.convergence as Record<string, unknown>)
+        : null;
+    const openP0 = conv && typeof conv.open_p0 === "number" ? conv.open_p0 : undefined;
 
     const data: VerdictOutput = {
+      raw: hasRaw ? (obj.raw as string) : undefined,
       verdict: typeof obj.verdict === "string" ? obj.verdict : undefined,
       pros: asStringArray(obj.pros),
       cons: asStringArray(obj.cons),
       action_points: aps,
+      openP0,
     };
     const candidate = { data, source: e.taskName ?? "" };
     if (aps.length > 0) return candidate; // the judge — take it
@@ -85,6 +92,35 @@ const PRIORITY_COLOR: Record<string, string> = {
   P2: "bg-yellow-500 text-black",
   P3: "bg-slate-500 text-white",
 };
+
+/**
+ * The full hand-off text for "copy to clipboard". Prefers the judge's own
+ * markdown report (`raw`); falls back to composing one from the structured
+ * fields so older / raw-less verdicts still copy something useful.
+ */
+function buildFullText(data: VerdictOutput, groupName: string, source: string): string {
+  if (data.raw && data.raw.trim()) return data.raw.trim();
+
+  const lines: string[] = [`# ${groupName}`];
+  if (source) lines.push(`_${source}_`);
+  if (data.verdict) lines.push("", "## Вердикт", data.verdict);
+  if (data.pros.length) lines.push("", "## Плюсы", ...data.pros.map((p) => `- ${p}`));
+  if (data.cons.length) lines.push("", "## Минусы", ...data.cons.map((c) => `- ${c}`));
+  if (data.action_points.length) {
+    lines.push(
+      "",
+      "## Action Points",
+      "",
+      "| # | Действие | Приоритет | Усилие | Обоснование | Трейд-офф |",
+      "| --- | --- | --- | --- | --- | --- |",
+      ...data.action_points.map(
+        (ap, i) =>
+          `| ${i + 1} | ${ap.title} | ${ap.priority ?? "—"} | ${ap.effort ?? "—"} | ${ap.rationale ?? "—"} | ${ap.tradeoff ?? "—"} |`,
+      ),
+    );
+  }
+  return lines.join("\n");
+}
 
 export function VerdictPanel({
   groupId,
@@ -101,6 +137,7 @@ export function VerdictPanel({
   const [, navigate] = useLocation();
   const [pipelineId, setPipelineId] = useState<string>("");
   const [sending, setSending] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const result = useMemo(
     () => (detail.data ? extractVerdict(detail.data.executions) : null),
@@ -117,6 +154,24 @@ export function VerdictPanel({
   if (!result) return null;
   const { data, source } = result;
   const actionPoints = data.action_points;
+  const fullText = buildFullText(data, groupName, source);
+
+  async function copyFullText() {
+    if (await copyText(fullText)) {
+      setCopied(true);
+      toast({
+        title: "Скопировано",
+        description: "Полный текст вердикта — в буфере обмена.",
+      });
+      window.setTimeout(() => setCopied(false), 2000);
+    } else {
+      toast({
+        variant: "destructive",
+        title: "Не удалось скопировать",
+        description: "Буфер обмена недоступен в этом контексте.",
+      });
+    }
+  }
 
   async function sendToPipeline() {
     if (!effectivePipelineId || actionPoints.length === 0) return;
@@ -171,13 +226,37 @@ export function VerdictPanel({
   return (
     <Card className="border-primary/40">
       <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Gavel className="h-4 w-4 text-primary" />
-          Вердикт планирования
-          {source && (
-            <span className="text-xs font-normal text-muted-foreground">— {source}</span>
-          )}
-        </CardTitle>
+        <div className="flex items-start justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Gavel className="h-4 w-4 text-primary" />
+            Вердикт планирования
+            {source && (
+              <span className="text-xs font-normal text-muted-foreground">— {source}</span>
+            )}
+            {typeof data.openP0 === "number" && (
+              <Badge
+                variant="outline"
+                className={data.openP0 === 0 ? "border-green-600 text-green-700" : "border-red-600 text-red-700"}
+              >
+                P0: {data.openP0}
+              </Badge>
+            )}
+          </CardTitle>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={copyFullText}
+            className="shrink-0"
+            title="Скопировать полный текст вердикта для передачи в работу вне multiqlti"
+          >
+            {copied ? (
+              <Check className="mr-2 h-4 w-4 text-green-600" />
+            ) : (
+              <Copy className="mr-2 h-4 w-4" />
+            )}
+            {copied ? "Скопировано" : "Скопировать текст"}
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="space-y-5">
         {data.verdict && (

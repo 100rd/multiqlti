@@ -1804,6 +1804,41 @@ export interface TaskResult {
   output?: Record<string, unknown>;
 }
 
+// ─── Consilium Verdict / Convergence Types (Consilium Loop A1) ───────────────
+
+/**
+ * A single action point emitted by a consilium judge task in its structured
+ * `output.action_points[]`. Shared by the client verdict panel and the
+ * server-side convergence reader so both agree on the shape (lifted from the
+ * former local interface in `verdict-panel.tsx`).
+ */
+export interface ActionPoint {
+  title: string;
+  priority?: string;
+  effort?: string;
+  rationale?: string;
+  tradeoff?: string;
+}
+
+/**
+ * The convergence-blocking priority tier. An action point at `P0` keeps the
+ * consilium loop from converging; the judge prompt, `readConvergence`, and the
+ * UI all key off this single constant so the taxonomy never drifts.
+ */
+export const P0_PRIORITY = "P0" as const;
+export type P0Priority = typeof P0_PRIORITY;
+
+/**
+ * Machine-readable convergence verdict the loop FSM decides on. Either trusted
+ * from the judge's `output.convergence` object or derived from `action_points`
+ * (trust-then-derive). `converged` is true iff no `P0` action points remain.
+ */
+export interface ConvergenceVerdict {
+  converged: boolean;
+  openP0: number;
+  openActionPoints: ActionPoint[];
+}
+
 // ─── Platform Version Types ────────────────────────────────────────────────────
 
 export interface VersionsResponse {

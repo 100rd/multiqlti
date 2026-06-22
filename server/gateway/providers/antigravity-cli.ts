@@ -54,6 +54,19 @@ const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 /** Maximum concurrent CLI processes — the subscription CLI is single-tenant. */
 const MAX_CONCURRENCY = 4;
 
+/**
+ * Total attempts for one invocation. `agy --print` intermittently exits 0 with
+ * EMPTY stdout (a transient agentic-mode drop) or a transient spawn failure;
+ * with no retry a single blip kills a whole multi-stage run after discarding
+ * the work already done by earlier stages. Other CLI/HTTP providers retry once;
+ * this brings Antigravity in line. Permanent errors (binary missing, not logged
+ * in) are NOT retried — they carry `retryable = false`.
+ */
+const MAX_ATTEMPTS = 3;
+
+/** Linear backoff base between retries (multiplied by the attempt number). */
+const RETRY_BACKOFF_MS = 500;
+
 /** Milliseconds-per-second divisor for the CLI's `--print-timeout` flag. */
 const MS_PER_SECOND = 1000;
 
@@ -79,9 +92,18 @@ export interface AntigravityCliResult {
 
 /** Raised when the CLI cannot be found, is not logged in, or fails. */
 export class AntigravityCliError extends Error {
-  constructor(message: string, readonly cause?: unknown) {
+  /**
+   * Whether a fresh attempt could plausibly succeed. True for transient blips
+   * (empty stdout, killed/timed-out child); false for deterministic config
+   * faults (binary missing, not logged in) where retrying only wastes time.
+   */
+  readonly retryable: boolean;
+
+  constructor(message: string, cause?: unknown, retryable = false) {
     super(message);
     this.name = "AntigravityCliError";
+    this.cause = cause;
+    this.retryable = retryable;
   }
 }
 
@@ -110,7 +132,9 @@ function toCliError(err: NodeJS.ErrnoException, stderr: string): AntigravityCliE
       err,
     );
   }
-  return new AntigravityCliError(`Antigravity CLI failed: ${detail}`, err);
+  // A killed/timed-out child (execFile timeout → err.killed) or a generic spawn
+  // failure is transient → retryable.
+  return new AntigravityCliError(`Antigravity CLI failed: ${detail}`, err, true);
 }
 
 let activeProcesses = 0;
@@ -148,7 +172,8 @@ function runProcess(input: AntigravityCliInput): Promise<AntigravityCliResult> {
         }
         const text = (stdout ?? "").trim();
         if (text.length === 0) {
-          reject(new AntigravityCliError("Antigravity CLI returned empty output."));
+          // Transient agentic-mode drop / hiccup — exit 0 but nothing on stdout.
+          reject(new AntigravityCliError("Antigravity CLI returned empty output.", undefined, true));
           return;
         }
         resolve({ text, promptBytes: Buffer.byteLength(input.prompt, "utf8") });
@@ -160,16 +185,52 @@ function runProcess(input: AntigravityCliInput): Promise<AntigravityCliResult> {
   });
 }
 
+/** Sleep that settles early (rejecting) if the caller's signal aborts. */
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new AntigravityCliError("Antigravity CLI request aborted."));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new AntigravityCliError("Antigravity CLI request aborted."));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 /**
  * Invoke the Antigravity CLI non-interactively and return its text output.
- * Concurrency is capped; the prompt is never passed through a shell.
+ * Concurrency is capped; the prompt is never passed through a shell. Transient
+ * failures (empty stdout, killed/timed-out child) are retried up to
+ * MAX_ATTEMPTS with linear backoff; permanent ones fail fast.
  */
 export async function invokeAntigravityCli(
   input: AntigravityCliInput,
 ): Promise<AntigravityCliResult> {
   await acquireSlot();
   try {
-    return await runProcess(input);
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        return await runProcess(input);
+      } catch (err) {
+        lastErr = err;
+        const retryable = err instanceof AntigravityCliError && err.retryable;
+        if (!retryable || attempt === MAX_ATTEMPTS || input.signal?.aborted) throw err;
+        console.warn(
+          `[antigravity] attempt ${attempt}/${MAX_ATTEMPTS} failed: ${(err as Error).message} — retrying`,
+        );
+        await delay(RETRY_BACKOFF_MS * attempt, input.signal);
+      }
+    }
+    // Unreachable (the loop either returns or throws), but satisfies the type.
+    throw lastErr;
   } finally {
     releaseSlot();
   }

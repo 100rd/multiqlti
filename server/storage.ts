@@ -42,8 +42,14 @@ import {
   type TraceRow,
   type SkillVersionRow,
   type InsertSkillVersion,
+  CONSILIUM_LOOP_TERMINAL_STATES,
   type TaskGroupRow,
   type InsertTaskGroup,
+  type ConsiliumLoopRow,
+  type InsertConsiliumLoop,
+  type ConsiliumLoopRoundRow,
+  type InsertConsiliumLoopRound,
+  type ConsiliumLoopState,
   type TaskRow,
   type InsertTask,
   type TaskTraceRow,
@@ -540,6 +546,38 @@ export interface IStorage {
   createTaskTemplate(data: InsertTaskTemplate): Promise<TaskTemplateRow>;
   updateTaskTemplate(id: string, updates: Partial<TaskTemplateRow>): Promise<TaskTemplateRow>;
   deleteTaskTemplate(id: string): Promise<void>;
+
+  // ─── Consilium Loops (Phase B — auto-versioned FSM, design §4) ──────────────
+  /** Insert a loop. The DB partial-unique index rejects a 2nd active loop per
+   *  group (Security H-3) — surfaces as a unique-violation the route maps to 409. */
+  createLoop(data: InsertConsiliumLoop): Promise<ConsiliumLoopRow>;
+  getLoop(id: string): Promise<ConsiliumLoopRow | undefined>;
+  /** Loops created by `ownerId`, newest first (owner-scoped list, mirror task-groups). */
+  getLoopsByOwner(ownerId: string): Promise<ConsiliumLoopRow[]>;
+  /** All loops (admin list / poller backstop sweep). */
+  getLoops(): Promise<ConsiliumLoopRow[]>;
+  /** The active (non-terminal) loop for a group, if any (create-time conflict check). */
+  getActiveLoopByGroup(groupId: string): Promise<ConsiliumLoopRow | undefined>;
+  updateLoop(
+    id: string,
+    updates: Partial<Omit<ConsiliumLoopRow, "id" | "createdAt">>,
+  ): Promise<ConsiliumLoopRow>;
+  /**
+   * H-3 — atomic compare-and-swap on `state`. Sets the loop to `next` (+ any
+   * extra fields) ONLY when its current state equals `expected`. Returns the
+   * updated row when the CAS won (1 row), or `undefined` when it lost (0 rows —
+   * another tick/instance already advanced it). The reducer's single source of
+   * mutual exclusion: NO in-memory Set.
+   */
+  casLoopState(
+    id: string,
+    expected: ConsiliumLoopState,
+    next: ConsiliumLoopState,
+    extra?: Partial<Omit<ConsiliumLoopRow, "id" | "createdAt" | "state">>,
+  ): Promise<ConsiliumLoopRow | undefined>;
+  /** Append one round (UNIQUE(loop, round) — idempotent re-append throws). */
+  appendLoopRound(data: InsertConsiliumLoopRound): Promise<ConsiliumLoopRoundRow>;
+  getLoopRounds(loopId: string): Promise<ConsiliumLoopRoundRow[]>;
 
 
   // Tracker Connections (Issue Tracker Integration)
@@ -1821,6 +1859,134 @@ export class MemStorage implements IStorage {
     return Array.from(this.orchestratorResearchMap.values())
       .filter((r) => r.runId === runId)
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  }
+
+  // ─── Consilium Loops (Phase B — auto-versioned FSM) ───────────────────────
+
+  private consiliumLoopsMap: Map<string, ConsiliumLoopRow> = new Map();
+  private consiliumLoopRoundsMap: Map<string, ConsiliumLoopRoundRow> = new Map();
+
+  /** Mirror the DB partial-unique index: at most one non-terminal loop/group. */
+  private isLoopActive(row: ConsiliumLoopRow): boolean {
+    return !CONSILIUM_LOOP_TERMINAL_STATES.includes(
+      row.state as (typeof CONSILIUM_LOOP_TERMINAL_STATES)[number],
+    );
+  }
+
+  async createLoop(data: InsertConsiliumLoop): Promise<ConsiliumLoopRow> {
+    const state = (data.state as ConsiliumLoopState | undefined) ?? "pending";
+    // H-3: emulate the partial-unique index — reject a 2nd active loop per group.
+    if (!CONSILIUM_LOOP_TERMINAL_STATES.includes(state as (typeof CONSILIUM_LOOP_TERMINAL_STATES)[number])) {
+      for (const existing of this.consiliumLoopsMap.values()) {
+        if (existing.groupId === data.groupId && this.isLoopActive(existing)) {
+          throw new Error("consilium_loops_one_active_per_group");
+        }
+      }
+    }
+    const now = new Date();
+    const row: ConsiliumLoopRow = {
+      id: randomUUID(),
+      groupId: data.groupId,
+      state,
+      round: data.round ?? 0,
+      maxRounds: data.maxRounds ?? 6,
+      repoPath: data.repoPath,
+      lastReviewedCommit: data.lastReviewedCommit ?? null,
+      currentIterationNumber: data.currentIterationNumber ?? null,
+      devPipelineId: data.devPipelineId ?? null,
+      devGroupId: data.devGroupId ?? null,
+      prRef: data.prRef ?? null,
+      headCommitAtReview: data.headCommitAtReview ?? null,
+      openP0: data.openP0 ?? null,
+      error: data.error ?? null,
+      createdBy: data.createdBy ?? null,
+      createdAt: now,
+      updatedAt: now,
+      completedAt: data.completedAt ?? null,
+    };
+    this.consiliumLoopsMap.set(row.id, row);
+    return row;
+  }
+
+  async getLoop(id: string): Promise<ConsiliumLoopRow | undefined> {
+    return this.consiliumLoopsMap.get(id);
+  }
+
+  async getLoopsByOwner(ownerId: string): Promise<ConsiliumLoopRow[]> {
+    return Array.from(this.consiliumLoopsMap.values())
+      .filter((l) => l.createdBy === ownerId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  async getLoops(): Promise<ConsiliumLoopRow[]> {
+    return Array.from(this.consiliumLoopsMap.values()).sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+    );
+  }
+
+  async getActiveLoopByGroup(groupId: string): Promise<ConsiliumLoopRow | undefined> {
+    return Array.from(this.consiliumLoopsMap.values()).find(
+      (l) => l.groupId === groupId && this.isLoopActive(l),
+    );
+  }
+
+  async updateLoop(
+    id: string,
+    updates: Partial<Omit<ConsiliumLoopRow, "id" | "createdAt">>,
+  ): Promise<ConsiliumLoopRow> {
+    const existing = this.consiliumLoopsMap.get(id);
+    if (!existing) throw new Error(`ConsiliumLoop ${id} not found`);
+    const updated = { ...existing, ...updates, updatedAt: new Date() };
+    this.consiliumLoopsMap.set(id, updated);
+    return updated;
+  }
+
+  async casLoopState(
+    id: string,
+    expected: ConsiliumLoopState,
+    next: ConsiliumLoopState,
+    extra?: Partial<Omit<ConsiliumLoopRow, "id" | "createdAt" | "state">>,
+  ): Promise<ConsiliumLoopRow | undefined> {
+    const existing = this.consiliumLoopsMap.get(id);
+    if (!existing || existing.state !== expected) return undefined;
+    const updated: ConsiliumLoopRow = {
+      ...existing,
+      ...extra,
+      state: next,
+      updatedAt: new Date(),
+    };
+    this.consiliumLoopsMap.set(id, updated);
+    return updated;
+  }
+
+  async appendLoopRound(data: InsertConsiliumLoopRound): Promise<ConsiliumLoopRoundRow> {
+    // UNIQUE(loop, round): reject a duplicate round append.
+    for (const r of this.consiliumLoopRoundsMap.values()) {
+      if (r.loopId === data.loopId && r.round === data.round) {
+        throw new Error("consilium_loop_rounds_uq");
+      }
+    }
+    const row: ConsiliumLoopRoundRow = {
+      id: randomUUID(),
+      loopId: data.loopId,
+      round: data.round,
+      iterationNumber: data.iterationNumber,
+      converged: data.converged ?? null,
+      openP0: data.openP0 ?? null,
+      openActionPoints: data.openActionPoints ?? null,
+      baselineCommit: data.baselineCommit ?? null,
+      headCommit: data.headCommit ?? null,
+      testSummary: data.testSummary ?? null,
+      createdAt: new Date(),
+    };
+    this.consiliumLoopRoundsMap.set(row.id, row);
+    return row;
+  }
+
+  async getLoopRounds(loopId: string): Promise<ConsiliumLoopRoundRow[]> {
+    return Array.from(this.consiliumLoopRoundsMap.values())
+      .filter((r) => r.loopId === loopId)
+      .sort((a, b) => a.round - b.round);
   }
 
   // ─── /consensus run mode ──────────────────────────────────────────────────

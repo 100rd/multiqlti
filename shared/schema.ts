@@ -10,12 +10,13 @@ import {
   serial,
   real,
   unique,
+  uniqueIndex,
   index,
 } from "drizzle-orm/pg-core";
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider, DebateDetails, ArbitratorVerdict, OrchestratorStepType, OrchestratorStepArgs, ResearchFinding, OrchestratorRunStatus, OrchestratorStepStatus, StopReason, Confidence, ConsensusVerdict, ConsensusRunStatus, ConsensusRoundPhase } from "./types.js";
+import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider, DebateDetails, ArbitratorVerdict, OrchestratorStepType, OrchestratorStepArgs, ResearchFinding, OrchestratorRunStatus, OrchestratorStepStatus, StopReason, Confidence, ConsensusVerdict, ConsensusRunStatus, ConsensusRoundPhase, ActionPoint } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -2588,3 +2589,117 @@ export const insertLessonSchema = createInsertSchema(lessons, {
 
 export type InsertLesson = z.infer<typeof insertLessonSchema>;
 export type Lesson = typeof lessons.$inferSelect;
+
+// ─── Consilium Loop (Phase B — auto-versioned closed loop FSM, design §4) ────
+// An auto-versioned loop: design-idea → consilium debate → DEV → re-review,
+// until convergence. Mirrors `orchestratorRuns` (state enum + jsonb + error +
+// audit timestamps). State is PERSISTED so the loop survives restart; every
+// transition is an atomic compare-and-swap on `state` (Security H-3).
+
+export const CONSILIUM_LOOP_STATES = [
+  "pending",
+  "building_context",
+  "reviewing",
+  "deciding",
+  "developing",
+  "awaiting_merge",
+  "converged",
+  "stopped_cap",
+  "escalated",
+  "failed",
+  "cancelled",
+] as const;
+export type ConsiliumLoopState = typeof CONSILIUM_LOOP_STATES[number];
+
+/** The terminal states — a loop in one of these never ticks again. */
+export const CONSILIUM_LOOP_TERMINAL_STATES = [
+  "converged",
+  "stopped_cap",
+  "escalated",
+  "failed",
+  "cancelled",
+] as const satisfies readonly ConsiliumLoopState[];
+
+export const consiliumLoops = pgTable(
+  "consilium_loops",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    // The consilium task group re-run each round (cascade with the group).
+    groupId: varchar("group_id")
+      .notNull()
+      .references(() => taskGroups.id, { onDelete: "cascade" }),
+    state: text("state").notNull().default("pending").$type<ConsiliumLoopState>(),
+    round: integer("round").notNull().default(0),
+    maxRounds: integer("max_rounds").notNull().default(6),
+    // Allowlisted target repo (validated at create AND re-validated each round).
+    repoPath: text("repo_path").notNull(),
+    // Diff baseline; null on round 1 (objective-only, no diff).
+    lastReviewedCommit: text("last_reviewed_commit"),
+    currentIterationNumber: integer("current_iteration_number"),
+    devPipelineId: varchar("dev_pipeline_id"),
+    devGroupId: varchar("dev_group_id"),
+    prRef: text("pr_ref"),
+    // M-3 (TOCTOU): HEAD captured when entering AWAITING_MERGE; merge-approved
+    // records the merged HEAD (server-read) as the next baseline + any delta.
+    headCommitAtReview: text("head_commit_at_review"),
+    // Latest convergence count (anti-stall mirror of the per-round history).
+    openP0: integer("open_p0"),
+    error: text("error"),
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    completedAt: timestamp("completed_at"),
+  },
+  (table) => ({
+    groupIdIdx: index("consilium_loops_group_id_idx").on(table.groupId),
+    createdByIdx: index("consilium_loops_created_by_idx").on(table.createdBy),
+    // H-3: at most ONE non-terminal loop per group. Partial unique index over
+    // group_id where the state is non-terminal — the DB rejects a 2nd active
+    // loop on the same group even under a create race.
+    oneActivePerGroup: uniqueIndex("consilium_loops_one_active_per_group")
+      .on(table.groupId)
+      .where(sql`state NOT IN ('converged','stopped_cap','escalated','failed','cancelled')`),
+  }),
+);
+
+export const insertConsiliumLoopSchema = createInsertSchema(consiliumLoops).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertConsiliumLoop = typeof consiliumLoops.$inferInsert;
+export type ConsiliumLoopRow = typeof consiliumLoops.$inferSelect;
+
+export const consiliumLoopRounds = pgTable(
+  "consilium_loop_rounds",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    loopId: varchar("loop_id")
+      .notNull()
+      .references(() => consiliumLoops.id, { onDelete: "cascade" }),
+    round: integer("round").notNull(),
+    // FK-by-value to task_group_iterations (the iteration that ran this round).
+    iterationNumber: integer("iteration_number").notNull(),
+    converged: boolean("converged"),
+    openP0: integer("open_p0"),
+    // The still-open action points — bounded by readConvergence (Security L-2).
+    // We persist the structured AP metadata for audit + the DEV handoff, but
+    // NEVER the raw diff / assembled prompt input (Security H-4).
+    openActionPoints: jsonb("open_action_points").$type<ActionPoint[]>(),
+    baselineCommit: text("baseline_commit"),
+    headCommit: text("head_commit"),
+    testSummary: text("test_summary"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    loopRoundUnique: unique("consilium_loop_rounds_uq").on(table.loopId, table.round),
+    loopIdIdx: index("consilium_loop_rounds_loop_id_idx").on(table.loopId),
+  }),
+);
+
+export const insertConsiliumLoopRoundSchema = createInsertSchema(consiliumLoopRounds).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertConsiliumLoopRound = typeof consiliumLoopRounds.$inferInsert;
+export type ConsiliumLoopRoundRow = typeof consiliumLoopRounds.$inferSelect;

@@ -90,6 +90,13 @@ import {
   taskGroupIterations,
   taskExecutions,
   taskTemplates,
+  consiliumLoops,
+  consiliumLoopRounds,
+  type ConsiliumLoopRow,
+  type InsertConsiliumLoop,
+  type ConsiliumLoopRoundRow,
+  type InsertConsiliumLoopRound,
+  type ConsiliumLoopState,
   trackerConnections,
   type TaskGroupRow,
   type InsertTaskGroup,
@@ -1210,6 +1217,93 @@ export class PgStorage implements IStorage {
       .from(orchestratorResearch)
       .where(eq(orchestratorResearch.runId, runId))
       .orderBy(asc(orchestratorResearch.createdAt));
+  }
+
+  // ─── Consilium Loops (Phase B — auto-versioned FSM) ───────────────────────
+
+  async createLoop(data: InsertConsiliumLoop): Promise<ConsiliumLoopRow> {
+    // H-3: the partial-unique index `consilium_loops_one_active_per_group`
+    // rejects a 2nd non-terminal loop on the same group at the DB level — the
+    // create route maps the unique-violation to a 409.
+    const [row] = await db.insert(consiliumLoops).values(data).returning();
+    return row;
+  }
+
+  async getLoop(id: string): Promise<ConsiliumLoopRow | undefined> {
+    const [row] = await db.select().from(consiliumLoops).where(eq(consiliumLoops.id, id));
+    return row;
+  }
+
+  async getLoopsByOwner(ownerId: string): Promise<ConsiliumLoopRow[]> {
+    return db
+      .select()
+      .from(consiliumLoops)
+      .where(eq(consiliumLoops.createdBy, ownerId))
+      .orderBy(desc(consiliumLoops.createdAt));
+  }
+
+  async getLoops(): Promise<ConsiliumLoopRow[]> {
+    return db.select().from(consiliumLoops).orderBy(desc(consiliumLoops.createdAt));
+  }
+
+  async getActiveLoopByGroup(groupId: string): Promise<ConsiliumLoopRow | undefined> {
+    const [row] = await db
+      .select()
+      .from(consiliumLoops)
+      .where(
+        and(
+          eq(consiliumLoops.groupId, groupId),
+          inArray(
+            consiliumLoops.state,
+            ["pending", "building_context", "reviewing", "deciding", "developing", "awaiting_merge"],
+          ),
+        ),
+      )
+      .limit(1);
+    return row;
+  }
+
+  async updateLoop(
+    id: string,
+    updates: Partial<Omit<ConsiliumLoopRow, "id" | "createdAt">>,
+  ): Promise<ConsiliumLoopRow> {
+    const [row] = await db
+      .update(consiliumLoops)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(consiliumLoops.id, id))
+      .returning();
+    if (!row) throw new Error(`ConsiliumLoop ${id} not found`);
+    return row;
+  }
+
+  async casLoopState(
+    id: string,
+    expected: ConsiliumLoopState,
+    next: ConsiliumLoopState,
+    extra?: Partial<Omit<ConsiliumLoopRow, "id" | "createdAt" | "state">>,
+  ): Promise<ConsiliumLoopRow | undefined> {
+    // H-3: atomic compare-and-swap. The WHERE pins BOTH id AND the expected
+    // state, so a concurrent tick/instance that already advanced the loop loses
+    // the race (0 rows → undefined). This is the FSM's sole mutual exclusion.
+    const [row] = await db
+      .update(consiliumLoops)
+      .set({ ...extra, state: next, updatedAt: new Date() })
+      .where(and(eq(consiliumLoops.id, id), eq(consiliumLoops.state, expected)))
+      .returning();
+    return row;
+  }
+
+  async appendLoopRound(data: InsertConsiliumLoopRound): Promise<ConsiliumLoopRoundRow> {
+    const [row] = await db.insert(consiliumLoopRounds).values(data).returning();
+    return row;
+  }
+
+  async getLoopRounds(loopId: string): Promise<ConsiliumLoopRoundRow[]> {
+    return db
+      .select()
+      .from(consiliumLoopRounds)
+      .where(eq(consiliumLoopRounds.loopId, loopId))
+      .orderBy(asc(consiliumLoopRounds.round));
   }
 
   // ─── /consensus run mode ──────────────────────────────────────────────────
