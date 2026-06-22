@@ -575,6 +575,23 @@ export interface IStorage {
     next: ConsiliumLoopState,
     extra?: Partial<Omit<ConsiliumLoopRow, "id" | "createdAt" | "state">>,
   ): Promise<ConsiliumLoopRow | undefined>;
+  /**
+   * H-3 (re-drive) — atomically CLAIM a crash-stranded loop's re-drive across
+   * instances. Conditional UPDATE that bumps `updatedAt` ONLY when the row is
+   * still in `expected` state, its state-specific child ref is NULL (reviewing →
+   * current_iteration_number IS NULL; developing → dev_group_id IS NULL), AND it
+   * has been stranded longer than `graceMs` (updatedAt < now - graceMs). The
+   * FIRST instance's UPDATE moves updatedAt to now, so a concurrent second
+   * instance's `updatedAt < now-grace` predicate no longer matches → 0 rows →
+   * `undefined` → it backs off. Returns the claimed row (run the side effect) or
+   * undefined (lost the claim — no-op). Same atomic-DB-guard discipline as
+   * casLoopState; closes the cross-instance re-drive double-fire.
+   */
+  claimRedrive(
+    id: string,
+    expected: ConsiliumLoopState,
+    graceMs: number,
+  ): Promise<ConsiliumLoopRow | undefined>;
   /** Append one round (UNIQUE(loop, round) — idempotent re-append throws). */
   appendLoopRound(data: InsertConsiliumLoopRound): Promise<ConsiliumLoopRoundRow>;
   getLoopRounds(loopId: string): Promise<ConsiliumLoopRoundRow[]>;
@@ -1957,6 +1974,29 @@ export class MemStorage implements IStorage {
     };
     this.consiliumLoopsMap.set(id, updated);
     return updated;
+  }
+
+  async claimRedrive(
+    id: string,
+    expected: ConsiliumLoopState,
+    graceMs: number,
+  ): Promise<ConsiliumLoopRow | undefined> {
+    const existing = this.consiliumLoopsMap.get(id);
+    if (!existing || existing.state !== expected) return undefined;
+    // State-specific null-ref predicate (mirrors the Pg WHERE).
+    const nullRef =
+      expected === "reviewing"
+        ? existing.currentIterationNumber == null
+        : expected === "developing"
+          ? existing.devGroupId == null
+          : false;
+    if (!nullRef) return undefined;
+    // Past-grace predicate: updatedAt < now - graceMs.
+    if (Date.now() - existing.updatedAt.getTime() < graceMs) return undefined;
+    // Atomic claim: bump updatedAt to now so a concurrent claim's grace check fails.
+    const claimed: ConsiliumLoopRow = { ...existing, updatedAt: new Date() };
+    this.consiliumLoopsMap.set(id, claimed);
+    return claimed;
   }
 
   async appendLoopRound(data: InsertConsiliumLoopRound): Promise<ConsiliumLoopRoundRow> {

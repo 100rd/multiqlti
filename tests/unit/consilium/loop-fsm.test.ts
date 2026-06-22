@@ -149,11 +149,27 @@ function makeFakeStorage(loop: ConsiliumLoopRow, rounds: { round: number; openP0
     current = { ...current, ...(extra ?? {}), state: next };
     return current;
   });
+  // Faithful atomic re-drive claim (mirrors Pg/Mem): state match + null child ref
+  // + past-grace, then bump updatedAt so a concurrent claim's grace check fails.
+  const claimRedrive = vi.fn(async (id: string, expected: LoopState, graceMs: number) => {
+    if (id !== current.id || current.state !== expected) return undefined;
+    const nullRef =
+      expected === "reviewing"
+        ? current.currentIterationNumber == null
+        : expected === "developing"
+          ? current.devGroupId == null
+          : false;
+    if (!nullRef) return undefined;
+    if (Date.now() - new Date(current.updatedAt).getTime() < graceMs) return undefined;
+    current = { ...current, updatedAt: new Date() }; // atomic bump → loser backs off
+    return current;
+  });
   const storage = {
     getLoop: vi.fn(async () => current),
     getLoops: vi.fn(async () => [current]),
     getLoopRounds: vi.fn(async () => rounds.map((r) => ({ ...r }))),
     casLoopState: cas,
+    claimRedrive,
     appendLoopRound: vi.fn(async () => ({})),
     updateLoop: vi.fn(async (_id: string, extra?: Record<string, unknown>) => {
       current = { ...current, ...(extra ?? {}) };
@@ -165,7 +181,7 @@ function makeFakeStorage(loop: ConsiliumLoopRow, rounds: { round: number; openP0
     getIteration: vi.fn(async () => ({ id: "it1", iterationNumber: current.currentIterationNumber ?? 1, status: "completed" })),
     getExecutionsByIteration: vi.fn(async () => []),
   };
-  return { storage, cas, get: () => current };
+  return { storage, cas, claimRedrive, get: () => current };
 }
 
 const fakeConfig = () =>
@@ -205,12 +221,15 @@ describe("controller tick — startGroup + cap precedence + CAS no-op", () => {
     expect(res?.currentIterationNumber).toBe(1);
   });
 
-  it("H-3: two concurrent ticks on a DECIDING loop → exactly ONE createTaskGroup (loser is a no-op)", async () => {
+  it("in-process lock: two concurrent same-process ticks → exactly ONE createTaskGroup (2nd is locked out)", async () => {
     const loop = makeLoop({ state: "deciding", round: 2, maxRounds: 6, currentIterationNumber: 2 });
-    const { storage, cas } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
-    // Serialize the CAS so the first claimer flips state to `developing`; the
-    // second sees state !== "deciding" and loses (returns undefined → no-op).
-    const createTaskGroup = vi.fn(async () => ({ group: { id: "devgrp" }, tasks: [] }));
+    const { storage } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
+    // A slow createTaskGroup keeps the first tick's side effect in flight while
+    // the second tick fires — the in-process lock must bar the 2nd before CAS.
+    const createTaskGroup = vi.fn(async () => {
+      await new Promise((r) => setTimeout(r, 25));
+      return { group: { id: "devgrp" }, tasks: [] };
+    });
     const startGroup = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } }));
     const controller = new ConsiliumLoopController({
       storage: storage as never,
@@ -219,13 +238,32 @@ describe("controller tick — startGroup + cap precedence + CAS no-op", () => {
       readIterationVerdict: async () => verdict(false, 2), // open P0s, room left → DEVELOPING
     });
     const [a, b] = await Promise.all([controller.tick(loop.id), controller.tick(loop.id)]);
-    // Exactly one tick won the CAS into `developing`; the other is a null no-op.
     const winners = [a, b].filter((r) => r !== null);
     expect(winners).toHaveLength(1);
     expect(winners[0]?.state).toBe("developing");
-    // BLOCKER: the non-idempotent DEV-group mint fires for the winner ONLY.
+    // The non-idempotent DEV-group mint fires for the single in-flight tick ONLY.
     expect(createTaskGroup).toHaveBeenCalledTimes(1);
-    // CAS into developing attempted twice, but only one row updated.
+  });
+
+  it("cross-instance CAS: a 2nd controller (separate process) that loses the CAS is a no-op", async () => {
+    // Two controllers share storage but NOT the in-process lock (simulating two
+    // pods). The first wins the CAS deciding->developing; the second's CAS sees
+    // state !== deciding → undefined → no-op, no second createTaskGroup.
+    const loop = makeLoop({ state: "deciding", round: 2, maxRounds: 6, currentIterationNumber: 2 });
+    const { storage, cas } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
+    const createTaskGroup = vi.fn(async () => ({ group: { id: "devgrp" }, tasks: [] }));
+    const mkController = () =>
+      new ConsiliumLoopController({
+        storage: storage as never,
+        taskOrchestrator: { startGroup: vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } })), createTaskGroup, cancelGroup: vi.fn() } as never,
+        config: fakeConfig,
+        readIterationVerdict: async () => verdict(false, 2),
+      });
+    const [a, b] = await Promise.all([mkController().tick(loop.id), mkController().tick(loop.id)]);
+    const winners = [a, b].filter((r) => r !== null);
+    expect(winners).toHaveLength(1);
+    expect(createTaskGroup).toHaveBeenCalledTimes(1);
+    // Both instances attempted the deciding->developing CAS; only one row updated.
     expect(cas.mock.calls.filter((c) => c[1] === "deciding" && c[2] === "developing").length).toBe(2);
   });
 
@@ -297,11 +335,16 @@ describe("controller tick — startGroup + cap precedence + CAS no-op", () => {
 // ─── Crash-window re-drive (liveness fix) ────────────────────────────────────
 
 describe("controller tick — crash-window re-drive of stranded loops", () => {
-  it("DEVELOPING with null devGroupId → re-drives → exactly one createTaskGroup, devGroupId persisted", async () => {
-    // Stranded: a crash between the CAS claim (deciding→developing) and the
-    // updateLoop that writes devGroupId left devGroupId null. tick must re-run
-    // the dev handoff (claim already held — no competing CAS).
-    const loop = makeLoop({ state: "developing", round: 2, devGroupId: null, currentIterationNumber: 2 });
+  // A loop whose state was persisted long ago (past the grace window) → a true
+  // crash-strand, eligible for re-drive. Grace = max(2x5s, 30s) = 30s here.
+  const STALE = new Date(Date.now() - 120_000);
+  const FRESH = new Date(); // within grace → in-flight, must NOT re-drive
+
+  it("DEVELOPING with null devGroupId, past grace → re-drives → exactly one createTaskGroup", async () => {
+    // Genuinely stranded: a crash between the CAS claim (deciding→developing) and
+    // the updateLoop that writes devGroupId left devGroupId null, AND updatedAt is
+    // older than the grace window. tick re-runs the dev handoff once.
+    const loop = makeLoop({ state: "developing", round: 2, devGroupId: null, currentIterationNumber: 2, updatedAt: STALE });
     const { storage } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
     const createTaskGroup = vi.fn(async () => ({ group: { id: "devgrp-redrive" }, tasks: [] }));
     const startGroup = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } }));
@@ -316,6 +359,73 @@ describe("controller tick — crash-window re-drive of stranded loops", () => {
     expect(createTaskGroup).toHaveBeenCalledTimes(1);
     expect(res?.devGroupId).toBe("devgrp-redrive");
     expect(res?.state).toBe("developing"); // state unchanged — only the ref filled
+  });
+
+  it("CROSS-INSTANCE: two controllers (two in-process Sets) re-driving the SAME stranded loop → EXACTLY ONE createTaskGroup", async () => {
+    // Security gap closer: two pods, separate in-process locks, ONE storage. Both
+    // read the stranded null-ref row past grace; the atomic claimRedrive lets only
+    // ONE win (the other's grace predicate fails after the winner bumps
+    // updatedAt) → exactly one non-idempotent side effect.
+    const loop = makeLoop({ state: "developing", round: 2, devGroupId: null, currentIterationNumber: 2, updatedAt: STALE });
+    const { storage, claimRedrive } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
+    const createTaskGroup = vi.fn(async () => {
+      await new Promise((r) => setTimeout(r, 20)); // keep the winner's side effect in flight
+      return { group: { id: "devgrp-x" }, tasks: [] };
+    });
+    const mk = () =>
+      new ConsiliumLoopController({
+        storage: storage as never,
+        taskOrchestrator: { startGroup: vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } })), createTaskGroup, cancelGroup: vi.fn() } as never,
+        config: fakeConfig,
+        readIterationVerdict: async () => verdict(false, 2),
+        readRepoHead: async () => "deadbeef",
+      });
+    // Two SEPARATE controllers → two independent in-process Sets (simulating pods).
+    const [a, b] = await Promise.all([mk().tick(loop.id), mk().tick(loop.id)]);
+    expect(createTaskGroup).toHaveBeenCalledTimes(1); // atomic claim → no double-fire
+    const winners = [a, b].filter((r) => r !== null);
+    expect(winners).toHaveLength(1);
+    expect(claimRedrive).toHaveBeenCalledTimes(2); // both attempted; one won
+  });
+
+  it("REGRESSION: REVIEWING with null ref but WITHIN grace (side effect in flight) → NO re-drive, NO duplicate startGroup", async () => {
+    // This is the live regression: during the in-flight window the loop is
+    // legitimately reviewing+null-ref. A poller tick must NOT re-drive it.
+    const loop = makeLoop({ state: "reviewing", round: 1, currentIterationNumber: null, updatedAt: FRESH });
+    const { storage } = makeFakeStorage(loop);
+    const startGroup = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 7 } }));
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup, createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+      readRepoHead: async () => "abc1234",
+    });
+    const res = await controller.tick(loop.id);
+    expect(startGroup).not.toHaveBeenCalled(); // in-flight → no second startGroup
+    expect(res).toBeNull(); // no-op (still reviewing, waiting on the in-flight iteration)
+  });
+
+  it("REGRESSION: a SLOW startGroup in flight + a poller tick fires → EXACTLY ONE startGroup", async () => {
+    // Drive the real BUILDING_CONTEXT→REVIEWING transition with a slow startGroup,
+    // then fire a concurrent poller tick during the in-flight window. The
+    // in-process lock bars the 2nd; net exactly one startGroup, one iteration.
+    const loop = makeLoop({ state: "building_context", round: 0, lastReviewedCommit: null, updatedAt: new Date() });
+    const { storage } = makeFakeStorage(loop);
+    const startGroup = vi.fn(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      return { group: {}, iteration: { iterationNumber: 1 } };
+    });
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup, createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+      readRepoHead: async () => "abc1234",
+    });
+    const [a, b] = await Promise.all([controller.tick(loop.id), controller.tick(loop.id)]);
+    expect(startGroup).toHaveBeenCalledTimes(1); // the duplicate-iteration regression is fixed
+    const winners = [a, b].filter((r) => r !== null);
+    expect(winners).toHaveLength(1);
+    expect(winners[0]?.currentIterationNumber).toBe(1);
   });
 
   it("DEVELOPING WITH a devGroupId → does NOT re-create (advances on the existing group)", async () => {
@@ -342,8 +452,8 @@ describe("controller tick — crash-window re-drive of stranded loops", () => {
     expect(res?.headCommitAtReview).toBe("cafef00d"); // M-3 captured
   });
 
-  it("REVIEWING with null currentIterationNumber → re-drives the review side effect", async () => {
-    const loop = makeLoop({ state: "reviewing", round: 0, currentIterationNumber: null, lastReviewedCommit: null });
+  it("REVIEWING with null currentIterationNumber, past grace → re-drives the review side effect", async () => {
+    const loop = makeLoop({ state: "reviewing", round: 0, currentIterationNumber: null, lastReviewedCommit: null, updatedAt: new Date(Date.now() - 120_000) });
     const { storage } = makeFakeStorage(loop);
     const startGroup = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } }));
     const controller = new ConsiliumLoopController({

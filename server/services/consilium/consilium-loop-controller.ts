@@ -165,6 +165,18 @@ export interface ConsiliumLoopControllerDeps {
 }
 
 export class ConsiliumLoopController {
+  /**
+   * In-process single-flight (regression fix): loopIds whose `tick` — INCLUDING
+   * its async side effect — is still running in THIS process. The persisted CAS
+   * (H-3) stops cross-INSTANCE double-STATE-writes, but it does NOT stop SAME-
+   * process re-entry while a long side effect (startGroup / createTaskGroup) is
+   * in flight: the side effect writes the child ref only AFTER it resolves, so
+   * the row legitimately sits in `reviewing`/`developing` with a null child ref
+   * for seconds, and the 5s poller would otherwise re-enter and double-fire.
+   * This lock + the grace guard below close that window. Both, not either.
+   */
+  private readonly inFlight = new Set<string>();
+
   constructor(private readonly deps: ConsiliumLoopControllerDeps) {}
 
   private get storage(): IStorage {
@@ -173,6 +185,22 @@ export class ConsiliumLoopController {
 
   private loopConfig() {
     return this.deps.config().pipeline.consiliumLoop;
+  }
+
+  /** Structured controller log — one line per decision (loopId-scoped). */
+  private log(loopId: string, msg: string): void {
+    // eslint-disable-next-line no-console
+    console.log(`[consilium-loop] ${loopId} ${msg}`);
+  }
+
+  /**
+   * Grace window before a null-child-ref loop is treated as crash-stranded:
+   * max(2x poll interval, 30s). An in-flight side effect (seconds) must never be
+   * re-driven; only a loop whose `updatedAt` predates this window — i.e. the
+   * state was persisted and then the process died — is re-driven.
+   */
+  private redriveGraceMs(): number {
+    return Math.max(2 * this.loopConfig().pollIntervalMs, 30_000);
   }
 
   /** Begin round 1. 409s (returns null) unless the loop is PENDING. */
@@ -223,6 +251,22 @@ export class ConsiliumLoopController {
    * no-op — `tick` NEVER blocks on long work.
    */
   async tick(loopId: string): Promise<ConsiliumLoopRow | null> {
+    // In-process single-flight: a tick for THIS loopId must not re-enter while
+    // its prior tick (incl. the async side effect) is still running in this
+    // process — that re-entry is exactly what double-fired the review iteration.
+    if (this.inFlight.has(loopId)) {
+      this.log(loopId, "tick skipped — already in flight in this process");
+      return null;
+    }
+    this.inFlight.add(loopId);
+    try {
+      return await this.tickInner(loopId);
+    } finally {
+      this.inFlight.delete(loopId);
+    }
+  }
+
+  private async tickInner(loopId: string): Promise<ConsiliumLoopRow | null> {
     const loop = await this.storage.getLoop(loopId);
     if (!loop || isTerminal(loop.state)) return null;
 
@@ -230,14 +274,18 @@ export class ConsiliumLoopController {
     // BEFORE the follow-up updateLoop writes the child ref. A crash in that
     // window strands the loop holding the state claim with a NULL child ref, and
     // the pollers dead-end (deriveDev/ReviewEvent return null on a null ref).
-    // Re-drive it: the claim is already held (no competing CAS winner), so we
-    // simply re-run the side effect and persist the child ref. Guarded so a loop
-    // whose child ref IS set is never re-driven (that path advances normally).
+    // Re-drive it — but ONLY after the grace window, so an in-flight side effect
+    // (the row is legitimately null-ref for seconds) is never mistaken for a
+    // crash. The in-process lock above + this grace guard together close the
+    // window the original null-only guard left open.
     const redriven = await this.redriveStranded(loop);
     if (redriven) return redriven;
 
     const event = await this.deriveEvent(loop);
-    if (!event) return null;
+    if (!event) {
+      this.log(loopId, `no-op in state=${loop.state} (no event)`);
+      return null;
+    }
 
     // Cap precedence (M-2): a `decided` event at the cap round with open P0s is
     // STOPPED_CAP — but a CONVERGED verdict still wins (handled in `decide`).
@@ -261,7 +309,11 @@ export class ConsiliumLoopController {
     // refs (devGroupId / currentIterationNumber) + the incremented round are
     // persisted AFTER the side effect via a follow-up updateLoop on the won row.
     const won = await this.commit(loop, transition);
-    if (!won) return null; // lost the CAS race -> no side effect runs
+    if (!won) {
+      this.log(loopId, `CAS lost ${transition.from}->${transition.to} (another tick won)`);
+      return null; // lost the CAS race -> no side effect runs
+    }
+    this.log(loopId, `CAS won ${transition.from}->${transition.to}`);
 
     const extra = await this.runSideEffect(won, transition, event);
     if (Object.keys(extra).length === 0) return won;
@@ -282,23 +334,50 @@ export class ConsiliumLoopController {
 
   /**
    * Recover a loop stranded by a crash between the CAS claim and the child-ref
-   * write. Returns the updated row when it re-drove the side effect, else null
-   * (the loop is not stranded — advance normally). No CAS here: the loop already
-   * holds the state claim from the original (committed) transition, so re-running
-   * the side effect cannot race another instance.
+   * write. A null child ref alone is ambiguous — EITHER "side effect in flight"
+   * (normal, seconds) OR "crashed mid-transition". We disambiguate AND make the
+   * re-drive cross-instance single-flight with an ATOMIC DB CLAIM
+   * (`storage.claimRedrive`): a conditional UPDATE that matches only a row still
+   * in `expected` state, with its child ref NULL, stranded past the grace window
+   * (`updatedAt < now - grace`), and bumps `updatedAt`. The FIRST instance's
+   * UPDATE moves `updatedAt` to now, so a concurrent second instance's grace
+   * predicate fails → 0 rows → it backs off. The non-idempotent side effect runs
+   * ONLY for the claim winner — closing the cross-instance re-drive double-fire
+   * (same H-3 class as casLoopState). The in-process Set (cheap same-process
+   * guard) + this DB claim (authoritative cross-instance guard) together.
    */
   private async redriveStranded(loop: ConsiliumLoopRow): Promise<ConsiliumLoopRow | null> {
-    if (loop.state === "reviewing" && loop.currentIterationNumber == null) {
-      const extra = await this.startReviewRound(loop);
-      return Object.keys(extra).length === 0 ? loop : this.storage.updateLoop(loop.id, extra);
+    const nullRef =
+      (loop.state === "reviewing" && loop.currentIterationNumber == null) ||
+      (loop.state === "developing" && loop.devGroupId == null);
+    if (!nullRef) return null; // child ref set — not stranded, advance normally
+
+    const ageMs = Date.now() - new Date(loop.updatedAt).getTime();
+    if (ageMs < this.redriveGraceMs()) {
+      this.log(loop.id, `null child ref in ${loop.state} but within grace (${ageMs}ms) — assume in-flight, no re-drive`);
+      return null; // in-flight side effect — must NOT re-drive (cheap pre-check)
     }
-    if (loop.state === "developing" && loop.devGroupId == null) {
-      const verdict = await this.resolveVerdict(loop);
-      if (!verdict) return null; // verdict unreadable → let the human/poller see it
-      const extra = await this.startDevHandoff(loop, verdict);
-      return Object.keys(extra).length === 0 ? loop : this.storage.updateLoop(loop.id, extra);
+
+    // Cross-instance ATOMIC claim: only the winner proceeds (H-3 re-drive guard).
+    const claimed = await this.storage.claimRedrive(loop.id, loop.state, this.redriveGraceMs());
+    if (!claimed) {
+      this.log(loop.id, `re-drive claim lost in ${loop.state} (another instance is re-driving) — no-op`);
+      return null;
     }
-    return null; // child ref already set — not stranded, advance normally
+
+    this.log(loop.id, `re-drive CLAIMED stranded ${loop.state} (age ${ageMs}ms > grace) — running side effect`);
+    if (claimed.state === "reviewing") {
+      const extra = await this.startReviewRound(claimed);
+      return Object.keys(extra).length === 0 ? claimed : this.storage.updateLoop(claimed.id, extra);
+    }
+    // developing
+    const verdict = await this.resolveVerdict(claimed);
+    if (!verdict) {
+      this.log(claimed.id, "re-drive developing aborted — verdict unreadable");
+      return null;
+    }
+    const extra = await this.startDevHandoff(claimed, verdict);
+    return Object.keys(extra).length === 0 ? claimed : this.storage.updateLoop(claimed.id, extra);
   }
 
   /**
@@ -403,9 +482,11 @@ export class ConsiliumLoopController {
       return { error: ctx.message };
     }
     await this.storage.updateTaskGroup(loop.groupId, { input: ctx.input });
+    this.log(loop.id, `startReviewRound -> startGroup(group=${loop.groupId}) round ${loop.round + 1}`);
     const { iteration } = await this.deps.taskOrchestrator.startGroup(loop.groupId, {
       triggeredBy: loop.createdBy,
     });
+    this.log(loop.id, `startReviewRound done -> iteration #${iteration.iterationNumber}`);
     return {
       round: loop.round + 1,
       currentIterationNumber: iteration.iterationNumber,
@@ -432,8 +513,10 @@ export class ConsiliumLoopController {
       source: loop.id,
       createdBy: loop.createdBy ?? undefined,
     });
+    this.log(loop.id, `startDevHandoff -> createTaskGroup (${verdict.openActionPoints.length} action points)`);
     const { group } = await this.deps.taskOrchestrator.createTaskGroup(payload);
     await this.deps.taskOrchestrator.startGroup(group.id, { triggeredBy: loop.createdBy });
+    this.log(loop.id, `startDevHandoff done -> devGroup ${group.id}`);
     return { devGroupId: group.id, openP0: verdict.openP0 };
   }
 

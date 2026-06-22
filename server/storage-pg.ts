@@ -1293,6 +1293,39 @@ export class PgStorage implements IStorage {
     return row;
   }
 
+  async claimRedrive(
+    id: string,
+    expected: ConsiliumLoopState,
+    graceMs: number,
+  ): Promise<ConsiliumLoopRow | undefined> {
+    // H-3 (re-drive): atomic cross-instance claim. The conditional UPDATE matches
+    // ONLY a row still in `expected` state, with its state-specific child ref
+    // NULL, that has been stranded past the grace window. It bumps updated_at to
+    // now — so a concurrent second instance's `updated_at < threshold` predicate
+    // no longer matches → 0 rows → undefined → that instance backs off. Same
+    // discipline as casLoopState; the re-drive side effect runs ONLY for the
+    // winner. NOTE: read the threshold off the DB row time, but the SET below
+    // also reads now() consistently per-statement.
+    const threshold = new Date(Date.now() - graceMs);
+    const nullRefCond =
+      expected === "reviewing"
+        ? isNull(consiliumLoops.currentIterationNumber)
+        : isNull(consiliumLoops.devGroupId);
+    const [row] = await db
+      .update(consiliumLoops)
+      .set({ updatedAt: new Date() })
+      .where(
+        and(
+          eq(consiliumLoops.id, id),
+          eq(consiliumLoops.state, expected),
+          nullRefCond,
+          lt(consiliumLoops.updatedAt, threshold),
+        ),
+      )
+      .returning();
+    return row;
+  }
+
   async appendLoopRound(data: InsertConsiliumLoopRound): Promise<ConsiliumLoopRoundRow> {
     const [row] = await db.insert(consiliumLoopRounds).values(data).returning();
     return row;
