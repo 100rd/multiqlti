@@ -1,6 +1,6 @@
 import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, inArray, sql as drizzleSql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
-import { db } from "./db";
+import { db, withProject } from "./db";
 import type { IStorage, PracticeCardFilters, MorningBriefFilters, NewsItemFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint, RunHistoryQuery, PipelineRunHistoryRow, TaskGroupHistoryRow } from "./storage";
 import {
   TASK_GROUP_V2_MAX_LIMIT,
@@ -168,11 +168,11 @@ export class PgStorage implements IStorage {
   }
 
   async getActiveModels(): Promise<Model[]> {
-    return db.select().from(models).where(eq(models.isActive, true));
+    return db.select().from(models).where(withProject(models, eq(models.isActive, true)));
   }
 
   async getModelBySlug(slug: string): Promise<Model | undefined> {
-    const [row] = await db.select().from(models).where(eq(models.slug, slug));
+    const [row] = await db.select().from(models).where(withProject(models, eq(models.slug, slug)));
     return row;
   }
 
@@ -206,14 +206,14 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(models)
       .set(updates)
-      .where(eq(models.id, id))
+      .where(withProject(models, eq(models.id, id)))
       .returning();
     if (!row) throw new Error(`Model not found: ${id}`);
     return row;
   }
 
   async deleteModel(id: string): Promise<void> {
-    await db.delete(models).where(eq(models.id, id));
+    await db.delete(models).where(withProject(models, eq(models.id, id)));
   }
 
   // ─── Pipelines ──────────────────────────────────────
@@ -223,12 +223,12 @@ export class PgStorage implements IStorage {
   }
 
   async getPipeline(id: string): Promise<Pipeline | undefined> {
-    const [row] = await db.select().from(pipelines).where(eq(pipelines.id, id));
+    const [row] = await db.select().from(pipelines).where(withProject(pipelines, eq(pipelines.id, id)));
     return row;
   }
 
   async getTemplates(): Promise<Pipeline[]> {
-    return db.select().from(pipelines).where(eq(pipelines.isTemplate, true));
+    return db.select().from(pipelines).where(withProject(pipelines, eq(pipelines.isTemplate, true)));
   }
 
   async createPipeline(pipeline: InsertPipeline): Promise<Pipeline> {
@@ -240,14 +240,14 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(pipelines)
       .set({ ...updates, updatedAt: new Date() })
-      .where(eq(pipelines.id, id))
+      .where(withProject(pipelines, eq(pipelines.id, id)))
       .returning();
     if (!row) throw new Error(`Pipeline not found: ${id}`);
     return row;
   }
 
   async deletePipeline(id: string): Promise<void> {
-    await db.delete(pipelines).where(eq(pipelines.id, id));
+    await db.delete(pipelines).where(withProject(pipelines, eq(pipelines.id, id)));
   }
 
   // ─── Pipeline Runs ──────────────────────────────────
@@ -257,7 +257,7 @@ export class PgStorage implements IStorage {
       return db
         .select()
         .from(pipelineRuns)
-        .where(eq(pipelineRuns.pipelineId, pipelineId))
+        .where(withProject(pipelineRuns, eq(pipelineRuns.pipelineId, pipelineId)))
         .orderBy(desc(pipelineRuns.createdAt));
     }
     return db.select().from(pipelineRuns).orderBy(desc(pipelineRuns.createdAt));
@@ -288,7 +288,7 @@ export class PgStorage implements IStorage {
         currentStageIndex: pipelineRuns.currentStageIndex,
       })
       .from(pipelineRuns)
-      .where(and(...conditions))
+      .where(withProject(pipelineRuns, and(...conditions)))
       .orderBy(desc(pipelineRuns.completedAt), desc(pipelineRuns.id))
       .limit(query.limit);
     return rows.map((r) => ({
@@ -306,7 +306,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(pipelineRuns)
-      .where(eq(pipelineRuns.id, id));
+      .where(withProject(pipelineRuns, eq(pipelineRuns.id, id)));
     return row;
   }
 
@@ -319,7 +319,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(pipelineRuns)
       .set(updates)
-      .where(eq(pipelineRuns.id, id))
+      .where(withProject(pipelineRuns, eq(pipelineRuns.id, id)))
       .returning();
     if (!row) throw new Error(`Run not found: ${id}`);
     return row;
@@ -331,7 +331,7 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(stageExecutions)
-      .where(eq(stageExecutions.runId, runId))
+      .where(withProject(stageExecutions, eq(stageExecutions.runId, runId)))
       .orderBy(stageExecutions.stageIndex);
   }
 
@@ -339,7 +339,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(stageExecutions)
-      .where(eq(stageExecutions.id, id));
+      .where(withProject(stageExecutions, eq(stageExecutions.id, id)));
     return row;
   }
 
@@ -355,7 +355,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(stageExecutions)
       .set(updates)
-      .where(eq(stageExecutions.id, id))
+      .where(withProject(stageExecutions, eq(stageExecutions.id, id)))
       .returning();
     if (!row) throw new Error(`Stage execution not found: ${id}`);
     return row;
@@ -391,7 +391,7 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(lessons)
-      .where(where)
+      .where(withProject(lessons, where))
       .orderBy(desc(lessons.createdAt))
       .limit(filter.limit ?? 10);
   }
@@ -402,7 +402,7 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(lessons)
-      .where(where)
+      .where(withProject(lessons, where))
       .orderBy(desc(lessons.createdAt));
   }
 
@@ -412,7 +412,7 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(questions)
-      .where(eq(questions.runId, runId))
+      .where(withProject(questions, eq(questions.runId, runId)))
       .orderBy(questions.createdAt);
   }
 
@@ -421,21 +421,19 @@ export class PgStorage implements IStorage {
       return db
         .select()
         .from(questions)
-        .where(
-          and(eq(questions.status, "pending"), eq(questions.runId, runId)),
-        );
+        .where(withProject(questions, and(eq(questions.status, "pending"), eq(questions.runId, runId)),));
     }
     return db
       .select()
       .from(questions)
-      .where(eq(questions.status, "pending"));
+      .where(withProject(questions, eq(questions.status, "pending")));
   }
 
   async getQuestion(id: string): Promise<Question | undefined> {
     const [row] = await db
       .select()
       .from(questions)
-      .where(eq(questions.id, id));
+      .where(withProject(questions, eq(questions.id, id)));
     return row;
   }
 
@@ -448,7 +446,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(questions)
       .set({ answer, status: "answered", answeredAt: new Date() })
-      .where(eq(questions.id, id))
+      .where(withProject(questions, eq(questions.id, id)))
       .returning();
     if (!row) throw new Error(`Question not found: ${id}`);
     return row;
@@ -458,7 +456,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(questions)
       .set({ status: "dismissed" })
-      .where(eq(questions.id, id))
+      .where(withProject(questions, eq(questions.id, id)))
       .returning();
     if (!row) throw new Error(`Question not found: ${id}`);
     return row;
@@ -474,7 +472,7 @@ export class PgStorage implements IStorage {
       .$dynamic();
 
     if (runId) {
-      query = query.where(eq(chatMessages.runId, runId));
+      query = query.where(withProject(chatMessages, eq(chatMessages.runId, runId)));
     }
 
     const rows = await query;
@@ -508,7 +506,7 @@ export class PgStorage implements IStorage {
     const [countRow] = await db
       .select({ count: drizzleSql<number>`count(*)::int` })
       .from(llmRequests)
-      .where(whereClause);
+      .where(withProject(llmRequests, whereClause));
     const total = countRow?.count ?? 0;
 
     // Paginated rows
@@ -519,7 +517,7 @@ export class PgStorage implements IStorage {
     const rows = await db
       .select()
       .from(llmRequests)
-      .where(whereClause)
+      .where(withProject(llmRequests, whereClause))
       .orderBy(desc(llmRequests.createdAt))
       .limit(limit)
       .offset(offset);
@@ -531,7 +529,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(llmRequests)
-      .where(eq(llmRequests.id, id));
+      .where(withProject(llmRequests, eq(llmRequests.id, id)));
     return row;
   }
 
@@ -615,7 +613,7 @@ export class PgStorage implements IStorage {
         costUsd: drizzleSql<number>`coalesce(sum(estimated_cost_usd), 0)::float`,
       })
       .from(llmRequests)
-      .where(drizzleSql`team_id is not null`)
+      .where(withProject(llmRequests, drizzleSql`team_id is not null`))
       .groupBy(llmRequests.teamId);
 
     return rows
@@ -639,7 +637,7 @@ export class PgStorage implements IStorage {
         costUsd: drizzleSql<number>`coalesce(sum(estimated_cost_usd), 0)::float`,
       })
       .from(llmRequests)
-      .where(and(gte(llmRequests.createdAt, from), lte(llmRequests.createdAt, to)))
+      .where(withProject(llmRequests, and(gte(llmRequests.createdAt, from), lte(llmRequests.createdAt, to))))
       .groupBy(drizzleSql`date_trunc('${drizzleSql.raw(truncFn)}', created_at)`)
       .orderBy(drizzleSql`date_trunc('${drizzleSql.raw(truncFn)}', created_at)`);
 
@@ -685,7 +683,7 @@ export class PgStorage implements IStorage {
       conditions.push(eq(memories.type, type));
     }
 
-    const rows = await db.select().from(memories).where(and(...conditions));
+    const rows = await db.select().from(memories).where(withProject(memories, and(...conditions)));
     return rows.map((r) => this.rowToMemory(r));
   }
 
@@ -700,7 +698,7 @@ export class PgStorage implements IStorage {
       ? and(textMatch, eq(memories.scope, scope))
       : textMatch;
 
-    const rows = await db.select().from(memories).where(condition);
+    const rows = await db.select().from(memories).where(withProject(memories, condition));
     return rows.map((r) => this.rowToMemory(r));
   }
 
@@ -734,7 +732,7 @@ export class PgStorage implements IStorage {
   }
 
   async deleteMemory(id: number): Promise<void> {
-    await db.delete(memories).where(eq(memories.id, id));
+    await db.delete(memories).where(withProject(memories, eq(memories.id, id)));
   }
 
   async decayMemories(excludeRunId: number, decayAmount: number): Promise<number> {
@@ -744,12 +742,10 @@ export class PgStorage implements IStorage {
         confidence: drizzleSql`${memories.confidence} - ${decayAmount}`,
         updatedAt: new Date(),
       })
-      .where(
-        and(
+      .where(withProject(memories, and(
           ne(memories.createdByRunId, excludeRunId),
           drizzleSql`${memories.confidence} > ${decayAmount}`,
-        ),
-      )
+        ),))
       .returning({ id: memories.id });
     return result.length;
   }
@@ -757,7 +753,7 @@ export class PgStorage implements IStorage {
   async deleteStaleMemories(threshold: number): Promise<number> {
     const result = await db
       .delete(memories)
-      .where(lt(memories.confidence, threshold))
+      .where(withProject(memories, lt(memories.confidence, threshold)))
       .returning({ id: memories.id });
     return result.length;
   }
@@ -766,7 +762,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(memories)
       .set({ published, updatedAt: new Date() })
-      .where(eq(memories.id, id))
+      .where(withProject(memories, eq(memories.id, id)))
       .returning();
     return row ? this.rowToMemory(row) : null;
   }
@@ -796,7 +792,7 @@ export class PgStorage implements IStorage {
   }
 
   async getMcpServer(id: number): Promise<McpServerConfig | undefined> {
-    const [row] = await db.select().from(mcpServers).where(eq(mcpServers.id, id));
+    const [row] = await db.select().from(mcpServers).where(withProject(mcpServers, eq(mcpServers.id, id)));
     return row ? this.rowToMcpServer(row) : undefined;
   }
 
@@ -834,14 +830,14 @@ export class PgStorage implements IStorage {
         ...(updates.toolCount !== undefined && { toolCount: updates.toolCount }),
         ...(updates.lastConnectedAt !== undefined && { lastConnectedAt: updates.lastConnectedAt }),
       })
-      .where(eq(mcpServers.id, id))
+      .where(withProject(mcpServers, eq(mcpServers.id, id)))
       .returning();
     if (!row) throw new Error(`MCP server not found: ${id}`);
     return this.rowToMcpServer(row);
   }
 
   async deleteMcpServer(id: number): Promise<void> {
-    await db.delete(mcpServers).where(eq(mcpServers.id, id));
+    await db.delete(mcpServers).where(withProject(mcpServers, eq(mcpServers.id, id)));
   }
 
   // ─── Delegation Requests (Phase 6.4) ────────────────────────────────────
@@ -855,7 +851,7 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(delegationRequests)
-      .where(eq(delegationRequests.runId, runId))
+      .where(withProject(delegationRequests, eq(delegationRequests.runId, runId)))
       .orderBy(asc(delegationRequests.createdAt));
   }
 
@@ -866,7 +862,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(delegationRequests)
       .set(updates)
-      .where(eq(delegationRequests.id, id))
+      .where(withProject(delegationRequests, eq(delegationRequests.id, id)))
       .returning();
     if (!row) throw new Error(`Delegation request not found: ${id}`);
     return row;
@@ -888,7 +884,7 @@ export class PgStorage implements IStorage {
   }
 
   async deleteSpecializationProfile(id: string): Promise<void> {
-    await db.delete(specializationProfiles).where(eq(specializationProfiles.id, id));
+    await db.delete(specializationProfiles).where(withProject(specializationProfiles, eq(specializationProfiles.id, id)));
   }
 
   // ─── Skills ─────────────────────────────────────────────────────────────────
@@ -899,12 +895,12 @@ export class PgStorage implements IStorage {
     if (filter?.isBuiltin !== undefined) conditions.push(eq(skills.isBuiltin, filter.isBuiltin));
 
     return conditions.length > 0
-      ? db.select().from(skills).where(and(...conditions)).orderBy(skills.name)
+      ? db.select().from(skills).where(withProject(skills, and(...conditions))).orderBy(skills.name)
       : db.select().from(skills).orderBy(skills.name);
   }
 
   async getSkill(id: string): Promise<Skill | undefined> {
-    const [row] = await db.select().from(skills).where(eq(skills.id, id));
+    const [row] = await db.select().from(skills).where(withProject(skills, eq(skills.id, id)));
     return row;
   }
 
@@ -924,14 +920,14 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(skills)
       .set({ ...(updates as Record<string, unknown>), updatedAt: new Date() } as Parameters<ReturnType<typeof db.update<typeof skills>>["set"]>[0])
-      .where(eq(skills.id, id))
+      .where(withProject(skills, eq(skills.id, id)))
       .returning();
     if (!row) throw new Error(`Skill not found: ${id}`);
     return row;
   }
 
   async deleteSkill(id: string): Promise<void> {
-    await db.delete(skills).where(eq(skills.id, id));
+    await db.delete(skills).where(withProject(skills, eq(skills.id, id)));
   }
 
   // ─── Skill Versions (Phase 6.16) ──────────────────────────────────────────
@@ -944,13 +940,13 @@ export class PgStorage implements IStorage {
     const countResult = await db
       .select({ count: drizzleSql<number>`count(*)::int` })
       .from(skillVersions)
-      .where(eq(skillVersions.skillId, skillId));
+      .where(withProject(skillVersions, eq(skillVersions.skillId, skillId)));
     const total = countResult[0]?.count ?? 0;
 
     const rows = await db
       .select()
       .from(skillVersions)
-      .where(eq(skillVersions.skillId, skillId))
+      .where(withProject(skillVersions, eq(skillVersions.skillId, skillId)))
       .orderBy(desc(skillVersions.createdAt))
       .limit(limit)
       .offset(offset);
@@ -965,12 +961,10 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(skillVersions)
-      .where(
-        and(
+      .where(withProject(skillVersions, and(
           eq(skillVersions.skillId, skillId),
           eq(skillVersions.version, version),
-        ),
-      );
+        ),));
     return row;
   }
 
@@ -1023,7 +1017,7 @@ export class PgStorage implements IStorage {
     const countResult = await db
       .select({ count: drizzleSql<number>`count(*)::int` })
       .from(skills)
-      .where(whereClause);
+      .where(withProject(skills, whereClause));
     const total = countResult[0]?.count ?? 0;
 
     let orderBy;
@@ -1047,7 +1041,7 @@ export class PgStorage implements IStorage {
       })
       .from(skills)
       .leftJoin(users, eq(skills.createdBy, users.id))
-      .where(whereClause)
+      .where(withProject(skills, whereClause))
       .orderBy(orderBy)
       .limit(filters.limit)
       .offset(filters.offset);
@@ -1084,7 +1078,7 @@ export class PgStorage implements IStorage {
       .set({
         usageCount: drizzleSql`${skills.usageCount} + 1`,
       })
-      .where(eq(skills.id, id))
+      .where(withProject(skills, eq(skills.id, id)))
       .returning({ usageCount: skills.usageCount });
     return row?.usageCount ?? 0;
   }
@@ -1101,7 +1095,7 @@ export class PgStorage implements IStorage {
   }
 
   async deleteSkillTeam(id: string): Promise<void> {
-    await db.delete(skillTeams).where(eq(skillTeams.id, id));
+    await db.delete(skillTeams).where(withProject(skillTeams, eq(skillTeams.id, id)));
   }
 
   // ─── Manager Iterations (Phase 6.6) ────────────────────────────────────────
@@ -1119,12 +1113,10 @@ export class PgStorage implements IStorage {
     await db
       .update(managerIterations)
       .set(updates)
-      .where(
-        and(
+      .where(withProject(managerIterations, and(
           eq(managerIterations.runId, runId),
           eq(managerIterations.iterationNumber, iterationNumber),
-        ),
-      );
+        ),));
   }
 
   async getManagerIterations(
@@ -1135,7 +1127,7 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(managerIterations)
-      .where(eq(managerIterations.runId, runId))
+      .where(withProject(managerIterations, eq(managerIterations.runId, runId)))
       .orderBy(asc(managerIterations.iterationNumber))
       .limit(limit)
       .offset(offset);
@@ -1145,7 +1137,7 @@ export class PgStorage implements IStorage {
     const result = await db
       .select({ count: drizzleSql<number>`count(*)::int` })
       .from(managerIterations)
-      .where(eq(managerIterations.runId, runId));
+      .where(withProject(managerIterations, eq(managerIterations.runId, runId)));
     return result[0]?.count ?? 0;
   }
 
@@ -1160,7 +1152,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(orchestratorRuns)
-      .where(eq(orchestratorRuns.runId, runId));
+      .where(withProject(orchestratorRuns, eq(orchestratorRuns.runId, runId)));
     return row;
   }
 
@@ -1168,7 +1160,7 @@ export class PgStorage implements IStorage {
     runId: string,
     updates: Partial<Omit<OrchestratorRunRow, "id" | "runId" | "createdAt">>,
   ): Promise<void> {
-    await db.update(orchestratorRuns).set(updates).where(eq(orchestratorRuns.runId, runId));
+    await db.update(orchestratorRuns).set(updates).where(withProject(orchestratorRuns, eq(orchestratorRuns.runId, runId)));
   }
 
   async createOrchestratorStep(data: InsertOrchestratorStep): Promise<OrchestratorStepRow> {
@@ -1180,14 +1172,14 @@ export class PgStorage implements IStorage {
     stepId: string,
     updates: Partial<Omit<OrchestratorStepRow, "id" | "runId" | "createdAt">>,
   ): Promise<void> {
-    await db.update(orchestratorSteps).set(updates).where(eq(orchestratorSteps.id, stepId));
+    await db.update(orchestratorSteps).set(updates).where(withProject(orchestratorSteps, eq(orchestratorSteps.id, stepId)));
   }
 
   async getOrchestratorSteps(runId: string): Promise<OrchestratorStepRow[]> {
     return db
       .select()
       .from(orchestratorSteps)
-      .where(eq(orchestratorSteps.runId, runId))
+      .where(withProject(orchestratorSteps, eq(orchestratorSteps.runId, runId)))
       .orderBy(asc(orchestratorSteps.stepIndex));
   }
 
@@ -1200,7 +1192,7 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(orchestratorDebates)
-      .where(eq(orchestratorDebates.runId, runId))
+      .where(withProject(orchestratorDebates, eq(orchestratorDebates.runId, runId)))
       .orderBy(asc(orchestratorDebates.createdAt));
   }
 
@@ -1215,7 +1207,7 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(orchestratorResearch)
-      .where(eq(orchestratorResearch.runId, runId))
+      .where(withProject(orchestratorResearch, eq(orchestratorResearch.runId, runId)))
       .orderBy(asc(orchestratorResearch.createdAt));
   }
 
@@ -1230,7 +1222,7 @@ export class PgStorage implements IStorage {
   }
 
   async getLoop(id: string): Promise<ConsiliumLoopRow | undefined> {
-    const [row] = await db.select().from(consiliumLoops).where(eq(consiliumLoops.id, id));
+    const [row] = await db.select().from(consiliumLoops).where(withProject(consiliumLoops, eq(consiliumLoops.id, id)));
     return row;
   }
 
@@ -1238,7 +1230,7 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(consiliumLoops)
-      .where(eq(consiliumLoops.createdBy, ownerId))
+      .where(withProject(consiliumLoops, eq(consiliumLoops.createdBy, ownerId)))
       .orderBy(desc(consiliumLoops.createdAt));
   }
 
@@ -1250,15 +1242,13 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(consiliumLoops)
-      .where(
-        and(
+      .where(withProject(consiliumLoops, and(
           eq(consiliumLoops.groupId, groupId),
           inArray(
             consiliumLoops.state,
             ["pending", "building_context", "reviewing", "deciding", "developing", "awaiting_merge"],
           ),
-        ),
-      )
+        ),))
       .limit(1);
     return row;
   }
@@ -1270,7 +1260,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(consiliumLoops)
       .set({ ...updates, updatedAt: new Date() })
-      .where(eq(consiliumLoops.id, id))
+      .where(withProject(consiliumLoops, eq(consiliumLoops.id, id)))
       .returning();
     if (!row) throw new Error(`ConsiliumLoop ${id} not found`);
     return row;
@@ -1288,7 +1278,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(consiliumLoops)
       .set({ ...extra, state: next, updatedAt: new Date() })
-      .where(and(eq(consiliumLoops.id, id), eq(consiliumLoops.state, expected)))
+      .where(withProject(consiliumLoops, and(eq(consiliumLoops.id, id), eq(consiliumLoops.state, expected))))
       .returning();
     return row;
   }
@@ -1314,14 +1304,12 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(consiliumLoops)
       .set({ updatedAt: new Date() })
-      .where(
-        and(
+      .where(withProject(consiliumLoops, and(
           eq(consiliumLoops.id, id),
           eq(consiliumLoops.state, expected),
           nullRefCond,
           lt(consiliumLoops.updatedAt, threshold),
-        ),
-      )
+        ),))
       .returning();
     return row;
   }
@@ -1335,7 +1323,7 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(consiliumLoopRounds)
-      .where(eq(consiliumLoopRounds.loopId, loopId))
+      .where(withProject(consiliumLoopRounds, eq(consiliumLoopRounds.loopId, loopId)))
       .orderBy(asc(consiliumLoopRounds.round));
   }
 
@@ -1347,7 +1335,7 @@ export class PgStorage implements IStorage {
   }
 
   async getConsensusRun(runId: string): Promise<ConsensusRunRow | undefined> {
-    const [row] = await db.select().from(consensusRuns).where(eq(consensusRuns.runId, runId));
+    const [row] = await db.select().from(consensusRuns).where(withProject(consensusRuns, eq(consensusRuns.runId, runId)));
     return row;
   }
 
@@ -1355,7 +1343,7 @@ export class PgStorage implements IStorage {
     runId: string,
     updates: Partial<Omit<ConsensusRunRow, "id" | "runId" | "createdAt">>,
   ): Promise<void> {
-    await db.update(consensusRuns).set(updates).where(eq(consensusRuns.runId, runId));
+    await db.update(consensusRuns).set(updates).where(withProject(consensusRuns, eq(consensusRuns.runId, runId)));
   }
 
   async createConsensusRound(data: InsertConsensusRound): Promise<ConsensusRoundRow> {
@@ -1369,7 +1357,7 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(consensusRounds)
-      .where(eq(consensusRounds.runId, runId))
+      .where(withProject(consensusRounds, eq(consensusRounds.runId, runId)))
       .orderBy(asc(consensusRounds.createdAt));
   }
 
@@ -1397,18 +1385,18 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(consensusCriticalIssues)
-      .where(eq(consensusCriticalIssues.runId, runId))
+      .where(withProject(consensusCriticalIssues, eq(consensusCriticalIssues.runId, runId)))
       .orderBy(asc(consensusCriticalIssues.createdAt));
   }
 
   // ─── Triggers (Phase 6.3) ─────────────────────────────────────────────────
 
   async getTriggers(pipelineId: string): Promise<TriggerRow[]> {
-    return db.select().from(triggers).where(eq(triggers.pipelineId, pipelineId)).orderBy(triggers.createdAt);
+    return db.select().from(triggers).where(withProject(triggers, eq(triggers.pipelineId, pipelineId))).orderBy(triggers.createdAt);
   }
 
   async getTrigger(id: string): Promise<TriggerRow | undefined> {
-    const [row] = await db.select().from(triggers).where(eq(triggers.id, id));
+    const [row] = await db.select().from(triggers).where(withProject(triggers, eq(triggers.id, id)));
     return row;
   }
 
@@ -1416,7 +1404,7 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(triggers)
-      .where(and(eq(triggers.enabled, true), eq(triggers.type, type as TriggerRow["type"])));
+      .where(withProject(triggers, and(eq(triggers.enabled, true), eq(triggers.type, type as TriggerRow["type"]))));
   }
 
   async createTrigger(
@@ -1439,14 +1427,14 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(triggers)
       .set({ ...updates, updatedAt: new Date() })
-      .where(eq(triggers.id, id))
+      .where(withProject(triggers, eq(triggers.id, id)))
       .returning();
     if (!row) throw new Error(`Trigger not found: ${id}`);
     return row;
   }
 
   async deleteTrigger(id: string): Promise<void> {
-    await db.delete(triggers).where(eq(triggers.id, id));
+    await db.delete(triggers).where(withProject(triggers, eq(triggers.id, id)));
   }
 
   // ─── Traces (Phase 6.5) ────────────────────────────────────────────────────
@@ -1457,12 +1445,12 @@ export class PgStorage implements IStorage {
   }
 
   async getTraceByRunId(runId: string): Promise<TraceRow | null> {
-    const [row] = await db.select().from(traces).where(eq(traces.runId, runId)).limit(1);
+    const [row] = await db.select().from(traces).where(withProject(traces, eq(traces.runId, runId))).limit(1);
     return row ?? null;
   }
 
   async getTraceByTraceId(traceId: string): Promise<TraceRow | null> {
-    const [row] = await db.select().from(traces).where(eq(traces.traceId, traceId)).limit(1);
+    const [row] = await db.select().from(traces).where(withProject(traces, eq(traces.traceId, traceId))).limit(1);
     return row ?? null;
   }
 
@@ -1476,7 +1464,7 @@ export class PgStorage implements IStorage {
   async updateTraceSpans(traceId: string, spans: TraceSpan[]): Promise<void> {
     await db.update(traces)
       .set({ spans: spans as TraceRow["spans"], updatedAt: new Date() })
-      .where(eq(traces.traceId, traceId));
+      .where(withProject(traces, eq(traces.traceId, traceId)));
   }
 
   // ─── Task Groups (Task Orchestrator) ────────────────────────────────────────
@@ -1486,7 +1474,7 @@ export class PgStorage implements IStorage {
   }
 
   async getTaskGroup(id: string): Promise<TaskGroupRow | undefined> {
-    const [row] = await db.select().from(taskGroups).where(eq(taskGroups.id, id));
+    const [row] = await db.select().from(taskGroups).where(withProject(taskGroups, eq(taskGroups.id, id)));
     return row;
   }
 
@@ -1496,24 +1484,24 @@ export class PgStorage implements IStorage {
   }
 
   async updateTaskGroup(id: string, updates: Partial<TaskGroupRow>): Promise<TaskGroupRow> {
-    const [row] = await db.update(taskGroups).set(updates).where(eq(taskGroups.id, id)).returning();
+    const [row] = await db.update(taskGroups).set(updates).where(withProject(taskGroups, eq(taskGroups.id, id))).returning();
     return row;
   }
 
   async deleteTaskGroup(id: string): Promise<void> {
-    await db.delete(taskGroups).where(eq(taskGroups.id, id));
+    await db.delete(taskGroups).where(withProject(taskGroups, eq(taskGroups.id, id)));
   }
 
   // ─── Tasks (Task Orchestrator) ──────────────────────────────────────────────
 
   async getTasksByGroup(groupId: string): Promise<TaskRow[]> {
     return db.select().from(tasks)
-      .where(eq(tasks.groupId, groupId))
+      .where(withProject(tasks, eq(tasks.groupId, groupId)))
       .orderBy(asc(tasks.sortOrder), asc(tasks.createdAt));
   }
 
   async getTask(id: string): Promise<TaskRow | undefined> {
-    const [row] = await db.select().from(tasks).where(eq(tasks.id, id));
+    const [row] = await db.select().from(tasks).where(withProject(tasks, eq(tasks.id, id)));
     return row;
   }
 
@@ -1523,24 +1511,24 @@ export class PgStorage implements IStorage {
   }
 
   async updateTask(id: string, updates: Partial<TaskRow>): Promise<TaskRow> {
-    const [row] = await db.update(tasks).set(updates).where(eq(tasks.id, id)).returning();
+    const [row] = await db.update(tasks).set(updates).where(withProject(tasks, eq(tasks.id, id))).returning();
     return row;
   }
 
   async getReadyTasks(groupId: string): Promise<TaskRow[]> {
     return db.select().from(tasks)
-      .where(and(eq(tasks.groupId, groupId), eq(tasks.status, "ready")))
+      .where(withProject(tasks, and(eq(tasks.groupId, groupId), eq(tasks.status, "ready"))))
       .orderBy(asc(tasks.sortOrder));
   }
 
   async getBlockedTasks(groupId: string): Promise<TaskRow[]> {
     return db.select().from(tasks)
-      .where(and(eq(tasks.groupId, groupId), eq(tasks.status, "blocked")))
+      .where(withProject(tasks, and(eq(tasks.groupId, groupId), eq(tasks.status, "blocked"))))
       .orderBy(asc(tasks.sortOrder));
   }
 
   async deleteTask(id: string): Promise<void> {
-    await db.delete(tasks).where(eq(tasks.id, id));
+    await db.delete(tasks).where(withProject(tasks, eq(tasks.id, id)));
   }
 
   async listTaskGroupHistory(query: RunHistoryQuery): Promise<TaskGroupHistoryRow[]> {
@@ -1566,7 +1554,7 @@ export class PgStorage implements IStorage {
         completedAt: taskGroups.completedAt,
       })
       .from(taskGroups)
-      .where(and(...conditions))
+      .where(withProject(taskGroups, and(...conditions)))
       .orderBy(desc(taskGroups.completedAt), desc(taskGroups.id))
       .limit(query.limit);
     return rows.map((r) => ({
@@ -1586,14 +1574,14 @@ export class PgStorage implements IStorage {
   }
 
   async getTaskTrace(groupId: string): Promise<TaskTraceRow | null> {
-    const [row] = await db.select().from(taskTraces).where(eq(taskTraces.groupId, groupId));
+    const [row] = await db.select().from(taskTraces).where(withProject(taskTraces, eq(taskTraces.groupId, groupId)));
     return row ?? null;
   }
 
   async updateTaskTrace(id: string, updates: Partial<TaskTraceRow>): Promise<TaskTraceRow> {
     const [row] = await db.update(taskTraces)
       .set({ ...updates, updatedAt: new Date() })
-      .where(eq(taskTraces.id, id))
+      .where(withProject(taskTraces, eq(taskTraces.id, id)))
       .returning();
     return row;
   }
@@ -1602,12 +1590,12 @@ export class PgStorage implements IStorage {
 
   async getTrackerConnectionsByGroup(taskGroupId: string): Promise<TrackerConnectionRow[]> {
     return db.select().from(trackerConnections)
-      .where(eq(trackerConnections.taskGroupId, taskGroupId));
+      .where(withProject(trackerConnections, eq(trackerConnections.taskGroupId, taskGroupId)));
   }
 
   async getTrackerConnection(id: string): Promise<TrackerConnectionRow | undefined> {
     const [row] = await db.select().from(trackerConnections)
-      .where(eq(trackerConnections.id, id));
+      .where(withProject(trackerConnections, eq(trackerConnections.id, id)));
     return row;
   }
 
@@ -1619,14 +1607,14 @@ export class PgStorage implements IStorage {
   }
 
   async deleteTrackerConnection(id: string): Promise<void> {
-    await db.delete(trackerConnections).where(eq(trackerConnections.id, id));
+    await db.delete(trackerConnections).where(withProject(trackerConnections, eq(trackerConnections.id, id)));
   }
 
   // ─── Model Skill Bindings (Phase 6.17) ──────────────────────────────────────
 
   async getModelSkillBindings(modelId: string): Promise<ModelSkillBinding[]> {
     return db.select().from(modelSkillBindings)
-      .where(eq(modelSkillBindings.modelId, modelId))
+      .where(withProject(modelSkillBindings, eq(modelSkillBindings.modelId, modelId)))
       .orderBy(asc(modelSkillBindings.createdAt));
   }
 
@@ -1647,12 +1635,10 @@ export class PgStorage implements IStorage {
 
   async deleteModelSkillBinding(modelId: string, skillId: string): Promise<void> {
     const result = await db.delete(modelSkillBindings)
-      .where(
-        and(
+      .where(withProject(modelSkillBindings, and(
           eq(modelSkillBindings.modelId, modelId),
           eq(modelSkillBindings.skillId, skillId),
-        ),
-      )
+        ),))
       .returning();
     if (result.length === 0) {
       throw new Error(`Binding not found for model ${modelId} skill ${skillId}`);
@@ -1664,7 +1650,7 @@ export class PgStorage implements IStorage {
       .select({ skill: skills })
       .from(modelSkillBindings)
       .innerJoin(skills, eq(modelSkillBindings.skillId, skills.id))
-      .where(eq(modelSkillBindings.modelId, modelId))
+      .where(withProject(modelSkillBindings, eq(modelSkillBindings.modelId, modelId)))
       .orderBy(asc(modelSkillBindings.createdAt));
     return rows.map((r) => r.skill);
   }
@@ -1726,11 +1712,13 @@ export class PgStorage implements IStorage {
   // ─── Workspaces ───────────────────────────────────────────────────────────
 
   async getWorkspaces(): Promise<WorkspaceRow[]> {
-    return db.select().from(workspaces).orderBy(asc(workspaces.createdAt));
+    return db.select().from(workspaces)
+      .where(withProject(workspaces))
+      .orderBy(asc(workspaces.createdAt));
   }
 
   async getWorkspace(id: string): Promise<WorkspaceRow | null> {
-    const [row] = await db.select().from(workspaces).where(eq(workspaces.id, id));
+    const [row] = await db.select().from(workspaces).where(withProject(workspaces, eq(workspaces.id, id)));
     return row ?? null;
   }
 
@@ -1746,14 +1734,14 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(workspaces)
       .set(updates)
-      .where(eq(workspaces.id, id))
+      .where(withProject(workspaces, eq(workspaces.id, id)))
       .returning();
     if (!row) throw new Error(`Workspace not found: ${id}`);
     return row;
   }
 
   async deleteWorkspace(id: string): Promise<void> {
-    await db.delete(workspaces).where(eq(workspaces.id, id));
+    await db.delete(workspaces).where(withProject(workspaces, eq(workspaces.id, id)));
   }
 
   // ─── Shared Sessions (Federation, issue #224) ─────────────────────────────
@@ -1782,12 +1770,12 @@ export class PgStorage implements IStorage {
   }
 
   async getSharedSession(id: string): Promise<SharedSession | null> {
-    const [row] = await db.select().from(sharedSessions).where(eq(sharedSessions.id, id));
+    const [row] = await db.select().from(sharedSessions).where(withProject(sharedSessions, eq(sharedSessions.id, id)));
     return row ? this.rowToSharedSession(row) : null;
   }
 
   async getSharedSessionByToken(token: string): Promise<SharedSession | null> {
-    const [row] = await db.select().from(sharedSessions).where(eq(sharedSessions.shareToken, token));
+    const [row] = await db.select().from(sharedSessions).where(withProject(sharedSessions, eq(sharedSessions.shareToken, token)));
     return row ? this.rowToSharedSession(row) : null;
   }
 
@@ -1795,7 +1783,7 @@ export class PgStorage implements IStorage {
     const rows = await db
       .select()
       .from(sharedSessions)
-      .where(and(eq(sharedSessions.runId, runId), eq(sharedSessions.isActive, true)));
+      .where(withProject(sharedSessions, and(eq(sharedSessions.runId, runId), eq(sharedSessions.isActive, true))));
     return rows.map((r) => this.rowToSharedSession(r));
   }
 
@@ -1822,14 +1810,14 @@ export class PgStorage implements IStorage {
     await db
       .update(sharedSessions)
       .set({ isActive: false })
-      .where(eq(sharedSessions.id, id));
+      .where(withProject(sharedSessions, eq(sharedSessions.id, id)));
   }
 
   async listActiveSharedSessions(): Promise<SharedSession[]> {
     const rows = await db
       .select()
       .from(sharedSessions)
-      .where(eq(sharedSessions.isActive, true))
+      .where(withProject(sharedSessions, eq(sharedSessions.isActive, true)))
       .orderBy(desc(sharedSessions.createdAt));
     const now = new Date();
     return rows
@@ -1854,7 +1842,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(sharedSessions)
       .set(updates)
-      .where(eq(sharedSessions.id, id))
+      .where(withProject(sharedSessions, eq(sharedSessions.id, id)))
       .returning();
     return row ? this.rowToSharedSession(row) : null;
   }
@@ -1882,7 +1870,7 @@ export class PgStorage implements IStorage {
     const rows = await db
       .select()
       .from(workspaceConnections)
-      .where(eq(workspaceConnections.workspaceId, workspaceId))
+      .where(withProject(workspaceConnections, eq(workspaceConnections.workspaceId, workspaceId)))
       .orderBy(asc(workspaceConnections.createdAt));
     return rows.map((r) => this.rowToWorkspaceConnection(r));
   }
@@ -1891,7 +1879,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(workspaceConnections)
-      .where(eq(workspaceConnections.id, id));
+      .where(withProject(workspaceConnections, eq(workspaceConnections.id, id)));
     return row ? this.rowToWorkspaceConnection(row) : null;
   }
 
@@ -1937,7 +1925,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(workspaceConnections)
       .set(patch)
-      .where(eq(workspaceConnections.id, id))
+      .where(withProject(workspaceConnections, eq(workspaceConnections.id, id)))
       .returning();
 
     if (!row) throw new Error(`WorkspaceConnection not found: ${id}`);
@@ -1945,7 +1933,7 @@ export class PgStorage implements IStorage {
   }
 
   async deleteWorkspaceConnection(id: string): Promise<void> {
-    await db.delete(workspaceConnections).where(eq(workspaceConnections.id, id));
+    await db.delete(workspaceConnections).where(withProject(workspaceConnections, eq(workspaceConnections.id, id)));
   }
 
   async testWorkspaceConnection(id: string): Promise<WorkspaceConnection> {
@@ -1982,13 +1970,11 @@ export class PgStorage implements IStorage {
     const rows = await db
       .select()
       .from(mcpToolCalls)
-      .where(
-        and(
+      .where(withProject(mcpToolCalls, and(
           eq(mcpToolCalls.connectionId, connectionId),
           gte(mcpToolCalls.startedAt, fromDate),
           lte(mcpToolCalls.startedAt, toDate),
-        ),
-      )
+        ),))
       .orderBy(asc(mcpToolCalls.startedAt))
       .limit(limit);
     return rows.map((r) => this.rowToMcpToolCall(r));
@@ -2096,7 +2082,7 @@ export class PgStorage implements IStorage {
     const q = db
       .select()
       .from(costLedger)
-      .where(and(...conditions))
+      .where(withProject(costLedger, and(...conditions)))
       .orderBy(asc(costLedger.ts));
 
     if (params.limit !== undefined) {
@@ -2123,7 +2109,7 @@ export class PgStorage implements IStorage {
     const [result] = await db
       .select({ total: drizzleSql<number>`COALESCE(SUM(${costLedger.costUsd}), 0)` })
       .from(costLedger)
-      .where(and(...conditions));
+      .where(withProject(costLedger, and(...conditions)));
 
     return result?.total ?? 0;
   }
@@ -2132,12 +2118,12 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(budgets)
-      .where(eq(budgets.workspaceId, workspaceId))
+      .where(withProject(budgets, eq(budgets.workspaceId, workspaceId)))
       .orderBy(asc(budgets.createdAt));
   }
 
   async getBudget(id: string): Promise<BudgetRow | null> {
-    const [row] = await db.select().from(budgets).where(eq(budgets.id, id));
+    const [row] = await db.select().from(budgets).where(withProject(budgets, eq(budgets.id, id)));
     return row ?? null;
   }
 
@@ -2160,21 +2146,21 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(budgets)
       .set({ ...updates, updatedAt: new Date() } as Partial<typeof budgets.$inferInsert>)
-      .where(eq(budgets.id, id))
+      .where(withProject(budgets, eq(budgets.id, id)))
       .returning();
     if (!row) throw new Error(`Budget ${id} not found`);
     return row;
   }
 
   async deleteBudget(id: string): Promise<void> {
-    await db.delete(budgets).where(eq(budgets.id, id));
+    await db.delete(budgets).where(withProject(budgets, eq(budgets.id, id)));
   }
 
   async getWorkspaceSettings(workspaceId: string): Promise<Record<string, unknown> | null> {
     const rows = await db
       .select()
       .from(workspaceSettings)
-      .where(eq(workspaceSettings.workspaceId, workspaceId));
+      .where(withProject(workspaceSettings, eq(workspaceSettings.workspaceId, workspaceId)));
     if (rows.length === 0) return null;
     // Merge all key-value rows into a single object
     const result: Record<string, unknown> = {};
@@ -2275,7 +2261,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(sessionConflicts)
-      .where(eq(sessionConflicts.id, conflictId));
+      .where(withProject(sessionConflicts, eq(sessionConflicts.id, conflictId)));
     return row ? this.rowToSessionConflict(row) : null;
   }
 
@@ -2283,7 +2269,7 @@ export class PgStorage implements IStorage {
     const rows = await db
       .select()
       .from(sessionConflicts)
-      .where(eq(sessionConflicts.sessionId, sessionId))
+      .where(withProject(sessionConflicts, eq(sessionConflicts.sessionId, sessionId)))
       .orderBy(desc(sessionConflicts.createdAt));
     return rows.map((r) => this.rowToSessionConflict(r));
   }
@@ -2310,7 +2296,7 @@ export class PgStorage implements IStorage {
       .orderBy(desc(decisionLog.recordedAt));
 
     const rows = sessionId
-      ? await query.where(eq(decisionLog.sessionId, sessionId))
+      ? await query.where(withProject(decisionLog, eq(decisionLog.sessionId, sessionId)))
       : await query;
 
     return rows.map((r) => this.rowToDecisionLogEntry(r));
@@ -2330,17 +2316,15 @@ export class PgStorage implements IStorage {
     const [existing] = await db
       .select()
       .from(practiceCards)
-      .where(
-        and(
+      .where(withProject(practiceCards, and(
           eq(practiceCards.workspaceId, data.workspaceId),
           eq(practiceCards.contentHash, data.contentHash),
-        ),
-      );
+        ),));
     return existing;
   }
 
   async getPracticeCard(id: string): Promise<PracticeCardRow | null> {
-    const [row] = await db.select().from(practiceCards).where(eq(practiceCards.id, id));
+    const [row] = await db.select().from(practiceCards).where(withProject(practiceCards, eq(practiceCards.id, id)));
     return row ?? null;
   }
 
@@ -2363,12 +2347,12 @@ export class PgStorage implements IStorage {
     const [{ count }] = await db
       .select({ count: drizzleSql<number>`count(*)::int` })
       .from(practiceCards)
-      .where(where);
+      .where(withProject(practiceCards, where));
 
     const cards = await db
       .select()
       .from(practiceCards)
-      .where(where)
+      .where(withProject(practiceCards, where))
       .orderBy(desc(practiceCards.createdAt))
       .limit(filters.limit ?? 50)
       .offset(filters.offset ?? 0);
@@ -2377,7 +2361,7 @@ export class PgStorage implements IStorage {
   }
 
   async getPracticeCardsByWorkspace(workspaceId: string): Promise<PracticeCardRow[]> {
-    return db.select().from(practiceCards).where(eq(practiceCards.workspaceId, workspaceId));
+    return db.select().from(practiceCards).where(withProject(practiceCards, eq(practiceCards.workspaceId, workspaceId)));
   }
 
   async updatePracticeCardState(
@@ -2388,7 +2372,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(practiceCards)
       .set({ ...rest, updatedAt: new Date() } as Partial<typeof practiceCards.$inferInsert>)
-      .where(eq(practiceCards.id, id))
+      .where(withProject(practiceCards, eq(practiceCards.id, id)))
       .returning();
     if (!row) throw new Error(`Practice card not found: ${id}`);
     return row;
@@ -2410,7 +2394,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(practiceCardRefreshRuns)
-      .where(eq(practiceCardRefreshRuns.id, id));
+      .where(withProject(practiceCardRefreshRuns, eq(practiceCardRefreshRuns.id, id)));
     return row ?? null;
   }
 
@@ -2422,7 +2406,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(practiceCardRefreshRuns)
       .set(rest as Partial<typeof practiceCardRefreshRuns.$inferInsert>)
-      .where(eq(practiceCardRefreshRuns.id, id))
+      .where(withProject(practiceCardRefreshRuns, eq(practiceCardRefreshRuns.id, id)))
       .returning();
     if (!row) throw new Error(`Refresh run not found: ${id}`);
     return row;
@@ -2434,7 +2418,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(newsProfile)
-      .where(and(eq(newsProfile.workspaceId, workspaceId), eq(newsProfile.userId, userId)));
+      .where(withProject(newsProfile, and(eq(newsProfile.workspaceId, workspaceId), eq(newsProfile.userId, userId))));
     return row ?? null;
   }
 
@@ -2475,18 +2459,16 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(morningBrief)
-      .where(
-        and(
+      .where(withProject(morningBrief, and(
           eq(morningBrief.workspaceId, workspaceId),
           eq(morningBrief.userId, userId),
           eq(morningBrief.briefDate, briefDate),
-        ),
-      );
+        ),));
     return row ?? null;
   }
 
   async getMorningBrief(id: string): Promise<MorningBriefRow | null> {
-    const [row] = await db.select().from(morningBrief).where(eq(morningBrief.id, id));
+    const [row] = await db.select().from(morningBrief).where(withProject(morningBrief, eq(morningBrief.id, id)));
     return row ?? null;
   }
 
@@ -2499,12 +2481,12 @@ export class PgStorage implements IStorage {
     const [{ count }] = await db
       .select({ count: drizzleSql<number>`count(*)::int` })
       .from(morningBrief)
-      .where(where);
+      .where(withProject(morningBrief, where));
 
     const briefs = await db
       .select()
       .from(morningBrief)
-      .where(where)
+      .where(withProject(morningBrief, where))
       .orderBy(desc(morningBrief.briefDate))
       .limit(filters.limit ?? 14)
       .offset(filters.offset ?? 0);
@@ -2517,7 +2499,7 @@ export class PgStorage implements IStorage {
     if (updates.status !== undefined) set.status = updates.status;
     if (updates.internalDegraded !== undefined) set.internalDegraded = updates.internalDegraded;
     if (updates.meta !== undefined) set.meta = updates.meta;
-    const [row] = await db.update(morningBrief).set(set).where(eq(morningBrief.id, id)).returning();
+    const [row] = await db.update(morningBrief).set(set).where(withProject(morningBrief, eq(morningBrief.id, id))).returning();
     if (!row) throw new Error(`Morning brief not found: ${id}`);
     return row;
   }
@@ -2534,7 +2516,7 @@ export class PgStorage implements IStorage {
     const rows = await db
       .select()
       .from(newsItem)
-      .where(inArray(newsItem.briefId, briefIds));
+      .where(withProject(newsItem, inArray(newsItem.briefId, briefIds)));
     const wanted = new Set(items.map((i) => `${i.briefId}::${i.contentHash}`));
     return rows.filter((r) => wanted.has(`${r.briefId}::${r.contentHash}`));
   }
@@ -2543,13 +2525,13 @@ export class PgStorage implements IStorage {
     const set: Partial<typeof newsItem.$inferInsert> = {};
     if (updates.feedback !== undefined) set.feedback = updates.feedback;
     if (updates.readState !== undefined) set.readState = updates.readState;
-    const [row] = await db.update(newsItem).set(set).where(eq(newsItem.id, id)).returning();
+    const [row] = await db.update(newsItem).set(set).where(withProject(newsItem, eq(newsItem.id, id))).returning();
     if (!row) throw new Error(`News item not found: ${id}`);
     return row;
   }
 
   async getNewsItem(id: string): Promise<NewsItemRow | null> {
-    const [row] = await db.select().from(newsItem).where(eq(newsItem.id, id));
+    const [row] = await db.select().from(newsItem).where(withProject(newsItem, eq(newsItem.id, id)));
     return row ?? null;
   }
 
@@ -2560,7 +2542,7 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(newsItem)
-      .where(and(...conditions))
+      .where(withProject(newsItem, and(...conditions)))
       .orderBy(desc(newsItem.relevanceScore));
   }
 
@@ -2588,7 +2570,7 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(taskGroupIterations)
-      .where(and(...conditions))
+      .where(withProject(taskGroupIterations, and(...conditions)))
       .orderBy(desc(taskGroupIterations.iterationNumber))
       .limit(limit);
   }
@@ -2597,12 +2579,10 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(taskGroupIterations)
-      .where(
-        and(
+      .where(withProject(taskGroupIterations, and(
           eq(taskGroupIterations.groupId, groupId),
           eq(taskGroupIterations.iterationNumber, iterationNumber),
-        ),
-      );
+        ),));
     return row;
   }
 
@@ -2610,7 +2590,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(taskGroupIterations)
-      .where(eq(taskGroupIterations.groupId, groupId))
+      .where(withProject(taskGroupIterations, eq(taskGroupIterations.groupId, groupId)))
       .orderBy(desc(taskGroupIterations.iterationNumber))
       .limit(1);
     return row;
@@ -2620,7 +2600,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(taskGroupIterations)
       .set(updates)
-      .where(eq(taskGroupIterations.id, id))
+      .where(withProject(taskGroupIterations, eq(taskGroupIterations.id, id)))
       .returning();
     return row;
   }
@@ -2679,12 +2659,10 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(taskExecutions)
-      .where(
-        and(
+      .where(withProject(taskExecutions, and(
           eq(taskExecutions.iterationId, iterationId),
           eq(taskExecutions.groupId, groupId),
-        ),
-      )
+        ),))
       .orderBy(asc(taskExecutions.createdAt));
   }
 
@@ -2693,12 +2671,10 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(taskExecutions)
-      .where(
-        and(
+      .where(withProject(taskExecutions, and(
           eq(taskExecutions.id, executionId),
           eq(taskExecutions.groupId, groupId),
-        ),
-      );
+        ),));
     return row;
   }
 
@@ -2706,7 +2682,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(taskExecutions)
       .set(updates)
-      .where(eq(taskExecutions.id, id))
+      .where(withProject(taskExecutions, eq(taskExecutions.id, id)))
       .returning();
     return row;
   }
@@ -2718,7 +2694,7 @@ export class PgStorage implements IStorage {
     const [existing] = await db
       .select({ id: taskGroupIterations.id })
       .from(taskGroupIterations)
-      .where(eq(taskGroupIterations.groupId, groupId))
+      .where(withProject(taskGroupIterations, eq(taskGroupIterations.groupId, groupId)))
       .limit(1);
     if (existing) return null;
     const groupTasks = await this.getTasksByGroup(groupId);
@@ -2730,12 +2706,10 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(taskTraces)
-      .where(
-        and(
+      .where(withProject(taskTraces, and(
           eq(taskTraces.iterationId, iterationId),
           eq(taskTraces.groupId, groupId),
-        ),
-      );
+        ),));
     return row ?? null;
   }
 
@@ -2765,13 +2739,13 @@ export class PgStorage implements IStorage {
     return db
       .select()
       .from(taskTemplates)
-      .where(where)
+      .where(withProject(taskTemplates, where))
       .orderBy(desc(taskTemplates.createdAt), desc(taskTemplates.id))
       .limit(limit);
   }
 
   async getTaskTemplate(id: string): Promise<TaskTemplateRow | undefined> {
-    const [row] = await db.select().from(taskTemplates).where(eq(taskTemplates.id, id));
+    const [row] = await db.select().from(taskTemplates).where(withProject(taskTemplates, eq(taskTemplates.id, id)));
     return row;
   }
 
@@ -2787,14 +2761,14 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(taskTemplates)
       .set({ ...updates, updatedAt: new Date() })
-      .where(eq(taskTemplates.id, id))
+      .where(withProject(taskTemplates, eq(taskTemplates.id, id)))
       .returning();
     return row;
   }
 
   async deleteTaskTemplate(id: string): Promise<void> {
     // FK onDelete:"set null" on tasks.template_id clears provenance automatically.
-    await db.delete(taskTemplates).where(eq(taskTemplates.id, id));
+    await db.delete(taskTemplates).where(withProject(taskTemplates, eq(taskTemplates.id, id)));
   }
 
 }

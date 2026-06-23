@@ -11,6 +11,28 @@ export const pool = new Pool({ connectionString: configLoader.get().database.url
 
 export const db = drizzle(pool, { schema });
 
+import { getProjectId } from "./context";
+import { SQL, and, eq } from "drizzle-orm";
+
+/**
+ * Helper to wrap any Drizzle query condition with the current project ID filter.
+ * Usage: db.select().from(table).where(withProject(table, eq(table.id, id)))
+ */
+export function withProject(table: any, condition?: SQL | undefined): SQL {
+  try {
+    const projectId = getProjectId();
+    const projectFilter = eq(table.projectId, projectId);
+    return condition ? and(projectFilter, condition)! : projectFilter;
+  } catch (e) {
+    // Fallback if executed outside of a project context (e.g., background cron jobs)
+    // In strict mode, you might want to throw here instead.
+    if (!condition) {
+      throw new Error("withProject requires a condition when outside project context");
+    }
+    return condition;
+  }
+}
+
 /**
  * Run pending Drizzle migrations on startup.
  * Safe to call multiple times — already-applied migrations are skipped.

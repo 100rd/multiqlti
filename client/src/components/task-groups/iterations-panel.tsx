@@ -11,12 +11,18 @@
  * summary/error/output are owner-gated server-side and rendered here as INERT
  * React text — never via dangerouslySetInnerHTML.
  */
-import type { ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Activity, Loader2, ChevronRight } from "lucide-react";
-import { useTaskGroupIterations, useIterationDetail } from "@/hooks/use-task-iterations";
+import { Textarea } from "@/components/ui/textarea";
+import { Activity, Loader2, ChevronRight, MessageSquarePlus } from "lucide-react";
+import {
+  useTaskGroupIterations,
+  useIterationDetail,
+  useSaveIterationNote,
+} from "@/hooks/use-task-iterations";
+import { useToast } from "@/hooks/use-toast";
 import {
   buildTimelineFromExecutions,
   formatDuration,
@@ -158,6 +164,84 @@ function formatExecutionOutput(output: unknown): string | null {
 }
 
 /**
+ * Human-in-the-loop note editor for one iteration. After a round finishes the
+ * owner records their thoughts/decisions here; on the NEXT run the note is folded
+ * into the iteration input so the debaters/judge argue with it in scope. The
+ * textarea is seeded from the persisted note and re-seeds when the server value
+ * changes (e.g. switching iterations) UNLESS the user has unsaved edits.
+ */
+function IterationNoteEditor({
+  groupId,
+  iterationNumber,
+  initialNote,
+}: {
+  groupId: string;
+  iterationNumber: number;
+  initialNote: string;
+}) {
+  const { toast } = useToast();
+  const save = useSaveIterationNote(groupId, iterationNumber);
+  const [note, setNote] = useState(initialNote);
+  const [dirty, setDirty] = useState(false);
+
+  // Re-seed from the server value when it changes and there are no local edits.
+  useEffect(() => {
+    if (!dirty) setNote(initialNote);
+  }, [initialNote, dirty]);
+
+  const onSave = () => {
+    save.mutate(note, {
+      onSuccess: () => {
+        setDirty(false);
+        toast({ title: "Заметка сохранена", description: "Будет учтена в следующей итерации (Run again)." });
+      },
+      onError: (e) =>
+        toast({
+          title: "Не удалось сохранить заметку",
+          description: e instanceof Error ? e.message : "Ошибка",
+          variant: "destructive",
+        }),
+    });
+  };
+
+  return (
+    <Card>
+      <CardHeader className="py-3 pb-1">
+        <CardTitle className="flex items-center gap-2 text-sm font-medium">
+          <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />
+          Ваши мысли и решения
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2 py-2">
+        <p className="text-xs text-muted-foreground">
+          Запишите выводы по этой итерации. При запуске следующей итерации («Run again») они
+          будут добавлены в контекст спора — участники и судья учтут их.
+        </p>
+        <Textarea
+          value={note}
+          onChange={(e) => {
+            setNote(e.target.value);
+            setDirty(true);
+          }}
+          placeholder="Например: судья переоценил риск X — считаю его P1; в следующем раунде сфокусируйтесь на Y…"
+          className="min-h-[120px] text-sm"
+          data-testid="iteration-human-note"
+        />
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={onSave} disabled={save.isPending || !dirty}>
+            {save.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : null}
+            Сохранить заметку
+          </Button>
+          {dirty ? <span className="text-xs text-muted-foreground">Есть несохранённые изменения</span> : null}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
  * The selected iteration's per-task execution history: a reused timeline built
  * from the iteration's executions, plus per-task summary/error cards. The Trace
  * button targets the per-iteration trace route.
@@ -207,6 +291,13 @@ export function IterationDetailView({
           </Button>
         </Link>
       </div>
+
+      {/* Human-in-the-loop: thoughts/decisions folded into the next run. */}
+      <IterationNoteEditor
+        groupId={groupId}
+        iterationNumber={iterationNumber}
+        initialNote={data.iteration.humanNote ?? ""}
+      />
 
       {/* Per-task execution cards (summary/error owner-gated, inert text). */}
       {data.executions.length === 0 ? (

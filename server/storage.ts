@@ -3259,6 +3259,7 @@ export class MemStorage implements IStorage {
       status: (data.status as TaskGroupStatus) ?? "running",
       input: data.input,
       output: (data.output as Record<string, unknown>) ?? null,
+      humanNote: (data as { humanNote?: string | null }).humanNote ?? null,
       traceId: data.traceId ?? null,
       triggeredBy: data.triggeredBy ?? null,
       startedAt: data.startedAt ?? null,

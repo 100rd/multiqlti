@@ -56,6 +56,8 @@ export interface IterationDetail {
     status: string;
     startedAt: string | null;
     completedAt: string | null;
+    /** Human-in-the-loop note; folded into the NEXT iteration's input. */
+    humanNote?: string | null;
   };
   executions: IterationExecution[];
 }

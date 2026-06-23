@@ -112,6 +112,23 @@ interface ResolvedTaskFields {
   templateId: string | null;
 }
 
+// ─── Human-in-the-loop note carry-forward ───────────────────────────────────
+
+/** Marker that opens the carried human-note block in an iteration's input. */
+export const HUMAN_NOTE_HEADING = "## Решения и заметки человека (предыдущий раунд)";
+
+/**
+ * Fold the previous iteration's human note (if any) into the next iteration's
+ * input snapshot. The note is appended under a clear heading so every debater /
+ * judge sees the user's thoughts and decisions as part of the standing
+ * objective. A blank/whitespace-only note is ignored (returns the base input).
+ */
+export function composeIterationInput(baseInput: string, humanNote: string | null): string {
+  const note = (humanNote ?? "").trim();
+  if (!note) return baseInput;
+  return `${baseInput}\n\n${HUMAN_NOTE_HEADING}:\n${note}`;
+}
+
 // ─── Task Orchestrator ──────────────────────────────────────────────────────
 
 export class TaskOrchestrator {
@@ -356,9 +373,15 @@ export class TaskOrchestrator {
       throw new NoReadyTasksError(groupId);
     }
 
+    // Human-in-the-loop carry-forward: if the previous iteration carries a human
+    // note (thoughts/decisions written after it finished), fold it into THIS
+    // iteration's input snapshot so every step argues with the user's input in
+    // scope. Only the latest iteration's note is carried.
+    const iterationInput = composeIterationInput(group.input, latest?.humanNote ?? null);
+
     const { iteration, executions } = await this.storage.createIterationWithExecutions(
       groupId,
-      { input: group.input, triggeredBy: options.triggeredBy ?? null, iterationNumber },
+      { input: iterationInput, triggeredBy: options.triggeredBy ?? null, iterationNumber },
       seeds,
     );
 

@@ -87,6 +87,27 @@ export function useTaskGroupIterations(
   };
 }
 
+/**
+ * Save the human-in-the-loop note on one iteration (PATCH …/iterations/:n).
+ * The note is folded into the NEXT iteration's input, so the following run
+ * argues with the user's thoughts/decisions in scope. Invalidates the
+ * iteration's detail so the editor reflects the persisted value.
+ */
+export function useSaveIterationNote(groupId: string, iterationNumber: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (humanNote: string) =>
+      apiRequest("PATCH", `/api/task-groups/${groupId}/iterations/${iterationNumber}`, {
+        humanNote,
+      }) as Promise<{ iterationNumber: number; humanNote: string | null }>,
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: ["/api/task-groups", groupId, "iterations", "detail", iterationNumber],
+      });
+    },
+  });
+}
+
 /** The owner-gated { iteration, executions } detail for one iteration (FE1). */
 export function useIterationDetail(groupId: string, iterationNumber: number | null) {
   return useQuery<IterationDetail>({

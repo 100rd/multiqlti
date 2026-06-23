@@ -114,6 +114,7 @@ export function buildVirtualIteration(group: TaskGroupRow, tasks: TaskRow[]): Vi
     status: group.status,
     input: group.input,
     output: (group.output as Record<string, unknown> | null) ?? null,
+    humanNote: null,
     traceId: group.traceId ?? null,
     triggeredBy: group.createdBy ?? null,
     startedAt: group.startedAt ?? null,

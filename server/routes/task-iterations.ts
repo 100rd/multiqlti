@@ -55,6 +55,11 @@ const ListQuerySchema = z.object({
   cursor: z.string().min(1).max(2000).optional(),
 });
 
+/** Body for PATCH iteration note. Empty string clears the note; bounded to 20k. */
+const NoteSchema = z.object({
+  humanNote: z.string().max(20_000),
+});
+
 // ─── Metadata-only summary (MF-2 ALLOWLIST) ─────────────────────────────────
 
 interface IterationSummary {
@@ -188,6 +193,37 @@ export function registerTaskIterationRoutes(router: Router, storage: IStorage): 
       return res.json(trace);
     } catch {
       return res.status(500).json({ error: "Failed to load iteration trace" });
+    }
+  });
+
+  // NOTE — human-in-the-loop. After an iteration finishes the owner can record
+  // their thoughts/decisions; the note is folded into the NEXT iteration's input
+  // (TaskOrchestrator.composeIterationInput) so the following round argues with
+  // it in scope. Owner-gated; cross-group re-checked; empty body clears the note.
+  router.patch("/api/task-groups/:id/iterations/:n", async (req: Request, res: Response) => {
+    const groupId = String(req.params.id);
+    const auth = await authorizeTaskGroup(req, res, storage, groupId);
+    if (!auth) return;
+
+    const iterationNumber = Number(req.params.n);
+    if (!Number.isInteger(iterationNumber) || iterationNumber < 1) {
+      return res.status(404).json({ error: "Iteration not found" });
+    }
+
+    const parsed = NoteSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Invalid note" });
+    const humanNote = parsed.data.humanNote.trim() === "" ? null : parsed.data.humanNote;
+
+    try {
+      const iteration = await resolveIteration(storage, groupId, iterationNumber);
+      // Cross-group guard + reject the synthetic virtual iteration (no real row).
+      if (!iteration || iteration.groupId !== groupId || !iteration.id) {
+        return res.status(404).json({ error: "Iteration not found" });
+      }
+      const updated = await storage.updateIteration(iteration.id, { humanNote });
+      return res.json({ iterationNumber, humanNote: updated.humanNote ?? null });
+    } catch {
+      return res.status(500).json({ error: "Failed to save iteration note" });
     }
   });
 }

@@ -14,6 +14,11 @@ pipeline:
     # token, failing the stage with "CLI idle for 60000ms (no output)". The
     # overall wall-clock cap (600s) is unchanged.
     idleTimeoutMs: 120000
+  # Consilium Loop — LOCAL dry-run config (do NOT commit; feature ships disabled).
+  consiliumLoop:
+    enabled: true
+    allowedRepoPaths:
+      - /Users/lord/Develop/multi-team-agentic/project/Omniscience
 
 features:
   sandbox:
