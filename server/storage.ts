@@ -2297,6 +2297,7 @@ export class MemStorage implements IStorage {
       sortOrder: data.sortOrder ?? 0,
       pipelineId: data.pipelineId ?? null,
       pipelineRunId: data.pipelineRunId ?? null,
+      workspaceId: data.workspaceId ?? null,
       modelSlug: data.modelSlug ?? null,
       teamId: data.teamId ?? null,
       labels: (data.labels as string[]) ?? [],

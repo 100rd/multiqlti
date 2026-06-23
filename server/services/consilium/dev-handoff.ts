@@ -31,6 +31,7 @@ function actionPointToTask(
   index: number,
   devPipelineId: string,
   source: string,
+  workspaceId: string | undefined,
 ): CreateTaskParam {
   const description =
     [ap.rationale ?? "", ap.tradeoff ? `Trade-off: ${ap.tradeoff}` : ""]
@@ -42,6 +43,9 @@ function actionPointToTask(
     description: clamp(description, DESC_MAX),
     executionMode: "pipeline_run",
     pipelineId: devPipelineId,
+    // §14.3: record each DEV run against the loop's workspace when bound (D.6
+    // passes it in). Optional/undefined = today's behaviour (no workspace).
+    workspaceId,
     sortOrder: index,
     input: {
       feature: ap.title,
@@ -63,6 +67,13 @@ export interface DevHandoffRequest {
   source: string;
   /** Optional creator id stamped on the handoff group (owner inheritance). */
   createdBy?: string;
+  /**
+   * Optional workspace the loop's repo is bound to (§14.3). When set, every
+   * emitted `pipeline_run` task carries it so the DEV pipeline's read tools see
+   * the loop's repo. Optional — the controller passes it in D.6; null/undefined
+   * keeps today's behaviour. Kept optional so existing callers are unaffected.
+   */
+  workspaceId?: string;
 }
 
 /**
@@ -85,7 +96,7 @@ export function buildDevHandoffGroup(req: DevHandoffRequest): CreateTaskGroupPar
     ),
     input: clamp(`Consilium loop DEV handoff for: ${req.source}`, INPUT_MAX),
     tasks: req.openActionPoints.map((ap, i) =>
-      actionPointToTask(ap, i, req.devPipelineId, req.source),
+      actionPointToTask(ap, i, req.devPipelineId, req.source, req.workspaceId),
     ),
     createdBy: req.createdBy,
   };

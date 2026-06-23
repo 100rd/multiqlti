@@ -208,7 +208,7 @@ describe("controller tick — startGroup + cap precedence + CAS no-op", () => {
     const startGroup = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } }));
     const controller = new ConsiliumLoopController({
       storage: storage as never,
-      taskOrchestrator: { startGroup, createTaskGroup: storage.createTaskGroup, cancelGroup: vi.fn() } as never,
+      taskOrchestrator: { startGroup, startGroupAsync: startGroup, createTaskGroup: storage.createTaskGroup, cancelGroup: vi.fn() } as never,
       config: fakeConfig,
     });
     const res = await controller.tick(loop.id);
@@ -233,7 +233,7 @@ describe("controller tick — startGroup + cap precedence + CAS no-op", () => {
     const startGroup = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } }));
     const controller = new ConsiliumLoopController({
       storage: storage as never,
-      taskOrchestrator: { startGroup, createTaskGroup, cancelGroup: vi.fn() } as never,
+      taskOrchestrator: { startGroup, startGroupAsync: startGroup, createTaskGroup, cancelGroup: vi.fn() } as never,
       config: fakeConfig,
       readIterationVerdict: async () => verdict(false, 2), // open P0s, room left → DEVELOPING
     });
@@ -255,7 +255,7 @@ describe("controller tick — startGroup + cap precedence + CAS no-op", () => {
     const mkController = () =>
       new ConsiliumLoopController({
         storage: storage as never,
-        taskOrchestrator: { startGroup: vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } })), createTaskGroup, cancelGroup: vi.fn() } as never,
+        taskOrchestrator: (() => { const sg = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } })); return { startGroup: sg, startGroupAsync: sg, createTaskGroup, cancelGroup: vi.fn() }; })() as never,
         config: fakeConfig,
         readIterationVerdict: async () => verdict(false, 2),
       });
@@ -275,7 +275,7 @@ describe("controller tick — startGroup + cap precedence + CAS no-op", () => {
     ]);
     const controller = new ConsiliumLoopController({
       storage: storage as never,
-      taskOrchestrator: { startGroup: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
       config: fakeConfig,
       readIterationVerdict: async () => verdict(false, 2), // still open → cap binds
     });
@@ -295,7 +295,7 @@ describe("controller tick — startGroup + cap precedence + CAS no-op", () => {
     ]);
     const controller = new ConsiliumLoopController({
       storage: storage as never,
-      taskOrchestrator: { startGroup: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
       config: fakeConfig,
       readIterationVerdict: async () => verdict(false, 3), // flat at 3 → would escalate
     });
@@ -308,7 +308,7 @@ describe("controller tick — startGroup + cap precedence + CAS no-op", () => {
     const { storage } = makeFakeStorage(loop, [{ round: 1, openP0: 1 }]);
     const controller = new ConsiliumLoopController({
       storage: storage as never,
-      taskOrchestrator: { startGroup: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
       config: fakeConfig,
       readIterationVerdict: async () => verdict(true, 0),
     });
@@ -323,7 +323,7 @@ describe("controller tick — startGroup + cap precedence + CAS no-op", () => {
     cas.mockImplementation(async () => undefined);
     const controller = new ConsiliumLoopController({
       storage: storage as never,
-      taskOrchestrator: { startGroup: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
       config: fakeConfig,
       readIterationVerdict: async () => verdict(true, 0),
     });
@@ -350,7 +350,7 @@ describe("controller tick — crash-window re-drive of stranded loops", () => {
     const startGroup = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } }));
     const controller = new ConsiliumLoopController({
       storage: storage as never,
-      taskOrchestrator: { startGroup, createTaskGroup, cancelGroup: vi.fn() } as never,
+      taskOrchestrator: { startGroup, startGroupAsync: startGroup, createTaskGroup, cancelGroup: vi.fn() } as never,
       config: fakeConfig,
       readIterationVerdict: async () => verdict(false, 2), // open P0s → real handoff
       readRepoHead: async () => "deadbeef", // no real git
@@ -375,7 +375,7 @@ describe("controller tick — crash-window re-drive of stranded loops", () => {
     const mk = () =>
       new ConsiliumLoopController({
         storage: storage as never,
-        taskOrchestrator: { startGroup: vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } })), createTaskGroup, cancelGroup: vi.fn() } as never,
+        taskOrchestrator: (() => { const sg = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } })); return { startGroup: sg, startGroupAsync: sg, createTaskGroup, cancelGroup: vi.fn() }; })() as never,
         config: fakeConfig,
         readIterationVerdict: async () => verdict(false, 2),
         readRepoHead: async () => "deadbeef",
@@ -396,7 +396,7 @@ describe("controller tick — crash-window re-drive of stranded loops", () => {
     const startGroup = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 7 } }));
     const controller = new ConsiliumLoopController({
       storage: storage as never,
-      taskOrchestrator: { startGroup, createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      taskOrchestrator: { startGroup, startGroupAsync: startGroup, createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
       config: fakeConfig,
       readRepoHead: async () => "abc1234",
     });
@@ -417,7 +417,7 @@ describe("controller tick — crash-window re-drive of stranded loops", () => {
     });
     const controller = new ConsiliumLoopController({
       storage: storage as never,
-      taskOrchestrator: { startGroup, createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      taskOrchestrator: { startGroup, startGroupAsync: startGroup, createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
       config: fakeConfig,
       readRepoHead: async () => "abc1234",
     });
@@ -440,16 +440,22 @@ describe("controller tick — crash-window re-drive of stranded loops", () => {
         : { id: loop.groupId, input: "objective" },
     ) as never;
     const createTaskGroup = vi.fn(async () => ({ group: { id: "SHOULD-NOT-HAPPEN" }, tasks: [] }));
+    // §14.4 (D.6): the DEVELOPING→AWAITING_MERGE side effect runs DevPrCloseout;
+    // the REAL prRef + headCommit come from the close-out result, NOT readRepoHead.
+    const runCloseout = vi.fn(async () => ({ prRef: "https://github.com/x/y/pull/42", headCommit: "cafef00d" }));
     const controller = new ConsiliumLoopController({
       storage: storage as never,
-      taskOrchestrator: { startGroup: vi.fn(), createTaskGroup, cancelGroup: vi.fn() } as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup, cancelGroup: vi.fn() } as never,
       config: fakeConfig,
-      readRepoHead: async () => "cafef00d",
+      readIterationVerdict: async () => verdict(false, 2), // open APs for the close-out body
+      runCloseout,
     });
     const res = await controller.tick(loop.id);
     expect(createTaskGroup).not.toHaveBeenCalled(); // no re-create on a set ref
     expect(res?.state).toBe("awaiting_merge"); // advanced on the existing group
-    expect(res?.headCommitAtReview).toBe("cafef00d"); // M-3 captured
+    expect(runCloseout).toHaveBeenCalledTimes(1); // close-out ran on the WON row
+    expect(res?.prRef).toBe("https://github.com/x/y/pull/42"); // real PR persisted (§14.4)
+    expect(res?.headCommitAtReview).toBe("cafef00d"); // M-3 captured from close-out
   });
 
   it("REVIEWING with null currentIterationNumber, past grace → re-drives the review side effect", async () => {
@@ -458,7 +464,7 @@ describe("controller tick — crash-window re-drive of stranded loops", () => {
     const startGroup = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } }));
     const controller = new ConsiliumLoopController({
       storage: storage as never,
-      taskOrchestrator: { startGroup, createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      taskOrchestrator: { startGroup, startGroupAsync: startGroup, createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
       config: fakeConfig,
       readRepoHead: async () => "abc1234",
     });
@@ -467,5 +473,159 @@ describe("controller tick — crash-window re-drive of stranded loops", () => {
     expect(res?.currentIterationNumber).toBe(1);
     expect(res?.round).toBe(1); // incremented exactly once on the re-drive
     expect(res?.state).toBe("reviewing");
+  });
+});
+
+// ─── D.6: non-blocking switch + prRef flow + close-out single-flight ─────────
+
+describe("controller — D.6 non-blocking startGroupAsync + prRef close-out flow", () => {
+  it("NON-BLOCKING: startReviewRound persists the iteration ref via startGroupAsync WITHOUT the child completing", async () => {
+    // The fake orchestrator's startGroupAsync returns IMMEDIATELY with a stub
+    // iteration whose status is NEVER flipped to completed — proving the child
+    // ref is persisted on KICKOFF, not after the consilium round settles.
+    const loop = makeLoop({ state: "building_context", round: 0, lastReviewedCommit: null });
+    const { storage } = makeFakeStorage(loop);
+    // getIteration would say "running" for the dispatched-but-not-settled child.
+    storage.getIteration = vi.fn(async () => ({ id: "it1", iterationNumber: 1, status: "running" })) as never;
+    const startGroup = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } })); // awaiting path
+    const startGroupAsync = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } }));
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup, startGroupAsync, createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+      readRepoHead: async () => "abc1234",
+    });
+    const res = await controller.tick(loop.id);
+    // The controller used the NON-BLOCKING path exclusively (D.6 switch).
+    expect(startGroupAsync).toHaveBeenCalledTimes(1);
+    expect(startGroup).not.toHaveBeenCalled();
+    // Ref set on KICKOFF — the child is still "running", proving non-blocking.
+    expect(res?.state).toBe("reviewing");
+    expect(res?.currentIterationNumber).toBe(1);
+    expect(res?.round).toBe(1);
+  });
+
+  it("MUTATION GUARD: a startGroupAsync that BLOCKS (re-introduced await) does NOT change the asserted ref-timing", async () => {
+    // If a regression re-introduced an internal await on completion, the fake
+    // here SLEEPS before resolving; the controller still must persist the ref
+    // from the resolved iteration with state=reviewing and round incremented —
+    // the assertion is identical, so the timing the test asserts is stable.
+    const loop = makeLoop({ state: "building_context", round: 0, lastReviewedCommit: null });
+    const { storage } = makeFakeStorage(loop);
+    const startGroupAsync = vi.fn(async () => {
+      await new Promise((r) => setTimeout(r, 15));
+      return { group: {}, iteration: { iterationNumber: 3 } };
+    });
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync, createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+      readRepoHead: async () => "abc1234",
+    });
+    const res = await controller.tick(loop.id);
+    expect(res?.currentIterationNumber).toBe(3);
+    expect(res?.state).toBe("reviewing");
+  });
+
+  it("startDevHandoff uses startGroupAsync for the DEV group (non-blocking) + binds the workspace id", async () => {
+    const loop = makeLoop({ state: "deciding", round: 2, maxRounds: 6, currentIterationNumber: 2 });
+    const { storage } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
+    // workspace bind: an existing local workspace at the loop repo path resolves.
+    storage.getWorkspaces = vi.fn(async () => [
+      { id: "ws-bound", type: "local", path: process.cwd(), branch: "main" },
+    ]) as never;
+    storage.createWorkspace = vi.fn() as never;
+    const createTaskGroup = vi.fn(async () => ({ group: { id: "devgrp" }, tasks: [] }));
+    const startGroupAsync = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 1 } }));
+    const startGroup = vi.fn();
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup, startGroupAsync, createTaskGroup, cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+      readIterationVerdict: async () => verdict(false, 2),
+      readRepoHead: async () => "abc1234",
+    });
+    const res = await controller.tick(loop.id);
+    expect(res?.state).toBe("developing");
+    expect(res?.devGroupId).toBe("devgrp");
+    // DEV group started via the NON-BLOCKING path (D.6), never the awaiting one.
+    expect(startGroupAsync).toHaveBeenCalledWith("devgrp", expect.anything());
+    expect(startGroup).not.toHaveBeenCalled();
+    // §14.3: the handoff payload carried the resolved workspaceId on every task.
+    const payload = createTaskGroup.mock.calls[0][0] as { tasks: Array<{ workspaceId?: string }> };
+    expect(payload.tasks.every((t) => t.workspaceId === "ws-bound")).toBe(true);
+  });
+
+  it("prRef extraction: a close-out returning a URL → AWAITING_MERGE persists exactly that prRef", async () => {
+    const loop = makeLoop({ state: "developing", round: 2, devGroupId: "existing-grp", currentIterationNumber: 2 });
+    const { storage } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
+    storage.getTaskGroup = vi.fn(async (id: string) =>
+      id === "existing-grp" ? { id, status: "completed" } : { id: loop.groupId, input: "objective" },
+    ) as never;
+    const runCloseout = vi.fn(async () => ({ prRef: "https://github.com/o/r/pull/99", headCommit: "feedbead" }));
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+      readIterationVerdict: async () => verdict(false, 2),
+      runCloseout,
+    });
+    const res = await controller.tick(loop.id);
+    expect(res?.state).toBe("awaiting_merge");
+    expect(res?.prRef).toBe("https://github.com/o/r/pull/99");
+    expect(res?.headCommitAtReview).toBe("feedbead");
+    expect(res?.error ?? null).toBeNull();
+  });
+
+  it("prRef extraction: a branch-only close-out → prRef null + error, still AWAITING_MERGE (loop NOT failed)", async () => {
+    const loop = makeLoop({ state: "developing", round: 2, devGroupId: "existing-grp", currentIterationNumber: 2 });
+    const { storage } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
+    storage.getTaskGroup = vi.fn(async (id: string) =>
+      id === "existing-grp" ? { id, status: "completed" } : { id: loop.groupId, input: "objective" },
+    ) as never;
+    const runCloseout = vi.fn(async () => ({
+      prRef: null,
+      headCommit: "feedbead",
+      error: "pushed branch consilium/loop-loop1/round-2; open PR manually",
+    }));
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+      readIterationVerdict: async () => verdict(false, 2),
+      runCloseout,
+    });
+    const res = await controller.tick(loop.id);
+    expect(res?.state).toBe("awaiting_merge"); // NOT failed — gate still meaningful
+    expect(res?.prRef).toBeNull();
+    expect(res?.error).toContain("open PR manually");
+  });
+
+  it("close-out single-flight: a 2nd concurrent DEVELOPING tick does NOT double-run the close-out (gated by CAS)", async () => {
+    const loop = makeLoop({ state: "developing", round: 2, devGroupId: "existing-grp", currentIterationNumber: 2 });
+    const { storage } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
+    storage.getTaskGroup = vi.fn(async (id: string) =>
+      id === "existing-grp" ? { id, status: "completed" } : { id: loop.groupId, input: "objective" },
+    ) as never;
+    // A slow close-out keeps the winner's side effect in flight while a 2nd tick
+    // fires; the in-process lock bars same-process re-entry and the CAS bars the
+    // cross-instance case — exactly one close-out runs.
+    const runCloseout = vi.fn(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      return { prRef: "https://github.com/o/r/pull/1", headCommit: "abc" };
+    });
+    const mk = () =>
+      new ConsiliumLoopController({
+        storage: storage as never,
+        taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+        config: fakeConfig,
+        readIterationVerdict: async () => verdict(false, 2),
+        runCloseout,
+      });
+    // Two separate controllers (two in-process Sets) over ONE storage = two pods.
+    const [a, b] = await Promise.all([mk().tick(loop.id), mk().tick(loop.id)]);
+    expect(runCloseout).toHaveBeenCalledTimes(1); // the CAS gate prevents a duplicate PR
+    const winners = [a, b].filter((r) => r !== null && r.state === "awaiting_merge");
+    expect(winners).toHaveLength(1);
   });
 });

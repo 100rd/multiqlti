@@ -64,6 +64,11 @@ export interface CreateTaskParam {
   teamId?: string;
   input?: Record<string, unknown>;
   sortOrder?: number;
+  /**
+   * Optional workspace the task's pipeline_run runs are recorded against (§14.3).
+   * Additive: omitted/undefined = today's behaviour (no workspace on startRun).
+   */
+  workspaceId?: string;
   /** When set, copy the template's fields into this definition (§5.3/§6 COPY-IN). */
   templateId?: string;
 }
@@ -83,6 +88,16 @@ export interface CreateTaskGroupParams {
 
 export interface StartGroupOptions {
   triggeredBy?: string | null;
+  /**
+   * §14.5 non-blocking model. Default `true` = the historical behaviour:
+   * `startGroup` awaits the whole batch and returns the SETTLED group/iteration.
+   * When `false` (the consilium loop path via `startGroupAsync`), the iteration
+   * row + executions are created and the group marked `running` SYNCHRONOUSLY,
+   * `launchBatch` is dispatched fire-and-forget, and the freshly-created
+   * `{group, iteration}` is returned IMMEDIATELY. A background batch rejection is
+   * caught and fails the iteration/group (never a perpetual `running`).
+   */
+  await?: boolean;
 }
 
 /** The resolved fields a definition row is created with (template overlay applied). */
@@ -92,6 +107,7 @@ interface ResolvedTaskFields {
   modelSlug: string | null;
   teamId: string | null;
   input: Record<string, unknown>;
+  workspaceId: string | null;
   labels: string[];
   templateId: string | null;
 }
@@ -156,6 +172,7 @@ export class TaskOrchestrator {
         modelSlug: t.modelSlug ?? null,
         teamId: t.teamId ?? null,
         input: t.input ?? {},
+        workspaceId: t.workspaceId ?? null,
         labels: [],
         templateId: null,
       };
@@ -167,6 +184,7 @@ export class TaskOrchestrator {
       modelSlug: t.modelSlug ?? tpl.modelSlug,
       teamId: t.teamId ?? tpl.teamId,
       input: t.input ?? tpl.input,
+      workspaceId: t.workspaceId ?? null,
       labels: tpl.labels,
       templateId: tpl.templateId,
     };
@@ -201,6 +219,7 @@ export class TaskOrchestrator {
         executionMode: fields.executionMode,
         dependsOn: [], // populated in second pass
         pipelineId: fields.pipelineId,
+        workspaceId: fields.workspaceId,
         modelSlug: fields.modelSlug,
         teamId: fields.teamId,
         input: fields.input,
@@ -257,10 +276,65 @@ export class TaskOrchestrator {
    * Start (or RE-run) a task group — creates a fresh iteration with one execution
    * per definition and kicks off the ready ones. Rejects only if the latest
    * iteration is still running, or the configured iteration cap is hit.
+   *
+   * Default (`options.await !== false`): AWAITS the whole batch and returns the
+   * SETTLED group/iteration — UNCHANGED historical behaviour for every existing
+   * caller/test. Pass `{ await: false }` (or call `startGroupAsync`) for the
+   * §14.5 fire-and-forget path that returns the freshly-created rows immediately.
    */
   async startGroup(groupId: string, options: StartGroupOptions = {}): Promise<{
     group: TaskGroupRow;
     iteration: TaskGroupIterationRow;
+  }> {
+    const prepared = await this.prepareGroupStart(groupId, options);
+    const { group, iteration, iterationNumber, ready, definitions, projected } = prepared;
+
+    if (options.await === false) {
+      // §14.5: dispatch fire-and-forget and return the just-created rows NOW.
+      // The risk guard fails the iteration/group on a top-level batch rejection
+      // so deriveReviewEvent later sees `failed`, never a perpetual `running`.
+      void this.launchBatch(ready, MAX_CONCURRENT_TASKS, group, iteration, definitions)
+        .catch((err) => this.failIterationBackground(group, iteration, err));
+      return { group: projected, iteration };
+    }
+
+    await this.launchBatch(ready, MAX_CONCURRENT_TASKS, group, iteration, definitions);
+
+    const settled = (await this.storage.getTaskGroup(groupId)) ?? projected;
+    const settledIteration = (await this.storage.getIteration(groupId, iterationNumber)) ?? iteration;
+    return { group: settled, iteration: settledIteration };
+  }
+
+  /**
+   * §14.5 non-blocking entry point. Creates the iteration + executions, marks the
+   * group `running`, dispatches the batch fire-and-forget, and returns the
+   * just-created `{group, iteration}` IMMEDIATELY (does NOT await completion).
+   * Thin alias over `startGroup({ await: false })` so the loop controller has an
+   * explicit, intention-revealing seam; existing awaiting callers are untouched.
+   */
+  async startGroupAsync(groupId: string, options: StartGroupOptions = {}): Promise<{
+    group: TaskGroupRow;
+    iteration: TaskGroupIterationRow;
+  }> {
+    return this.startGroup(groupId, { ...options, await: false });
+  }
+
+  /**
+   * SYNCHRONOUS (pre-launch) half of a start: validate, create the iteration +
+   * executions, mark the group `running`, open tracing, broadcast `started`.
+   * Shared verbatim by both the awaiting and non-awaiting paths so neither can
+   * drift. Returns everything the caller needs to launch the batch.
+   */
+  private async prepareGroupStart(
+    groupId: string,
+    options: StartGroupOptions,
+  ): Promise<{
+    group: TaskGroupRow;
+    iteration: TaskGroupIterationRow;
+    iterationNumber: number;
+    ready: TaskExecutionRow[];
+    definitions: TaskRow[];
+    projected: TaskGroupRow;
   }> {
     const group = await this.storage.getTaskGroup(groupId);
     if (!group) throw new Error(`TaskGroup ${groupId} not found`);
@@ -308,11 +382,38 @@ export class TaskOrchestrator {
       timestamp: new Date().toISOString(),
     });
 
-    await this.launchBatch(ready, MAX_CONCURRENT_TASKS, group, iteration, definitions);
+    return { group, iteration, iterationNumber, ready, definitions, projected };
+  }
 
-    const settled = (await this.storage.getTaskGroup(groupId)) ?? projected;
-    const settledIteration = (await this.storage.getIteration(groupId, iterationNumber)) ?? iteration;
-    return { group: settled, iteration: settledIteration };
+  /**
+   * §14.5 risk guard. On the fire-and-forget path a TOP-LEVEL `launchBatch`
+   * rejection (one that escaped the per-execution try/catch and the
+   * `Promise.allSettled` inside `launchBatch`) must not be swallowed — it would
+   * otherwise leave the iteration/group `running` forever. Mirror the iteration/
+   * group failure projection from `onTaskFailed` so `deriveReviewEvent` sees
+   * `failed`. Best-effort + self-guarded: never re-throws (no unhandled rejection).
+   */
+  private async failIterationBackground(
+    group: TaskGroupRow,
+    iteration: TaskGroupIterationRow,
+    err: unknown,
+  ): Promise<void> {
+    const error = err instanceof Error ? err.message : String(err);
+    try {
+      await this.storage.updateIteration(iteration.id, { status: "failed", completedAt: new Date() });
+      await this.storage.updateTaskGroup(group.id, { status: "failed", completedAt: new Date() });
+      this.markGroupSettled(group.id, iteration.id);
+      this.tracing.failGroup(group.id, error);
+      this.broadcast(group.id, {
+        type: "taskgroup:failed",
+        runId: group.id,
+        payload: { error },
+        timestamp: new Date().toISOString(),
+      });
+    } catch {
+      // Swallow: the failure projection is best-effort. Re-throwing here would
+      // resurrect the unhandled rejection this guard exists to prevent.
+    }
   }
 
   /**
@@ -550,7 +651,15 @@ export class TaskOrchestrator {
     group: TaskGroupRow,
   ): Promise<TaskResult> {
     const inputText = typeof task.input === "string" ? task.input : JSON.stringify(task.input);
-    const run = await this.pipelineController.startRun(task.pipelineId!, inputText);
+    // §14.3: thread the task's workspace (if any) so the pipeline run is recorded
+    // against it and its read tools default to it. undefined = today's behaviour.
+    const run = await this.pipelineController.startRun(
+      task.pipelineId!,
+      inputText,
+      undefined,
+      undefined,
+      task.workspaceId ?? undefined,
+    );
 
     await this.storage.updateExecution(execution.id, { pipelineRunId: run.id });
 

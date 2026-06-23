@@ -1131,6 +1131,10 @@ export const tasks = pgTable(
     dependsOn: jsonb("depends_on").notNull().default(sql`'[]'::jsonb`).$type<string[]>(),
     pipelineId: varchar("pipeline_id"),
     pipelineRunId: varchar("pipeline_run_id"),
+    // Optional workspace this task's pipeline_run runs are recorded against
+    // (consilium loop DEV handoff, design §14.3). Plain varchar (no FK) mirrors
+    // pipeline_runs.workspace_id; null = today's behaviour (no workspace).
+    workspaceId: varchar("workspace_id"),
     modelSlug: text("model_slug"),
     teamId: text("team_id"),
     // v2 (task-groups-v2 §3.3): organizational labels (array, not a join table —

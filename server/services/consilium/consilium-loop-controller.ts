@@ -23,6 +23,20 @@
  *        `onMergeApproved` records the server-read merged HEAD as the next
  *        baseline and the delta vs `headCommitAtReview` (never a client sha).
  *   L-1  `prRef` is display-only — it never drives a merge.
+ *
+ * §14 (DEV→repo→PR close-out + non-blocking side effects):
+ *   - `startReviewRound`/`startDevHandoff` use the NON-BLOCKING `startGroupAsync`
+ *     (D.1) so the child ref (`currentIterationNumber`/`devGroupId`) is persisted
+ *     on KICKOFF (milliseconds), not after the child completes. `deriveReviewEvent`
+ *     /`deriveDevEvent` then poll the settled child to advance — they are now the
+ *     primary completion driver (§14.5), not vestigial.
+ *   - The DEVELOPING→AWAITING_MERGE side effect runs `DevPrCloseout` (D.5) to
+ *     produce a REAL branch + Draft PR; `prRef` + `headCommitAtReview` are
+ *     persisted on the won row (§14.4). The close-out runs ONLY on the CAS/claim
+ *     winner (single-flight, §13) — a re-driven DEVELOPING never double-runs it;
+ *     pr-wrapper's M-6/M-7 idempotency is the second line.
+ *   - The DEV handoff's `pipeline_run` tasks carry the resolved `workspaceId`
+ *     (D.2/D.3) so the DEV pipeline's read tools are grounded in the loop's repo.
  */
 import type { IStorage } from "../../storage.js";
 import type { ConsiliumLoopRow, ConsiliumLoopState } from "@shared/schema";
@@ -32,6 +46,8 @@ import type { AppConfig } from "../../config/schema.js";
 import { readConvergence } from "../orchestrator/convergence.js";
 import { buildDiffContext } from "./diff-context.js";
 import { buildDevHandoffGroup } from "./dev-handoff.js";
+import { resolveLoopWorkspace, type WorkspaceBindStorage } from "./workspace-bind.js";
+import { DevPrCloseout, type DevCloseoutResult } from "./dev-closeout.js";
 
 // ─── FSM events (design §3 "Event / guard" column) ──────────────────────────
 
@@ -100,6 +116,11 @@ export function reduce(state: ConsiliumLoopState, event: LoopEvent): LoopTransit
 
     case "developing":
       if (event.kind === "dev_completed") {
+        // §14.4: the REAL `prRef` + `headCommit` are produced by `DevPrCloseout`
+        // in `runSideEffect` AFTER this CAS wins (so the close-out runs only on
+        // the winning path). The event carries placeholders here; the won row's
+        // follow-up `updateLoop` persists the real values. The transition still
+        // seeds whatever the event happens to carry (null/"" by default).
         return {
           from: "developing",
           to: "awaiting_merge",
@@ -162,6 +183,17 @@ export interface ConsiliumLoopControllerDeps {
    * buildDiffContext). Returns "" when unreadable (caller treats it as best-effort).
    */
   readRepoHead?: (loop: ConsiliumLoopRow) => Promise<string>;
+  /**
+   * §14.2/D.5 DEV→repo→PR close-out. Injectable so unit tests assert prRef flow
+   * with a fake (no real repo / gh). The default runs the real `DevPrCloseout`
+   * over the injected `closeoutManager` + the controller's `storage`.
+   */
+  runCloseout?: (loop: ConsiliumLoopRow, verdict: ConvergenceVerdict) => Promise<DevCloseoutResult>;
+  /**
+   * The `WorkspaceManager`-shaped seam the default close-out drives (branch +
+   * write). Required only when `runCloseout` is NOT injected.
+   */
+  closeoutManager?: ConstructorParameters<typeof DevPrCloseout>[0]["manager"];
 }
 
 export class ConsiliumLoopController {
@@ -301,12 +333,12 @@ export class ConsiliumLoopController {
     if (!transition) return null;
 
     // H-3 (BLOCKER fix): CLAIM the transition with the CAS FIRST, then run any
-    // non-idempotent side effect (createTaskGroup / startGroup — both mint NEW
-    // ids with no idempotency key) ONLY on the row that WON the CAS. Under
-    // multi-instance (>=2 pollers reading the same `deciding` row) exactly one
-    // CAS updates a row; the loser gets `undefined` -> null no-op -> NO side
-    // effect, so the DEV group / review iteration can never double-fire. Child
-    // refs (devGroupId / currentIterationNumber) + the incremented round are
+    // non-idempotent side effect (createTaskGroup / startGroup / the DevPrCloseout
+    // branch+push+PR — all mint NEW external state with no idempotency key) ONLY
+    // on the row that WON the CAS. Under multi-instance (>=2 pollers reading the
+    // same `deciding`/`developing` row) exactly one CAS updates a row; the loser
+    // gets `undefined` -> null no-op -> NO side effect, so the DEV group / review
+    // iteration / the close-out PR can never double-fire. Child refs + prRef are
     // persisted AFTER the side effect via a follow-up updateLoop on the won row.
     const won = await this.commit(loop, transition);
     if (!won) {
@@ -428,14 +460,22 @@ export class ConsiliumLoopController {
     return { kind: "decided", verdict, priorOpenP0 };
   }
 
-  /** DEVELOPING: poll the DEV handoff group; completed → open merge gate. */
+  /**
+   * DEVELOPING: poll the DEV handoff group; completed → open the merge gate.
+   *
+   * §14.4: this returns a PLACEHOLDER `dev_completed` (prRef null / headCommit
+   * "") — the REAL `prRef` + `headCommit` come from `DevPrCloseout`, which runs
+   * in `runSideEffect` AFTER the `developing→awaiting_merge` CAS WINS, so the
+   * close-out (a non-idempotent branch+push+PR) runs ONLY on the winning path
+   * (single-flight, §13). Running it here would let a losing tick open a
+   * duplicate PR before the CAS rejects it.
+   */
   private async deriveDevEvent(loop: ConsiliumLoopRow): Promise<LoopEvent | null> {
     if (!loop.devGroupId) return null;
     const group = await this.storage.getTaskGroup(loop.devGroupId);
     if (!group) return null;
     if (group.status === "completed") {
-      const head = await this.readRepoHead(loop);
-      return { kind: "dev_completed", prRef: loop.prRef ?? null, headCommit: head };
+      return { kind: "dev_completed", prRef: null, headCommit: "" };
     }
     if (group.status === "failed" || group.status === "cancelled") {
       return { kind: "review_failed", error: `DEV group ${group.status}` };
@@ -446,7 +486,8 @@ export class ConsiliumLoopController {
   /**
    * Run a transition's side effect, returning the extra columns the CAS must
    * persist atomically with the state change. Each branch is <30 lines and
-   * single-responsibility; the CAS that follows makes them idempotent.
+   * single-responsibility; the CAS that PRECEDED this call makes them run on the
+   * winning path only (single-flight).
    */
   private async runSideEffect(
     loop: ConsiliumLoopRow,
@@ -457,13 +498,65 @@ export class ConsiliumLoopController {
     if (transition.to === "developing" && event.kind === "decided") {
       return this.startDevHandoff(loop, event.verdict);
     }
+    // §14.4: DEVELOPING→AWAITING_MERGE — run the close-out on the WON row and
+    // persist the real prRef + reviewed HEAD. The verdict (open action points)
+    // is re-resolved here for the close-out artifact body.
+    if (transition.to === "awaiting_merge") return this.runDevCloseout(loop);
     return {};
   }
 
   /**
+   * DEVELOPING→AWAITING_MERGE side effect (§14.2/§14.4). Runs `DevPrCloseout`
+   * (real branch + Draft PR) and returns `{ prRef, headCommitAtReview, error? }`
+   * for the follow-up `updateLoop` on the won row. The close-out NEVER throws
+   * (branch-only fallback on any VCS failure) so the loop is never failed here.
+   * Runs ONLY on the CAS winner — a re-driven DEVELOPING never double-runs it.
+   */
+  private async runDevCloseout(loop: ConsiliumLoopRow): Promise<Record<string, unknown>> {
+    const verdict = await this.resolveVerdict(loop);
+    if (!verdict) {
+      this.log(loop.id, "close-out skipped — verdict unreadable; AWAITING_MERGE with null prRef");
+      return { prRef: null, error: "verdict unreadable at close-out" };
+    }
+    const result = await this.closeout(loop, verdict);
+    this.log(loop.id, `close-out done -> prRef=${result.prRef ?? "null"}${result.error ? ` (${result.error})` : ""}`);
+    return {
+      prRef: result.prRef,
+      headCommitAtReview: result.headCommit,
+      ...(result.error ? { error: result.error } : {}),
+    };
+  }
+
+  /** Resolve the close-out fn: injected fake (tests) or the real DevPrCloseout. */
+  private async closeout(
+    loop: ConsiliumLoopRow,
+    verdict: ConvergenceVerdict,
+  ): Promise<DevCloseoutResult> {
+    if (this.deps.runCloseout) return this.deps.runCloseout(loop, verdict);
+    const cfg = this.loopConfig();
+    if (!this.deps.closeoutManager) {
+      return { prRef: null, headCommit: "", error: "no close-out manager configured" };
+    }
+    const closeout = new DevPrCloseout({
+      manager: this.deps.closeoutManager,
+      storage: this.storage as unknown as WorkspaceBindStorage,
+    });
+    return closeout.run({
+      loopId: loop.id,
+      round: loop.round,
+      repoPath: loop.repoPath,
+      ownerId: loop.createdBy ?? "",
+      allowedRepoPaths: cfg.allowedRepoPaths,
+      openActionPoints: verdict.openActionPoints,
+    });
+  }
+
+  /**
    * BUILDING_CONTEXT → REVIEWING: build A2 diff-context, seed the group input,
-   * start the consilium round, record the new iteration number + incremented
-   * round. `round` only ever increments here (M-2).
+   * start the consilium round NON-BLOCKINGLY (D.1 `startGroupAsync`), record the
+   * new iteration number + incremented round. The child ref is persisted on
+   * KICKOFF (milliseconds) — `deriveReviewEvent` then polls the settle (§14.5).
+   * `round` only ever increments here (M-2).
    */
   private async startReviewRound(loop: ConsiliumLoopRow): Promise<Record<string, unknown>> {
     const cfg = this.loopConfig();
@@ -482,11 +575,14 @@ export class ConsiliumLoopController {
       return { error: ctx.message };
     }
     await this.storage.updateTaskGroup(loop.groupId, { input: ctx.input });
-    this.log(loop.id, `startReviewRound -> startGroup(group=${loop.groupId}) round ${loop.round + 1}`);
-    const { iteration } = await this.deps.taskOrchestrator.startGroup(loop.groupId, {
+    this.log(loop.id, `startReviewRound -> startGroupAsync(group=${loop.groupId}) round ${loop.round + 1}`);
+    // §14.5: NON-BLOCKING — returns the instant the iteration row is created, NOT
+    // after the consilium round completes. The child runs in the background and
+    // settles the iteration; `deriveReviewEvent` polls that settle.
+    const { iteration } = await this.deps.taskOrchestrator.startGroupAsync(loop.groupId, {
       triggeredBy: loop.createdBy,
     });
-    this.log(loop.id, `startReviewRound done -> iteration #${iteration.iterationNumber}`);
+    this.log(loop.id, `startReviewRound done -> iteration #${iteration.iterationNumber} (dispatched)`);
     return {
       round: loop.round + 1,
       currentIterationNumber: iteration.iterationNumber,
@@ -495,8 +591,10 @@ export class ConsiliumLoopController {
   }
 
   /**
-   * DECIDING → DEVELOPING: persist the round audit row, then hand the open
-   * action points to the DEV pipeline as a `pipeline_run` group.
+   * DECIDING → DEVELOPING: persist the round audit row, resolve the loop's
+   * workspace (D.3, grounds the DEV pipeline's read tools §14.3), then hand the
+   * open action points to the DEV pipeline as a `pipeline_run` group started
+   * NON-BLOCKINGLY (D.1). `devGroupId` is persisted on KICKOFF (§14.5).
    */
   private async startDevHandoff(
     loop: ConsiliumLoopRow,
@@ -507,17 +605,42 @@ export class ConsiliumLoopController {
       return { state: "escalated", error: "no DEV pipeline configured", completedAt: new Date() };
     }
     await this.recordRound(loop, verdict);
+    const workspaceId = await this.resolveWorkspaceId(loop); // §14.3 grounding.
     const payload = buildDevHandoffGroup({
       openActionPoints: verdict.openActionPoints,
       devPipelineId,
       source: loop.id,
       createdBy: loop.createdBy ?? undefined,
+      workspaceId,
     });
-    this.log(loop.id, `startDevHandoff -> createTaskGroup (${verdict.openActionPoints.length} action points)`);
+    this.log(loop.id, `startDevHandoff -> createTaskGroup (${verdict.openActionPoints.length} action points, ws=${workspaceId ?? "none"})`);
     const { group } = await this.deps.taskOrchestrator.createTaskGroup(payload);
-    await this.deps.taskOrchestrator.startGroup(group.id, { triggeredBy: loop.createdBy });
-    this.log(loop.id, `startDevHandoff done -> devGroup ${group.id}`);
+    // §14.5: NON-BLOCKING — `devGroupId` is persisted on KICKOFF; `deriveDevEvent`
+    // polls the DEV group's settle to open the merge gate.
+    await this.deps.taskOrchestrator.startGroupAsync(group.id, { triggeredBy: loop.createdBy });
+    this.log(loop.id, `startDevHandoff done -> devGroup ${group.id} (dispatched)`);
     return { devGroupId: group.id, openP0: verdict.openP0 };
+  }
+
+  /**
+   * §14.3: resolve (scan-or-create) the `local` workspace bound to the loop's
+   * repo so the DEV handoff's read tools are grounded in the repo. Best-effort:
+   * a bind failure (non-allowlisted path / fs error) must NOT block the handoff
+   * — it degrades to today's no-workspace behaviour (undefined).
+   */
+  private async resolveWorkspaceId(loop: ConsiliumLoopRow): Promise<string | undefined> {
+    try {
+      const ws = await resolveLoopWorkspace(
+        this.storage as unknown as WorkspaceBindStorage,
+        loop.repoPath,
+        loop.createdBy ?? "",
+        this.loopConfig().allowedRepoPaths,
+      );
+      return ws.id;
+    } catch (err) {
+      this.log(loop.id, `workspace bind failed (DEV runs without workspace): ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
   }
 
   /** Persist this round's audit row (NEVER the raw diff/input — H-4). */
