@@ -389,9 +389,20 @@ export class TaskOrchestrator {
    * §14.5 risk guard. On the fire-and-forget path a TOP-LEVEL `launchBatch`
    * rejection (one that escaped the per-execution try/catch and the
    * `Promise.allSettled` inside `launchBatch`) must not be swallowed — it would
-   * otherwise leave the iteration/group `running` forever. Mirror the iteration/
-   * group failure projection from `onTaskFailed` so `deriveReviewEvent` sees
-   * `failed`. Best-effort + self-guarded: never re-throws (no unhandled rejection).
+   * otherwise leave the iteration `running` forever. Mirror the iteration/group
+   * failure projection from `onTaskFailed` so `deriveReviewEvent` sees `failed`.
+   *
+   * CRITICAL: fail ONLY if the iteration is STILL non-terminal. The executions
+   * settle the iteration/group THEMSELVES (onTaskCompleted/onTaskFailed →
+   * checkGroupCompletion) DURING the awaited chain, so a `launchBatch` rejection
+   * that arrives AFTER the group already reached `completed` (a stray
+   * post-completion throw — broadcast/tracing/transient storage error in the
+   * recursive onTaskCompleted→launchBatch path) must NOT stomp the completed
+   * group to `failed` (the live-run pipeline_run regression: runs completed 6/6
+   * yet the group flipped to failed 0/N). Re-read the current status and no-op
+   * when terminal. The awaiting path never touched group status on rejection;
+   * this restores that invariant for the non-blocking path. Self-guarded: never
+   * re-throws (no unhandled rejection).
    */
   private async failIterationBackground(
     group: TaskGroupRow,
@@ -400,6 +411,12 @@ export class TaskOrchestrator {
   ): Promise<void> {
     const error = err instanceof Error ? err.message : String(err);
     try {
+      // Re-read by number (the held row may be stale) — only fail if the
+      // executions have NOT already driven the iteration to a terminal state.
+      const current = await this.storage.getIteration(group.id, iteration.iterationNumber);
+      const status = current?.status ?? iteration.status;
+      if (status !== "running" && status !== "pending") return; // already settled → no-op
+
       await this.storage.updateIteration(iteration.id, { status: "failed", completedAt: new Date() });
       await this.storage.updateTaskGroup(group.id, { status: "failed", completedAt: new Date() });
       this.markGroupSettled(group.id, iteration.id);
