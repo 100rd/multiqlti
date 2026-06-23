@@ -4,11 +4,17 @@ function getAuthToken(): string | null {
   return localStorage.getItem("auth_token");
 }
 
+function getProjectId(): string | null {
+  return localStorage.getItem("project_id");
+}
+
 function buildAuthHeaders(hasBody: boolean): Record<string, string> {
   const headers: Record<string, string> = {};
   if (hasBody) headers["Content-Type"] = "application/json";
   const token = getAuthToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  const projectId = getProjectId();
+  if (projectId) headers["x-project-id"] = projectId;
   return headers;
 }
 

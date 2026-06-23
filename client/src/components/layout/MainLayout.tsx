@@ -36,6 +36,7 @@ import { usePendingQuestions } from "@/hooks/use-pipeline";
 import { useAuth } from "@/hooks/use-auth";
 import type { UserRole } from "@shared/types";
 import { PeerStatusBadge } from "@/components/config-sync/PeerStatusBadge";
+import { ProjectSelector } from "@/components/ProjectSelector";
 
 interface MainLayoutProps {
   children: ReactNode;
@@ -166,6 +167,9 @@ export default function MainLayout({ children }: MainLayoutProps) {
               </div>
               <PeerStatusBadge />
             </div>
+          </div>
+          <div className="px-4 py-2">
+            <ProjectSelector />
           </div>
 
           <nav className="p-4 space-y-1">

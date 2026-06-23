@@ -1,3 +1,5 @@
+import { ProjectProvider } from "@/contexts/ProjectContext";
+
 import { Switch, Route, Redirect } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -222,9 +224,11 @@ function App() {
       <TooltipProvider>
         <Toaster />
         <AuthProvider>
-          <ErrorBoundary>
-            <Router />
-          </ErrorBoundary>
+          <ProjectProvider>
+            <ErrorBoundary>
+              <Router />
+            </ErrorBoundary>
+          </ProjectProvider>
         </AuthProvider>
       </TooltipProvider>
     </QueryClientProvider>

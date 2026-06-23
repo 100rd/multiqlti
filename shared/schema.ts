@@ -45,6 +45,29 @@ export const users = pgTable("users", {
   unique("users_oauth_provider_id").on(table.oauthProvider, table.oauthId),
 ]);
 
+
+export const projects = pgTable("projects", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  name: text("name").notNull(),
+  description: text("description"),
+  ownerId: text("owner_id").references(() => users.id, { onDelete: "cascade" }).notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const projectMembers = pgTable("project_members", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull(),
+  userId: text("user_id").references(() => users.id, { onDelete: "cascade" }).notNull(),
+  role: text("role").notNull().default("editor"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  primaryKey({ columns: [t.projectId, t.userId] }),
+]);
+
+export const insertProjectSchema = createInsertSchema(projects).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertProject = z.infer<typeof insertProjectSchema>;
+export type Project = typeof projects.$inferSelect;
+
 export const insertUserSchema = createInsertSchema(users)
   .omit({ id: true, createdAt: true, updatedAt: true })
   .extend({
@@ -80,6 +103,7 @@ export type SessionRow = typeof sessions.$inferSelect;
 // ─── Models ─────────────────────────────────────────
 
 export const models = pgTable("models", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id")
     .primaryKey()
     .default(sql`gen_random_uuid()`),
@@ -107,6 +131,7 @@ export type Model = typeof models.$inferSelect;
 // ─── Pipelines ──────────────────────────────────────
 
 export const pipelines = pgTable("pipelines", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id")
     .primaryKey()
     .default(sql`gen_random_uuid()`),
@@ -135,6 +160,7 @@ export type Pipeline = typeof pipelines.$inferSelect;
 // ─── Pipeline Runs ──────────────────────────────────
 
 export const pipelineRuns = pgTable("pipeline_runs", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id")
     .primaryKey()
     .default(sql`gen_random_uuid()`),
@@ -166,6 +192,7 @@ export type PipelineRun = typeof pipelineRuns.$inferSelect;
 // ─── Stage Executions ───────────────────────────────
 
 export const stageExecutions = pgTable("stage_executions", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id")
     .primaryKey()
     .default(sql`gen_random_uuid()`),
@@ -217,6 +244,7 @@ export type StageExecution = typeof stageExecutions.$inferSelect;
 // ─── Questions ──────────────────────────────────────
 
 export const questions = pgTable("questions", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id")
     .primaryKey()
     .default(sql`gen_random_uuid()`),
@@ -241,6 +269,7 @@ export type Question = typeof questions.$inferSelect;
 // ─── Chat Messages ──────────────────────────────────
 
 export const chatMessages = pgTable("chat_messages", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id")
     .primaryKey()
     .default(sql`gen_random_uuid()`),
@@ -278,6 +307,7 @@ export type ProviderKey = typeof providerKeys.$inferSelect;
 // ─── Anonymization Patterns ──────────────────────────────────────────────────
 
 export const anonymizationPatterns = pgTable("anonymization_patterns", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   entityType: text("entity_type").notNull().default("custom_pattern"),
@@ -300,6 +330,7 @@ export type AnonymizationPattern = typeof anonymizationPatterns.$inferSelect;
 // ─── Anonymization Audit Log ─────────────────────────────────────────────────
 
 export const anonymizationLog = pgTable("anonymization_log", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: serial("id").primaryKey(),
   runId: text("run_id"),
   sessionId: text("session_id").notNull(),
@@ -313,6 +344,7 @@ export type AnonymizationLogEntry = typeof anonymizationLog.$inferSelect;
 // ─── LLM Requests ───────────────────────────────────
 
 export const llmRequests = pgTable("llm_requests", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: serial("id").primaryKey(),
   runId: varchar("run_id"),
   stageExecutionId: varchar("stage_execution_id"),
@@ -370,6 +402,7 @@ export type MemoryRow = typeof memories.$inferSelect;
 // ─── MCP Servers ─────────────────────────────────────────────────────────────
 
 export const mcpServers = pgTable("mcp_servers", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: serial("id").primaryKey(),
   name: text("name").notNull().unique(),
   transport: text("transport").notNull(),  // 'stdio' | 'sse' | 'streamable-http'
@@ -438,6 +471,7 @@ export const SYMBOL_KINDS = [
 export type SymbolKind = typeof SYMBOL_KINDS[number];
 
 export const workspaces = pgTable("workspaces", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id")
     .primaryKey()
     .default(sql`gen_random_uuid()`),
@@ -463,6 +497,7 @@ export type WorkspaceRow = typeof workspaces.$inferSelect;
 // ─── Maintenance Autopilot Schema (Phase 4.5) ────────────────────────────────
 
 export const maintenancePolicies = pgTable("maintenance_policies", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id")
     .primaryKey()
     .default(sql`gen_random_uuid()`),
@@ -490,6 +525,7 @@ export const maintenancePolicies = pgTable("maintenance_policies", {
 export type MaintenancePolicyRow = typeof maintenancePolicies.$inferSelect;
 
 export const maintenanceScans = pgTable("maintenance_scans", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id")
     .primaryKey()
     .default(sql`gen_random_uuid()`),
@@ -516,6 +552,7 @@ export type MaintenanceScanRow = typeof maintenanceScans.$inferSelect;
 // ─── Auto-Trigger Audit (Phase 6.11) ─────────────────────────────────────────
 
 export const autoTriggerAudit = pgTable("auto_trigger_audit", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id")
     .primaryKey()
     .default(sql`gen_random_uuid()`),
@@ -533,6 +570,7 @@ export type AutoTriggerAuditRow = typeof autoTriggerAudit.$inferSelect;
 // ─── Delegation Requests (Phase 6.4) ─────────────────────────────────────────
 
 export const delegationRequests = pgTable("delegation_requests", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id")
     .primaryKey()
     .default(sql`gen_random_uuid()`),
@@ -562,6 +600,7 @@ export type DelegationRequestRow = typeof delegationRequests.$inferSelect;
 // ─── Specialization Profiles (Phase 5) ───────────────────────────────────────
 
 export const specializationProfiles = pgTable("specialization_profiles", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
   isBuiltIn: boolean("is_built_in").notNull().default(false),
@@ -576,6 +615,7 @@ export type SpecializationProfileRow = typeof specializationProfiles.$inferSelec
 // ─── Git Skill Sources (issue #161) ─────────────────────────────────────────
 
 export const gitSkillSources = pgTable("git_skill_sources", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
   repoUrl: text("repo_url").notNull(),
@@ -597,6 +637,7 @@ export type GitSkillSourceRow = typeof gitSkillSources.$inferSelect;
 // ─── Skills (Phase 3.1b) ─────────────────────────────────────────────────────
 
 export const skills = pgTable("skills", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
   description: text("description").notNull().default(""),
@@ -634,6 +675,7 @@ export type Skill = typeof skills.$inferSelect;
 // ─── Skill Versions (Phase 6.16) ────────────────────────────────────────────
 
 export const skillVersions = pgTable("skill_versions", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   skillId: varchar("skill_id")
     .notNull()
@@ -659,6 +701,7 @@ export type SkillVersionRow = typeof skillVersions.$inferSelect;
 // ─── Skill Teams ─────────────────────────────────────────────────────────────
 
 export const skillTeams = pgTable("skill_teams", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
   description: text("description").notNull().default(""),
@@ -1084,6 +1127,7 @@ export const TASK_GROUP_STATUSES = ["pending", "running", "completed", "failed",
 export type TaskGroupStatus = typeof TASK_GROUP_STATUSES[number];
 
 export const taskGroups = pgTable("task_groups", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id")
     .primaryKey()
     .default(sql`gen_random_uuid()`),
@@ -1228,6 +1272,11 @@ export const taskGroupIterations = pgTable(
     // Immutable snapshot of group.input at run time — what actually ran.
     input: text("input").notNull(),
     output: jsonb("output").$type<Record<string, unknown>>(),
+    // Human-in-the-loop note written AFTER this iteration completes. It is folded
+    // into the NEXT iteration's input snapshot (see TaskOrchestrator.startGroupAsync)
+    // so the debaters/judge of the following round argue WITH the user's thoughts
+    // and decisions in scope. Nullable; only the latest iteration's note is carried.
+    humanNote: text("human_note"),
     traceId: text("trace_id"),
     triggeredBy: text("triggered_by").references(() => users.id, { onDelete: "set null" }),
     startedAt: timestamp("started_at"),
@@ -1325,6 +1374,7 @@ export const LIBRARY_CHANNEL_TYPES = ["rss", "manual", "github", "cve"] as const
 export type LibraryChannelType = typeof LIBRARY_CHANNEL_TYPES[number];
 
 export const libraryChannels = pgTable("library_channels", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id")
     .primaryKey()
     .default(sql`gen_random_uuid()`),
@@ -1433,6 +1483,7 @@ export type TaskTraceRow = typeof taskTraces.$inferSelect;
 export const TRACKER_PROVIDERS = ["jira", "clickup", "linear", "github"] as const;
 
 export const trackerConnections = pgTable("tracker_connections", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id")
     .primaryKey()
     .default(sql`gen_random_uuid()`),
@@ -1462,6 +1513,7 @@ export type TrackerConnectionRow = typeof trackerConnections.$inferSelect;
 // ─── Model Skill Bindings (Phase 6.17) ───────────────────────────────────────
 
 export const modelSkillBindings = pgTable("model_skill_bindings", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   modelId: text("model_id").notNull(),
   skillId: varchar("skill_id").notNull().references(() => skills.id, { onDelete: "cascade" }),
@@ -1479,6 +1531,7 @@ export type ModelSkillBinding = typeof modelSkillBindings.$inferSelect;
 // ── Phase 8: Remote Agents ────────────────────────────────────────────────
 
 export const remoteAgents = pgTable("remote_agents", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull().unique(),
   environment: text("environment").notNull().default("kubernetes"),
@@ -1499,6 +1552,7 @@ export const remoteAgents = pgTable("remote_agents", {
 });
 
 export const a2aTasks = pgTable("a2a_tasks", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   agentId: varchar("agent_id").notNull().references(() => remoteAgents.id),
   runId: varchar("run_id"),
@@ -1519,6 +1573,7 @@ export const insertA2ATaskSchema = createInsertSchema(a2aTasks);
 // ── Phase 9: Skill Market ─────────────────────────────────────────────────
 
 export const skillRegistrySources = pgTable("skill_registry_sources", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: serial("id").primaryKey(),
   adapterId: text("adapter_id").notNull().unique(),
   name: text("name").notNull(),
@@ -1533,6 +1588,7 @@ export const skillRegistrySources = pgTable("skill_registry_sources", {
 });
 
 export const skillInstallLog = pgTable("skill_install_log", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: serial("id").primaryKey(),
   skillId: varchar("skill_id"),
   externalSource: text("external_source"),
@@ -1550,6 +1606,7 @@ export const insertSkillInstallLogSchema = createInsertSchema(skillInstallLog);
 // ── Federation: Shared Sessions (issue #224) ────────────────────────────────
 
 export const sharedSessions = pgTable("shared_sessions", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   runId: varchar("run_id").notNull(),
   shareToken: varchar("share_token").notNull().unique(),
@@ -2500,6 +2557,7 @@ export type InsertConfigConflict = typeof configConflicts.$inferInsert;
  * Seeded with defaults; can be overridden per installation.
  */
 export const configConflictStrategies = pgTable("config_conflict_strategies", {
+  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
   entityKind: text("entity_kind").primaryKey(),
   strategy: text("strategy").notNull().default("lww").$type<ConfigConflictStrategy>(),
   markContested: boolean("mark_contested").notNull().default(true),

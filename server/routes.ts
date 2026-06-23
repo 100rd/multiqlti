@@ -118,6 +118,9 @@ export async function registerRoutes(
 
   // Register auth routes (public routes included)
   registerAuthRoutes(app);
+  // @ts-ignore
+  const projectRoutes = require("./routes/projects").default;
+  app.use("/api/projects", projectRoutes);
 
   // Register protected route groups — all require authentication
   app.use("/api/pipelines", requireAuth);
