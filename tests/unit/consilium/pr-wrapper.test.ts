@@ -29,11 +29,29 @@ const REPO = "/some/allowlisted/repo";
 const ORIGIN = "https://github.com/acme/widget.git";
 const OWNER_REPO = "acme/widget";
 
+/**
+ * The REAL simple-git auto-appends `--verbose --porcelain` AFTER the caller's
+ * arg array. This fake replays that so a stray `--` end-of-options terminator
+ * (which would make git parse those trailing flags as refspecs — the live
+ * "src refspec --verbose does not match any" bug) is caught here, not in prod.
+ */
+function simulateSimpleGitPush(args: string[]): void {
+  const effective = [...args, "--verbose", "--porcelain"]; // simple-git's real trailer
+  const dashDash = effective.indexOf("--");
+  if (dashDash !== -1 && dashDash < effective.length - 1) {
+    // Anything after `--` is a refspec; git's auto-flags must NOT land there.
+    const afterTerminator = effective.slice(dashDash + 1);
+    if (afterTerminator.some((a) => a.startsWith("--"))) {
+      throw new Error(`src refspec ${afterTerminator.find((a) => a.startsWith("--"))} does not match any`);
+    }
+  }
+}
+
 function fakeGit(over: Partial<GitPushClient> = {}): GitPushClient & {
   push: ReturnType<typeof vi.fn>;
   getRemotes: ReturnType<typeof vi.fn>;
 } {
-  const push = vi.fn(async () => undefined);
+  const push = vi.fn(async (args: string[]) => { simulateSimpleGitPush(args); });
   const getRemotes = vi.fn(async () => [{ name: "origin", refs: { fetch: ORIGIN, push: ORIGIN } }]);
   return { push, getRemotes, ...over } as GitPushClient & {
     push: ReturnType<typeof vi.fn>;
@@ -67,11 +85,14 @@ describe("isValidLoopBranch (B-3)", () => {
 });
 
 describe("pushBranch", () => {
-  it("calls push(['-u','origin','--',branch]) (B-4 arg-array + `--` terminator)", async () => {
+  it("calls push(['-u','origin',branch]) — EXACTLY, NO `--` (simple-git appends --verbose --porcelain)", async () => {
     const git = fakeGit();
     const res = await pushBranch(REPO, BRANCH, git);
     expect(res.ok).toBe(true);
-    expect(git.push).toHaveBeenCalledWith(["-u", "origin", "--", BRANCH]);
+    // Exact argv: a `--` here would corrupt simple-git's trailing auto-flags.
+    expect(git.push).toHaveBeenCalledWith(["-u", "origin", BRANCH]);
+    const pushArgs = git.push.mock.calls[0][0] as string[];
+    expect(pushArgs).not.toContain("--");
   });
 
   it("REJECTS a non-matching/injection branch before any push (B-3)", async () => {

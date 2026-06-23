@@ -16,10 +16,13 @@
  *          elements (or `--body-file`), NEVER interpolated into a shell.
  *   - B-3+ (flag/option injection): leading-dash `title`/`branch` are rejected
  *          (a leading-dash argv element is parsed as a flag even under execFile).
- *          `git push` gets a `--` terminator before the refspec; `gh pr create`
- *          has NO positionals and rejects `--end-of-options` (verified gh 2.94),
- *          so its value-flags (`--base/--head/--title`) are guarded by the
- *          leading-dash rejection instead of a terminator.
+ *          NO `--` terminator on `git push` — simple-git auto-appends
+ *          `--verbose --porcelain`, which a `--` would turn into bogus refspecs;
+ *          the branch is already option-safe via the regex gate + leading-dash
+ *          rejection. `gh pr create` has NO positionals and rejects
+ *          `--end-of-options` (verified gh 2.94), so its value-flags
+ *          (`--base/--head/--title`) are likewise guarded by leading-dash
+ *          rejection, not a terminator.
  *   - B-4: push targets only `origin` of the given allowlisted `repoPath`.
  *   - H-6: `gh` opens DRAFT PRs only (a human always merges). `gh` absent /
  *          unauthenticated / non-zero exit → typed failure; NEVER throws — the
@@ -158,8 +161,9 @@ async function resolveOwnerRepo(git: GitPushClient): Promise<string | WrapFail> 
 /**
  * Push `branch` to `origin` of `repoPath` with upstream tracking, via the
  * arg-array `push` API (never a shell string). Rejects a non-server branch
- * (B-3) / leading-dash branch (B-3+), runs under a sanitized env (H-7b), and
- * never throws.
+ * (B-3) / leading-dash branch (B-3+ — option-injection via the branch is closed
+ * by the regex gate + leading-dash rejection, no `--` needed), runs under a
+ * sanitized env (H-7b), and never throws.
  */
 export async function pushBranch(
   repoPath: string,
@@ -169,8 +173,12 @@ export async function pushBranch(
   if (branch.startsWith("-") || !isValidLoopBranch(branch)) return badBranch(branch);
   const git: GitPushClient = gitClient ?? makeGit(repoPath);
   try {
-    // B-4: origin only. B-3+: `--` terminates options so `branch` is never a flag.
-    await git.push(["-u", "origin", "--", branch]);
+    // B-4: origin only. NO `--` terminator here: simple-git auto-APPENDS
+    // `--verbose --porcelain` AFTER this array, and a `--` would turn those
+    // trailing flags into refspecs ("src refspec --verbose does not match any").
+    // Option-injection via `branch` is already closed by the regex gate +
+    // leading-dash rejection above (B-3), so the branch is safe without it.
+    await git.push(["-u", "origin", branch]);
     return { ok: true, branch };
   } catch (err) {
     return { ok: false, kind: "unknown", message: scrub(err instanceof Error ? err.message : String(err)) };
