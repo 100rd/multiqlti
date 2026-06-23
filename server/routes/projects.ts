@@ -45,7 +45,7 @@ router.get("/", requireAuth, async (req, res) => {
 
 router.post("/", requireAuth, async (req, res) => {
   try {
-    const data = insertProjectSchema.parse(req.body);
+    const data = insertProjectSchema.omit({ ownerId: true }).parse(req.body);
     const userId = req.user!.id;
 
     const [newProject] = await db
