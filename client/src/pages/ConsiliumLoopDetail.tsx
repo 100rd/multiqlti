@@ -25,6 +25,7 @@ import {
   AlertTriangle,
   Check,
   X,
+  Clock,
   Play,
   Ban,
   GitMerge,
@@ -75,6 +76,45 @@ const PRIORITY_COLOR: Record<string, string> = {
   P2: "bg-yellow-500 text-black",
   P3: "bg-slate-500 text-white",
 };
+
+// Clarifies that the (intentionally red) P0 badge is a SEVERITY tier, not a
+// failure status — so a wall of red P0s reads as "these are the critical items".
+const PRIORITY_LEGEND =
+  "P0–P3 — приоритет важности (P0 = критический), не статус выполнения.";
+
+/**
+ * Open-P0 text colour. Mid-loop (non-terminal) an open P0 is EXPECTED
+ * work-remaining → amber, not red. Zero open → green. Red is reserved for a
+ * terminal loop that still carries P0s (a genuinely bad final outcome).
+ */
+function p0ClassName(openP0: number | null | undefined, terminal: boolean): string {
+  if (openP0 == null) return "text-muted-foreground";
+  if (openP0 <= 0) return "text-green-600 dark:text-green-400";
+  return terminal
+    ? "text-red-600 dark:text-red-400"
+    : "text-amber-600 dark:text-amber-400";
+}
+
+/**
+ * Convergence mark. `true` → green check (closed). `false` mid-loop just means
+ * "not closed yet" → amber Clock (in-progress), NOT red. Only a TERMINAL
+ * non-converged loop shows a red ✗ — there "didn't converge" is the bad outcome.
+ */
+function ConvergenceMark({
+  converged,
+  terminal,
+}: {
+  converged: boolean | null | undefined;
+  terminal: boolean;
+}) {
+  if (converged == null) return <span className="text-muted-foreground">—</span>;
+  if (converged) return <Check className="h-4 w-4 text-green-600" />;
+  return terminal ? (
+    <X className="h-4 w-4 text-red-500" />
+  ) : (
+    <Clock className="h-4 w-4 text-amber-500" aria-label="in progress" />
+  );
+}
 
 function shortSha(sha: string | null | undefined): string {
   if (!sha) return "—";
@@ -150,7 +190,15 @@ function Fact({
 
 // ─── Rounds table ─────────────────────────────────────────────────────────────
 
-function RoundRow({ round, groupId }: { round: ConsiliumLoopRoundRow; groupId: string }) {
+function RoundRow({
+  round,
+  groupId,
+  terminal,
+}: {
+  round: ConsiliumLoopRoundRow;
+  groupId: string;
+  terminal: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const aps: ActionPoint[] = Array.isArray(round.openActionPoints)
     ? round.openActionPoints
@@ -174,21 +222,9 @@ function RoundRow({ round, groupId }: { round: ConsiliumLoopRoundRow; groupId: s
           </span>
         </TableCell>
         <TableCell>
-          {round.converged == null ? (
-            <span className="text-muted-foreground">—</span>
-          ) : round.converged ? (
-            <Check className="h-4 w-4 text-green-600" />
-          ) : (
-            <X className="h-4 w-4 text-red-500" />
-          )}
+          <ConvergenceMark converged={round.converged} terminal={terminal} />
         </TableCell>
-        <TableCell
-          className={`tabular-nums font-medium ${
-            (round.openP0 ?? 0) > 0
-              ? "text-red-600 dark:text-red-400"
-              : "text-green-600 dark:text-green-400"
-          }`}
-        >
+        <TableCell className={`tabular-nums font-medium ${p0ClassName(round.openP0, terminal)}`}>
           {round.openP0 ?? "—"}
         </TableCell>
         <TableCell className="font-mono text-xs whitespace-nowrap">
@@ -228,6 +264,7 @@ function RoundRow({ round, groupId }: { round: ConsiliumLoopRoundRow; groupId: s
                   </li>
                 ))}
               </ul>
+              <p className="text-[11px] text-muted-foreground/70">{PRIORITY_LEGEND}</p>
             </div>
           </TableCell>
         </TableRow>
@@ -447,13 +484,7 @@ export default function ConsiliumLoopDetail() {
                 </span>
               </Fact>
               <Fact label="Open P0">
-                <span
-                  className={`tabular-nums font-medium ${
-                    (loop.openP0 ?? 0) > 0
-                      ? "text-red-600 dark:text-red-400"
-                      : "text-green-600 dark:text-green-400"
-                  }`}
-                >
+                <span className={`tabular-nums font-medium ${p0ClassName(loop.openP0, terminal)}`}>
                   {loop.openP0 ?? "—"}
                 </span>
               </Fact>
@@ -531,11 +562,19 @@ export default function ConsiliumLoopDetail() {
                     {[...rounds]
                       .sort((a, b) => a.round - b.round)
                       .map((round) => (
-                        <RoundRow key={round.id} round={round} groupId={loop.groupId} />
+                        <RoundRow
+                          key={round.id}
+                          round={round}
+                          groupId={loop.groupId}
+                          terminal={terminal}
+                        />
                       ))}
                   </TableBody>
                 </Table>
               </div>
+            )}
+            {rounds.length > 0 && (
+              <p className="mt-2 text-[11px] text-muted-foreground/70">{PRIORITY_LEGEND}</p>
             )}
           </CardContent>
         </Card>
