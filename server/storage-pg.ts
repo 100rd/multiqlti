@@ -1,6 +1,6 @@
 import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, inArray, sql as drizzleSql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
-import { db, withProject } from "./db";
+import { db, withProject, withProjectInsert } from "./db";
 import type { IStorage, PracticeCardFilters, MorningBriefFilters, NewsItemFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint, RunHistoryQuery, PipelineRunHistoryRow, TaskGroupHistoryRow } from "./storage";
 import {
   TASK_GROUP_V2_MAX_LIMIT,
@@ -177,7 +177,7 @@ export class PgStorage implements IStorage {
   }
 
   async createModel(model: InsertModel): Promise<Model> {
-    const [row] = await db.insert(models).values(model).returning();
+    const [row] = await db.insert(models).values(withProjectInsert(models, model)).returning();
     return row;
   }
 
@@ -187,7 +187,7 @@ export class PgStorage implements IStorage {
     // but keep the existing id/createdAt.
     const [row] = await db
       .insert(models)
-      .values(model)
+      .values(withProjectInsert(models, model))
       .onConflictDoUpdate({
         target: models.slug,
         set: {
@@ -232,7 +232,7 @@ export class PgStorage implements IStorage {
   }
 
   async createPipeline(pipeline: InsertPipeline): Promise<Pipeline> {
-    const [row] = await db.insert(pipelines).values(pipeline).returning();
+    const [row] = await db.insert(pipelines).values(withProjectInsert(pipelines, pipeline)).returning();
     return row;
   }
 
@@ -311,7 +311,7 @@ export class PgStorage implements IStorage {
   }
 
   async createPipelineRun(run: InsertPipelineRun): Promise<PipelineRun> {
-    const [row] = await db.insert(pipelineRuns).values(run).returning();
+    const [row] = await db.insert(pipelineRuns).values(withProjectInsert(pipelineRuns, run)).returning();
     return row;
   }
 
@@ -344,7 +344,7 @@ export class PgStorage implements IStorage {
   }
 
   async createStageExecution(execution: InsertStageExecution): Promise<StageExecution> {
-    const [row] = await db.insert(stageExecutions).values(execution).returning();
+    const [row] = await db.insert(stageExecutions).values(withProjectInsert(stageExecutions, execution)).returning();
     return row;
   }
 
@@ -364,7 +364,7 @@ export class PgStorage implements IStorage {
   // ─── Lessons (agent-experience memory — Track B) ─────
 
   async createLesson(lesson: InsertLesson): Promise<Lesson> {
-    const [row] = await db.insert(lessons).values(lesson).returning();
+    const [row] = await db.insert(lessons).values(withProjectInsert(lessons, lesson)).returning();
     return row;
   }
 
@@ -438,7 +438,7 @@ export class PgStorage implements IStorage {
   }
 
   async createQuestion(question: InsertQuestion): Promise<Question> {
-    const [row] = await db.insert(questions).values(question).returning();
+    const [row] = await db.insert(questions).values(withProjectInsert(questions, question)).returning();
     return row;
   }
 
@@ -480,14 +480,14 @@ export class PgStorage implements IStorage {
   }
 
   async createChatMessage(message: InsertChatMessage): Promise<ChatMessage> {
-    const [row] = await db.insert(chatMessages).values(message).returning();
+    const [row] = await db.insert(chatMessages).values(withProjectInsert(chatMessages, message)).returning();
     return row;
   }
 
   // ─── LLM Requests ───────────────────────────────────
 
   async createLlmRequest(data: InsertLlmRequest): Promise<LlmRequest> {
-    const [row] = await db.insert(llmRequests).values(data).returning();
+    const [row] = await db.insert(llmRequests).values(withProjectInsert(llmRequests, data)).returning();
     return row;
   }
 
@@ -705,7 +705,7 @@ export class PgStorage implements IStorage {
   async upsertMemory(insert: InsertMemory): Promise<Memory> {
     const [row] = await db
       .insert(memories)
-      .values({
+      .values(withProjectInsert(memories, {
         scope: insert.scope,
         scopeId: insert.scopeId ?? null,
         type: insert.type,
@@ -717,7 +717,7 @@ export class PgStorage implements IStorage {
         expiresAt: insert.expiresAt ?? null,
         createdByRunId: insert.createdByRunId ?? null,
         published: insert.published ?? false,
-      })
+      }))
       .onConflictDoUpdate({
         target: [memories.scope, memories.scopeId, memories.key],
         set: {
@@ -799,7 +799,7 @@ export class PgStorage implements IStorage {
   async createMcpServer(config: Omit<McpServerConfig, 'id'>): Promise<McpServerConfig> {
     const [row] = await db
       .insert(mcpServers)
-      .values({
+      .values(withProjectInsert(mcpServers, {
         name: config.name,
         transport: config.transport,
         command: config.command ?? null,
@@ -810,7 +810,7 @@ export class PgStorage implements IStorage {
         autoConnect: config.autoConnect,
         toolCount: config.toolCount ?? 0,
         lastConnectedAt: config.lastConnectedAt ?? null,
-      })
+      }))
       .returning();
     return this.rowToMcpServer(row);
   }
@@ -843,7 +843,7 @@ export class PgStorage implements IStorage {
   // ─── Delegation Requests (Phase 6.4) ────────────────────────────────────
 
   async createDelegationRequest(data: InsertDelegationRequest): Promise<DelegationRequestRow> {
-    const [row] = await db.insert(delegationRequests).values(data).returning();
+    const [row] = await db.insert(delegationRequests).values(withProjectInsert(delegationRequests, data)).returning();
     return row;
   }
 
@@ -875,11 +875,11 @@ export class PgStorage implements IStorage {
   }
 
   async createSpecializationProfile(profile: InsertSpecializationProfile): Promise<SpecializationProfileRow> {
-    const [row] = await db.insert(specializationProfiles).values({
+    const [row] = await db.insert(specializationProfiles).values(withProjectInsert(specializationProfiles, {
       name: profile.name,
       isBuiltIn: profile.isBuiltIn ?? false,
       assignments: (profile.assignments ?? {}) as Record<string, string>,
-    }).returning();
+    })).returning();
     return row;
   }
 
@@ -906,7 +906,7 @@ export class PgStorage implements IStorage {
 
   async createSkill(data: InsertSkill): Promise<Skill> {
     type SkillInsert = Parameters<typeof db.insert<typeof skills>>[0] extends object ? Parameters<ReturnType<typeof db.insert<typeof skills>>["values"]>[0] : never;
-    const [row] = await db.insert(skills).values(data as unknown as SkillInsert).returning();
+    const [row] = await db.insert(skills).values(withProjectInsert(skills, data as unknown as SkillInsert)).returning();
     return row;
   }
 
@@ -971,13 +971,13 @@ export class PgStorage implements IStorage {
   async createSkillVersion(data: InsertSkillVersion): Promise<SkillVersionRecord> {
     const [row] = await db
       .insert(skillVersions)
-      .values({
+      .values(withProjectInsert(skillVersions, {
         skillId: data.skillId,
         version: data.version,
         config: data.config,
         changelog: data.changelog,
         createdBy: data.createdBy,
-      })
+      }))
       .returning();
     return row;
   }
@@ -1090,7 +1090,7 @@ export class PgStorage implements IStorage {
   }
 
   async createSkillTeam(data: InsertSkillTeam): Promise<SkillTeam> {
-    const [row] = await db.insert(skillTeams).values(data).returning();
+    const [row] = await db.insert(skillTeams).values(withProjectInsert(skillTeams, data)).returning();
     return row;
   }
 
@@ -1101,7 +1101,7 @@ export class PgStorage implements IStorage {
   // ─── Manager Iterations (Phase 6.6) ────────────────────────────────────────
 
   async createManagerIteration(data: InsertManagerIteration): Promise<ManagerIterationRow> {
-    const [row] = await db.insert(managerIterations).values(data).returning();
+    const [row] = await db.insert(managerIterations).values(withProjectInsert(managerIterations, data)).returning();
     return row;
   }
 
@@ -1144,7 +1144,7 @@ export class PgStorage implements IStorage {
   // ─── Debate-Research Orchestrator ───────────────────────────────────────────
 
   async createOrchestratorRun(data: InsertOrchestratorRun): Promise<OrchestratorRunRow> {
-    const [row] = await db.insert(orchestratorRuns).values(data).returning();
+    const [row] = await db.insert(orchestratorRuns).values(withProjectInsert(orchestratorRuns, data)).returning();
     return row;
   }
 
@@ -1164,7 +1164,7 @@ export class PgStorage implements IStorage {
   }
 
   async createOrchestratorStep(data: InsertOrchestratorStep): Promise<OrchestratorStepRow> {
-    const [row] = await db.insert(orchestratorSteps).values(data).returning();
+    const [row] = await db.insert(orchestratorSteps).values(withProjectInsert(orchestratorSteps, data)).returning();
     return row;
   }
 
@@ -1184,7 +1184,7 @@ export class PgStorage implements IStorage {
   }
 
   async createOrchestratorDebate(data: InsertOrchestratorDebate): Promise<OrchestratorDebateRow> {
-    const [row] = await db.insert(orchestratorDebates).values(data).returning();
+    const [row] = await db.insert(orchestratorDebates).values(withProjectInsert(orchestratorDebates, data)).returning();
     return row;
   }
 
@@ -1199,7 +1199,7 @@ export class PgStorage implements IStorage {
   async createOrchestratorResearch(
     data: InsertOrchestratorResearch,
   ): Promise<OrchestratorResearchRow> {
-    const [row] = await db.insert(orchestratorResearch).values(data).returning();
+    const [row] = await db.insert(orchestratorResearch).values(withProjectInsert(orchestratorResearch, data)).returning();
     return row;
   }
 
@@ -1217,7 +1217,7 @@ export class PgStorage implements IStorage {
     // H-3: the partial-unique index `consilium_loops_one_active_per_group`
     // rejects a 2nd non-terminal loop on the same group at the DB level — the
     // create route maps the unique-violation to a 409.
-    const [row] = await db.insert(consiliumLoops).values(data).returning();
+    const [row] = await db.insert(consiliumLoops).values(withProjectInsert(consiliumLoops, data)).returning();
     return row;
   }
 
@@ -1315,7 +1315,7 @@ export class PgStorage implements IStorage {
   }
 
   async appendLoopRound(data: InsertConsiliumLoopRound): Promise<ConsiliumLoopRoundRow> {
-    const [row] = await db.insert(consiliumLoopRounds).values(data).returning();
+    const [row] = await db.insert(consiliumLoopRounds).values(withProjectInsert(consiliumLoopRounds, data)).returning();
     return row;
   }
 
@@ -1330,7 +1330,7 @@ export class PgStorage implements IStorage {
   // ─── /consensus run mode ──────────────────────────────────────────────────
 
   async createConsensusRun(data: InsertConsensusRun): Promise<ConsensusRunRow> {
-    const [row] = await db.insert(consensusRuns).values(data).returning();
+    const [row] = await db.insert(consensusRuns).values(withProjectInsert(consensusRuns, data)).returning();
     return row;
   }
 
@@ -1349,7 +1349,7 @@ export class PgStorage implements IStorage {
   async createConsensusRound(data: InsertConsensusRound): Promise<ConsensusRoundRow> {
     // MF-5: the (run_id, round, phase) unique constraint guarantees a blind row
     // can never be duplicated; the insert throws on a duplicate.
-    const [row] = await db.insert(consensusRounds).values(data).returning();
+    const [row] = await db.insert(consensusRounds).values(withProjectInsert(consensusRounds, data)).returning();
     return row;
   }
 
@@ -1366,7 +1366,7 @@ export class PgStorage implements IStorage {
   ): Promise<ConsensusCriticalIssueRow> {
     const [row] = await db
       .insert(consensusCriticalIssues)
-      .values(data)
+      .values(withProjectInsert(consensusCriticalIssues, data))
       .onConflictDoUpdate({
         target: [consensusCriticalIssues.runId, consensusCriticalIssues.issueKey],
         set: {
@@ -1412,13 +1412,13 @@ export class PgStorage implements IStorage {
   ): Promise<TriggerRow> {
     const [row] = await db
       .insert(triggers)
-      .values({
+      .values(withProjectInsert(triggers, {
         pipelineId: data.pipelineId,
         type: data.type as TriggerRow["type"],
         config: data.config,
         secretEncrypted: data.secretEncrypted ?? null,
         enabled: data.enabled ?? true,
-      })
+      }))
       .returning();
     return row;
   }
@@ -1440,7 +1440,7 @@ export class PgStorage implements IStorage {
   // ─── Traces (Phase 6.5) ────────────────────────────────────────────────────
 
   async createTrace(data: InsertTrace): Promise<TraceRow> {
-    const [row] = await db.insert(traces).values(data).returning();
+    const [row] = await db.insert(traces).values(withProjectInsert(traces, data)).returning();
     return row;
   }
 
@@ -1479,7 +1479,7 @@ export class PgStorage implements IStorage {
   }
 
   async createTaskGroup(data: InsertTaskGroup): Promise<TaskGroupRow> {
-    const [row] = await db.insert(taskGroups).values(data as typeof taskGroups.$inferInsert).returning();
+    const [row] = await db.insert(taskGroups).values(withProjectInsert(taskGroups, data as typeof taskGroups.$inferInsert)).returning();
     return row;
   }
 
@@ -1506,7 +1506,7 @@ export class PgStorage implements IStorage {
   }
 
   async createTask(data: InsertTask): Promise<TaskRow> {
-    const [row] = await db.insert(tasks).values(data as typeof tasks.$inferInsert).returning();
+    const [row] = await db.insert(tasks).values(withProjectInsert(tasks, data as typeof tasks.$inferInsert)).returning();
     return row;
   }
 
@@ -1569,7 +1569,7 @@ export class PgStorage implements IStorage {
   // ─── Task Traces (End-to-End Request Observability) ──────────────────────────
 
   async createTaskTrace(data: InsertTaskTrace): Promise<TaskTraceRow> {
-    const [row] = await db.insert(taskTraces).values(data as typeof taskTraces.$inferInsert).returning();
+    const [row] = await db.insert(taskTraces).values(withProjectInsert(taskTraces, data as typeof taskTraces.$inferInsert)).returning();
     return row;
   }
 
@@ -1601,7 +1601,7 @@ export class PgStorage implements IStorage {
 
   async createTrackerConnection(data: InsertTrackerConnection): Promise<TrackerConnectionRow> {
     const [row] = await db.insert(trackerConnections)
-      .values(data as typeof trackerConnections.$inferInsert)
+      .values(withProjectInsert(trackerConnections, data as typeof trackerConnections.$inferInsert))
       .returning();
     return row;
   }
@@ -1628,7 +1628,7 @@ export class PgStorage implements IStorage {
 
   async createModelSkillBinding(data: InsertModelSkillBinding): Promise<ModelSkillBinding> {
     const [row] = await db.insert(modelSkillBindings)
-      .values(data as typeof modelSkillBindings.$inferInsert)
+      .values(withProjectInsert(modelSkillBindings, data as typeof modelSkillBindings.$inferInsert))
       .returning();
     return row;
   }
@@ -1725,7 +1725,7 @@ export class PgStorage implements IStorage {
   async createWorkspace(data: InsertWorkspace & { id?: string }): Promise<WorkspaceRow> {
     const [row] = await db
       .insert(workspaces)
-      .values(data as typeof workspaces.$inferInsert)
+      .values(withProjectInsert(workspaces, data as typeof workspaces.$inferInsert))
       .returning();
     return row;
   }
@@ -1790,7 +1790,7 @@ export class PgStorage implements IStorage {
   async createSharedSession(input: CreateSharedSessionInput): Promise<SharedSession> {
     const [row] = await db
       .insert(sharedSessions)
-      .values({
+      .values(withProjectInsert(sharedSessions, {
         runId: input.runId,
         shareToken: input.shareToken,
         ownerInstanceId: input.ownerInstanceId,
@@ -1801,7 +1801,7 @@ export class PgStorage implements IStorage {
         canChat: input.canChat ?? (input.role !== "viewer"),
         canVote: input.canVote ?? (input.role !== "viewer"),
         canViewMemories: input.canViewMemories ?? true,
-      } as typeof sharedSessions.$inferInsert)
+      } as typeof sharedSessions.$inferInsert))
       .returning();
     return this.rowToSharedSession(row);
   }
@@ -1890,7 +1890,7 @@ export class PgStorage implements IStorage {
 
     const [row] = await db
       .insert(workspaceConnections)
-      .values({
+      .values(withProjectInsert(workspaceConnections, {
         workspaceId: input.workspaceId,
         type: input.type,
         name: input.name,
@@ -1898,7 +1898,7 @@ export class PgStorage implements IStorage {
         secretsEncrypted,
         status: "active",
         createdBy: input.createdBy ?? null,
-      } as typeof workspaceConnections.$inferInsert)
+      } as typeof workspaceConnections.$inferInsert))
       .returning();
     return this.rowToWorkspaceConnection(row);
   }
@@ -1946,7 +1946,7 @@ export class PgStorage implements IStorage {
   async recordMcpToolCall(input: RecordMcpToolCallInput): Promise<McpToolCall> {
     const [row] = await db
       .insert(mcpToolCalls)
-      .values({
+      .values(withProjectInsert(mcpToolCalls, {
         pipelineRunId: input.pipelineRunId ?? null,
         stageId: input.stageId ?? null,
         connectionId: input.connectionId,
@@ -1956,7 +1956,7 @@ export class PgStorage implements IStorage {
         error: input.error ?? null,
         durationMs: input.durationMs,
         startedAt: input.startedAt ?? new Date(),
-      } as typeof mcpToolCalls.$inferInsert)
+      } as typeof mcpToolCalls.$inferInsert))
       .returning();
     return this.rowToMcpToolCall(row);
   }
@@ -2049,7 +2049,7 @@ export class PgStorage implements IStorage {
   async appendCostLedger(input: InsertCostLedger): Promise<CostLedgerRow> {
     const [row] = await db
       .insert(costLedger)
-      .values({
+      .values(withProjectInsert(costLedger, {
         workspaceId: input.workspaceId,
         provider: input.provider,
         model: input.model,
@@ -2058,7 +2058,7 @@ export class PgStorage implements IStorage {
         promptTokens: input.promptTokens ?? 0,
         completionTokens: input.completionTokens ?? 0,
         costUsd: input.costUsd ?? 0,
-      } as typeof costLedger.$inferInsert)
+      } as typeof costLedger.$inferInsert))
       .returning();
     return row;
   }
@@ -2130,14 +2130,14 @@ export class PgStorage implements IStorage {
   async createBudget(input: InsertBudget): Promise<BudgetRow> {
     const [row] = await db
       .insert(budgets)
-      .values({
+      .values(withProjectInsert(budgets, {
         workspaceId: input.workspaceId,
         provider: input.provider ?? null,
         period: input.period ?? "month",
         limitUsd: input.limitUsd,
         hard: input.hard ?? false,
         notifyAtPct: input.notifyAtPct ?? [],
-      } as typeof budgets.$inferInsert)
+      } as typeof budgets.$inferInsert))
       .returning();
     return row;
   }
@@ -2174,7 +2174,7 @@ export class PgStorage implements IStorage {
     for (const [key, value] of Object.entries(patch)) {
       await db
         .insert(workspaceSettings)
-        .values({ workspaceId, key, value: value as Record<string, unknown>, updatedAt: new Date() })
+        .values(withProjectInsert(workspaceSettings, { workspaceId, key, value: value as Record<string, unknown>, updatedAt: new Date() }))
         .onConflictDoUpdate({
           target: [workspaceSettings.workspaceId, workspaceSettings.key],
           set: { value: value as Record<string, unknown>, updatedAt: new Date() },
@@ -2224,7 +2224,7 @@ export class PgStorage implements IStorage {
   async saveConflict(conflict: SessionConflict): Promise<void> {
     await db
       .insert(sessionConflicts)
-      .values({
+      .values(withProjectInsert(sessionConflicts, {
         id: conflict.id,
         sessionId: conflict.sessionId,
         raisedBy: conflict.raisedBy,
@@ -2242,7 +2242,7 @@ export class PgStorage implements IStorage {
         outcome: conflict.outcome as unknown as typeof sessionConflicts.$inferInsert["outcome"] ?? null,
         createdAt: new Date(conflict.createdAt),
         updatedAt: new Date(conflict.updatedAt),
-      } as typeof sessionConflicts.$inferInsert)
+      } as typeof sessionConflicts.$inferInsert))
       .onConflictDoUpdate({
         target: sessionConflicts.id,
         set: {
@@ -2275,7 +2275,7 @@ export class PgStorage implements IStorage {
   }
 
   async appendDecisionLog(entry: DecisionLogEntry): Promise<void> {
-    await db.insert(decisionLog).values({
+    await db.insert(decisionLog).values(withProjectInsert(decisionLog, {
       id: entry.id,
       sessionId: entry.sessionId,
       conflictId: entry.conflictId,
@@ -2286,7 +2286,7 @@ export class PgStorage implements IStorage {
       proposalCount: entry.proposalCount,
       durationMs: entry.durationMs,
       recordedAt: new Date(entry.recordedAt),
-    } as typeof decisionLog.$inferInsert);
+    } as typeof decisionLog.$inferInsert));
   }
 
   async getDecisionLog(sessionId?: string): Promise<DecisionLogEntry[]> {
@@ -2308,7 +2308,7 @@ export class PgStorage implements IStorage {
     // Idempotent: ON CONFLICT (workspace_id, content_hash) DO NOTHING.
     const [inserted] = await db
       .insert(practiceCards)
-      .values(data as typeof practiceCards.$inferInsert)
+      .values(withProjectInsert(practiceCards, data as typeof practiceCards.$inferInsert))
       .onConflictDoNothing({ target: [practiceCards.workspaceId, practiceCards.contentHash] })
       .returning();
     if (inserted) return inserted;
@@ -2385,7 +2385,7 @@ export class PgStorage implements IStorage {
   ): Promise<PracticeCardRefreshRunRow> {
     const [row] = await db
       .insert(practiceCardRefreshRuns)
-      .values({ workspaceId, topic, trigger, status: "running", report: {} })
+      .values(withProjectInsert(practiceCardRefreshRuns, { workspaceId, topic, trigger, status: "running", report: {} }))
       .returning();
     return row;
   }
@@ -2425,7 +2425,7 @@ export class PgStorage implements IStorage {
   async upsertNewsProfile(data: InsertNewsProfile): Promise<NewsProfileRow> {
     const [row] = await db
       .insert(newsProfile)
-      .values(data as typeof newsProfile.$inferInsert)
+      .values(withProjectInsert(newsProfile, data as typeof newsProfile.$inferInsert))
       .onConflictDoUpdate({
         target: [newsProfile.workspaceId, newsProfile.userId],
         set: {
@@ -2444,7 +2444,7 @@ export class PgStorage implements IStorage {
     // ON CONFLICT DO NOTHING — an empty return means another worker holds it.
     const [inserted] = await db
       .insert(morningBrief)
-      .values(data as typeof morningBrief.$inferInsert)
+      .values(withProjectInsert(morningBrief, data as typeof morningBrief.$inferInsert))
       .onConflictDoNothing({
         target: [morningBrief.workspaceId, morningBrief.userId, morningBrief.briefDate],
       })
@@ -2509,7 +2509,7 @@ export class PgStorage implements IStorage {
     // onConflict(brief_id, content_hash) DO NOTHING — idempotent dedup.
     await db
       .insert(newsItem)
-      .values(items as Array<typeof newsItem.$inferInsert>)
+      .values(withProjectInsert(newsItem, items as Array<typeof newsItem.$inferInsert>))
       .onConflictDoNothing({ target: [newsItem.briefId, newsItem.contentHash] });
     // Return the persisted rows for these (briefId, contentHash) pairs.
     const briefIds = Array.from(new Set(items.map((i) => i.briefId)));
@@ -2552,7 +2552,7 @@ export class PgStorage implements IStorage {
     // UNIQUE(group_id, iteration_number) is the race backstop: insert-or-detect.
     const [row] = await db
       .insert(taskGroupIterations)
-      .values(data as typeof taskGroupIterations.$inferInsert)
+      .values(withProjectInsert(taskGroupIterations, data as typeof taskGroupIterations.$inferInsert))
       .onConflictDoNothing({
         target: [taskGroupIterations.groupId, taskGroupIterations.iterationNumber],
       })
@@ -2614,7 +2614,7 @@ export class PgStorage implements IStorage {
     return db.transaction(async (tx) => {
       const [iteration] = await tx
         .insert(taskGroupIterations)
-        .values({
+        .values(withProjectInsert(taskGroupIterations, {
           groupId,
           iterationNumber: start.iterationNumber,
           status: "running",
@@ -2622,7 +2622,7 @@ export class PgStorage implements IStorage {
           triggeredBy: start.triggeredBy ?? null,
           traceId: start.traceId ?? null,
           startedAt: new Date(),
-        })
+        }))
         .onConflictDoNothing({
           target: [taskGroupIterations.groupId, taskGroupIterations.iterationNumber],
         })
@@ -2631,16 +2631,14 @@ export class PgStorage implements IStorage {
       if (seeds.length === 0) return { iteration, executions: [] };
       const executions = await tx
         .insert(taskExecutions)
-        .values(
-          seeds.map((seed) => ({
+        .values(withProjectInsert(taskExecutions, seeds.map((seed) => ({
             iterationId: iteration.id,
             taskId: seed.taskId,
             taskName: seed.taskName,
             groupId,
             status: seed.status,
             modelSlug: seed.modelSlug ?? null,
-          })),
-        )
+          })),))
         .returning();
       return { iteration, executions };
     });
@@ -2649,7 +2647,7 @@ export class PgStorage implements IStorage {
   async createExecution(data: InsertTaskExecution): Promise<TaskExecutionRow> {
     const [row] = await db
       .insert(taskExecutions)
-      .values(data as typeof taskExecutions.$inferInsert)
+      .values(withProjectInsert(taskExecutions, data as typeof taskExecutions.$inferInsert))
       .returning();
     return row;
   }
@@ -2752,7 +2750,7 @@ export class PgStorage implements IStorage {
   async createTaskTemplate(data: InsertTaskTemplate): Promise<TaskTemplateRow> {
     const [row] = await db
       .insert(taskTemplates)
-      .values(data as typeof taskTemplates.$inferInsert)
+      .values(withProjectInsert(taskTemplates, data as typeof taskTemplates.$inferInsert))
       .returning();
     return row;
   }

@@ -34,6 +34,23 @@ export function withProject(table: any, condition?: SQL | undefined): SQL {
 }
 
 /**
+ * Helper to inject the current project ID into data for insert operations.
+ * Usage: db.insert(table).values(withProjectInsert(table, data))
+ */
+export function withProjectInsert<T>(table: any, data: T): T {
+  try {
+    const projectId = getProjectId();
+    
+    if (Array.isArray(data)) {
+      return data.map(item => ({ ...item, projectId })) as unknown as T;
+    }
+    return { ...data, projectId } as unknown as T;
+  } catch (e) {
+    return data;
+  }
+}
+
+/**
  * Run pending Drizzle migrations on startup.
  * Safe to call multiple times — already-applied migrations are skipped.
  * Resolves silently when DATABASE_URL is not set (MemStorage mode).
