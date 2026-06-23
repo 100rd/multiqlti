@@ -46,6 +46,8 @@ import { WorkspaceTracesPage, WorkspaceTraceDetailPage } from "@/pages/Workspace
 import Costs from "@/pages/Costs";
 import ConfigSync from "@/pages/ConfigSync";
 import Activity from "@/pages/Activity";
+import ConsiliumLoopList from "@/pages/ConsiliumLoopList";
+import ConsiliumLoopDetail from "@/pages/ConsiliumLoopDetail";
 
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
@@ -92,6 +94,12 @@ function ProtectedRouter() {
         )} />
         <Route path="/triggers" component={() => (
           <ErrorBoundary><TriggersPage /></ErrorBoundary>
+        )} />
+        <Route path="/consilium-loops/:id" component={() => (
+          <ErrorBoundary><ConsiliumLoopDetail /></ErrorBoundary>
+        )} />
+        <Route path="/consilium-loops" component={() => (
+          <ErrorBoundary><ConsiliumLoopList /></ErrorBoundary>
         )} />
         <Route path="/workspaces" component={() => (
           <ErrorBoundary><WorkspaceList /></ErrorBoundary>

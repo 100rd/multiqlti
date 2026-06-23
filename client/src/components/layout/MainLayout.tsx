@@ -29,6 +29,7 @@ import {
   Newspaper,
   Bot,
   Activity,
+  Repeat,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -78,6 +79,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: ListChecks, label: "Task Groups", href: "/task-groups" },
     { icon: BookMarked, label: "Task Library", href: "/task-library" },
     { icon: Zap, label: "Triggers", href: "/triggers" },
+    { icon: Repeat, label: "Consilium Loops", href: "/consilium-loops" },
     { icon: Activity, label: "Live Activity", href: "/activity" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
     // Show "Connections", "Inventory", "Knowledge Base", and "Traces" sub-items
