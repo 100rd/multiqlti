@@ -3201,3 +3201,39 @@ export interface ActivityHistoryPage {
   /** Whether the caller is admin (FE shows the owner column). */
   isAdmin: boolean;
 }
+
+// ─── Dark Factory Types (Phase 6+) ──────────────────────────────────────────
+
+export interface SpecRequirement {
+  id: string;
+  description: string;
+  acceptanceCriteria: string; // "When ... Then ..."
+}
+
+export interface OpenSpec {
+  id: string;
+  title: string;
+  description: string;
+  requirements: SpecRequirement[];
+  version: string;
+}
+
+export type EvaluatorVerdict = "pass" | "fail" | "error";
+
+export interface VerificationProof {
+  specId: string;
+  requirementId: string;
+  verdict: EvaluatorVerdict;
+  proofType: "log" | "screenshot" | "test_result" | "sandbox_trace";
+  proofContent: string; // The raw log, or trace output
+  evaluatorModel: string;
+  timestamp: string;
+  reasoning?: string;
+}
+
+export interface EvaluatorResult {
+  specId: string;
+  overallVerdict: EvaluatorVerdict;
+  proofs: VerificationProof[];
+  summary: string;
+}
