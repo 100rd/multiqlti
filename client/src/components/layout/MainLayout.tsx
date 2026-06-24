@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
@@ -30,6 +30,9 @@ import {
   Bot,
   Activity,
   Repeat,
+  ChevronDown,
+  ChevronRight,
+  Archive,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -50,6 +53,7 @@ const ROLE_BADGE: Record<UserRole, { label: string; className: string }> = {
 
 export default function MainLayout({ children }: MainLayoutProps) {
   const [location, navigate] = useLocation();
+  const [isV1Open, setIsV1Open] = useState(false);
   const { data: pendingQuestions } = usePendingQuestions();
   const pendingList = Array.isArray(pendingQuestions)
     ? (pendingQuestions as Array<{ runId?: string; pipelineName?: string | null }>)
@@ -70,18 +74,10 @@ export default function MainLayout({ children }: MainLayoutProps) {
 
   const navItems = [
     { icon: LayoutDashboard, label: "Dashboard", href: "/" },
-    { icon: MessageSquare, label: "Chat & Models", href: "/chat" },
-    {
-      icon: GitMerge,
-      label: "Pipelines",
-      href: "/pipelines",
-      badge: pendingCount > 0 ? pendingCount : undefined,
-    },
     { icon: ListChecks, label: "Task Groups", href: "/task-groups" },
     { icon: BookMarked, label: "Task Library", href: "/task-library" },
     { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: Repeat, label: "Consilium Loops", href: "/consilium-loops" },
-    { icon: Activity, label: "Live Activity", href: "/activity" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
     // Show "Connections", "Inventory", "Knowledge Base", and "Traces" sub-items
     // when inside a workspace
@@ -131,13 +127,9 @@ export default function MainLayout({ children }: MainLayoutProps) {
           },
         ]
       : []),
-    { icon: Sparkles, label: "Skills", href: "/skills" },
-    { icon: Store, label: "Marketplace", href: "/skills/marketplace" },
-    { icon: ShoppingBag, label: "Skill Market", href: "/skills/market" },
+        ]
+      : []),
     { icon: BarChart3, label: "Statistics", href: "/stats" },
-    { icon: BookOpen, label: "Library", href: "/library" },
-    { icon: Brain, label: "Memory", href: "/memories" },
-    { icon: ShieldCheck, label: "Privacy", href: "/privacy" },
     { icon: Wrench, label: "Maintenance", href: "/maintenance" },
     { icon: Settings, label: "Settings", href: "/settings" },
     { icon: Radio, label: "Config Sync", href: "/settings/peers" },
@@ -202,6 +194,65 @@ export default function MainLayout({ children }: MainLayoutProps) {
               );
             })}
           </nav>
+
+          <div className="px-4 py-2 mt-2 border-t border-border/50">
+            <button
+              onClick={() => setIsV1Open(!isV1Open)}
+              className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <Archive className="h-4 w-4" />
+                <span>Legacy V1</span>
+              </div>
+              {isV1Open ? (
+                <ChevronDown className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
+            </button>
+            
+            {isV1Open && (
+              <nav className="mt-1 space-y-1 pb-2">
+                {[
+                  { icon: MessageSquare, label: "Chat & Models", href: "/chat" },
+                  {
+                    icon: GitMerge,
+                    label: "Pipelines",
+                    href: "/pipelines",
+                    badge: pendingCount > 0 ? pendingCount : undefined,
+                  },
+                  { icon: Activity, label: "Live Activity", href: "/activity" },
+                  { icon: Sparkles, label: "Skills", href: "/skills" },
+                  { icon: Store, label: "Marketplace", href: "/skills/marketplace" },
+                  { icon: ShoppingBag, label: "Skill Market", href: "/skills/market" },
+                  { icon: BookOpen, label: "Library", href: "/library" },
+                  { icon: Brain, label: "Memory", href: "/memories" },
+                  { icon: ShieldCheck, label: "Privacy", href: "/privacy" },
+                ].map((item) => {
+                  const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
+                  const Icon = item.icon;
+                  return (
+                    <Link key={item.href} href={item.href}>
+                      <div className={cn(
+                        "flex items-center gap-3 px-3 py-1.5 rounded-md transition-colors cursor-pointer text-xs font-medium",
+                        isActive
+                          ? "bg-primary/10 text-primary"
+                          : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground",
+                      )}>
+                        <Icon className="h-3.5 w-3.5" />
+                        <span className="flex-1">{item.label}</span>
+                        {"badge" in item && item.badge && (
+                          <span className="ml-auto bg-amber-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+                            {item.badge}
+                          </span>
+                        )}
+                      </div>
+                    </Link>
+                  );
+                })}
+              </nav>
+            )}
+          </div>
 
           {/* Pending Questions Quick Access */}
           {pendingCount > 0 && (

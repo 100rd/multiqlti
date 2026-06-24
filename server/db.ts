@@ -9,6 +9,17 @@ import path from "path";
 // but importing this module is safe even when DATABASE_URL is not set (e.g. in tests).
 export const pool = new Pool({ connectionString: configLoader.get().database.url });
 
+// A dropped Postgres connection (container restart, machine sleep, or a server
+// "terminating connection due to administrator command") makes node-postgres
+// emit an 'error' event on the affected idle client. With NO listener Node
+// rethrows it as an unhandled 'error' and crashes the ENTIRE process — which is
+// exactly how this server died on infra blips. Log and swallow instead: the
+// pool drops the bad client and transparently establishes a fresh connection on
+// the next query, so a transient DB hiccup no longer takes the server down.
+pool.on("error", (err: Error) => {
+  console.error("[db] idle pool client error (recovering, not fatal):", err.message);
+});
+
 export const db = drizzle(pool, { schema });
 
 import { getProjectId } from "./context";
