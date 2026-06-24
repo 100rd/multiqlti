@@ -127,8 +127,6 @@ export default function MainLayout({ children }: MainLayoutProps) {
           },
         ]
       : []),
-        ]
-      : []),
     { icon: BarChart3, label: "Statistics", href: "/stats" },
     { icon: Wrench, label: "Maintenance", href: "/maintenance" },
     { icon: Settings, label: "Settings", href: "/settings" },
