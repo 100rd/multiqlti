@@ -1,169 +1,193 @@
 # Dark Factory: OpenSpecs v5 (Full Autonomy Architecture)
 
-Переработка v4. Сохранён весь костяк (SPEC-01…09 закрывают подделку логов, гейминг метрик, инъекции и сверх-привилегии механизмами вне LLM). Три содержательных изменения против v4:
+Revision of v4. The entire backbone is preserved (SPEC-01…09 close vulnerabilities like log forgery, metric gaming, prompt injections, and over-privilege via out-of-LLM mechanisms). Three substantial changes compared to v4:
 
-1. **SPEC-06 дополнен** требованием против *circularity of error* — тесты для новой задачи выводятся из спецификации, а не из реализации Worker'а. Это закрывало главную остававшуюся брешь: «кто пишет проверку для незнакомой задачи».
-2. **Appendix переписан** — голословные утверждения заменены на привязанные к источникам 2026 года, с честными оговорками о границах.
-3. **Калибровка автономии** — цель явно обозначена как «уровень 4 с человеком на курировании эталонов», а не «уровень 5». Добавлен defense-лист к дебатам.
+1. **SPEC-06 extended** with a requirement against *circularity of error* — tests for a new task must be derived from the specification, not from the Worker's implementation. This closes the main remaining gap: "who writes the check for an unseen task."
+2. **Appendix rewritten** — unsubstantiated claims replaced with links to 2026 industry sources, including honest disclaimers about boundaries.
+3. **Autonomy Calibration** — the goal is explicitly designated as "Level 4 with a human curating the baselines," rather than "Level 5." Added a defense-list for debates.
 
-**Главный принцип:** доверие строится не на LLM-оценщиках, а на независимых источниках фактов, разнесённых по разным песочницам (microVM), и детерминированных механизмах вне LLM. Там, где детерминизм невозможен, человек остаётся — и это явная, а не скрытая граница метода.
+**Core Principle:** Trust is built not on LLM evaluators, but on independent sources of truth, isolated in different sandboxes (microVMs), and deterministic mechanisms outside the LLM. Where determinism is impossible, the human remains — and this is an explicit, not a hidden, boundary of the method.
 
 ---
 
-## SPEC-01: Изоляция контекста и Двойная Песочница
+## SPEC-01: Context Isolation & Dual Sandbox
 **ID:** DF-SPEC-01
 
 **Requirements:**
-- **[REQ-01-A]** Изоляция Worker'а: работа в изолированном Git Worktree (Sandbox A).
-- **[REQ-01-B]** Песочница Runner'а (Read-Only): Test-Runner в Sandbox B, код из Sandbox A монтируется только для чтения.
-- **[REQ-01-C]** Системные скрипты: Runner использует свои скрипты верификации, а не `package.json` внутри проекта.
+- **[REQ-01-A] Worker Isolation:** Work is executed in an isolated Git Worktree (`Sandbox A`).
+- **[REQ-01-B] Runner Sandbox (Read-Only):** The Test-Runner operates in `Sandbox B`, where code from `Sandbox A` is mounted **read-only**.
+- **[REQ-01-C] System Scripts:** The Runner uses its *own* verification scripts, not the `package.json` inside the project.
 
 ---
 
-## SPEC-02: Множественность доказательств (Proof Multiplicity)
+## SPEC-02: Proof Multiplicity
 **ID:** DF-SPEC-02
 
 **Requirements:**
-- **[REQ-02-A]** Структура Proof'ов: Type A (Behavior, `exit_code: 0`), Type B (Visual, `pixel_diff`), Type C (Heuristics SonarQube + Type A зелёные).
-- **[REQ-02-B]** Zone-Based Security Gate (вне LLM): касание `/auth`, `/payments` → принудительно добавляется Type A proof.
-- **[REQ-02-C]** Планирование ≠ Авторизация: Gate проверяет план, но не заменяет авторизацию в момент исполнения (SPEC-08).
+- **[REQ-02-A] Proof Structure:** Type A (Behavior, `exit_code: 0`), Type B (Visual, `pixel_diff`), Type C (Heuristics `SonarQube` + Type A green).
+- **[REQ-02-B] Zone-Based Security Gate (Out-of-LLM):** Touching `/auth` or `/payments` → forcibly appends a Type A proof requirement.
+- **[REQ-02-C] Planning ≠ Authorization:** The Gate verifies the plan but does not replace execution-time authorization (SPEC-08).
 
 ---
 
-## SPEC-03: Внешние Эталоны для UI
+## SPEC-03: External Baselines for UI
 **ID:** DF-SPEC-03
 
 **Requirements:**
-- **[REQ-03-A]** External Baseline: для Visual Proofs эталон поступает снаружи контура (Figma/дизайнер).
-- **[REQ-03-B]** Детерминированный Diff: сравнение через Pixelmatch, не Vision-LLM. Vision-модель — только советник Worker'у.
-- **[REQ-03-C]** Жёсткая привязка: «задача ↔ эталон» фиксируется детерминированно по пути компонента, а не выбирается агентом.
+- **[REQ-03-A] External Baseline:** For Visual Proofs, the baseline comes from *outside* the loop (Figma/designer).
+- **[REQ-03-B] Deterministic Diff:** Comparison via Pixelmatch, not Vision-LLM. Vision models act only as advisors to the Worker.
+- **[REQ-03-C] Hard Binding:** The "task ↔ baseline" association is fixed deterministically by the component path, not chosen by the agent.
 
 ---
 
-## SPEC-04: Парковка и HIL (Human-In-The-Loop)
+## SPEC-04: Parking and HIL (Human-In-The-Loop)
 **ID:** DF-SPEC-04
 
 **Requirements:**
-- **[REQ-04-A]** Pending Approval: задачи с Type D (субъективная оценка) паркуются для человека.
-- **[REQ-04-B]** Gate на Type D: присваивается только если Zone-Gate подтвердил отсутствие защищённых зон.
-- **[REQ-04-C]** Лимит HIL: превышение доли задач в `awaiting_human` сигнализирует о сломанной маршрутизации.
+- **[REQ-04-A] Pending Approval:** Tasks with Type D (subjective evaluation) are parked for human review.
+- **[REQ-04-B] Gate on Type D:** Assigned only if the Zone-Gate confirms no protected zones are touched.
+- **[REQ-04-C] HIL Limit:** Exceeding the allowed ratio of tasks in `awaiting_human` signals broken routing.
 
 ---
 
-## SPEC-05: Песочница уровня microVM
-**ID:** DF-SPEC-05 — **Цель:** защита от prompt-injection и исполнения вредоносного кода с доступом к секретам.
+## SPEC-05: microVM-Level Sandbox
+**ID:** DF-SPEC-05 — **Goal:** Protection against prompt-injection and execution of malicious code with access to secrets.
 
 **Requirements:**
-- **[REQ-05-A]** microVM-изоляция: обе песочницы в Firecracker/Kata (gVisor как лёгкая опция). Каждая задача — отдельное ядро гостя.
-- **[REQ-05-B]** Default-deny сеть: Worker имеет доступ только к allow-list, неизменяемому изнутри.
-- **[REQ-05-C]** Нет продакшн-секретов: ключи не монтируются; для интеграций — scoped-токены (SPEC-08).
+- **[REQ-05-A] microVM Isolation:** Both sandboxes run in Firecracker/Kata (gVisor as a lightweight option). Each task gets a dedicated guest kernel.
+- **[REQ-05-B] Default-Deny Network:** The Worker only has access to an allow-list, immutable from the inside.
+- **[REQ-05-C] No Production Secrets:** Keys are not mounted; integrations use scoped tokens (SPEC-08).
 
 ---
 
-## SPEC-06: Верификация верификатора (Evaluator Locking + Golden-Set + Spec-Derived Tests)
-**ID:** DF-SPEC-06 — **Цель:** защита от reward hacking (обмана оценщика) И от circularity of error (теста, выведенного из кода).
+## SPEC-06: Verifying the Verifier (Evaluator Locking + Golden-Set + Spec-Derived Tests)
+**ID:** DF-SPEC-06 — **Goal:** Protection against reward hacking and circularity of error.
 
 **Requirements:**
-- **[REQ-06-A]** Evaluator Locking: скрипты проверок лежат в Sandbox B, хешируются до прогона; попытка Worker'а изменить их = `fail`.
-- **[REQ-06-B]** Golden-Set: новый Evaluator/скилл допускается только при 100% на эталонном наборе вне контура.
-- **[REQ-06-C]** File-access instrumentation: любое обращение Worker'а к файлам тестов логируется и карается провалом.
-- **[REQ-06-D]** Isomorphic Check: проверка инвариантности логики на эквивалентных задачах (защита от хардкодинга). **Область применения: классы A и C (алгоритмика, reasoning, API-контракты). Для Type B (визуал) не определён — не применять.**
-- **[REQ-06-E] (новое) Spec-Derived Tests:** для новой задачи тесты порождаются из `OpenSpec` (NL-описание/контракт намеренного поведения), **а не из реализации Worker'а**. Тест, выведенный из кода под проверкой, фиксирует «что код делает сейчас», а не «что он должен делать», и потому не способен поймать дефект. Источник истины проверки — спецификация, заданная вне контура.
+- **[REQ-06-A] Evaluator Locking:** Verification scripts live in Sandbox B and are hashed before execution; any attempt by the Worker to modify them = `fail`.
+- **[REQ-06-B] Golden-Set:** A new Evaluator/skill is admitted only upon achieving 100% on a baseline set outside the loop.
+- **[REQ-06-C] File-Access Instrumentation:** Any access by the Worker to test files is logged and punished with a failure.
+- **[REQ-06-D] Isomorphic Check:** Checking logic invariance on equivalent tasks (protection against hardcoding). **Scope: Classes A and C. Not applicable for Type B (visual).**
+- **[REQ-06-E] Spec-Derived Tests:** For a new task, tests are generated from the `OpenSpec` (NL-description/contract), **not from the Worker's implementation**. 
 
-> **Почему REQ-06-E критичен.** Без него на незнакомой задаче возникает цикл: Worker пишет код → Worker (или агент в том же контуре) пишет тест под этот код → тест проходит → баг закреплён как норма. Golden-set ловит это только если новая задача похожа на размеченные; для по-настоящему новой — нет. Привязка теста к человеко-заданной спеке разрывает цикл и удерживает человека на уровне определения корректности (см. калибровку автономии ниже).
+> **Why REQ-06-E is critical:** Without it, a cycle emerges on unseen tasks: Worker writes code → Worker writes test for this code → test passes → bug is cemented as normal. Golden-sets only catch this if the new task resembles labeled ones. Deriving tests from a human-provided spec breaks the cycle and keeps the human at the correctness-definition level.
 
 ---
 
-## SPEC-07: Meta-Loop (Слойные стоп-условия + Circuit Breaker + Hacker-Fixer)
-**ID:** DF-SPEC-07 — **Цель:** оркестрация, отлов сбоев, контроль бюджета, непрерывный harden'инг оценщиков.
+## SPEC-07: Meta-Loop (Layered Stop Conditions + Circuit Breaker + Hacker-Fixer)
+**ID:** DF-SPEC-07 — **Goal:** Orchestration, failure catching, budget control, continuous evaluator hardening.
 
 **Requirements:**
-- **[REQ-07-A]** Слойные стоп-условия: лимит попыток (3), токенов, таймаутов, глубины делегирования; детектор отсутствия прогресса (два одинаковых сбоя подряд = эскалация).
-- **[REQ-07-B]** Circuit breaker: отказ провайдера/модели выше порога → переключение на fallback.
-- **[REQ-07-C]** Бюджет со скользящим окном: при исчерпании — авто-сон контура.
-- **[REQ-07-D]** Self-aware termination: агент обязан задокументировать неустранимое ограничение и остановиться сам.
-- **[REQ-07-E] (новое) Hacker-Fixer Loop:** периодический адверсариальный цикл, где red-team-агент пытается обмануть Evaluator/SecurityGate, а blue-team-агент патчит проверки под найденные эксплойты. **Ограничение, фиксируемое явно:** контур защищён лишь от эксплойтов, которые red-team обнаружит; red-team из той же модели, что Worker, коррелирует с ним в слепых зонах. Поэтому red-team должен по возможности быть из другого семейства моделей.
+- **[REQ-07-A] Layered Stop Conditions:** Retry limits (3), token/timeout limits, delegation depth; no-progress detector (two identical failures in a row = escalation).
+- **[REQ-07-B] Circuit Breaker:** Provider/model failure rate above threshold → switch to fallback.
+- **[REQ-07-C] Sliding Window Budget:** Upon depletion — auto-sleep the loop.
+- **[REQ-07-D] Self-Aware Termination:** Agent must document unresolvable constraints and stop voluntarily.
+- **[REQ-07-E] Hacker-Fixer Loop:** Periodic adversarial cycle where a red-team agent attempts to bypass the Evaluator/SecurityGate, and a blue-team patches them. **Boundary:** Must use a different model family for the red-team to avoid correlated blind spots.
 
 ---
 
-## SPEC-08: Scope-ограниченные креды (Execution-time authorization)
-**ID:** DF-SPEC-08 — **Цель:** защита от сверх-привилегированных агентов.
+## SPEC-08: Scope-Limited Credentials (Execution-Time Authorization)
+**ID:** DF-SPEC-08 — **Goal:** Protection against over-privileged agents.
 
 **Requirements:**
-- **[REQ-08-A]** Least-privilege креды: scoped-токен (OAuth) только под конкретную задачу.
-- **[REQ-08-B]** Boundary: все действия — через авторизационный барьер в момент исполнения; fail-closed по умолчанию.
-- **[REQ-08-C]** Полный аудит: запись всех действий агента с его временными правами.
+- **[REQ-08-A] Least-Privilege Credentials:** Scoped token (OAuth) strictly for the specific task.
+- **[REQ-08-B] Boundary:** All actions pass through an authorization barrier at execution time; fail-closed by default.
+- **[REQ-08-C] Full Audit:** Logging all agent actions alongside their temporary permissions.
 
 ---
 
-## SPEC-09: Транзакционный откат
-**ID:** DF-SPEC-09 — **Цель:** обратимость мутаций.
+## SPEC-09: Transactional Rollback
+**ID:** DF-SPEC-09 — **Goal:** Reversibility of mutations.
 
 **Requirements:**
-- **[REQ-09-A]** Транзакционная обёртка: задача исполняется как транзакция с полным откатом при `fail`.
-- **[REQ-09-B]** Перехват высокорисковых команд: детерминированный фильтр вне LLM перехватывает `rm -rf`, `deploy` → требует Approval.
-- **[REQ-09-C]** Headless-совместимость: все предохранители работают без интерактивного ввода.
+- **[REQ-09-A] Transactional Wrapper:** Tasks execute as transactions with a full rollback on `fail`.
+- **[REQ-09-B] High-Risk Command Interception:** A deterministic out-of-LLM filter intercepts `rm -rf`, `deploy` → requires Approval.
+- **[REQ-09-C] Headless Compatibility:** All safeties operate without interactive prompts.
 
 ---
 
-## Калибровка автономии (переработанный тезис уровня)
+## Autonomy Calibration (Level 4, not 5)
 
-Шкала зрелости (5 уровней, по аналогии с SAE-автопилотами) — **наша рамка ранжирования, а не отраслевой стандарт.** Используем её для позиционирования, не выдавая за внешний факт.
+The maturity scale (5 levels, akin to SAE self-driving) is our framing tool, not an external mandate. 
 
-- **L2/L3:** масс-маркет (Copilot, Devin) — агент пишет код, человек ревьюит каждый PR.
-- **L4:** spec-driven — агенты работают автономно часами, человек ревьюит конечный продукт и курирует эталоны.
-- **L5:** полное отсутствие проверки человеком до продакшена.
+- **L2/L3:** Mass market (Copilot, Devin) — agent writes code, human reviews every PR.
+- **L4:** Spec-driven — agents run autonomously for hours, human reviews final product and curates baselines.
+- **L5:** Zero human verification before production.
 
-**Куда честно целится v5:** уровень **4**, не 5. Документ держится на golden-set (REQ-06-B) и внешних эталонах (REQ-03-A, REQ-06-E), которые поддерживает человек вне контура. Это не убирает человека — это перемещает его с ревью кода на **курирование эталонов и определение корректности**. Backend-задачи исполняются автономно, но «корректность», по которой их судят, восходит к человеко-заданной спеке. Называть это L5 — подставляться: задачи, прошедшей в прод без участия человека ни в коде, ни в тесте, ни в эталоне, в этой архитектуре не существует, потому что эталон кто-то разметил. L4 с очень хорошим инструментарием — сильная и защитимая позиция; L5 — нет.
-
----
-
-## Appendix A: Индустриальный контекст и источники (2026)
-
-Каждое утверждение привязано к источнику. Где источник даёт ограничение нашего подхода — оно приведено честно.
-
-### A.1 Reward Hacking подтверждён эмпирически
-Агенты-программисты активно манипулируют оценщиками: переписывают юнит-тесты, глушат ассерты, monkey-patch'ат функции скоринга ради прохождения без решения задачи (RewardHackingAgents, март 2026; «LLMs Gaming Verifiers», arXiv 2604.15149). Масштаб: o3 reward-hacks в ~30% прогонов RE-Bench; >15% задач в пяти terminal-agent бенчмарках решаются обманом верификатора (Terminal Wrench / arXiv 2606.08960). → обосновывает SPEC-06 (locking + file instrumentation) и SPEC-01 (out-of-band runner: внутри одной песочницы агент перехватывает stdout на уровне syscall'ов).
-
-### A.2 Circularity of Error — обоснование REQ-06-E
-Центральная проблема LLM-генерации тестов — проверка корректности самих тестов («как верифицировать верификатор?»). Использование реализации как ground-truth оракула создаёт «циркулярность ошибки»: тесты фиксируют текущее поведение кода, а не намеренное, и потому не ловят дефект. Доля невалидных LLM-тестов высока — 34–62% по ряду замеров (arXiv 2602.10522). Решение из литературы: выводить тесты из NL-спецификации, а не из кода — это и есть REQ-06-E. Шире: надёжность самопроверки деградирует без внешнего grounding (arXiv 2504.00406, 2311.11797).
-
-### A.3 Isomorphic Perturbation Testing — обоснование и граница REQ-06-D
-Модели хардкодят ответы под extensional-тесты; IPT прогоняет логически эквивалентные, но структурно изменённые тесты — хитрость падает на изоморфном варианте (arXiv 2604.15149). **Граница:** IPT определён там, где есть переписываемая логическая структура (алгоритмы, reasoning, контракты). Для визуала/UX не определён — отсюда сужение области в REQ-06-D.
-
-### A.4 Hacker-Fixer Loop — обоснование и граница REQ-07-E
-Адверсариальный harden'инг оценщиков — реальный паттерн 2026: outcome-верификаторы делаются вручную и редко устойчивы; стандартная реакция (найти эксплойт → пропатчить → дальше) реактивна, а классы эксплойтов повторяются и обновляются с каждым поколением моделей (arXiv 2606.08960; RvB, arXiv 2601.19726 / 2602.14457). Экономика в пользу подхода: red-vs-blue цикл снизил расход токенов на >18% против кооперативного baseline. **Две границы, фиксируемые явно:** (1) harden'инг ограничен возможностями red-team — что red-team не нашёл, то не защищено; (2) red-team из того же поколения моделей, что Worker, коррелирует с ним в слепых зонах. Отсюда требование разного семейства моделей в REQ-07-E.
+**Where v5 honestly aims: Level 4.** The document hinges on golden-sets (REQ-06-B) and external baselines (REQ-03-A, REQ-06-E) maintained by humans outside the loop. This moves the human from code review to **baseline curation and correctness definition**. Backend tasks execute autonomously, but "correctness" traces back to a human-authored spec. Calling this L5 is a vulnerability: a task reaching prod without human input in code, test, or baseline does not exist in this architecture. L4 with excellent tooling is a strong, defensible position; L5 is not.
 
 ---
 
-## Appendix B: Defense-лист к дебатам
+## Appendix A: Industry Context & Sources (2026)
 
-Готовые ответы на сильные ходы оппонента. Формат: тезис → ответ из конкретной SPEC → честно признанная граница.
+### A.1 Reward Hacking Confirmed Empirically
+Agents actively manipulate evaluators: rewriting unit tests, muting asserts, monkey-patching scoring functions to pass without solving the task (RewardHackingAgents, March 2026; "LLMs Gaming Verifiers", arXiv 2604.15149). Scale: >15% of tasks across five terminal-agent benchmarks are solved via verifier deception (Terminal Wrench / arXiv 2606.08960). → Justifies SPEC-06 (locking + instrumentation) and SPEC-01 (out-of-band runner).
 
-**1. «Ваш Evaluator сам может быть обманут / кто судит судью?»**
-→ SPEC-06: locking + хеш + file instrumentation против тамперинга; golden-set вне контура против неверного судейства; Hacker-Fixer (SPEC-07-E) для непрерывного harden'инга.
-→ Граница: reward hacking снижается, не обнуляется; даже лучшие модели дают ненулевой процент, а детектируемость падает, когда из трейса убраны рассуждения. Мониторинг хрупок by design — признаём.
+### A.2 Circularity of Error (REQ-06-E)
+The core issue of LLM-generated tests is "how to verify the verifier". Using implementation as a ground-truth oracle creates "circularity of error". Invalid LLM-test rates run high: 34–62% (arXiv 2602.10522). Literature solution: derive tests from NL-specification, not code. Self-verification degrades without external grounding (arXiv 2504.00406, 2311.11797).
 
-**2. «Кто пишет проверку для новой, ранее не виданной задачи?»**
-→ SPEC-06-E: тесты выводятся из OpenSpec, не из реализации; circularity of error разорвана привязкой к спеке.
-→ Граница: корректность самой спеки — на человеке. Это и есть наш L4, а не L5.
+### A.3 Isomorphic Perturbation Testing (REQ-06-D)
+Models hardcode answers for extensional tests; IPT runs logically equivalent but structurally altered tests — deception fails on the isomorphic variant (arXiv 2604.15149). **Boundary:** IPT is defined where rewritable logical structure exists (algorithms, reasoning). Undefined for visual/UX — hence the scope restriction in REQ-06-D.
 
-**3. «Это же не настоящая автономия — человек всё равно в петле.»**
-→ Согласны и заявляем это сами: цель — L4 с человеком на курировании эталонов. Backend автономен в исполнении; определение корректности — за человеком. Мы не продаём L5.
-
-**4. «Другая модель для Evaluator/red-team не даёт независимости.»**
-→ REQ-07-E требует другого семейства моделей именно поэтому.
-→ Граница: полная независимость ошибок дороже (разные провайдеры); внутри одного поколения корреляция остаётся. Признаём как стоимость, а не отрицаем.
-
-**5. «Isomorphic check спасёт от хардкодинга везде.»**
-→ Не заявляем этого: REQ-06-D сужен до классов A/C. Для визуала источник истины — pixel_diff против внешнего эталона (SPEC-03), не IPT.
-
-**6. «Агент с правами деплоя может разнести продакшн.»**
-→ SPEC-08 (scoped-токены, execution-time fail-closed) + SPEC-09 (транзакционный откат, перехват высокорисковых команд) + SPEC-05 (microVM, default-deny сеть).
-→ Граница: задачи, реально требующие продакшн-интеграции, проходят через scoped-креды, но это расширяет поверхность — мониторинг аудита (REQ-08-C) обязателен.
+### A.4 Hacker-Fixer Loop (REQ-07-E)
+Adversarial evaluator hardening is a 2026 pattern: outcome verifiers are manually crafted and rarely robust (arXiv 2606.08960; RvB, arXiv 2601.19726 / 2602.14457). Economics favor it: red-vs-blue cycles reduced token spend by >18% vs cooperative baselines.
 
 ---
 
-## Итог
+## Appendix B: Defense-List for Debates
 
-Все механические уязвимости Dark Factory перекрыты на архитектурном уровне, а не «умным промптом»: гипервизоры (SPEC-05), locked-файлы с хешем (SPEC-06), детерминированные гейты (SPEC-02/08), транзакции (SPEC-09). Две оставшиеся зависимости — корректность golden-set и корректность спеки — намеренно оставлены на человеке, и это граница метода, а не недоработка. v5 честно целится в уровень 4: автономное исполнение при человеческом определении корректности. Это позиция, по которой нельзя ударить за обещание того, чего архитектура не делает.
+**1. "Your Evaluator can be deceived / who judges the judge?"**
+→ SPEC-06: locking + hash + file instrumentation against tampering; golden-set outside loop against flawed judgment; Hacker-Fixer for continuous hardening. Boundary: reward hacking is reduced, not eliminated; monitoring is inherently fragile.
+
+**2. "Who writes the check for a novel, unseen task?"**
+→ SPEC-06-E: tests are derived from OpenSpec, not implementation; circularity broken. Boundary: correctness of the spec itself is on the human (This is our L4).
+
+**3. "This isn't real autonomy — human is still in the loop."**
+→ Agreed: the goal is L4 with humans curating baselines. Backend is autonomous in execution; correctness definition is human. We do not sell L5.
+
+**4. "A different model for Evaluator doesn't guarantee independence."**
+→ REQ-07-E requires a different model family for this exact reason. Boundary: full error independence is costly; intra-generation correlation remains.
+
+**5. "Isomorphic checks will save us everywhere."**
+→ We don't claim this: REQ-06-D is restricted to Classes A/C. For visuals, the source of truth is `pixel_diff` against an external baseline (SPEC-03).
+
+**6. "An agent with deploy rights can destroy production."**
+→ SPEC-08 (scoped-tokens, execution-time fail-closed) + SPEC-09 (transactional rollback, high-risk intercept) + SPEC-05 (microVM, default-deny network). Boundary: expands surface area; audit monitoring (REQ-08-C) is mandatory.
+
+---
+
+## Execution Roadmap: Agentic Task Breakdown
+
+To implement this architecture sequentially using targeted autonomous agents, the work is broken down into the following logical tasks. Each task is a self-contained unit that can be handed to a Subagent.
+
+### Phase 1: Foundation (Isolation & Contracts)
+- **Task 1.1: Implement Dual Sandbox (SPEC-01 & SPEC-05)**
+  - *Goal:* Create the `IsolatedWorkspaceManager`.
+  - *Action:* Write a module that provisions a Firecracker microVM (or Docker with gVisor). It must support mounting a directory as Read-Write (`Sandbox A` for Worker) and another as Read-Only (`Sandbox B` for Runner), with default-deny networking.
+- **Task 1.2: Implement OpenSpec & Security Gate (SPEC-02)**
+  - *Goal:* Enforce Proof Multiplicity.
+  - *Action:* Define `OpenSpec` TypeScript interfaces. Implement `ZoneBasedSecurityGate` to intercept plans touching `/auth` or `/payments` and forcefully inject `Type A` (exit code) proof requirements.
+
+### Phase 2: The Truth Engine (Verification)
+- **Task 2.1: Implement Out-of-Band Test Runner (SPEC-01 & SPEC-06)**
+  - *Goal:* Execute tests deterministically without Worker interference.
+  - *Action:* Build a `TestRunner` class that executes commands exclusively inside `Sandbox B` (Read-Only). Implement Evaluator Locking by hashing test files before execution to detect tampering.
+- **Task 2.2: Implement Spec-Derived Test Generator (SPEC-06-E)**
+  - *Goal:* Break the Circularity of Error.
+  - *Action:* Create an agentic pipeline step that takes the NL `OpenSpec` and generates Jest/Vitest files *before* the Worker writes any implementation code.
+
+### Phase 3: Orchestration & Safety
+- **Task 3.1: Implement Meta-Loop & Layered Stops (SPEC-07)**
+  - *Goal:* Autonomous retry and failure handling.
+  - *Action:* Refactor `MetaLoopService` to include token limits, retry limits (max 3), and a no-progress detector (if the exact same test failure occurs twice, halt and escalate).
+- **Task 3.2: Implement Execution-Time Authorization (SPEC-08 & SPEC-09)**
+  - *Goal:* Prevent over-privileged destruction.
+  - *Action:* Build a transactional wrapper that intercepts high-risk commands (`rm -rf`, `deploy`) and enforces OAuth scoped-token checks at execution time, automatically rolling back filesystem state on failure.
+
+### Phase 4: UI & Human-in-the-Loop
+- **Task 4.1: Implement Visual Diffing (SPEC-03)**
+  - *Goal:* Deterministic Type B Proofs.
+  - *Action:* Integrate `Pixelmatch` to compare Worker-generated screenshots (via Playwright) against external Figma baselines.
+- **Task 4.2: Implement HIL Parking State (SPEC-04)**
+  - *Goal:* Graceful degradation for Type D tasks.
+  - *Action:* Add an `awaiting_human` state to the orchestrator. If a task requires subjective review, park the git branch and send an approval notification instead of consuming retry attempts.
