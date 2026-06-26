@@ -47,7 +47,7 @@ export function IterationsPanel({
   StatusBadge,
   activeNumber,
 }: IterationsPanelProps) {
-  const { items, hasMore, isLoading, isFetchingMore, loadMore } =
+  const { items, hasMore, isLoading, isFetchingMore, error, loadMore } =
     useTaskGroupIterations(groupId);
 
   return (
@@ -62,6 +62,16 @@ export function IterationsPanel({
           <p className="px-4 py-6 text-center text-xs text-muted-foreground">
             Loading iterations…
           </p>
+        ) : error ? (
+          <div
+            role="alert"
+            className="mx-4 my-4 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+          >
+            <p className="font-medium">Failed to load iterations.</p>
+            <p className="mt-1 break-words text-destructive/80">
+              {error instanceof Error ? error.message : String(error)}
+            </p>
+          </div>
         ) : items.length === 0 ? (
           <p className="px-4 py-6 text-center text-xs text-muted-foreground">
             No runs yet. Use Run to start the first iteration.
