@@ -191,3 +191,29 @@ To implement this architecture sequentially using targeted autonomous agents, th
 - **Task 4.2: Implement HIL Parking State (SPEC-04)**
   - *Goal:* Graceful degradation for Type D tasks.
   - *Action:* Add an `awaiting_human` state to the orchestrator. If a task requires subjective review, park the git branch and send an approval notification instead of consuming retry attempts.
+
+---
+
+# PART VI. Integration & Merge Protocol
+
+To prevent architectural conflicts and ensure the system is secure at every step, autonomous PRs must be merged strictly in this order:
+
+1. **Layer 1: Foundation (Isolation & Routing)**
+   - `SPEC-01` & `SPEC-05` (Dual Sandbox & microVM)
+   - `SPEC-02` (Proof Multiplicity & Security Gate)
+2. **Layer 2: Execution Safety (Intercept & Rollback)**
+   - `SPEC-08` & `SPEC-09` (Execution-Time Auth & Transactional Rollback) — *must precede control loops so all tasks are sandboxed safely.*
+3. **Layer 3: Control Flow (Loops & Human-in-the-Loop)**
+   - `SPEC-07` (Meta-Loop, Circuit Breakers)
+   - `SPEC-04` (HIL Parking)
+4. **Layer 4: Verification Engines (The Truth Engine)**
+   - `SPEC-06` (Evaluator Locking)
+   - `SPEC-06-E` (Spec-Derived Test Generator)
+   - `SPEC-03` (External UI Baselines)
+
+## 100% Verification Protocol
+
+Before any merge is finalized, the system must undergo **three verification layers**:
+1. **Victory Audit (Independent):** A completely isolated subagent must verify the code against the Spec, ensuring no hardcoded mocks.
+2. **Pipeline Integration Dry-Run:** An end-to-end (E2E) integration test must be executed on the `main` branch immediately after the merge to ensure the new layer intercepts execution correctly (e.g., injecting a malicious command).
+3. **Health Check (Service Liveness):** For infrastructure/network changes, an explicit liveness check must be run (e.g. `curl` or DB connection script) to prove the service is active and listening, not just returning a 0 exit code from a start script.
