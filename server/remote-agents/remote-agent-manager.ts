@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { runAsSystem } from "../context";
 import { remoteAgents, a2aTasks } from "@shared/schema";
+import { encrypt, decrypt } from "../crypto";
 import { A2AClient } from "./a2a-client";
 import { AgentDiscoveryService } from "./agent-discovery";
 import type {
@@ -97,7 +98,8 @@ export class RemoteAgentManager {
         cluster: input.cluster ?? null,
         namespace: input.namespace ?? null,
         labels: input.labels ?? null,
-        authTokenEnc: input.authTokenEnc ?? null,
+        // Encrypt the bearer token before persisting (PR-0d: encrypt plaintext authTokenEnc).
+        authTokenEnc: input.authTokenEnc ? encrypt(input.authTokenEnc) : null,
         enabled: input.enabled ?? true,
         autoConnect: input.autoConnect ?? false,
         status: agentCard ? "online" : "offline",
@@ -302,7 +304,9 @@ export class RemoteAgentManager {
       cluster: row.cluster,
       namespace: row.namespace,
       labels: row.labels as Record<string, string> | null,
-      authTokenEnc: row.authTokenEnc,
+      // Decrypt at the DB boundary so all callers receive the plaintext token.
+      // The DB column stores AES-256-GCM ciphertext; the config field holds plaintext.
+      authTokenEnc: row.authTokenEnc ? decrypt(row.authTokenEnc) : null,
       enabled: row.enabled,
       autoConnect: row.autoConnect,
       status: row.status as RemoteAgentConfig["status"],

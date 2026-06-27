@@ -20,6 +20,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { remoteAgents } from "@shared/schema";
+import { encrypt } from "../crypto";
 import type { RemoteAgentManager } from "../remote-agents/remote-agent-manager";
 
 // ─── Validation schemas ───────────────────────────────────────────────────────
@@ -191,7 +192,8 @@ export function registerRemoteAgentRoutes(
       if (data.namespace !== undefined) updateSet.namespace = data.namespace;
       if (data.labels !== undefined) updateSet.labels = data.labels;
       if (data.authTokenEnc !== undefined)
-        updateSet.authTokenEnc = data.authTokenEnc;
+        // Encrypt the bearer token before writing to DB (PR-0d: encrypt plaintext authTokenEnc).
+        updateSet.authTokenEnc = data.authTokenEnc ? encrypt(data.authTokenEnc) : null;
       if (data.enabled !== undefined) updateSet.enabled = data.enabled;
       if (data.autoConnect !== undefined)
         updateSet.autoConnect = data.autoConnect;
