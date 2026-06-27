@@ -43,6 +43,37 @@ function isProxy(val) {
   return false;
 }
 
+function verifySafeObject(obj, name = 'Object', visited = new WeakSet()) {
+  if (obj === null || (typeof obj !== 'object' && typeof obj !== 'function')) {
+    return;
+  }
+  if (visited.has(obj)) {
+    return;
+  }
+  visited.add(obj);
+
+  if (util.types.isProxy(obj)) {
+    throw new ValidationError(`${name} must not be a Proxy`);
+  }
+
+  const keys = Reflect.ownKeys(obj);
+  for (const key of keys) {
+    const desc = Object.getOwnPropertyDescriptor(obj, key);
+    if (desc) {
+      if (desc.get || desc.set) {
+        throw new ValidationError(`${name} property "${String(key)}" must be a data descriptor, not an accessor`);
+      }
+      const val = obj[key];
+      if (val && (typeof val === 'object' || typeof val === 'function')) {
+        if (util.types.isProxy(val)) {
+          throw new ValidationError(`${name} property "${String(key)}" must not be a Proxy`);
+        }
+        verifySafeObject(val, name, visited);
+      }
+    }
+  }
+}
+
 function hasPrototypePollution(obj, visited = new WeakSet()) {
   if (obj === null || typeof obj !== 'object') return false;
   if (visited.has(obj)) return false;
@@ -95,6 +126,9 @@ class EnvironmentRouter {
     if (!executionContext || typeof executionContext !== 'object' || Array.isArray(executionContext)) {
       throw new ValidationError('Execution context must be a valid object');
     }
+
+    verifySafeObject(task, 'Task object');
+    verifySafeObject(executionContext, 'Execution context');
 
     // 2. Prevent ES6 Proxy exploits (TOCTOU defense)
     if (isProxy(task)) {
@@ -245,6 +279,10 @@ class EnvironmentRouter {
    * @private
    */
   _isDestructiveOrMutationQuery(query) {
+    if (query.includes('/*!')) {
+      throw new ValidationError('MySQL executable comments are not allowed');
+    }
+
     // Decompose using NFKD
     let normalized = query.normalize('NFKD');
     
@@ -254,19 +292,81 @@ class EnvironmentRouter {
       replaced += HOMOGLYPH_MAP[char] || char;
     }
     
-    // Strip comments
-    let cleaned = replaced.replace(/--.*$/gm, '');
-    cleaned = cleaned.replace(/\/\*[\s\S]*?\*\//g, '');
+    if (replaced.includes('/*!')) {
+      throw new ValidationError('MySQL executable comments are not allowed');
+    }
+
+    // Lexer to strip comments and strings
+    let cleaned = '';
+    let i = 0;
+    const len = replaced.length;
     
-    // Strip string literals
-    cleaned = cleaned.replace(/'(\\.|[^'\\])*'/g, '');
-    cleaned = cleaned.replace(/"(\\.|[^"\\])*"/g, '');
-    cleaned = cleaned.replace(/`(\\.|[^`\\])*`/g, '');
+    while (i < len) {
+      const char = replaced[i];
+      
+      // 1. Single-line comment: -- or #
+      if (replaced.startsWith('--', i)) {
+        while (i < len && replaced[i] !== '\n' && replaced[i] !== '\r') {
+          i++;
+        }
+        continue;
+      }
+      
+      if (char === '#') {
+        while (i < len && replaced[i] !== '\n' && replaced[i] !== '\r') {
+          i++;
+        }
+        continue;
+      }
+      
+      // 2. Block comment: /* ... */
+      if (replaced.startsWith('/*', i)) {
+        if (replaced.startsWith('/*!', i)) {
+          throw new ValidationError('MySQL executable comments are not allowed');
+        }
+        
+        let endIdx = replaced.indexOf('*/', i + 2);
+        if (endIdx === -1) {
+          i = len;
+        } else {
+          i = endIdx + 2;
+        }
+        // Replace block comments with a single space ' ' (not empty string)
+        cleaned += ' ';
+        continue;
+      }
+      
+      // 3. String literal: ', ", or `
+      if (char === "'" || char === '"' || char === '`') {
+        const quoteChar = char;
+        i++; // skip opening quote
+        while (i < len && replaced[i] !== quoteChar) {
+          i++;
+        }
+        if (i < len) {
+          i++; // skip closing quote
+        }
+        continue;
+      }
+      
+      // 4. Regular character
+      cleaned += char;
+      i++;
+    }
+    
+    // Check if the remaining query contains any non-ASCII characters
+    if (/[^\x00-\x7F]/.test(cleaned)) {
+      throw new ValidationError('Query contains non-ASCII characters after stripping comments and strings');
+    }
     
     // Match forbidden destructive/mutation keywords at word boundaries
     const forbiddenKeywords = [
       'drop', 'alter', 'truncate', 'delete', 'update', 'insert',
-      'create', 'rename', 'replace', 'grant', 'revoke'
+      'create', 'rename', 'replace', 'grant', 'revoke',
+      // Underscore keywords
+      'drop_table', 'alter_table', 'create_table', 'truncate_table', 'delete_from', 'drop_database', 'create_database',
+      // Dynamic SQL
+      'do', 'prepare', 'execute', 'declare', 'fetch'
     ];
     
     const keywordRegex = new RegExp(`\\b(${forbiddenKeywords.join('|')})\\b`, 'i');

@@ -153,4 +153,42 @@ describe('EnvironmentRouter - Adversarial Test Suite', () => {
       expect(() => router.route(taskNotD, { env: 'Prod', query: fullwidthQuery })).toThrow(RestrictedEnvironmentError);
     });
   });
+
+  describe('Adversarial Security Patches Assertions', () => {
+    const taskNotD = { id: 'task-1', type: 'A' };
+
+    it('should block comment bypasses like DROP/**/TABLE', () => {
+      expect(() => router.route(taskNotD, { env: 'Prod', query: 'DROP/**/TABLE users;' })).toThrow(RestrictedEnvironmentError);
+    });
+
+    it('should throw ValidationError for MySQL executable comments', () => {
+      expect(() => router.route(taskNotD, { env: 'Prod', query: '/*! DROP TABLE users */' })).toThrow(ValidationError);
+    });
+
+    it('should block underscore keywords like drop_table', () => {
+      expect(() => router.route(taskNotD, { env: 'Prod', query: 'SELECT * FROM users; drop_table(x);' })).toThrow(RestrictedEnvironmentError);
+    });
+
+    it('should block dynamic SQL keywords', () => {
+      expect(() => router.route(taskNotD, { env: 'Prod', query: 'prepare stmt from "select 1";' })).toThrow(RestrictedEnvironmentError);
+      expect(() => router.route(taskNotD, { env: 'Prod', query: 'execute stmt;' })).toThrow(RestrictedEnvironmentError);
+    });
+
+    it('should throw ValidationError for Unicode homoglyphs (non-ASCII) in keywords', () => {
+      expect(() => router.route(taskNotD, { env: 'Prod', query: 'crea\u03a4e table users;' })).toThrow(ValidationError);
+    });
+
+    it('should throw ValidationError for nested Proxy TOCTOU traps', () => {
+      const task = {
+        id: 'task-1',
+        type: 'A',
+        nested: new Proxy({}, {
+          getPrototypeOf() {
+            return Object.prototype;
+          }
+        })
+      };
+      expect(() => router.route(task, { env: 'Prod', query: 'SELECT 1;' })).toThrow(ValidationError);
+    });
+  });
 });
