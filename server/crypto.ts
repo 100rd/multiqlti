@@ -1,35 +1,20 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "crypto";
 import { configLoader } from "./config/loader";
 
+// ─── DO NOT DEPLOY THIS FILE UNTIL ──────────────────────────────────────────
+// 1. The rekey migration script (scripts/rekey-v2.ts) has been run in EVERY
+//    environment (dev → staging → prod).
+// 2. `npx tsx scripts/rekey-v2.ts --verify` exits 0 (zero non-v2: rows) in
+//    EVERY environment.
+// Only after both checks pass is it safe to deploy this commit, which removes
+// the insecure dev-fallback key and the legacy-format fallback branch.
+// ─────────────────────────────────────────────────────────────────────────────
+
 const ALGORITHM = "aes-256-gcm";
 const KEY_LEN = 32;
-
-/**
- * Legacy static salt used for all ciphertext produced before v2:.
- * Kept here ONLY to decrypt existing (pre-rekey) rows — never used for new
- * encryptions. The v2: format embeds a per-value random salt instead.
- */
-const LEGACY_SALT = "multiqlti-provider-keys-v1";
-
-/**
- * V2 salt length in bytes. Each v2: ciphertext embeds a fresh 32-byte random
- * salt so key-derivation is independent per value.
- */
 const V2_SALT_LEN = 32;
-
-/**
- * The old insecure dev-fallback key.
- *
- * Used ONLY inside `decryptLegacy()` to detect rows that were written with the
- * fallback instead of a real key. This lets the rekey migration script find and
- * re-encrypt those rows. The application NEVER produces new ciphertext with this
- * key — `encrypt()` calls `getSecret()` which throws if ENCRYPTION_KEY is unset.
- *
- * After the rekey migration confirms zero non-v2: rows in every environment,
- * this constant and the fallback branch in decryptLegacy() will be removed in a
- * separate deploy (see PR-0e Commit 2 — "Remove fallback").
- */
-const DEV_FALLBACK_KEY = "dev-default-insecure-key-change-me!";
+const V2_PREFIX = "v2:";
+const V2_HEADER_LEN = V2_SALT_LEN + 12 + 16; // salt + iv + authTag (bytes)
 
 function deriveKey(secret: string, salt: string): Buffer {
   return scryptSync(secret, salt, KEY_LEN);
@@ -39,8 +24,8 @@ function deriveKey(secret: string, salt: string): Buffer {
  * Returns the configured encryption secret.
  *
  * Throws if ENCRYPTION_KEY / MULTI_ENCRYPTION_KEY is not set.
- * There is NO insecure dev-fallback — a missing key is a hard failure.
- * To run tests, set ENCRYPTION_KEY (any 32+-char string) or mock configLoader.
+ * There is NO fallback — a missing key is a hard startup failure.
+ * In tests, mock configLoader or set ENCRYPTION_KEY to any 32+-char string.
  */
 function getSecret(): string {
   const { key } = configLoader.get().encryption;
@@ -63,14 +48,6 @@ function getSecret(): string {
 //   payload (n  bytes) — encrypted plaintext
 //
 // Stored as: "v2:" + Buffer.concat([salt, iv, authTag, payload]).toString("hex")
-//
-// Benefits over the legacy format:
-//   - Per-value random salt: each ciphertext uses an independently derived key.
-//   - Version prefix: format is self-describing; migration scripts can detect
-//     which rows need rekeying vs. which are already current.
-
-const V2_PREFIX = "v2:";
-const V2_HEADER_LEN = V2_SALT_LEN + 12 + 16; // salt + iv + authTag (bytes)
 
 function encryptV2(plaintext: string, secret: string): string {
   const salt = randomBytes(V2_SALT_LEN);
@@ -98,55 +75,6 @@ function decryptV2(prefixedHex: string, secret: string): string {
   return Buffer.concat([decipher.update(payload), decipher.final()]).toString("utf8");
 }
 
-// ─── Legacy format ─────────────────────────────────────────────────────────────
-//
-// Wire format (binary, then hex-encoded, NO prefix):
-//   iv      (12 bytes)
-//   authTag (16 bytes)
-//   payload (n  bytes)
-//
-// Key derived with: scryptSync(secret, LEGACY_SALT, KEY_LEN)
-
-const LEGACY_HEADER_LEN = 12 + 16;
-
-function decryptLegacy(hex: string): string {
-  const buf = Buffer.from(hex, "hex");
-  if (buf.length < LEGACY_HEADER_LEN) {
-    throw new Error("[crypto] legacy ciphertext is too short to be valid");
-  }
-  const iv = buf.subarray(0, 12);
-  const authTag = buf.subarray(12, 28);
-  const payload = buf.subarray(28);
-
-  // Try the real (configured) key first.
-  const currentSecret = getSecret();
-  try {
-    const key = deriveKey(currentSecret, LEGACY_SALT);
-    const decipher = createDecipheriv(ALGORITHM, key, iv);
-    decipher.setAuthTag(authTag);
-    return Buffer.concat([decipher.update(payload), decipher.final()]).toString("utf8");
-  } catch {
-    // GCM auth-tag failure means this value was NOT encrypted with the current
-    // key.  Try the dev-fallback key so the rekey migration can detect and
-    // re-encrypt these rows.
-    //
-    // NOTE: This fallback branch will be removed in Commit 2 of PR-0e AFTER the
-    // rekey migration script has confirmed zero non-v2: rows in every environment.
-  }
-
-  try {
-    const fallbackKey = deriveKey(DEV_FALLBACK_KEY, LEGACY_SALT);
-    const decipher = createDecipheriv(ALGORITHM, fallbackKey, iv);
-    decipher.setAuthTag(authTag);
-    return Buffer.concat([decipher.update(payload), decipher.final()]).toString("utf8");
-  } catch {
-    throw new Error(
-      "[crypto] failed to decrypt legacy ciphertext with both the current key and the dev fallback. " +
-      "The ciphertext may be corrupt, or encrypted with an unknown key.",
-    );
-  }
-}
-
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -163,56 +91,31 @@ export function encrypt(plaintext: string): string {
 }
 
 /**
- * Decrypts a string produced by `encrypt()` (v2: format) or any legacy value
- * produced by the previous format (no prefix).
+ * Decrypts a string produced by `encrypt()`.
  *
- * Dispatch:
- *   - Starts with `v2:` → decryptV2 with the current key.
- *   - No prefix (legacy) → decryptLegacy: tries current key first, then the
- *     dev-fallback key so the rekey migration can detect affected rows.
+ * Only accepts `v2:` prefixed values.  Legacy unprefixed values are no longer
+ * supported — they must have been migrated by `scripts/rekey-v2.ts` before
+ * this commit was deployed.
  *
- * After the rekey migration + `--verify` passes in every environment, Commit 2
- * of PR-0e removes the legacy branch and the fallback key entirely.
+ * If a legacy value is encountered here it means the rekey migration was not
+ * completed before deploying this commit.  The error message is explicit about
+ * the remediation: roll back this commit and run the rekey migration.
  */
 export function decrypt(ciphertext: string): string {
   if (ciphertext.startsWith(V2_PREFIX)) {
     return decryptV2(ciphertext, getSecret());
   }
-  return decryptLegacy(ciphertext);
+  throw new Error(
+    "[crypto] encountered a legacy (non-v2:) ciphertext after fallback removal. " +
+    "This means the rekey migration was not completed before deploying this commit. " +
+    "Roll back this deploy, run `npx tsx scripts/rekey-v2.ts` until --verify passes " +
+    "in every environment, then re-deploy.",
+  );
 }
 
 /**
- * Returns true if the value is already in the v2: format (i.e. produced by
- * this version of encrypt() or already rekeyed by the migration script).
+ * Returns true if the value is already in the v2: format.
  */
 export function isV2(value: string): boolean {
   return value.startsWith(V2_PREFIX);
 }
-
-/**
- * Exposed for the rekey migration script ONLY.  Do not call from application
- * code.
- *
- * Attempts to decrypt a legacy (non-v2:) ciphertext using a known secret and
- * the static legacy salt.  Throws on auth-tag failure.  The caller (rekey
- * script) is expected to catch the error and try alternative keys.
- */
-export function decryptLegacyWithKey(hex: string, secret: string): string {
-  const buf = Buffer.from(hex, "hex");
-  if (buf.length < LEGACY_HEADER_LEN) {
-    throw new Error("[crypto] legacy ciphertext is too short to be valid");
-  }
-  const iv = buf.subarray(0, 12);
-  const authTag = buf.subarray(12, 28);
-  const payload = buf.subarray(28);
-  const key = deriveKey(secret, LEGACY_SALT);
-  const decipher = createDecipheriv(ALGORITHM, key, iv);
-  decipher.setAuthTag(authTag);
-  return Buffer.concat([decipher.update(payload), decipher.final()]).toString("utf8");
-}
-
-/**
- * The dev fallback key — exported for the rekey script so it can try to
- * decrypt values that were written without a real ENCRYPTION_KEY.
- */
-export const DEV_FALLBACK_KEY_EXPORT = DEV_FALLBACK_KEY;
