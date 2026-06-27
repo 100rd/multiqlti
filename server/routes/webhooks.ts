@@ -15,6 +15,7 @@ import {
   startRateLimitCleanup,
 } from "../services/webhook-handler.js";
 import { handleGitHubEvent } from "../services/github-event-handler.js";
+import { runAsSystem } from "../context.js";
 
 function correlationId(): string {
   return randomUUID().slice(0, 8);
@@ -55,7 +56,13 @@ export function registerWebhookRoutes(
         req.headers as Record<string, string | string[] | undefined>,
         req.body as unknown,
         {
-          getEnabledTriggersByType: (type) => storage.getEnabledTriggersByType(type),
+          // getEnabledTriggersByType must run cross-project (no ALS context on github-events).
+          // runAsSystem establishes a system context; getAllEnabledTriggersByType bypasses
+          // the project filter so all matching triggers across all projects are returned.
+          getEnabledTriggersByType: (type) =>
+            runAsSystem("github-event-trigger-lookup", () =>
+              storage.getAllEnabledTriggersByType(type),
+            ),
           getSecret: (id) => triggerService.getSecret(id),
           fireTrigger,
         },

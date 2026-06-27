@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db } from "../db";
+import { runAsSystem } from "../context";
 import { remoteAgents, a2aTasks } from "@shared/schema";
 import { A2AClient } from "./a2a-client";
 import { AgentDiscoveryService } from "./agent-discovery";
@@ -49,7 +50,9 @@ export class RemoteAgentManager {
 
   /** Load all agents from DB and auto-connect those flagged for it. */
   async initialize(): Promise<void> {
-    const agents = await this.listAgents();
+    // listAgents() is a cross-project query (remote agents span all projects).
+    // runAsSystem establishes the required ALS context and provides an audit trail.
+    const agents = await runAsSystem("remote-agent-manager-init", () => this.listAgents());
     for (const agent of agents) {
       if (agent.autoConnect && agent.enabled) {
         await this.connectAgent(agent.id).catch(() => {
@@ -267,7 +270,8 @@ export class RemoteAgentManager {
 
   private startHeartbeat(intervalMs: number): void {
     this.heartbeatInterval = setInterval(async () => {
-      const agents = await this.listAgents();
+      // listAgents() reads across all projects; runAsSystem provides context + audit.
+      const agents = await runAsSystem("remote-agent-heartbeat", () => this.listAgents());
       for (const agent of agents) {
         if (!agent.enabled) continue;
         const health = await this.discovery.healthCheck(agent);

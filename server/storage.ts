@@ -440,6 +440,9 @@ export interface IStorage {
   getTriggers(pipelineId: string): Promise<TriggerRow[]>;
   getTrigger(id: string): Promise<TriggerRow | undefined>;
   getEnabledTriggersByType(type: string): Promise<TriggerRow[]>;
+  /** Cross-project query for system/background use: returns ALL enabled triggers of this type
+   *  across every project. Must be called within runAsSystem(). See ADR-001 §3.1(d). */
+  getAllEnabledTriggersByType(type: string): Promise<TriggerRow[]>;
   createTrigger(data: Omit<TriggerRow, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt'> & { secretEncrypted?: string | null }): Promise<TriggerRow>;
   updateTrigger(id: string, updates: Partial<TriggerRow>): Promise<TriggerRow>;
   deleteTrigger(id: string): Promise<void>;
@@ -2156,6 +2159,12 @@ export class MemStorage implements IStorage {
   }
 
   async getEnabledTriggersByType(type: string): Promise<TriggerRow[]> {
+    return Array.from(this.triggersMap.values()).filter((t) => t.enabled && t.type === type);
+  }
+
+  // Cross-project: in MemStorage there is no project isolation, so this is
+  // identical to getEnabledTriggersByType. Both return all matching triggers.
+  async getAllEnabledTriggersByType(type: string): Promise<TriggerRow[]> {
     return Array.from(this.triggersMap.values()).filter((t) => t.enabled && t.type === type);
   }
 

@@ -22,43 +22,113 @@ pool.on("error", (err: Error) => {
 
 export const db = drizzle(pool, { schema });
 
-import { getProjectId } from "./context";
+import { requestContext } from "./context";
 import { SQL, and, eq } from "drizzle-orm";
 
 /**
  * Helper to wrap any Drizzle query condition with the current project ID filter.
+ *
+ * FAIL-CLOSED: throws rather than silently bypassing isolation when no project
+ * context is present. Callers outside a request handler MUST be wrapped in
+ * runAsProject(projectId, fn) or runAsSystem(reason, fn).
+ *
+ * System context (runAsSystem) is allowed to call withProject for SELECT queries
+ * but the project filter is NOT applied — the query runs cross-project.  The
+ * audit trail is provided by the surrounding runAsSystem() call. System context
+ * callers must NOT use withProject to access secret material (enforced at the
+ * broker layer in PR-1b).
+ *
  * Usage: db.select().from(table).where(withProject(table, eq(table.id, id)))
  */
 export function withProject(table: any, condition?: SQL | undefined): SQL {
-  try {
-    const projectId = getProjectId();
-    const projectFilter = eq(table.projectId, projectId);
-    return condition ? and(projectFilter, condition)! : projectFilter;
-  } catch (e) {
-    // Fallback if executed outside of a project context (e.g., background cron jobs)
-    // In strict mode, you might want to throw here instead.
+  const ctx = requestContext.getStore();
+
+  if (!ctx) {
+    throw new Error(
+      "withProject: no request context — this path runs outside a request handler. " +
+        "Wrap background/startup callers in runAsProject(projectId, fn) or runAsSystem(reason, fn). " +
+        "See server/context.ts and ADR-001 §3.1(c)/(d).",
+    );
+  }
+
+  if (ctx.system) {
+    // System context: the runAsSystem() audit trail covers this cross-project read.
+    // Do NOT apply a project filter — system code reads across all projects by design.
+    // System context is structurally prohibited from accessing secret material (PR-1b).
     if (!condition) {
-      throw new Error("withProject requires a condition when outside project context");
+      throw new Error(
+        "withProject: system context SELECT requires a WHERE condition — " +
+          "pass a filter expression or use unscopedSystemQuery(label, fn) explicitly.",
+      );
     }
     return condition;
   }
+
+  if (!ctx.projectId) {
+    throw new Error(
+      "withProject: no projectId in context — ensure the x-project-id header is sent " +
+        "and requireProject middleware is wired (PR-0b), " +
+        "or use runAsProject(projectId, fn) for background callers.",
+    );
+  }
+
+  // Sanity-check: table must have a projectId column. Tables that don't have it
+  // yet (e.g. provider_keys, argocd_config, triggers pre-PR-0c) will be caught
+  // here at development/test time rather than silently bypassing isolation.
+  if (table.projectId === undefined) {
+    throw new Error(
+      'withProject: table has no "projectId" column — ' +
+        "add the column in PR-0c before enabling project scoping on this table.",
+    );
+  }
+
+  const projectFilter = eq(table.projectId, ctx.projectId);
+  return condition ? and(projectFilter, condition)! : projectFilter;
 }
 
 /**
  * Helper to inject the current project ID into data for insert operations.
+ *
+ * FAIL-CLOSED: throws when no context is present.
+ *
+ * In system context (runAsSystem) sets projectId to null, creating globally
+ * visible rows (e.g. seeded default models, built-in skills, pipeline templates).
+ * This matches the pre-existing schema design where nullable projectId means
+ * "shared across all projects".
+ *
  * Usage: db.insert(table).values(withProjectInsert(table, data))
  */
 export function withProjectInsert<T>(table: any, data: T): T {
-  try {
-    const projectId = getProjectId();
-    
-    if (Array.isArray(data)) {
-      return data.map(item => ({ ...item, projectId })) as unknown as T;
-    }
-    return { ...data, projectId } as unknown as T;
-  } catch (e) {
-    return data;
+  const ctx = requestContext.getStore();
+
+  if (!ctx) {
+    throw new Error(
+      "withProjectInsert: no request context — wrap background/startup inserts in " +
+        "runAsProject(projectId, fn) or runAsSystem(reason, fn). " +
+        "See server/context.ts and ADR-001 §3.1(c)/(d).",
+    );
   }
+
+  if (ctx.system) {
+    // System context: insert with projectId=null (globally shared / unscoped data).
+    // Use for system-level seeding that creates resources shared across all projects.
+    if (Array.isArray(data)) {
+      return data.map((item) => ({ ...item, projectId: null })) as unknown as T;
+    }
+    return { ...data, projectId: null } as unknown as T;
+  }
+
+  if (!ctx.projectId) {
+    throw new Error(
+      "withProjectInsert: no projectId in context — ensure requireProject middleware " +
+        "is wired (PR-0b) or use runAsProject(projectId, fn) for background inserts.",
+    );
+  }
+
+  if (Array.isArray(data)) {
+    return data.map((item) => ({ ...item, projectId: ctx.projectId! })) as unknown as T;
+  }
+  return { ...data, projectId: ctx.projectId } as unknown as T;
 }
 
 /**
