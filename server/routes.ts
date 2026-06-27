@@ -46,6 +46,7 @@ import { FileWatcherService } from "./services/file-watcher";
 import { stopRateLimitCleanup } from "./services/webhook-handler";
 import { BUILTIN_SKILLS } from "./skills/builtin";
 import { requireAuth } from "./auth/middleware";
+import { requireProject } from "./middleware/project";
 import { tracer } from "./tracing/tracer";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
@@ -121,44 +122,71 @@ export async function registerRoutes(
   const projectRoutes = (await import("./routes/projects")).default;
   app.use("/api/projects", projectRoutes);
 
-  // Register protected route groups — all require authentication
-  app.use("/api/pipelines", requireAuth);
-  app.use("/api/runs", requireAuth);
-  app.use("/api/activity", requireAuth);
-  app.use("/api/models", requireAuth);
-  app.use("/api/gateway", requireAuth);
-  app.use("/api/settings", requireAuth);
-  app.use("/api/workspaces", requireAuth);
-  app.use("/api/chat", requireAuth);
-  app.use("/api/questions", requireAuth);
-  app.use("/api/stats", requireAuth);
-  app.use("/api/strategies", requireAuth);
-  app.use("/api/privacy", requireAuth);
-  app.use("/api/memory", requireAuth);
-  app.use("/api/memories", requireAuth);
-  app.use("/api/lessons", requireAuth);
-  app.use("/api/tools", requireAuth);
-  app.use("/api/mcp", requireAuth);
-  app.use("/api/providers", requireAuth);
+  // Register protected route groups — all require authentication.
+  //
+  // Project-scoped routes (requireAuth + requireProject):
+  //   requireProject reads x-project-id, validates owner/member, sets ALS context.
+  //   Keep /api/projects, auth, health, /api/teams, /api/sandbox, /api/federation public
+  //   (i.e. requireAuth only or no auth) because they must work without a project context.
+  //
+  // UNCERTAIN routes that were scoped conservatively (per ADR-001 §3.1b "when unsure, scope it"):
+  //   /api/models    — models have optional projectId; global catalog seeded without project
+  //   /api/gateway   — uses project-specific provider keys after PR-0c
+  //   /api/lessons   — workspace-scoped (workspaceId), not directly project-scoped
+  //   /api/traces    — indirectly scoped via runId → pipelineRuns.projectId
+  //   /api/lmstudio  — local server config; import creates project-scoped models
+  //   /api/skill-market — external registry; install creates project-scoped skills
+
+  // ── Project-scoped (requireAuth + requireProject) ──────────────────────────
+  app.use("/api/pipelines", requireAuth, requireProject);
+  app.use("/api/runs", requireAuth, requireProject);
+  app.use("/api/activity", requireAuth, requireProject);
+  app.use("/api/models", requireAuth, requireProject);         // UNCERTAIN — see note above
+  app.use("/api/gateway", requireAuth, requireProject);        // UNCERTAIN — see note above
+  app.use("/api/settings", requireAuth, requireProject);
+  app.use("/api/workspaces", requireAuth, requireProject);
+  app.use("/api/chat", requireAuth, requireProject);
+  app.use("/api/questions", requireAuth, requireProject);
+  app.use("/api/stats", requireAuth, requireProject);
+  app.use("/api/strategies", requireAuth, requireProject);
+  app.use("/api/privacy", requireAuth, requireProject);
+  app.use("/api/memory", requireAuth, requireProject);
+  app.use("/api/memories", requireAuth, requireProject);
+  app.use("/api/lessons", requireAuth, requireProject);        // UNCERTAIN — see note above
+  app.use("/api/tools", requireAuth, requireProject);
+  app.use("/api/mcp", requireAuth, requireProject);
+  app.use("/api/providers", requireAuth, requireProject);
+  app.use("/api/maintenance", requireAuth, requireProject);
+  app.use("/api/specialization-profiles", requireAuth, requireProject);
+  app.use("/api/skills", requireAuth, requireProject);
+  app.use("/api/guardrails", requireAuth, requireProject);
+  app.use("/api/triggers", requireAuth, requireProject);
+  app.use("/api/traces", requireAuth, requireProject);         // UNCERTAIN — see note above
+  app.use("/api/task-groups", requireAuth, requireProject);
+  app.use("/api/consilium-loops", requireAuth, requireProject);
+  app.use("/api/task-templates", requireAuth, requireProject);
+  app.use("/api/library", requireAuth, requireProject);
+  app.use("/api/lmstudio", requireAuth, requireProject);       // UNCERTAIN — see note above
+  app.use("/api/skill-teams", requireAuth, requireProject);
+  app.use("/api/tracker-connections", requireAuth, requireProject);
+  app.use("/api/remote-agents", requireAuth, requireProject);
+  app.use("/api/skill-market", requireAuth, requireProject);   // UNCERTAIN — see note above
+  // /api/workspaces/:id/knowledge is already covered by /api/workspaces above;
+  // keep this explicit mount for clarity and so the middleware fires even if the
+  // /api/workspaces mount is ever narrowed.
+  app.use("/api/workspaces/:id/knowledge", requireAuth, requireProject);
+
+  // ── Auth-only (requireAuth, no requireProject) ─────────────────────────────
+  // /api/teams — returns global SDLC team constants, not project data
   app.use("/api/teams", requireAuth);
+  // /api/sandbox — Docker execution utility, no project-specific data
   app.use("/api/sandbox", requireAuth);
-  app.use("/api/maintenance", requireAuth);
-  app.use("/api/specialization-profiles", requireAuth);
-  app.use("/api/skills", requireAuth);
-  app.use("/api/guardrails", requireAuth);
-  app.use("/api/triggers", requireAuth);
-  app.use("/api/traces", requireAuth);
-  app.use("/api/task-groups", requireAuth);
-  app.use("/api/consilium-loops", requireAuth);
-  app.use("/api/task-templates", requireAuth);
-  app.use("/api/library", requireAuth);
-  app.use("/api/lmstudio", requireAuth);
-  app.use("/api/skill-teams", requireAuth);
-  app.use("/api/tracker-connections", requireAuth);
-  app.use("/api/remote-agents", requireAuth);
-  app.use("/api/skill-market", requireAuth);
+  // /api/federation — cross-instance infrastructure, inherently cross-project
   app.use("/api/federation", requireAuth);
-  app.use("/api/workspaces/:id/knowledge", requireAuth);
+
+  // /api/pipeline-run-stats — was entirely unprotected (bug); add both guards now.
+  // This inline endpoint reads pipeline runs (project-scoped data).
+  app.use("/api/pipeline-run-stats", requireAuth, requireProject);
 
   // Register route implementations
   registerModelRoutes(app, storage);
