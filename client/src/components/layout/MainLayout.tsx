@@ -182,9 +182,9 @@ export default function MainLayout({ children }: MainLayoutProps) {
                   )}>
                     <Icon className="h-4 w-4" />
                     <span className="flex-1">{item.label}</span>
-                    {"badge" in item && item.badge && (
+                    {"badge" in item && (item as any).badge && (
                       <span className="ml-auto bg-amber-500 text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                        {item.badge}
+                        {(item as any).badge as ReactNode}
                       </span>
                     )}
                   </div>

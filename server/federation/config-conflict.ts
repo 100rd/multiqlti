@@ -730,6 +730,7 @@ export class InMemoryConflictStore implements IConflictStore {
       markContested: strategy === "lww" || strategy === "approval_voting",
       alertAfterH,
       updatedAt: new Date(),
+      projectId: null,
     });
   }
 

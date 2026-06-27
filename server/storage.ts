@@ -793,6 +793,7 @@ export class MemStorage implements IStorage {
       capabilities: insert.capabilities ?? [],
       isActive: insert.isActive ?? true,
       createdAt: new Date(),
+      projectId: (insert as any).projectId ?? null,
     };
     this.models.set(id, model);
     return model;
@@ -846,6 +847,7 @@ export class MemStorage implements IStorage {
       managerConfig: ((insert as { managerConfig?: unknown }).managerConfig ?? null) as import("@shared/types").ManagerConfig | null,
       createdAt: now,
       updatedAt: now,
+      projectId: (insert as any).projectId ?? null,
     };
     this.pipelinesMap.set(id, pipeline);
     return pipeline;
@@ -910,6 +912,7 @@ export class MemStorage implements IStorage {
       triggeredBy: insert.triggeredBy ?? null,
       dagMode: insert.dagMode ?? false,
       createdAt: new Date(),
+      projectId: (insert as any).projectId ?? null,
     };
     this.runs.set(id, run);
     return run;
@@ -965,6 +968,7 @@ export class MemStorage implements IStorage {
       swarmCloneResults: insert.swarmCloneResults ?? null,
       swarmMeta: insert.swarmMeta ?? null,
       createdAt: new Date(),
+      projectId: (insert as any).projectId ?? null,
     };
     this.stages.set(id, stage);
     return stage;
@@ -1049,6 +1053,7 @@ export class MemStorage implements IStorage {
       status: insert.status ?? "pending",
       createdAt: new Date(),
       answeredAt: insert.answeredAt ?? null,
+      projectId: (insert as any).projectId ?? null,
     };
     this.questionsMap.set(id, question);
     return question;
@@ -1102,6 +1107,7 @@ export class MemStorage implements IStorage {
       content: insert.content,
       metadata: insert.metadata ?? null,
       createdAt: new Date(),
+      projectId: (insert as any).projectId ?? null,
     };
     this.messages.set(id, msg);
     return msg;
@@ -1132,6 +1138,7 @@ export class MemStorage implements IStorage {
       teamId: data.teamId ?? null,
       tags: data.tags ?? [],
       createdAt: new Date(),
+      projectId: (data as any).projectId ?? null,
     };
     this.llmRequestsMap.set(id, req);
     return req;
@@ -1433,6 +1440,7 @@ export class MemStorage implements IStorage {
       startedAt: data.startedAt ?? now,
       completedAt: data.completedAt ?? null,
       createdAt: now,
+      projectId: (data as any).projectId ?? null,
     };
     this.delegationsMap.set(id, row);
     return row;
@@ -1469,6 +1477,7 @@ export class MemStorage implements IStorage {
       isBuiltIn: profile.isBuiltIn ?? false,
       assignments: (profile.assignments ?? {}) as Record<string, string>,
       createdAt: new Date(),
+      projectId: (profile as any).projectId ?? null,
     };
     this.specializationProfilesMap.set(id, row);
     return row;
@@ -1526,6 +1535,7 @@ export class MemStorage implements IStorage {
       autoUpdate: data.autoUpdate ?? null,
       createdAt: now,
       updatedAt: now,
+      projectId: (data as any).projectId ?? null,
     };
     this.skillsMap.set(id, skill);
     return skill;
@@ -1587,6 +1597,7 @@ export class MemStorage implements IStorage {
       changelog: data.changelog,
       createdBy: data.createdBy,
       createdAt: new Date(),
+      projectId: (data as any).projectId ?? null,
     };
     this.skillVersionsMap.set(id, row);
     return row;
@@ -1686,6 +1697,7 @@ export class MemStorage implements IStorage {
       description: data.description ?? "",
       createdBy: data.createdBy ?? null,
       createdAt: new Date(),
+      projectId: (data as any).projectId ?? null,
     };
     this.skillTeamsMap.set(id, row);
     return row;
@@ -2240,7 +2252,7 @@ export class MemStorage implements IStorage {
 
   async createTaskGroup(data: InsertTaskGroup): Promise<TaskGroupRow> {
     const id = randomUUID();
-    const row: TaskGroupRow = { id, name: data.name, description: data.description, input: data.input, status: (data.status as TaskGroupRow["status"]) ?? "pending", output: data.output ?? null, traceId: (data as Record<string, unknown>).traceId as string | null ?? null, createdBy: data.createdBy ?? null, startedAt: data.startedAt ?? null, completedAt: data.completedAt ?? null, createdAt: new Date() };
+    const row: TaskGroupRow = { id, name: data.name, description: data.description, input: data.input, status: (data.status as TaskGroupRow["status"]) ?? "pending", output: data.output ?? null, traceId: (data as Record<string, unknown>).traceId as string | null ?? null, createdBy: data.createdBy ?? null, startedAt: data.startedAt ?? null, completedAt: data.completedAt ?? null, createdAt: new Date(), projectId: (data as any).projectId ?? null };
     this.taskGroupsMap.set(id, row);
     return row;
   }
@@ -2429,6 +2441,7 @@ export class MemStorage implements IStorage {
       baseUrl: data.baseUrl ?? null,
       metadata: data.metadata ?? null,
       createdAt: new Date(),
+      projectId: (data as any).projectId ?? null,
     };
     this.trackerConnectionsMap.set(id, row);
     return row;
@@ -2474,6 +2487,7 @@ export class MemStorage implements IStorage {
       skillId: data.skillId,
       createdBy: data.createdBy ?? null,
       createdAt: new Date(),
+      projectId: (data as any).projectId ?? null,
     };
     this.modelSkillBindingsMap.set(id, binding);
     return binding;
@@ -2570,6 +2584,7 @@ export class MemStorage implements IStorage {
       createdAt: now,
       ownerId: data.ownerId ?? null,
       indexStatus: (data.indexStatus ?? "idle") as "idle" | "indexing" | "ready" | "error",
+      projectId: (data as any).projectId ?? null,
     };
     this.workspacesMap.set(id, row);
     return row;
