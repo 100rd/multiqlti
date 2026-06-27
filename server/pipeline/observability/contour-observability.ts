@@ -129,3 +129,8 @@ export class ContourObservabilityService {
     }
   }
 }
+
+export const contourObservability = new ContourObservabilityService(
+  new ObservabilityStore(),
+  new AlertChannel()
+);

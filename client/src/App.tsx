@@ -50,6 +50,7 @@ import ConfigSync from "@/pages/ConfigSync";
 import Activity from "@/pages/Activity";
 import ConsiliumLoopList from "@/pages/ConsiliumLoopList";
 import ConsiliumLoopDetail from "@/pages/ConsiliumLoopDetail";
+import ContourObservability from "@/pages/ContourObservability";
 
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
@@ -171,6 +172,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/memories" component={() => (
           <ErrorBoundary><Memory /></ErrorBoundary>
+        )} />
+        <Route path="/contour" component={() => (
+          <ErrorBoundary><ContourObservability /></ErrorBoundary>
         )} />
         <Route path="/task-groups/new" component={() => (
           <ErrorBoundary><CreateTaskGroup /></ErrorBoundary>
