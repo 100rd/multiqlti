@@ -96,6 +96,7 @@ import { ConflictResolutionService } from "./federation/conflict-resolution";
 import { MemoryFederationService } from "./federation/memory-federation";
 import { PipelineSyncService } from "./federation/pipeline-sync";
 import { getFederationManager } from "./federation/manager-state";
+import { runAsSystem } from "./context";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -314,15 +315,21 @@ export async function registerRoutes(
   try {
     triggerService = new TriggerService(storage);
 
+    // fireTrigger is called from background contexts (cron, file watcher, GitHub events)
+    // where no project ALS context is established. runAsSystem audits the access and
+    // allows withProject to operate cross-project (no project filter applied in system
+    // context). getPipeline validates the pipeline still exists; updateTrigger records
+    // the last-fired timestamp. Both operate cross-project in system context.
     const fireTrigger = async (trigger: import("@shared/schema").TriggerRow, payload: unknown): Promise<void> => {
-      // Fire the trigger by starting a pipeline run
-      const pipeline = await storage.getPipeline(trigger.pipelineId);
-      if (!pipeline) {
-        log(`[triggers] Pipeline not found for trigger ${trigger.id}`, "triggers");
-        return;
-      }
-      await storage.updateTrigger(trigger.id, { lastTriggeredAt: new Date() });
-      log(`[triggers] Fired trigger ${trigger.id} for pipeline ${pipeline.id}`, "triggers");
+      await runAsSystem("fire-trigger", async () => {
+        const pipeline = await storage.getPipeline(trigger.pipelineId);
+        if (!pipeline) {
+          log(`[triggers] Pipeline not found for trigger ${trigger.id}`, "triggers");
+          return;
+        }
+        await storage.updateTrigger(trigger.id, { lastTriggeredAt: new Date() });
+        log(`[triggers] Fired trigger ${trigger.id} for pipeline ${pipeline.id}`, "triggers");
+      });
     };
 
     // VETO-1 fix: pass storage as third argument so routes can look up pipeline ownership
@@ -330,8 +337,11 @@ export async function registerRoutes(
     registerWebhookRoutes(app, storage, triggerService, fireTrigger);
     webhookRoutesRegistered = true;
 
+    // Use getAllEnabledTriggersByType (cross-project, system-context) wrapped in
+    // runAsSystem so the scheduler can load triggers across ALL projects at bootstrap.
     cronScheduler = new CronScheduler({
-      getEnabledTriggersByType: (type) => storage.getEnabledTriggersByType(type),
+      getEnabledTriggersByType: (type) =>
+        runAsSystem("cron-scheduler-bootstrap", () => storage.getAllEnabledTriggersByType(type)),
       fireTrigger,
     });
     await cronScheduler.bootstrap();
@@ -340,7 +350,8 @@ export async function registerRoutes(
     await knowledgeRefreshScheduler.start();
 
     fileWatcherService = new FileWatcherService({
-      getEnabledTriggersByType: (type) => storage.getEnabledTriggersByType(type),
+      getEnabledTriggersByType: (type) =>
+        runAsSystem("file-watcher-bootstrap", () => storage.getAllEnabledTriggersByType(type)),
       fireTrigger,
     });
     await fileWatcherService.bootstrap();
@@ -425,29 +436,37 @@ export async function registerRoutes(
   // Phase 6.10 — ArgoCD auto-connect from env vars (if configured)
   await autoConnectArgoCdFromEnv();
 
-  // Seed built-in skills (idempotent — checks each by ID)
-  for (const skill of BUILTIN_SKILLS) {
-    const existing = await storage.getSkill(skill.id as string);
-    if (!existing) {
-      await storage.createSkill(skill);
+  // Seed built-in skills (idempotent — checks each by ID).
+  // Runs in system context: built-in skills have null projectId (globally shared).
+  await runAsSystem("startup-seed-builtin-skills", async () => {
+    for (const skill of BUILTIN_SKILLS) {
+      const existing = await storage.getSkill(skill.id as string);
+      if (!existing) {
+        await storage.createSkill(skill);
+      }
     }
-  }
+  });
 
-  // Seed default models
-  const existingModels = await storage.getModels();
-  if (existingModels.length === 0) {
-    for (const model of DEFAULT_MODELS) {
-      await storage.createModel(model);
+  // Seed default models. getModels() is an unscoped global select; createModel()
+  // uses withProjectInsert which sets projectId=null in system context (global row).
+  await runAsSystem("startup-seed-default-models", async () => {
+    const existingModels = await storage.getModels();
+    if (existingModels.length === 0) {
+      for (const model of DEFAULT_MODELS) {
+        await storage.createModel(model);
+      }
+      log(`Seeded ${DEFAULT_MODELS.length} default models`);
     }
-    log(`Seeded ${DEFAULT_MODELS.length} default models`);
-  }
+  });
 
   // Reconcile the DB model catalog to the LIVE discovered models so every
   // DB-catalog consumer (Workspace, pipeline, manager, dashboard, settings)
   // only sees the real subscription-CLI models. Best-effort, never blocks boot.
   try {
-    const recon = await reconcileModelCatalog(storage, gateway);
-    log(`Reconciled model catalog: ${recon.upserted} upserted, ${recon.deactivated} deactivated`);
+    await runAsSystem("startup-reconcile-model-catalog", async () => {
+      const recon = await reconcileModelCatalog(storage, gateway);
+      log(`Reconciled model catalog: ${recon.upserted} upserted, ${recon.deactivated} deactivated`);
+    });
   } catch (e) {
     log(`Model catalog reconcile skipped: ${(e as Error).message}`);
   }
@@ -455,12 +474,14 @@ export async function registerRoutes(
   // Best-effort: re-point any EXISTING pipeline stage that still references a now
   // inactive/dead model slug onto a working default. Never throws / never blocks boot.
   try {
-    const stageRecon = await reconcileExistingPipelineStages(storage);
-    if (stageRecon.stagesRepointed > 0) {
-      log(
-        `Re-pointed dead pipeline stages: ${stageRecon.stagesRepointed} stages across ${stageRecon.pipelinesUpdated} pipelines`,
-      );
-    }
+    await runAsSystem("startup-reconcile-pipeline-stages", async () => {
+      const stageRecon = await reconcileExistingPipelineStages(storage);
+      if (stageRecon.stagesRepointed > 0) {
+        log(
+          `Re-pointed dead pipeline stages: ${stageRecon.stagesRepointed} stages across ${stageRecon.pipelinesUpdated} pipelines`,
+        );
+      }
+    });
   } catch (e) {
     log(`Pipeline stage reconcile skipped: ${(e as Error).message}`);
   }
@@ -469,28 +490,33 @@ export async function registerRoutes(
   // KB_SEED_EXAMPLE=true). Idempotent; projection is best-effort.
   if (process.env.KB_SEED_EXAMPLE === "true") {
     try {
-      const seed = await seedExampleTerraformCards(storage, { resolveAdminUserId: resolveFirstAdminUserId });
-      log(
-        `Seeded example Terraform cards: ${seed.created} created, ${seed.alreadyPresent} already present ` +
-          `(workspace ${seed.workspaceId}; projection ${seed.projectionSkipped ? "skipped" : "ok"})`,
-      );
+      await runAsSystem("startup-seed-kb-example", async () => {
+        const seed = await seedExampleTerraformCards(storage, { resolveAdminUserId: resolveFirstAdminUserId });
+        log(
+          `Seeded example Terraform cards: ${seed.created} created, ${seed.alreadyPresent} already present ` +
+            `(workspace ${seed.workspaceId}; projection ${seed.projectionSkipped ? "skipped" : "ok"})`,
+        );
+      });
     } catch (e) {
       log(`Knowledge example seed skipped: ${(e as Error).message}`);
     }
   }
 
-  // Seed default pipeline template
-  const existingPipelines = await storage.getPipelines();
-  if (existingPipelines.length === 0) {
-    await storage.createPipeline({
-      name: "Full SDLC Pipeline",
-      description:
-        "Complete software development lifecycle: Planning → Architecture → Development → Testing → Code Review → Deployment → Monitoring",
-      stages: DEFAULT_PIPELINE_STAGES,
-      isTemplate: true,
-    });
-    log("Seeded default SDLC pipeline template");
-  }
+  // Seed default pipeline template. getPipelines() is an unscoped global select;
+  // createPipeline() uses withProjectInsert which sets projectId=null in system context.
+  await runAsSystem("startup-seed-default-pipeline", async () => {
+    const existingPipelines = await storage.getPipelines();
+    if (existingPipelines.length === 0) {
+      await storage.createPipeline({
+        name: "Full SDLC Pipeline",
+        description:
+          "Complete software development lifecycle: Planning → Architecture → Development → Testing → Code Review → Deployment → Monitoring",
+        stages: DEFAULT_PIPELINE_STAGES,
+        isTemplate: true,
+      });
+      log("Seeded default SDLC pipeline template");
+    }
+  });
 
   // Global pending questions endpoint (protected by /api/questions middleware above)
   app.get("/api/questions/pending", async (_req, res) => {

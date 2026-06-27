@@ -3,6 +3,7 @@ import type { Server, IncomingMessage } from "http";
 import type { WsEvent, User } from "@shared/types";
 import type { IStorage } from "../storage";
 import { authService } from "../auth/service";
+import { runAsSystem } from "../context";
 import { isVisible } from "../routes/authorize-run.js";
 
 function extractTokenFromRequest(req: IncomingMessage): string | null {
@@ -97,21 +98,28 @@ export class WsManager {
   ): Promise<boolean> {
     if (!user?.id || !this.storage) return false;
 
-    // 1) Pipeline-family path (unchanged, checked first).
-    const run = await this.storage.getPipelineRun(runId);
-    if (run) {
-      if (!isVisible(run.triggeredBy, user)) return false;
+    // WS connections survive the HTTP upgrade but the ALS context does not
+    // propagate through the socket event loop. Wrap storage lookups in
+    // runAsSystem so they have context; no project filter is applied in system
+    // context, which is correct here — we're looking up a run by ID without
+    // knowing its project yet (that's the whole point of the ownership check).
+    return runAsSystem("ws-authorize-and-subscribe", async () => {
+      // 1) Pipeline-family path (unchanged, checked first).
+      const run = await this.storage!.getPipelineRun(runId);
+      if (run) {
+        if (!isVisible(run.triggeredBy, user)) return false;
+        this.subscribe(ws, runId);
+        return true;
+      }
+
+      // 2) Task-group fallback (H3) — gate on task_groups.createdBy.
+      const group = await this.storage!.getTaskGroup(runId);
+      if (!group) return false; // unknown in both spaces → fail closed.
+      if (!isVisible(group.createdBy, user)) return false;
+
       this.subscribe(ws, runId);
       return true;
-    }
-
-    // 2) Task-group fallback (H3) — gate on task_groups.createdBy.
-    const group = await this.storage.getTaskGroup(runId);
-    if (!group) return false; // unknown in both spaces → fail closed.
-    if (!isVisible(group.createdBy, user)) return false;
-
-    this.subscribe(ws, runId);
-    return true;
+    });
   }
 
   subscribe(ws: WebSocket, runId: string): void {

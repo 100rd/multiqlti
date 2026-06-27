@@ -1,6 +1,7 @@
 import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, inArray, sql as drizzleSql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db, withProject, withProjectInsert } from "./db";
+import { unscopedSystemQuery } from "./context";
 import type { IStorage, PracticeCardFilters, MorningBriefFilters, NewsItemFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint, RunHistoryQuery, PipelineRunHistoryRow, TaskGroupHistoryRow } from "./storage";
 import {
   TASK_GROUP_V2_MAX_LIMIT,
@@ -1405,6 +1406,20 @@ export class PgStorage implements IStorage {
       .select()
       .from(triggers)
       .where(withProject(triggers, and(eq(triggers.enabled, true), eq(triggers.type, type as TriggerRow["type"]))));
+  }
+
+  /**
+   * Cross-project query: returns ALL enabled triggers of this type across every
+   * project. Intended for background/system callers (CronScheduler, FileWatcher,
+   * GitHub event handler). MUST be called within runAsSystem(). See ADR-001 §3.1(d).
+   */
+  async getAllEnabledTriggersByType(type: string): Promise<TriggerRow[]> {
+    return unscopedSystemQuery("getAllEnabledTriggersByType", () =>
+      db
+        .select()
+        .from(triggers)
+        .where(and(eq(triggers.enabled, true), eq(triggers.type, type as TriggerRow["type"]))),
+    );
   }
 
   async createTrigger(
