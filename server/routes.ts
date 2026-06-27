@@ -23,6 +23,7 @@ import { registerSandboxRoutes } from "./routes/sandbox";
 import { registerSettingsRoutes } from "./routes/settings";
 import { registerMaintenanceRoutes } from "./routes/maintenance";
 import { registerSpecializationRoutes } from "./routes/specialization";
+import { registerContourObservabilityRoutes } from "./routes/observability";
 import { registerSkillRoutes } from "./routes/skills";
 import { registerGuardrailRoutes } from "./routes/guardrails";
 import { registerDelegationRoutes } from "./routes/delegations";
@@ -159,6 +160,7 @@ export async function registerRoutes(
   app.use("/api/skill-market", requireAuth);
   app.use("/api/federation", requireAuth);
   app.use("/api/workspaces/:id/knowledge", requireAuth);
+  app.use("/api/observability", requireAuth);
 
   // Register route implementations
   registerModelRoutes(app, storage);
@@ -176,6 +178,7 @@ export async function registerRoutes(
   registerToolRoutes(app, storage);
   registerWorkspaceRoutes(app, gateway, wsManager, storage);
   registerConnectionRoutes(app, storage);
+  registerContourObservabilityRoutes(app);
   registerConnectionsYamlRoutes(app, storage);
   registerInventoryRoutes(app, storage);
   registerWorkspaceTraceRoutes(app, storage);
