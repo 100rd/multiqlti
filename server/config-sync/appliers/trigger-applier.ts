@@ -59,7 +59,7 @@ export async function applyTriggers(
           // createTrigger requires the full TriggerRow minus id/timestamps,
           // plus optional secretEncrypted.  We pass null for secretEncrypted
           // since the YAML never carries secret material.
-          const createData: Omit<TriggerRow, "id" | "createdAt" | "updatedAt" | "lastTriggeredAt"> & { secretEncrypted?: string | null } = {
+          const createData: Omit<TriggerRow, "id" | "projectId" | "createdAt" | "updatedAt" | "lastTriggeredAt"> & { secretEncrypted?: string | null } = {
             pipelineId: pipeline.id,
             type: triggerType as TriggerRow["type"],
             config: entity.config as TriggerRow["config"],

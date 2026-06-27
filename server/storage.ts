@@ -440,7 +440,7 @@ export interface IStorage {
   getTriggers(pipelineId: string): Promise<TriggerRow[]>;
   getTrigger(id: string): Promise<TriggerRow | undefined>;
   getEnabledTriggersByType(type: string): Promise<TriggerRow[]>;
-  createTrigger(data: Omit<TriggerRow, 'id' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt'> & { secretEncrypted?: string | null }): Promise<TriggerRow>;
+  createTrigger(data: Omit<TriggerRow, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt'> & { secretEncrypted?: string | null }): Promise<TriggerRow>;
   updateTrigger(id: string, updates: Partial<TriggerRow>): Promise<TriggerRow>;
   deleteTrigger(id: string): Promise<void>;
 
@@ -612,7 +612,7 @@ export interface IStorage {
 
   // ArgoCD Config
   getArgoCdConfig(): Promise<ArgoCdConfigRow | null>;
-  saveArgoCdConfig(config: Partial<InsertArgoCdConfig> & { id?: number }): Promise<ArgoCdConfigRow>;
+  saveArgoCdConfig(config: Partial<InsertArgoCdConfig>): Promise<ArgoCdConfigRow>;
   deleteArgoCdConfig(): Promise<void>;
 
   // Workspaces
@@ -2160,12 +2160,13 @@ export class MemStorage implements IStorage {
   }
 
   async createTrigger(
-    data: Omit<TriggerRow, 'id' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt'> & { secretEncrypted?: string | null },
+    data: Omit<TriggerRow, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt'> & { secretEncrypted?: string | null },
   ): Promise<TriggerRow> {
     const id = randomUUID();
     const now = new Date();
     const row: TriggerRow = {
       id,
+      projectId: null, // MemStorage has no project context; projectId is null in-memory
       pipelineId: data.pipelineId,
       type: data.type as TriggerRow["type"],
       config: (data.config ?? {}) as TriggerRow["config"],
@@ -2523,7 +2524,7 @@ export class MemStorage implements IStorage {
     return this.argoCdConfigRow;
   }
 
-  async saveArgoCdConfig(config: Partial<InsertArgoCdConfig> & { id?: number }): Promise<ArgoCdConfigRow> {
+  async saveArgoCdConfig(config: Partial<InsertArgoCdConfig>): Promise<ArgoCdConfigRow> {
     const now = new Date();
     if (this.argoCdConfigRow) {
       // Update existing
@@ -2533,9 +2534,10 @@ export class MemStorage implements IStorage {
         updatedAt: now,
       } as ArgoCdConfigRow;
     } else {
-      // Create new
+      // Create new; id is a serial auto-inc (no longer singleton id=1)
       this.argoCdConfigRow = {
-        id: config.id ?? 1,
+        id: 1, // MemStorage uses a single in-memory row; id is irrelevant here
+        projectId: null, // MemStorage has no project context
         serverUrl: config.serverUrl ?? null,
         tokenEnc: config.tokenEnc ?? null,
         verifySsl: config.verifySsl ?? true,

@@ -172,7 +172,6 @@ export function registerArgoCdSettingsRoutes(router: Router, storage: IStorage):
 
       // Upsert argocd_config row
       await storage.saveArgoCdConfig({
-        id: 1,
         serverUrl,
         tokenEnc,
         verifySsl,
@@ -207,7 +206,6 @@ export function registerArgoCdSettingsRoutes(router: Router, storage: IStorage):
 
       // Update health status
       await storage.saveArgoCdConfig({
-        id: 1,
         healthStatus,
         healthError,
         lastHealthCheckAt: new Date(),
