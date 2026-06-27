@@ -293,15 +293,27 @@ export type ChatMessage = typeof chatMessages.$inferSelect;
 
 // ─── Provider Keys ──────────────────────────────────
 
-export const providerKeys = pgTable("provider_keys", {
-  id: varchar("id")
-    .primaryKey()
-    .default(sql`gen_random_uuid()`),
-  provider: text("provider").notNull().unique(),
-  apiKeyEncrypted: text("api_key_encrypted").notNull(),
-  createdAt: timestamp("created_at").defaultNow(),
-  updatedAt: timestamp("updated_at").defaultNow(),
-});
+export const providerKeys = pgTable(
+  "provider_keys",
+  {
+    id: varchar("id")
+      .primaryKey()
+      .default(sql`gen_random_uuid()`),
+    // Per-project scoping: ADR-001 PR-0c
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    apiKeyEncrypted: text("api_key_encrypted").notNull(),
+    createdAt: timestamp("created_at").defaultNow(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (table) => ({
+    // Composite unique replaces the old global unique(provider): ADR-001 §5
+    projectProviderUniq: unique("provider_keys_project_provider_unique").on(
+      table.projectId,
+      table.provider,
+    ),
+  }),
+);
 
 export type ProviderKey = typeof providerKeys.$inferSelect;
 
@@ -431,19 +443,30 @@ export type McpServerRow = typeof mcpServers.$inferSelect;
 export const ARGOCD_HEALTH_STATUS = ['connected', 'error', 'unknown'] as const;
 export type ArgoCdHealthStatus = typeof ARGOCD_HEALTH_STATUS[number];
 
-export const argoCdConfig = pgTable('argocd_config', {
-  id: integer('id').primaryKey().default(1),
-  serverUrl: text('server_url'),
-  tokenEnc: text('token_enc'),
-  verifySsl: boolean('verify_ssl').notNull().default(true),
-  enabled: boolean('enabled').notNull().default(false),
-  mcpServerId: integer('mcp_server_id').references(() => mcpServers.id, { onDelete: 'set null' }),
-  lastHealthCheckAt: timestamp('last_health_check_at'),
-  healthStatus: text('health_status').notNull().default('unknown').$type<ArgoCdHealthStatus>(),
-  healthError: text('health_error'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow(),
-});
+export const argoCdConfig = pgTable(
+  'argocd_config',
+  {
+    // Changed from integer().default(1) singleton to serial (auto-inc) + per-project unique:
+    // ADR-001 PR-0c converts the id=1 singleton to per-project rows.
+    id: serial('id').primaryKey(),
+    // Per-project scoping: one row per project — ADR-001 §3.1(e) [R3-SEC-5]
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    serverUrl: text('server_url'),
+    tokenEnc: text('token_enc'),
+    verifySsl: boolean('verify_ssl').notNull().default(true),
+    enabled: boolean('enabled').notNull().default(false),
+    mcpServerId: integer('mcp_server_id').references(() => mcpServers.id, { onDelete: 'set null' }),
+    lastHealthCheckAt: timestamp('last_health_check_at'),
+    healthStatus: text('health_status').notNull().default('unknown').$type<ArgoCdHealthStatus>(),
+    healthError: text('health_error'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => ({
+    // One ArgoCD config per project (replaces the id=1 singleton): ADR-001 §5
+    projectUniq: unique('argocd_config_project_unique').on(table.projectId),
+  }),
+);
 
 export const insertArgoCdConfigSchema = createInsertSchema(argoCdConfig).omit({
   id: true,
@@ -725,6 +748,8 @@ export const triggers = pgTable(
     id: varchar("id")
       .primaryKey()
       .default(sql`gen_random_uuid()`),
+    // Denormalized from pipelines.projectId for direct query scoping: ADR-001 PR-0c §3.1(e)
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
     pipelineId: varchar("pipeline_id")
       .notNull()
       .references(() => pipelines.id, { onDelete: "cascade" }),
@@ -739,11 +764,13 @@ export const triggers = pgTable(
   (table) => ({
     pipelineIdIdx: index("triggers_pipeline_id_idx").on(table.pipelineId),
     enabledTypeIdx: index("triggers_enabled_type_idx").on(table.enabled, table.type),
+    projectIdIdx: index("triggers_project_id_idx").on(table.projectId),
   }),
 );
 
 export const insertTriggerSchema = createInsertSchema(triggers).omit({
   id: true,
+  projectId: true,
   createdAt: true,
   updatedAt: true,
   lastTriggeredAt: true,
@@ -1768,6 +1795,10 @@ export const mcpToolCalls = pgTable(
     id: varchar("id")
       .primaryKey()
       .default(sql`gen_random_uuid()`),
+    // Per-project scoping: ADR-001 PR-0c — resolves the column-not-found gap
+    // that would cause fail-closed withProject(mcpToolCalls) to throw. Backfilled
+    // from pipeline_runs.project_id via JOIN on pipeline_run_id.
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
     /** Nullable — tool calls may occur outside a pipeline run context. */
     pipelineRunId: varchar("pipeline_run_id"),
     /** DAG stage ID within the run, if applicable. */
@@ -1794,11 +1825,13 @@ export const mcpToolCalls = pgTable(
       table.connectionId,
       table.startedAt,
     ),
+    projectIdIdx: index("mcp_tool_calls_project_id_idx").on(table.projectId),
   }),
 );
 
 export const insertMcpToolCallSchema = createInsertSchema(mcpToolCalls).omit({
   id: true,
+  projectId: true,
   startedAt: true,
 });
 

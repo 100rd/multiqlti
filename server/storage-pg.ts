@@ -1423,7 +1423,7 @@ export class PgStorage implements IStorage {
   }
 
   async createTrigger(
-    data: Omit<TriggerRow, "id" | "createdAt" | "updatedAt" | "lastTriggeredAt"> & { secretEncrypted?: string | null },
+    data: Omit<TriggerRow, "id" | "projectId" | "createdAt" | "updatedAt" | "lastTriggeredAt"> & { secretEncrypted?: string | null },
   ): Promise<TriggerRow> {
     const [row] = await db
       .insert(triggers)
@@ -1672,18 +1672,22 @@ export class PgStorage implements IStorage {
 
 
   // ─── ArgoCD Config ────────────────────────────────────────────────────────
+  // ADR-001 PR-0c [R3-SEC-5]: converted from id=1 singleton to per-project rows.
+  // All three functions use withProject(argoCdConfig) for project-scoped access.
+  // They will throw without a project context (same as all other scoped tables);
+  // this is intentional — enforce as soon as requireProject is wired (PR-0b).
 
   async getArgoCdConfig(): Promise<ArgoCdConfigRow | null> {
-    const [row] = await db.select().from(argoCdConfig).where(eq(argoCdConfig.id, 1));
+    const [row] = await db.select().from(argoCdConfig).where(withProject(argoCdConfig));
     return row ?? null;
   }
 
-  async saveArgoCdConfig(config: Partial<InsertArgoCdConfig> & { id?: number }): Promise<ArgoCdConfigRow> {
+  async saveArgoCdConfig(config: Partial<InsertArgoCdConfig>): Promise<ArgoCdConfigRow> {
     const now = new Date();
     const existing = await this.getArgoCdConfig();
 
     if (existing) {
-      // Update existing row
+      // Update existing row for the current project
       const updates: Record<string, unknown> = { updatedAt: now };
       if (config.serverUrl !== undefined) updates.serverUrl = config.serverUrl;
       if (config.tokenEnc !== undefined) updates.tokenEnc = config.tokenEnc;
@@ -1697,15 +1701,14 @@ export class PgStorage implements IStorage {
       const [row] = await db
         .update(argoCdConfig)
         .set(updates)
-        .where(eq(argoCdConfig.id, 1))
+        .where(withProject(argoCdConfig, eq(argoCdConfig.id, existing.id)))
         .returning();
       return row;
     } else {
-      // Insert new row
+      // Insert new row; withProjectInsert injects projectId from ALS context
       const [row] = await db
         .insert(argoCdConfig)
-        .values({
-          id: config.id ?? 1,
+        .values(withProjectInsert(argoCdConfig, {
           serverUrl: config.serverUrl ?? null,
           tokenEnc: config.tokenEnc ?? null,
           verifySsl: config.verifySsl ?? true,
@@ -1714,14 +1717,14 @@ export class PgStorage implements IStorage {
           healthStatus: ((config as Record<string, unknown>).healthStatus as string) ?? "unknown",
           healthError: ((config as Record<string, unknown>).healthError as string) ?? null,
           updatedAt: now,
-        } as typeof argoCdConfig.$inferInsert)
+        } as typeof argoCdConfig.$inferInsert))
         .returning();
       return row;
     }
   }
 
   async deleteArgoCdConfig(): Promise<void> {
-    await db.delete(argoCdConfig).where(eq(argoCdConfig.id, 1));
+    await db.delete(argoCdConfig).where(withProject(argoCdConfig));
   }
 
   // ─── Workspaces ───────────────────────────────────────────────────────────

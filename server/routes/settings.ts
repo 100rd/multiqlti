@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { spawnSync } from "child_process";
 import { readFileSync } from "fs";
 import { resolve } from "path";
-import { db } from "../db";
+import { db, withProject, withProjectInsert } from "../db";
 import { providerKeys } from "@shared/schema";
 import { encrypt, decrypt } from "../crypto";
 import type { Gateway } from "../gateway/index";
@@ -164,11 +164,14 @@ export function registerSettingsRoutes(router: Router, gateway: Gateway) {
       const encrypted = encrypt(result.data.key);
       const now = new Date();
 
+      // ADR-001 PR-0c: inject projectId from ALS context via withProjectInsert.
+      // Conflict target is composite (projectId, provider) since the unique
+      // constraint on provider alone was dropped in the PR-0c migration.
       await db
         .insert(providerKeys)
-        .values({ provider, apiKeyEncrypted: encrypted, updatedAt: now })
+        .values(withProjectInsert(providerKeys, { provider, apiKeyEncrypted: encrypted, updatedAt: now }))
         .onConflictDoUpdate({
-          target: providerKeys.provider,
+          target: [providerKeys.projectId, providerKeys.provider],
           set: { apiKeyEncrypted: encrypted, updatedAt: now },
         });
 
@@ -189,7 +192,7 @@ export function registerSettingsRoutes(router: Router, gateway: Gateway) {
     }
 
     try {
-      await db.delete(providerKeys).where(eq(providerKeys.provider, provider));
+      await db.delete(providerKeys).where(withProject(providerKeys, eq(providerKeys.provider, provider)));
       // Reload gateway — if config key is set it will still work, otherwise provider is gone
       await gateway.reloadProvider(provider as CloudProvider, null);
       res.json({ ok: true, provider });
