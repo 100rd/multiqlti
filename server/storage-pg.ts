@@ -1588,22 +1588,37 @@ export class PgStorage implements IStorage {
 
   // ─── Tracker Connections (Issue Tracker Integration) ────────────────────────
 
+  /** Decrypt the api_token column for a tracker connection row. Null-safe. */
+  private decryptTrackerToken(row: typeof trackerConnections.$inferSelect): TrackerConnectionRow {
+    return {
+      ...row,
+      apiToken: row.apiToken ? decrypt(row.apiToken) : null,
+    };
+  }
+
   async getTrackerConnectionsByGroup(taskGroupId: string): Promise<TrackerConnectionRow[]> {
-    return db.select().from(trackerConnections)
+    const rows = await db.select().from(trackerConnections)
       .where(withProject(trackerConnections, eq(trackerConnections.taskGroupId, taskGroupId)));
+    return rows.map((r) => this.decryptTrackerToken(r));
   }
 
   async getTrackerConnection(id: string): Promise<TrackerConnectionRow | undefined> {
     const [row] = await db.select().from(trackerConnections)
       .where(withProject(trackerConnections, eq(trackerConnections.id, id)));
-    return row;
+    return row ? this.decryptTrackerToken(row) : undefined;
   }
 
   async createTrackerConnection(data: InsertTrackerConnection): Promise<TrackerConnectionRow> {
+    // Encrypt the token before persisting; decrypt on the way out so callers always
+    // receive plaintext regardless of storage layer.
+    const encryptedData = {
+      ...data,
+      apiToken: data.apiToken ? encrypt(data.apiToken) : (data.apiToken ?? null),
+    };
     const [row] = await db.insert(trackerConnections)
-      .values(withProjectInsert(trackerConnections, data as typeof trackerConnections.$inferInsert))
+      .values(withProjectInsert(trackerConnections, encryptedData as typeof trackerConnections.$inferInsert))
       .returning();
-    return row;
+    return this.decryptTrackerToken(row);
   }
 
   async deleteTrackerConnection(id: string): Promise<void> {

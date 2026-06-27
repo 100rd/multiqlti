@@ -15,7 +15,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { IStorage } from "../storage";
-import { encrypt, decrypt } from "../crypto";
+import { encrypt } from "../crypto";
 import { mcpClientManager } from "../tools/mcp-client";
 import { argoCdService } from "../services/argocd-service";
 import type { ArgoCdConfigRow } from "@shared/schema";
@@ -144,25 +144,32 @@ export function registerArgoCdSettingsRoutes(router: Router, storage: IStorage):
         return res.status(400).json({ error: "token is required for the initial ArgoCD configuration" });
       }
 
-      // Upsert mcp_servers row for ArgoCD
-      const decryptedToken = decrypt(tokenEnc);
+      // Upsert mcp_servers row for ArgoCD.
+      //
+      // PR-0d: We intentionally do NOT write the decrypted ARGOCD_TOKEN into
+      // mcp_servers.env.  For SSE transport the env field is not passed to the
+      // SSEClientTransport layer (see server/tools/mcp-client.ts connect()), so
+      // storing the plaintext token there is both unnecessary and a plaintext leak
+      // in the DB.
+      //
+      // TODO(PR-1): inject ARGOCD_TOKEN at MCP spawn time via the credential
+      // broker seam (CredentialProvider.issueLease → spawnBuiltinServer secrets
+      // arg) instead of persisting it to mcp_servers.env at all.
       let mcpServerId: number | null = existingRow?.mcpServerId ?? null;
 
       if (mcpServerId !== null) {
-        // Update existing MCP server row
+        // Update existing MCP server row (URL + flags only; token stays in argocd_config.token_enc)
         await storage.updateMcpServer(mcpServerId, {
           url: serverUrl,
-          env: { ARGOCD_TOKEN: decryptedToken },
           enabled,
           autoConnect: enabled,
         } as Partial<import("@shared/types").McpServerConfig>);
       } else {
-        // Create new MCP server row
+        // Create new MCP server row without env (token lives in argocd_config.token_enc)
         const inserted = await storage.createMcpServer({
           name: "argocd",
           transport: "sse",
           url: serverUrl,
-          env: { ARGOCD_TOKEN: decryptedToken },
           enabled,
           autoConnect: enabled,
           toolCount: 0,
