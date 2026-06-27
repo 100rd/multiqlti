@@ -783,6 +783,7 @@ export class MemStorage implements IStorage {
   async createModel(insert: InsertModel): Promise<Model> {
     const id = randomUUID();
     const model: Model = {
+      projectId: insert.projectId ?? null,
       id,
       name: insert.name,
       slug: insert.slug,
@@ -835,6 +836,7 @@ export class MemStorage implements IStorage {
     const id = randomUUID();
     const now = new Date();
     const pipeline: Pipeline = {
+      projectId: insert.projectId ?? null,
       id,
       name: insert.name,
       description: insert.description ?? null,
@@ -898,6 +900,7 @@ export class MemStorage implements IStorage {
   async createPipelineRun(insert: InsertPipelineRun): Promise<PipelineRun> {
     const id = randomUUID();
     const run: PipelineRun = {
+      projectId: insert.projectId ?? null,
       id,
       pipelineId: insert.pipelineId,
       workspaceId: insert.workspaceId ?? null,
@@ -943,6 +946,7 @@ export class MemStorage implements IStorage {
   ): Promise<StageExecution> {
     const id = randomUUID();
     const stage: StageExecution = {
+      projectId: insert.projectId ?? null,
       id,
       runId: insert.runId,
       stageIndex: insert.stageIndex,
@@ -1040,6 +1044,7 @@ export class MemStorage implements IStorage {
   async createQuestion(insert: InsertQuestion): Promise<Question> {
     const id = randomUUID();
     const question: Question = {
+      projectId: insert.projectId ?? null,
       id,
       runId: insert.runId,
       stageExecutionId: insert.stageExecutionId,
@@ -1094,6 +1099,7 @@ export class MemStorage implements IStorage {
   async createChatMessage(insert: InsertChatMessage): Promise<ChatMessage> {
     const id = randomUUID();
     const msg: ChatMessage = {
+      projectId: insert.projectId ?? null,
       id,
       runId: insert.runId ?? null,
       role: insert.role,
@@ -1112,6 +1118,7 @@ export class MemStorage implements IStorage {
   async createLlmRequest(data: InsertLlmRequest): Promise<LlmRequest> {
     const id = this.llmRequestIdSeq++;
     const req: LlmRequest = {
+      projectId: data.projectId ?? null,
       id,
       runId: data.runId ?? null,
       stageExecutionId: data.stageExecutionId ?? null,
@@ -1418,6 +1425,7 @@ export class MemStorage implements IStorage {
     const id = randomUUID();
     const now = new Date();
     const row: DelegationRequestRow = {
+      projectId: data.projectId ?? null,
       id,
       runId: data.runId,
       fromStage: data.fromStage,
@@ -1464,6 +1472,7 @@ export class MemStorage implements IStorage {
   async createSpecializationProfile(profile: InsertSpecializationProfile): Promise<SpecializationProfileRow> {
     const id = randomUUID();
     const row: SpecializationProfileRow = {
+      projectId: profile.projectId ?? null,
       id,
       name: profile.name,
       isBuiltIn: profile.isBuiltIn ?? false,
@@ -1501,6 +1510,7 @@ export class MemStorage implements IStorage {
     const id = (data.id as string | undefined) ?? randomUUID();
     const now = new Date();
     const skill: Skill = {
+      projectId: data.projectId ?? null,
       id,
       name: data.name,
       description: data.description ?? "",
@@ -1580,6 +1590,7 @@ export class MemStorage implements IStorage {
   async createSkillVersion(data: InsertSkillVersionType): Promise<SkillVersionRecord> {
     const id = randomUUID();
     const row: SkillVersionRow = {
+      projectId: null,
       id,
       skillId: data.skillId,
       version: data.version,
@@ -1681,6 +1692,7 @@ export class MemStorage implements IStorage {
   async createSkillTeam(data: InsertSkillTeam): Promise<SkillTeam> {
     const id = randomUUID();
     const row: SkillTeam = {
+      projectId: data.projectId ?? null,
       id,
       name: data.name,
       description: data.description ?? "",
@@ -2240,7 +2252,7 @@ export class MemStorage implements IStorage {
 
   async createTaskGroup(data: InsertTaskGroup): Promise<TaskGroupRow> {
     const id = randomUUID();
-    const row: TaskGroupRow = { id, name: data.name, description: data.description, input: data.input, status: (data.status as TaskGroupRow["status"]) ?? "pending", output: data.output ?? null, traceId: (data as Record<string, unknown>).traceId as string | null ?? null, createdBy: data.createdBy ?? null, startedAt: data.startedAt ?? null, completedAt: data.completedAt ?? null, createdAt: new Date() };
+    const row: TaskGroupRow = { id, projectId: data.projectId ?? null, name: data.name, description: data.description, input: data.input, status: (data.status as TaskGroupRow["status"]) ?? "pending", output: data.output ?? null, traceId: (data as Record<string, unknown>).traceId as string | null ?? null, createdBy: data.createdBy ?? null, startedAt: data.startedAt ?? null, completedAt: data.completedAt ?? null, createdAt: new Date() };
     this.taskGroupsMap.set(id, row);
     return row;
   }
@@ -2417,6 +2429,7 @@ export class MemStorage implements IStorage {
   async createTrackerConnection(data: InsertTrackerConnection): Promise<TrackerConnectionRow> {
     const id = randomUUID();
     const row: TrackerConnectionRow = {
+      projectId: data.projectId ?? null,
       id,
       taskGroupId: data.taskGroupId,
       provider: data.provider as TrackerConnectionRow["provider"],
@@ -2469,6 +2482,7 @@ export class MemStorage implements IStorage {
     }
     const id = randomUUID();
     const binding: ModelSkillBinding = {
+      projectId: data.projectId ?? null,
       id,
       modelId: data.modelId,
       skillId: data.skillId,
@@ -2560,6 +2574,7 @@ export class MemStorage implements IStorage {
     const id = data.id ?? randomUUID();
     const now = new Date();
     const row: WorkspaceRow = {
+      projectId: data.projectId ?? null,
       id,
       name: data.name,
       type: data.type as "local" | "remote",

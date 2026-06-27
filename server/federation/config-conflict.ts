@@ -725,6 +725,7 @@ export class InMemoryConflictStore implements IConflictStore {
   /** Seed a strategy override for a given entity kind. */
   seedStrategy(entityKind: string, strategy: ConfigConflictStrategy, alertAfterH = 24): void {
     this.strategies.set(entityKind, {
+      projectId: null,
       entityKind,
       strategy,
       markContested: strategy === "lww" || strategy === "approval_voting",
