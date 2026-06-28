@@ -119,6 +119,16 @@ export class ProviderPoolRouter {
   }
 
   routeRequest(model: Model): ProviderNode {
+    if (!model) {
+      throw new Error("Invalid model: model is null or undefined");
+    }
+    if (model.provider === null || model.provider === undefined) {
+      throw new Error("Invalid model: provider is null or undefined");
+    }
+    if (model.slug === null || model.slug === undefined) {
+      throw new Error("Invalid model: slug is null or undefined");
+    }
+
     const healthy = this.getHealthyNodes();
     if (healthy.length === 0) {
       throw new Error(
@@ -129,8 +139,25 @@ export class ProviderPoolRouter {
     const matched = healthy.filter((node) => node.provider === model.provider);
     const nodesToRoute = matched.length > 0 ? matched : healthy;
 
-    const node = nodesToRoute[this.rrIndex % nodesToRoute.length];
-    this.rrIndex++;
+    const weightedNodes: ProviderNode[] = [];
+    for (const node of nodesToRoute) {
+      let weight = node.weight;
+      if (weight === undefined || weight === null || weight <= 0) {
+        weight = 1;
+      } else {
+        weight = Math.floor(weight);
+        if (weight <= 0) {
+          weight = 1;
+        }
+      }
+      for (let i = 0; i < weight; i++) {
+        weightedNodes.push(node);
+      }
+    }
+
+    const index = Math.abs(this.rrIndex) % weightedNodes.length;
+    const node = weightedNodes[index];
+    this.rrIndex = Math.abs((this.rrIndex + 1) % 1000000);
     return node;
   }
 
@@ -165,41 +192,20 @@ export class ProviderPoolRouter {
       } else {
         errorInstance = new Error(primaryErr === null ? 'null error' : String(primaryErr));
       }
+      
+      console.error("Primary provider error:", errorInstance);
       errors.push({ providerId: this.primaryProvider.id, error: errorInstance });
 
-      // Safe error type guards
-      let isRetryable = false;
-      if (primaryErr && typeof primaryErr === 'object') {
-        const errObj = primaryErr as any;
-        isRetryable = 
-          errObj instanceof RateLimitError || 
-          errObj instanceof NetworkError ||
-          errObj.name === 'RateLimitError' ||
-          errObj.name === 'NetworkError' ||
-          errObj.status === 429 ||
-          (typeof errObj.message === 'string' && (
-            errObj.message.includes('429') ||
-            errObj.message.toLowerCase().includes('rate limit')
-          )) ||
-          // Non-standard error
-          (errObj.name !== 'Error' && errObj.name !== 'TypeError' && errObj.name !== 'RangeError' && errObj.name !== 'ReferenceError' && errObj.name !== 'SyntaxError');
-      } else {
-        // Null or non-object errors trigger fallback
-        isRetryable = true;
-      }
-
-      if (isRetryable) {
-        try {
-          return await this.fallbackProvider.generate(request);
-        } catch (fallbackErr: any) {
-          let fallbackErrorInstance: Error;
-          if (fallbackErr instanceof Error) {
-            fallbackErrorInstance = fallbackErr;
-          } else {
-            fallbackErrorInstance = new Error(fallbackErr === null ? 'null error' : String(fallbackErr));
-          }
-          errors.push({ providerId: this.fallbackProvider.id, error: fallbackErrorInstance });
+      try {
+        return await this.fallbackProvider.generate(request);
+      } catch (fallbackErr: any) {
+        let fallbackErrorInstance: Error;
+        if (fallbackErr instanceof Error) {
+          fallbackErrorInstance = fallbackErr;
+        } else {
+          fallbackErrorInstance = new Error(fallbackErr === null ? 'null error' : String(fallbackErr));
         }
+        errors.push({ providerId: this.fallbackProvider.id, error: fallbackErrorInstance });
       }
     }
 
