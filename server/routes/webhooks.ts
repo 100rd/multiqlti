@@ -31,11 +31,14 @@ export function registerWebhookRoutes(
   startRateLimitCleanup();
 
   // POST /api/webhooks/:triggerId — generic webhook receiver
+  // PUBLIC endpoint: no requireProject, no x-project-id header.
+  // C-1: getTrigger and getSecret must run inside runAsSystem so withProject
+  // (fail-closed) does not throw "no request context" on every incoming webhook.
   app.post("/api/webhooks/:triggerId", async (req, res) => {
     try {
       await handleWebhookRequest(req, res, {
-        getTrigger: (id) => storage.getTrigger(id),
-        getSecret: (id) => triggerService.getSecret(id),
+        getTrigger: (id) => runAsSystem("webhook-get-trigger", () => storage.getTrigger(id)),
+        getSecret:  (id) => runAsSystem("webhook-get-secret",  () => triggerService.getSecret(id)),
         fireTrigger,
       });
     } catch (e) {
@@ -49,6 +52,8 @@ export function registerWebhookRoutes(
   });
 
   // POST /api/github-events — GitHub webhook event router
+  // PUBLIC endpoint: no requireProject, no x-project-id header.
+  // C-2: getSecret must run inside runAsSystem (same reason as C-1).
   app.post("/api/github-events", async (req, res) => {
     try {
       const result = await handleGitHubEvent(
@@ -63,7 +68,8 @@ export function registerWebhookRoutes(
             runAsSystem("github-event-trigger-lookup", () =>
               storage.getAllEnabledTriggersByType(type),
             ),
-          getSecret: (id) => triggerService.getSecret(id),
+          getSecret: (id) =>
+            runAsSystem("github-event-get-secret", () => triggerService.getSecret(id)),
           fireTrigger,
         },
       );

@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
-import { db } from "../db";
-import { runAsSystem } from "../context";
+import { db, withProject, withProjectInsert } from "../db";
+import { runAsSystem, unscopedSystemQuery } from "../context";
 import { remoteAgents, a2aTasks } from "@shared/schema";
 import { encrypt, decrypt } from "../crypto";
 import { A2AClient } from "./a2a-client";
@@ -51,16 +51,20 @@ export class RemoteAgentManager {
 
   /** Load all agents from DB and auto-connect those flagged for it. */
   async initialize(): Promise<void> {
-    // listAgents() is a cross-project query (remote agents span all projects).
-    // runAsSystem establishes the required ALS context and provides an audit trail.
-    const agents = await runAsSystem("remote-agent-manager-init", () => this.listAgents());
-    for (const agent of agents) {
-      if (agent.autoConnect && agent.enabled) {
-        await this.connectAgent(agent.id).catch(() => {
-          // Agent may be unreachable at startup -- continue with others
-        });
+    // Wrap the entire init (getAllAgents + auto-connect loop) in runAsSystem so
+    // that getAllAgents' unscopedSystemQuery assertion passes, and all subsequent
+    // manager calls (getAgent, connectAgent) run in system context where
+    // withProject strips the project filter and returns the id-only condition.
+    await runAsSystem("remote-agent-manager-init", async () => {
+      const agents = await this.getAllAgents();
+      for (const agent of agents) {
+        if (agent.autoConnect && agent.enabled) {
+          await this.connectAgent(agent.id).catch(() => {
+            // Agent may be unreachable at startup -- continue with others
+          });
+        }
       }
-    }
+    });
     this.startHeartbeat(60_000);
   }
 
@@ -88,23 +92,27 @@ export class RemoteAgentManager {
       // Agent may be offline -- register anyway with status offline
     }
 
+    // H-5: withProjectInsert stamps projectId from the current ALS context
+    // (the POST route runs under requireProject, so context is always present).
     const [created] = await db
       .insert(remoteAgents)
-      .values({
-        name: input.name,
-        environment: input.environment,
-        transport: input.transport,
-        endpoint: input.endpoint,
-        cluster: input.cluster ?? null,
-        namespace: input.namespace ?? null,
-        labels: input.labels ?? null,
-        // Encrypt the bearer token before persisting (PR-0d: encrypt plaintext authTokenEnc).
-        authTokenEnc: input.authTokenEnc ? encrypt(input.authTokenEnc) : null,
-        enabled: input.enabled ?? true,
-        autoConnect: input.autoConnect ?? false,
-        status: agentCard ? "online" : "offline",
-        agentCard: agentCard as unknown as Record<string, unknown> | null,
-      })
+      .values(
+        withProjectInsert(remoteAgents, {
+          name: input.name,
+          environment: input.environment,
+          transport: input.transport,
+          endpoint: input.endpoint,
+          cluster: input.cluster ?? null,
+          namespace: input.namespace ?? null,
+          labels: input.labels ?? null,
+          // Encrypt the bearer token before persisting (PR-0d: encrypt plaintext authTokenEnc).
+          authTokenEnc: input.authTokenEnc ? encrypt(input.authTokenEnc) : null,
+          enabled: input.enabled ?? true,
+          autoConnect: input.autoConnect ?? false,
+          status: agentCard ? "online" : "offline",
+          agentCard: agentCard as unknown as Record<string, unknown> | null,
+        }),
+      )
       .returning();
 
     return this.rowToConfig(created);
@@ -112,7 +120,11 @@ export class RemoteAgentManager {
 
   async unregisterAgent(agentId: string): Promise<void> {
     this.clients.delete(agentId);
-    await db.delete(remoteAgents).where(eq(remoteAgents.id, agentId));
+    // H-4: scope the DELETE to the current project so project A cannot delete
+    // project B's agent by guessing an ID.
+    await db
+      .delete(remoteAgents)
+      .where(withProject(remoteAgents, eq(remoteAgents.id, agentId)));
   }
 
   // ── Connection ─────────────────────────────────────────────────────
@@ -132,6 +144,9 @@ export class RemoteAgentManager {
 
     this.clients.set(agentId, client);
 
+    // H-4: scope the UPDATE so this cannot modify a cross-project agent.
+    // In system context (startup/heartbeat) withProject strips the project filter
+    // and applies only the id condition — correct for system-level operations.
     await db
       .update(remoteAgents)
       .set({
@@ -142,15 +157,16 @@ export class RemoteAgentManager {
           (health.agentCard as unknown as Record<string, unknown>) ?? null,
         updatedAt: new Date(),
       })
-      .where(eq(remoteAgents.id, agentId));
+      .where(withProject(remoteAgents, eq(remoteAgents.id, agentId)));
   }
 
   async disconnectAgent(agentId: string): Promise<void> {
     this.clients.delete(agentId);
+    // H-4: scope the UPDATE to the current project.
     await db
       .update(remoteAgents)
       .set({ status: "offline" as const, updatedAt: new Date() })
-      .where(eq(remoteAgents.id, agentId));
+      .where(withProject(remoteAgents, eq(remoteAgents.id, agentId)));
   }
 
   // ── Routing ────────────────────────────────────────────────────────
@@ -196,17 +212,20 @@ export class RemoteAgentManager {
     const client = this.clients.get(agentId);
     if (!client) throw new Error(`Agent ${agentId} not connected`);
 
-    // Persist task before sending
+    // H-6: withProjectInsert stamps projectId on the task row from ALS context
+    // (dispatch routes run under requireProject).
     const [task] = await db
       .insert(a2aTasks)
-      .values({
-        agentId,
-        runId: options?.runId ?? null,
-        stageExecutionId: options?.stageExecutionId ?? null,
-        skill: options?.skill ?? null,
-        input: message as unknown as Record<string, unknown>,
-        status: "submitted",
-      })
+      .values(
+        withProjectInsert(a2aTasks, {
+          agentId,
+          runId: options?.runId ?? null,
+          stageExecutionId: options?.stageExecutionId ?? null,
+          skill: options?.skill ?? null,
+          input: message as unknown as Record<string, unknown>,
+          status: "submitted",
+        }),
+      )
       .returning();
 
     const start = Date.now();
@@ -248,19 +267,49 @@ export class RemoteAgentManager {
 
   // ── Query ──────────────────────────────────────────────────────────
 
+  /**
+   * List agents scoped to the current project (per-project HTTP routes).
+   *
+   * MUST be called in a per-project request context (requireProject sets it).
+   * withProject(remoteAgents) injects WHERE projectId = ? from the ALS context.
+   * In system context this would throw (no bare withProject without condition) —
+   * use getAllAgents() instead for background/heartbeat callers.
+   */
   async listAgents(): Promise<RemoteAgentConfig[]> {
     const rows = await db
       .select()
       .from(remoteAgents)
+      .where(withProject(remoteAgents))
       .orderBy(remoteAgents.name);
     return rows.map((r) => this.rowToConfig(r));
   }
 
+  /**
+   * List ALL agents across all projects — for system/background callers only.
+   *
+   * MUST be called inside runAsSystem(reason, fn) — unscopedSystemQuery enforces
+   * this structurally. Mirrors the getAllEnabledTriggersByType pattern.
+   */
+  private async getAllAgents(): Promise<RemoteAgentConfig[]> {
+    const rows = await unscopedSystemQuery("agent-heartbeat-list", () =>
+      db.select().from(remoteAgents).orderBy(remoteAgents.name),
+    );
+    return rows.map((r) => this.rowToConfig(r));
+  }
+
+  /**
+   * Get a single agent by ID, scoped to the current project.
+   *
+   * H-4: withProject adds AND projectId = ? so cross-project ID guessing
+   * returns null (→ 404 in routes) instead of leaking another project's config.
+   * In system context withProject strips the project filter, returning only
+   * the id condition — correct for startup/heartbeat callers.
+   */
   async getAgent(agentId: string): Promise<RemoteAgentConfig | null> {
     const [row] = await db
       .select()
       .from(remoteAgents)
-      .where(eq(remoteAgents.id, agentId));
+      .where(withProject(remoteAgents, eq(remoteAgents.id, agentId)));
     return row ? this.rowToConfig(row) : null;
   }
 
@@ -272,21 +321,25 @@ export class RemoteAgentManager {
 
   private startHeartbeat(intervalMs: number): void {
     this.heartbeatInterval = setInterval(async () => {
-      // listAgents() reads across all projects; runAsSystem provides context + audit.
-      const agents = await runAsSystem("remote-agent-heartbeat", () => this.listAgents());
-      for (const agent of agents) {
-        if (!agent.enabled) continue;
-        const health = await this.discovery.healthCheck(agent);
-        await db
-          .update(remoteAgents)
-          .set({
-            status: health.status,
-            lastHeartbeatAt: new Date(),
-            healthError: health.error ?? null,
-            updatedAt: new Date(),
-          })
-          .where(eq(remoteAgents.id, agent.id));
-      }
+      // Wrap the entire heartbeat body in runAsSystem so that getAllAgents()
+      // (which asserts system context via unscopedSystemQuery) and any DB
+      // writes all execute under the same audit-trail context.
+      await runAsSystem("remote-agent-heartbeat", async () => {
+        const agents = await this.getAllAgents();
+        for (const agent of agents) {
+          if (!agent.enabled) continue;
+          const health = await this.discovery.healthCheck(agent);
+          await db
+            .update(remoteAgents)
+            .set({
+              status: health.status,
+              lastHeartbeatAt: new Date(),
+              healthError: health.error ?? null,
+              updatedAt: new Date(),
+            })
+            .where(eq(remoteAgents.id, agent.id));
+        }
+      });
     }, intervalMs);
   }
 
@@ -304,8 +357,9 @@ export class RemoteAgentManager {
       cluster: row.cluster,
       namespace: row.namespace,
       labels: row.labels as Record<string, string> | null,
-      // Decrypt at the DB boundary so all callers receive the plaintext token.
-      // The DB column stores AES-256-GCM ciphertext; the config field holds plaintext.
+      // Decrypt at the DB boundary so internal callers (connectAgent) receive the
+      // plaintext token. HTTP responses MUST strip this via toPublicAgent() in the
+      // route layer (H-3 fix in routes/remote-agents.ts).
       authTokenEnc: row.authTokenEnc ? decrypt(row.authTokenEnc) : null,
       enabled: row.enabled,
       autoConnect: row.autoConnect,

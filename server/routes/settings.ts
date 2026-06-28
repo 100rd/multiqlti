@@ -7,6 +7,7 @@ import { resolve } from "path";
 import { db, withProject, withProjectInsert } from "../db";
 import { providerKeys } from "@shared/schema";
 import { encrypt, decrypt } from "../crypto";
+import { unscopedSystemQuery } from "../context";
 import type { Gateway } from "../gateway/index";
 import { configLoader } from "../config/loader";
 import type { VersionsResponse } from "@shared/types";
@@ -119,10 +120,16 @@ async function probePostgresVersion(): Promise<string | null> {
 }
 
 export function registerSettingsRoutes(router: Router, gateway: Gateway) {
-  /** GET /api/settings/providers — list providers with config status */
+  /**
+   * GET /api/settings/providers — list providers with config status.
+   *
+   * M-7 fix: the query was previously unscoped (`db.select().from(providerKeys)`)
+   * behind requireProject, returning metadata from ALL projects. Added
+   * `.where(withProject(providerKeys))` to scope it to the current project.
+   */
   router.get("/api/settings/providers", async (_req, res) => {
     try {
-      const rows = await db.select().from(providerKeys);
+      const rows = await db.select().from(providerKeys).where(withProject(providerKeys));
       const dbMap = new Map(rows.map((r) => [r.provider, r]));
 
       const result = CLOUD_PROVIDERS.map((provider) => {
@@ -239,10 +246,25 @@ export function registerSettingsRoutes(router: Router, gateway: Gateway) {
   });
 }
 
-/** Load DB-stored keys and return a map of provider → decrypted key. */
+/**
+ * Load DB-stored keys and return a map of provider → decrypted key.
+ *
+ * M-8 fix: the query was unscoped and decrypted ALL projects' keys. It is now
+ * guarded by unscopedSystemQuery, which throws if called outside a runAsSystem()
+ * context. Callers MUST use:
+ *
+ *   await runAsSystem("startup-load-provider-keys", () => loadProviderKeysFromDb())
+ *
+ * Per-project gateway key resolution will move to the Phase-1 credential broker;
+ * this function is a transitional helper for startup-time gateway seeding only.
+ */
 export async function loadProviderKeysFromDb(): Promise<Map<string, string>> {
   try {
-    const rows = await db.select().from(providerKeys);
+    // unscopedSystemQuery throws if not called inside runAsSystem() — this ensures
+    // callers always establish an explicit audit context before reading all-project keys.
+    const rows = await unscopedSystemQuery("gateway-load-provider-keys", () =>
+      db.select().from(providerKeys),
+    );
     const map = new Map<string, string>();
     for (const row of rows) {
       try {

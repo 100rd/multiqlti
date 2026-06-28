@@ -12,9 +12,14 @@ const mockDb = {
 
 vi.mock("../../server/db", () => ({
   db: mockDb,
+  // H-5/H-6/H-4 fix: pass through so the manager can call them without error.
+  // Project-scoping behaviour is tested separately in remote-agents-isolation.test.ts.
+  withProject: (_t: unknown, cond?: unknown) => cond ?? {},
+  withProjectInsert: (_t: unknown, data: unknown) => data,
 }));
 
-// Build a chainable query-builder mock that mimics drizzle's API
+// Build a chainable query-builder mock that mimics drizzle's API.
+// Handles .values().returning(), .set().where(), and .where().orderBy() chains.
 function createQueryChain(opts: {
   onReturning?: () => Record<string, unknown>[];
   onExecute?: () => Record<string, unknown>[];
@@ -39,6 +44,17 @@ function createQueryChain(opts: {
     return opts.onReturning?.() ?? [];
   });
   return chain;
+}
+
+/**
+ * Helper for select mocks that need to support .where().orderBy() chaining.
+ * Used for listAgents() and resolveAgent() which now call withProject() first.
+ */
+function chainableSelect(rows: unknown[]) {
+  const self: Record<string, unknown> = {};
+  self.where = vi.fn().mockReturnValue(self);
+  self.orderBy = vi.fn().mockReturnValue(rows);
+  return self;
 }
 
 // ─── Mock A2AClient ─────────────────────────────────────────────────────────
@@ -271,6 +287,7 @@ describe("RemoteAgentManager", () => {
   describe("resolveAgent", () => {
     it("resolves by explicit agentId", async () => {
       const row = makeAgentRow({ id: "agent-x" });
+      // getAgent() calls .select().from().where() — use createQueryChain
       const selectChain = createQueryChain({ onExecute: () => [row] });
       mockDb.select.mockReturnValue({
         from: vi.fn().mockReturnValue(selectChain),
@@ -295,10 +312,9 @@ describe("RemoteAgentManager", () => {
         labels: { role: "coder" },
         enabled: true,
       });
+      // listAgents() calls .select().from().where().orderBy() — use chainableSelect
       mockDb.select.mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          orderBy: vi.fn().mockReturnValue([row1, row2]),
-        }),
+        from: vi.fn().mockReturnValue(chainableSelect([row1, row2])),
       });
 
       const mgr = await getManager();
@@ -312,9 +328,7 @@ describe("RemoteAgentManager", () => {
 
     it("returns null when no agent matches selector", async () => {
       mockDb.select.mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          orderBy: vi.fn().mockReturnValue([]),
-        }),
+        from: vi.fn().mockReturnValue(chainableSelect([])),
       });
 
       const mgr = await getManager();
@@ -328,9 +342,7 @@ describe("RemoteAgentManager", () => {
     it("falls back to any online agent when no selector given", async () => {
       const row = makeAgentRow({ id: "fallback", status: "online" });
       mockDb.select.mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          orderBy: vi.fn().mockReturnValue([row]),
-        }),
+        from: vi.fn().mockReturnValue(chainableSelect([row])),
       });
 
       const mgr = await getManager();
@@ -452,14 +464,14 @@ describe("RemoteAgentManager", () => {
         enabled: true,
       });
 
-      // listAgents call
+      // getAllAgents() (cross-project) calls .select().from().orderBy() — no .where()
       mockDb.select.mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
           orderBy: vi.fn().mockReturnValue([row1, row2]),
         }),
       });
 
-      // connectAgent -> getAgent call
+      // connectAgent -> getAgent() calls .select().from().where() — use createQueryChain
       const agentSelectChain = createQueryChain({
         onExecute: () => [row1],
       });
@@ -508,10 +520,9 @@ describe("RemoteAgentManager", () => {
   describe("listAgents", () => {
     it("returns mapped agent configs from DB rows", async () => {
       const row = makeAgentRow({ id: "list-1", name: "alpha" });
+      // listAgents() now calls .select().from().where().orderBy() — use chainableSelect
       mockDb.select.mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          orderBy: vi.fn().mockReturnValue([row]),
-        }),
+        from: vi.fn().mockReturnValue(chainableSelect([row])),
       });
 
       const mgr = await getManager();

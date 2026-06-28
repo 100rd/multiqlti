@@ -39,6 +39,18 @@ const SubmitWorkSchema = z.object({
   trackerBaseUrl: z.string().url().max(2000).optional(),
 });
 
+// ─── DTO helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * H-3 (tracker): strip the apiToken from list responses so the plaintext
+ * credential is never returned over the wire. Callers receive hasApiToken
+ * to know whether a token is configured without seeing its value.
+ */
+function toPublicTrackerConnection(conn: Record<string, unknown>): Record<string, unknown> {
+  const { apiToken, ...rest } = conn;
+  return { ...rest, hasApiToken: apiToken != null };
+}
+
 // ─── Route Registration ─────────────────────────────────────────────────────
 
 export function registerTrackerRoutes(
@@ -64,10 +76,14 @@ export function registerTrackerRoutes(
   );
 
   // List tracker connections for a task group
+  // H-3: redact apiToken — callers only need to know whether a token is configured.
   router.get("/api/tracker-connections/:groupId", async (req, res) => {
     try {
       const conns = await storage.getTrackerConnectionsByGroup(req.params.groupId);
-      res.json(conns);
+      const safe = (conns as unknown as Array<Record<string, unknown>>).map(
+        toPublicTrackerConnection,
+      );
+      res.json(safe);
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }

@@ -18,10 +18,11 @@
 import type { Router } from "express";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
-import { db } from "../db";
+import { db, withProject } from "../db";
 import { remoteAgents } from "@shared/schema";
 import { encrypt } from "../crypto";
 import type { RemoteAgentManager } from "../remote-agents/remote-agent-manager";
+import type { RemoteAgentConfig } from "@shared/types";
 
 // ─── Validation schemas ───────────────────────────────────────────────────────
 
@@ -58,6 +59,25 @@ const DispatchSchema = z.object({
   skill: z.string().optional(),
 });
 
+// ─── DTO helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * H-3 fix: strips the decrypted authTokenEnc from HTTP responses and replaces
+ * it with a boolean hasAuthToken so callers know whether a token is configured
+ * without receiving the plaintext credential.
+ *
+ * Internal callers (connectAgent, discovery) continue to receive the plaintext
+ * via rowToConfig() — only the HTTP response boundary is sanitised here.
+ */
+type PublicAgentConfig = Omit<RemoteAgentConfig, "authTokenEnc"> & {
+  hasAuthToken: boolean;
+};
+
+function toPublicAgent(agent: RemoteAgentConfig): PublicAgentConfig {
+  const { authTokenEnc, ...rest } = agent;
+  return { ...rest, hasAuthToken: authTokenEnc != null };
+}
+
 // ─── Route registration ───────────────────────────────────────────────────────
 
 export function registerRemoteAgentRoutes(
@@ -77,7 +97,8 @@ export function registerRemoteAgentRoutes(
     }
     try {
       const agents = await manager!.listAgents();
-      return res.json(agents);
+      // H-3: strip plaintext authTokenEnc from all list responses.
+      return res.json(agents.map(toPublicAgent));
     } catch (e) {
       return res.status(500).json({ error: (e as Error).message });
     }
@@ -103,7 +124,8 @@ export function registerRemoteAgentRoutes(
     }
     try {
       const agent = await manager!.registerAgent(parse.data);
-      return res.status(201).json(agent);
+      // H-3: strip plaintext authTokenEnc — caller just sent it, no need to echo it back.
+      return res.status(201).json(toPublicAgent(agent));
     } catch (e) {
       return res.status(500).json({ error: (e as Error).message });
     }
@@ -146,11 +168,13 @@ export function registerRemoteAgentRoutes(
         .json({ error: "Remote agent subsystem is not available" });
     }
     try {
+      // H-4: getAgent() uses withProject — returns null for cross-project agents.
       const agent = await manager!.getAgent(req.params.id);
       if (!agent) {
         return res.status(404).json({ error: "Agent not found" });
       }
-      return res.json(agent);
+      // H-3: strip plaintext authTokenEnc.
+      return res.json(toPublicAgent(agent));
     } catch (e) {
       return res.status(500).json({ error: (e as Error).message });
     }
@@ -175,6 +199,7 @@ export function registerRemoteAgentRoutes(
       });
     }
     try {
+      // H-4: getAgent() is project-scoped; cross-project IDs return null → 404.
       const existing = await manager!.getAgent(req.params.id);
       if (!existing) {
         return res.status(404).json({ error: "Agent not found" });
@@ -198,13 +223,17 @@ export function registerRemoteAgentRoutes(
       if (data.autoConnect !== undefined)
         updateSet.autoConnect = data.autoConnect;
 
+      // H-4: scope the UPDATE to the current project so a cross-project actor
+      // cannot modify another project's agent by supplying its ID.
       await db
         .update(remoteAgents)
         .set(updateSet)
-        .where(eq(remoteAgents.id, req.params.id));
+        .where(withProject(remoteAgents, eq(remoteAgents.id, req.params.id)));
 
+      // H-4: getAgent() is project-scoped here too.
       const updated = await manager!.getAgent(req.params.id);
-      return res.json(updated);
+      // H-3: strip plaintext authTokenEnc from update response.
+      return res.json(updated ? toPublicAgent(updated) : null);
     } catch (e) {
       return res.status(500).json({ error: (e as Error).message });
     }
@@ -219,6 +248,7 @@ export function registerRemoteAgentRoutes(
         .json({ error: "Remote agent subsystem is not available" });
     }
     try {
+      // H-4: unregisterAgent() uses withProject — safe for cross-project IDs.
       await manager!.unregisterAgent(req.params.id);
       return res.status(204).end();
     } catch (e) {
@@ -235,6 +265,7 @@ export function registerRemoteAgentRoutes(
         .json({ error: "Remote agent subsystem is not available" });
     }
     try {
+      // H-4: getAgent() is project-scoped — cross-project IDs return null → 404.
       const agent = await manager!.getAgent(req.params.id);
       if (!agent) {
         return res.status(404).json({ error: "Agent not found" });
@@ -257,6 +288,7 @@ export function registerRemoteAgentRoutes(
         .json({ error: "Remote agent subsystem is not available" });
     }
     try {
+      // H-4: getAgent() is project-scoped — cross-project IDs return null → 404.
       const agent = await manager!.getAgent(req.params.id);
       if (!agent) {
         return res.status(404).json({ error: "Agent not found" });
@@ -283,6 +315,7 @@ export function registerRemoteAgentRoutes(
         .json({ error: "Remote agent subsystem is not available" });
     }
     try {
+      // H-4: getAgent() is project-scoped — cross-project IDs return null → 404.
       const agent = await manager!.getAgent(req.params.id);
       if (!agent) {
         return res.status(404).json({ error: "Agent not found" });
@@ -325,6 +358,7 @@ export function registerRemoteAgentRoutes(
       });
     }
     try {
+      // H-4: getAgent() is project-scoped — cross-project IDs return null → 404.
       const agent = await manager!.getAgent(req.params.id);
       if (!agent) {
         return res.status(404).json({ error: "Agent not found" });
