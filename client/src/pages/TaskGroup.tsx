@@ -500,7 +500,7 @@ export default function TaskGroupPage() {
   const [, params] = useRoute("/task-groups/:id");
   const id = params?.id ?? "";
 
-  const { data, isLoading } = useTaskGroup(id);
+  const { data, isLoading, isError, error } = useTaskGroup(id);
   const events = useTaskGroupEvents(id);
   const iterations = useTaskGroupIterations(id);
   const startMutation = useStartTaskGroupRun(id);
@@ -516,6 +516,30 @@ export default function TaskGroupPage() {
   useEffect(() => {
     activityEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [events.activity.length]);
+
+  // An error (403 owner-gate, 404 deleted/missing, …) must surface — otherwise
+  // `!data` falls through to the loading branch and the page spins forever.
+  if (isError) {
+    const message =
+      error instanceof Error ? error.message : "Failed to load task group";
+    const notFound = /not found/i.test(message);
+    const forbidden = /forbidden/i.test(message);
+    return (
+      <div className="p-6 space-y-3">
+        <h1 className="text-lg font-semibold">
+          {notFound
+            ? "Task group not found"
+            : forbidden
+              ? "You don't have access to this task group"
+              : "Couldn't load this task group"}
+        </h1>
+        <p className="text-sm text-muted-foreground">{message}</p>
+        <Link href="/task-groups">
+          <Button variant="outline" size="sm">Back to task groups</Button>
+        </Link>
+      </div>
+    );
+  }
 
   if (isLoading || !data) {
     return <div className="p-6 text-muted-foreground">Loading...</div>;

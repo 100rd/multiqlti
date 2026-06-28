@@ -7,6 +7,7 @@ interface ProjectContextValue {
   currentProject: Project | null;
   isLoadingProjects: boolean;
   selectProject: (projectId: string) => void;
+  deleteProject: (projectId: string) => Promise<void>;
   refreshProjects: () => Promise<void>;
 }
 
@@ -48,6 +49,18 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }
   }, [fetchProjects]);
 
+  const deleteProject = useCallback(async (projectId: string) => {
+    // Server enforces owner-or-admin; cascade FKs remove all dependent rows.
+    await apiRequest("DELETE", `/api/projects/${projectId}`);
+    // If the deleted project was the active one, drop the stale selection so
+    // fetchProjects() can re-seed currentProject from what's left.
+    if (localStorage.getItem("project_id") === projectId) {
+      localStorage.removeItem("project_id");
+      setCurrentProject(null);
+    }
+    await fetchProjects();
+  }, [fetchProjects]);
+
   const selectProject = useCallback((projectId: string) => {
     const p = projects.find(p => p.id === projectId);
     if (p) {
@@ -59,7 +72,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }, [projects]);
 
   return (
-    <ProjectContext.Provider value={{ projects, currentProject, isLoadingProjects, selectProject, refreshProjects: fetchProjects }}>
+    <ProjectContext.Provider value={{ projects, currentProject, isLoadingProjects, selectProject, deleteProject, refreshProjects: fetchProjects }}>
       {children}
     </ProjectContext.Provider>
   );
