@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { ChevronDown, ChevronUp, Plus, Trash2, TestTube } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { buildAuthHeaders } from "@/lib/projectHeaders";
 import type { StageGuardrail, GuardrailType, GuardrailOnFail, GuardrailConfig } from "@shared/types";
 
 interface GuardrailEditorProps {
@@ -84,7 +85,7 @@ function GuardrailCard({
     try {
       const res = await fetch("/api/guardrails/test", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: buildAuthHeaders(true),
         body: JSON.stringify({ guardrail, sampleOutput: testOutput }),
       });
       const data = await res.json() as { passed: boolean; reason?: string };

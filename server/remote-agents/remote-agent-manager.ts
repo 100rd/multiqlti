@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { db } from "../db";
+import { db, withProject, withProjectList } from "../db";
 import { runAsSystem } from "../context";
 import { remoteAgents, a2aTasks } from "@shared/schema";
 import { encrypt, decrypt } from "../crypto";
@@ -112,7 +112,9 @@ export class RemoteAgentManager {
 
   async unregisterAgent(agentId: string): Promise<void> {
     this.clients.delete(agentId);
-    await db.delete(remoteAgents).where(eq(remoteAgents.id, agentId));
+    // Project-scoped: prevents a cross-tenant DELETE-by-id IDOR (the route handler
+    // does not pre-fetch via the scoped getAgent).
+    await db.delete(remoteAgents).where(withProject(remoteAgents, eq(remoteAgents.id, agentId)));
   }
 
   // ── Connection ─────────────────────────────────────────────────────
@@ -252,6 +254,7 @@ export class RemoteAgentManager {
     const rows = await db
       .select()
       .from(remoteAgents)
+      .where(withProjectList(remoteAgents))
       .orderBy(remoteAgents.name);
     return rows.map((r) => this.rowToConfig(r));
   }
@@ -260,7 +263,7 @@ export class RemoteAgentManager {
     const [row] = await db
       .select()
       .from(remoteAgents)
-      .where(eq(remoteAgents.id, agentId));
+      .where(withProject(remoteAgents, eq(remoteAgents.id, agentId)));
     return row ? this.rowToConfig(row) : null;
   }
 

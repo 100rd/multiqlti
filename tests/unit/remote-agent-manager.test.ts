@@ -12,6 +12,12 @@ const mockDb = {
 
 vi.mock("../../server/db", () => ({
   db: mockDb,
+  // Scoping helpers are pure WHERE-fragment builders; the chainable mock ignores
+  // the condition it's handed, so stubs that echo the (optional) condition suffice.
+  withProject: (_table: unknown, condition?: unknown) => condition,
+  withProjectList: (_table: unknown, condition?: unknown) => condition,
+  withProjectOrGlobal: (_table: unknown, condition?: unknown) => condition,
+  withProjectInsert: (_table: unknown, data: unknown) => data,
 }));
 
 // Build a chainable query-builder mock that mimics drizzle's API
@@ -297,6 +303,7 @@ describe("RemoteAgentManager", () => {
       });
       mockDb.select.mockReturnValue({
         from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnThis(),
           orderBy: vi.fn().mockReturnValue([row1, row2]),
         }),
       });
@@ -313,6 +320,7 @@ describe("RemoteAgentManager", () => {
     it("returns null when no agent matches selector", async () => {
       mockDb.select.mockReturnValue({
         from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnThis(),
           orderBy: vi.fn().mockReturnValue([]),
         }),
       });
@@ -329,6 +337,7 @@ describe("RemoteAgentManager", () => {
       const row = makeAgentRow({ id: "fallback", status: "online" });
       mockDb.select.mockReturnValue({
         from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnThis(),
           orderBy: vi.fn().mockReturnValue([row]),
         }),
       });
@@ -455,6 +464,7 @@ describe("RemoteAgentManager", () => {
       // listAgents call
       mockDb.select.mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnThis(),
           orderBy: vi.fn().mockReturnValue([row1, row2]),
         }),
       });
@@ -510,6 +520,7 @@ describe("RemoteAgentManager", () => {
       const row = makeAgentRow({ id: "list-1", name: "alpha" });
       mockDb.select.mockReturnValue({
         from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnThis(),
           orderBy: vi.fn().mockReturnValue([row]),
         }),
       });

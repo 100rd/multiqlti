@@ -39,6 +39,7 @@
  *     (D.2/D.3) so the DEV pipeline's read tools are grounded in the loop's repo.
  */
 import type { IStorage } from "../../storage.js";
+import { runAsSystem } from "../../context.js";
 import type { ConsiliumLoopRow, ConsiliumLoopState } from "@shared/schema";
 import type { ActionPoint, ConvergenceVerdict } from "@shared/types";
 import type { TaskOrchestrator } from "../task-orchestrator.js";
@@ -747,7 +748,11 @@ export class ConsiliumLoopPoller {
     if (this.sweeping) return; // never overlap sweeps
     this.sweeping = true;
     try {
-      const loops = await this.storage.getLoops();
+      // Cross-project sweep of every non-terminal loop, under an audited system
+      // context. Per-loop tick() keeps its existing (context-free) behavior.
+      const loops = await runAsSystem("consilium-loop-poller-sweep", () =>
+        this.storage.getLoops(),
+      );
       for (const loop of loops) {
         await this.controller.tick(loop.id).catch(() => undefined);
       }

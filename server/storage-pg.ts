@@ -1,6 +1,6 @@
 import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, inArray, sql as drizzleSql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
-import { db, withProject, withProjectInsert } from "./db";
+import { db, withProject, withProjectList, withProjectInsert, withProjectOrGlobal } from "./db";
 import { unscopedSystemQuery } from "./context";
 import type { IStorage, PracticeCardFilters, MorningBriefFilters, NewsItemFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint, RunHistoryQuery, PipelineRunHistoryRow, TaskGroupHistoryRow } from "./storage";
 import {
@@ -165,15 +165,19 @@ export class PgStorage implements IStorage {
   // ─── Models ─────────────────────────────────────────
 
   async getModels(): Promise<Model[]> {
-    return db.select().from(models);
+    // GLOBAL CATALOG: shared rows (project_id IS NULL) are visible in every
+    // project; project-specific rows are visible only in their own project.
+    // System context (startup seed / catalog reconcile) sees the whole catalog.
+    return db.select().from(models).where(withProjectOrGlobal(models));
   }
 
   async getActiveModels(): Promise<Model[]> {
-    return db.select().from(models).where(withProject(models, eq(models.isActive, true)));
+    // GLOBAL CATALOG (see getModels): global-or-current visibility, active only.
+    return db.select().from(models).where(withProjectOrGlobal(models, eq(models.isActive, true)));
   }
 
   async getModelBySlug(slug: string): Promise<Model | undefined> {
-    const [row] = await db.select().from(models).where(withProject(models, eq(models.slug, slug)));
+    const [row] = await db.select().from(models).where(withProjectOrGlobal(models, eq(models.slug, slug)));
     return row;
   }
 
@@ -220,7 +224,9 @@ export class PgStorage implements IStorage {
   // ─── Pipelines ──────────────────────────────────────
 
   async getPipelines(): Promise<Pipeline[]> {
-    return db.select().from(pipelines);
+    // Project-scoped in a request context; cross-project in a system context
+    // (config-sync, federation, catalog reconcile, startup seed) via runAsSystem.
+    return db.select().from(pipelines).where(withProjectList(pipelines));
   }
 
   async getPipeline(id: string): Promise<Pipeline | undefined> {
@@ -254,14 +260,17 @@ export class PgStorage implements IStorage {
   // ─── Pipeline Runs ──────────────────────────────────
 
   async getPipelineRuns(pipelineId?: string): Promise<PipelineRun[]> {
-    if (pipelineId) {
-      return db
-        .select()
-        .from(pipelineRuns)
-        .where(withProject(pipelineRuns, eq(pipelineRuns.pipelineId, pipelineId)))
-        .orderBy(desc(pipelineRuns.createdAt));
-    }
-    return db.select().from(pipelineRuns).orderBy(desc(pipelineRuns.createdAt));
+    // ALWAYS project-scoped — both the per-pipeline branch AND the list-all
+    // branch (the latter previously returned runs from every project). A system
+    // context (runAsSystem) reads cross-project, audited.
+    const filter = pipelineId
+      ? withProjectList(pipelineRuns, eq(pipelineRuns.pipelineId, pipelineId))
+      : withProjectList(pipelineRuns);
+    return db
+      .select()
+      .from(pipelineRuns)
+      .where(filter)
+      .orderBy(desc(pipelineRuns.createdAt));
   }
 
   async listPipelineRunHistory(query: RunHistoryQuery): Promise<PipelineRunHistoryRow[]> {
@@ -466,17 +475,17 @@ export class PgStorage implements IStorage {
   // ─── Chat Messages ──────────────────────────────────
 
   async getChatMessages(runId?: string, limit?: number): Promise<ChatMessage[]> {
-    let query = db
+    // ALWAYS project-scoped at the base — even when runId is omitted. Previously a
+    // no-runId call applied NO filter and dumped chat messages across every project.
+    // When runId is provided it is AND-ed with the project filter.
+    const filter = runId
+      ? withProjectList(chatMessages, eq(chatMessages.runId, runId))
+      : withProjectList(chatMessages);
+    const rows = await db
       .select()
       .from(chatMessages)
-      .orderBy(chatMessages.createdAt)
-      .$dynamic();
-
-    if (runId) {
-      query = query.where(withProject(chatMessages, eq(chatMessages.runId, runId)));
-    }
-
-    const rows = await query;
+      .where(filter)
+      .orderBy(chatMessages.createdAt);
     return limit ? rows.slice(-limit) : rows;
   }
 
@@ -542,7 +551,8 @@ export class PgStorage implements IStorage {
         totalOutputTokens: drizzleSql<number>`coalesce(sum(output_tokens), 0)::int`,
         totalCostUsd: drizzleSql<number>`coalesce(sum(estimated_cost_usd), 0)::float`,
       })
-      .from(llmRequests);
+      .from(llmRequests)
+      .where(withProject(llmRequests));
 
     return {
       totalRequests: row?.totalRequests ?? 0,
@@ -565,6 +575,7 @@ export class PgStorage implements IStorage {
         errorCount: drizzleSql<number>`count(*) filter (where status = 'error')::int`,
       })
       .from(llmRequests)
+      .where(withProject(llmRequests))
       .groupBy(llmRequests.modelSlug, llmRequests.provider);
 
     return rows.map((r) => ({
@@ -591,6 +602,7 @@ export class PgStorage implements IStorage {
         errorCount: drizzleSql<number>`count(*) filter (where status = 'error')::int`,
       })
       .from(llmRequests)
+      .where(withProject(llmRequests))
       .groupBy(llmRequests.provider);
 
     return rows.map((r) => ({
@@ -788,7 +800,7 @@ export class PgStorage implements IStorage {
   }
 
   async getMcpServers(): Promise<McpServerConfig[]> {
-    const rows = await db.select().from(mcpServers).orderBy(mcpServers.name);
+    const rows = await db.select().from(mcpServers).where(withProjectList(mcpServers)).orderBy(mcpServers.name);
     return rows.map((r) => this.rowToMcpServer(r));
   }
 
@@ -872,7 +884,7 @@ export class PgStorage implements IStorage {
   // ─── Specialization Profiles (Phase 5) ──────────────────────────────────────
 
   async getSpecializationProfiles(): Promise<SpecializationProfileRow[]> {
-    return db.select().from(specializationProfiles).orderBy(specializationProfiles.createdAt);
+    return db.select().from(specializationProfiles).where(withProjectList(specializationProfiles)).orderBy(specializationProfiles.createdAt);
   }
 
   async createSpecializationProfile(profile: InsertSpecializationProfile): Promise<SpecializationProfileRow> {
@@ -897,7 +909,7 @@ export class PgStorage implements IStorage {
 
     return conditions.length > 0
       ? db.select().from(skills).where(withProject(skills, and(...conditions))).orderBy(skills.name)
-      : db.select().from(skills).orderBy(skills.name);
+      : db.select().from(skills).where(withProjectList(skills)).orderBy(skills.name);
   }
 
   async getSkill(id: string): Promise<Skill | undefined> {
@@ -1087,7 +1099,7 @@ export class PgStorage implements IStorage {
   // ─── Skill Teams ─────────────────────────────────────────────────────────────
 
   async getSkillTeams(): Promise<SkillTeam[]> {
-    return db.select().from(skillTeams).orderBy(skillTeams.createdAt);
+    return db.select().from(skillTeams).where(withProject(skillTeams)).orderBy(skillTeams.createdAt);
   }
 
   async createSkillTeam(data: InsertSkillTeam): Promise<SkillTeam> {
@@ -1236,7 +1248,20 @@ export class PgStorage implements IStorage {
   }
 
   async getLoops(): Promise<ConsiliumLoopRow[]> {
-    return db.select().from(consiliumLoops).orderBy(desc(consiliumLoops.createdAt));
+    // consilium_loops has NO project_id column of its own (a loop belongs to a
+    // task group). Scope by sub-querying the loop's group through task_groups,
+    // which IS project-scoped — so only loops whose group is in the current
+    // project are returned. Same runId->pipeline_runs idea as getTraces().
+    return db
+      .select()
+      .from(consiliumLoops)
+      .where(
+        inArray(
+          consiliumLoops.groupId,
+          db.select({ id: taskGroups.id }).from(taskGroups).where(withProjectList(taskGroups)),
+        ),
+      )
+      .orderBy(desc(consiliumLoops.createdAt));
   }
 
   async getActiveLoopByGroup(groupId: string): Promise<ConsiliumLoopRow | undefined> {
@@ -1470,7 +1495,20 @@ export class PgStorage implements IStorage {
   }
 
   async getTraces(limit = 50, offset = 0): Promise<TraceRow[]> {
+    // traces has NO project_id column (a trace belongs to a pipeline run). Scope
+    // by sub-querying through pipeline_runs (which IS project-scoped) so only
+    // traces whose run is in the current project are returned. A schema migration
+    // adding traces.project_id was considered but rejected here: it would
+    // denormalize and require a backfill + dual-write, whereas the
+    // runId->pipeline_runs join is exact and cheap (indexed run_id) for the
+    // dashboard's page-sized reads.
     return db.select().from(traces)
+      .where(
+        inArray(
+          traces.runId,
+          db.select({ id: pipelineRuns.id }).from(pipelineRuns).where(withProjectList(pipelineRuns)),
+        ),
+      )
       .orderBy(desc(traces.createdAt))
       .limit(limit)
       .offset(offset);
@@ -1485,7 +1523,7 @@ export class PgStorage implements IStorage {
   // ─── Task Groups (Task Orchestrator) ────────────────────────────────────────
 
   async getTaskGroups(): Promise<TaskGroupRow[]> {
-    return db.select().from(taskGroups).orderBy(desc(taskGroups.createdAt));
+    return db.select().from(taskGroups).where(withProject(taskGroups)).orderBy(desc(taskGroups.createdAt));
   }
 
   async getTaskGroup(id: string): Promise<TaskGroupRow | undefined> {
@@ -1652,6 +1690,7 @@ export class PgStorage implements IStorage {
     const rows = await db
       .selectDistinct({ modelId: modelSkillBindings.modelId })
       .from(modelSkillBindings)
+      .where(withProjectList(modelSkillBindings))
       .orderBy(asc(modelSkillBindings.modelId));
     return rows.map((r) => r.modelId);
   }

@@ -54,6 +54,7 @@ import { runSafetyChecks } from "./safety-checks.js";
 import type { SafetyIssue } from "./safety-checks.js";
 import { withApplyLock, ApplyLockBusyError } from "./apply-lock.js";
 import { writeAuditEntry } from "./audit-log.js";
+import { runAsSystem } from "../context.js";
 import { checkInstanceHealth } from "./health-check.js";
 
 // ─── Public event emitter ─────────────────────────────────────────────────────
@@ -206,6 +207,10 @@ export async function runApply(
   repoPath: string,
   options: ApplyOptions = {},
 ): Promise<ApplyResult> {
+  // config-sync is a cross-project CLI operation: run the whole apply under an
+  // audited system context so the (now project-scoped) storage reads/writes are
+  // explicitly cross-project (getAll*System + withProjectInsert -> projectId=null).
+  return runAsSystem("config-sync-apply", async (): Promise<ApplyResult> => {
   const appliedAt = new Date().toISOString();
   const dryRun = options.dryRun ?? false;
   const force = options.force ?? false;
@@ -256,6 +261,7 @@ export async function runApply(
     instanceUrl,
     options,
   );
+  });
 }
 
 // ─── Core apply logic ─────────────────────────────────────────────────────────
