@@ -6,13 +6,15 @@
  *   remote_agents.auth_token_enc        — was stored as plaintext despite the _enc name
  *
  * The ARGOCD_TOKEN cleanup in mcp_servers.env is handled by the companion SQL
- * migration: migrations/0027_phase0d_clean_argocd_env.sql
+ * migration: migrations/0028_phase0d_clean_argocd_env.sql
  *
  * Usage:
  *   DATABASE_URL=<url> ENCRYPTION_KEY=<key> npx tsx scripts/encrypt-existing-secrets.ts
  *
  * Safety:
- *   - Idempotent: rows that are already valid AES-256-GCM ciphertexts are skipped.
+ *   - Idempotent: rows already encrypted (v2: prefix OR legacy hex format) are skipped.
+ *     A v2:-prefixed value (produced by scripts/rekey-v2.ts) is detected FIRST,
+ *     preventing double-encryption on a second run (R2-H1 fix).
  *   - Dry-run mode: set DRY_RUN=true to preview without writing.
  *   - MUST be run with the NEW code deployed (i.e. after this PR merges) so that
  *     the ENCRYPTION_KEY in the environment is the same key the app will use to
@@ -30,7 +32,7 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 import { trackerConnections, remoteAgents } from "../shared/schema.js";
-import { encrypt, decrypt } from "../server/crypto.js";
+import { encrypt, decrypt, isV2 } from "../server/crypto.js";
 import { eq } from "drizzle-orm";
 
 const DRY_RUN = process.env["DRY_RUN"] === "true";
@@ -44,15 +46,23 @@ const pool = new pg.Pool({ connectionString: process.env["DATABASE_URL"] });
 const db = drizzle(pool);
 
 /**
- * Returns true if the value looks like an AES-256-GCM ciphertext produced
- * by server/crypto.ts:encrypt().
+ * Returns true if the value is already encrypted and should be skipped.
  *
- * Format: hex(iv[12] + authTag[16] + ciphertext[N]) — minimum 56 hex chars.
- * We attempt an actual decrypt as the authoritative check; this heuristic is
- * just used for logging clarity.
+ * R2-H1 fix: checks the v2: prefix FIRST. Without this guard a second run
+ * double-encrypts rows already migrated by scripts/rekey-v2.ts, causing
+ * permanent corruption (the v2: prefix fails the hex regex, so `isAlreadyEncrypted`
+ * returned false and `encrypt()` was called again on an already-encrypted value).
+ *
+ * Detection order:
+ *   1. v2: prefix → already in new format → skip immediately
+ *   2. Legacy hex check (≥56 all-hex chars) + decrypt attempt → legacy encrypted → skip
+ *   3. Anything else → plaintext → proceed to encrypt
  */
 function isAlreadyEncrypted(value: string): boolean {
-  // Minimum: 12-byte IV + 16-byte authTag = 28 bytes = 56 hex chars
+  // R2-H1: v2: prefix = already migrated. Skip to prevent double-encrypt.
+  if (isV2(value)) return true;
+
+  // Legacy format: hex(iv[12] + authTag[16] + ciphertext) — minimum 56 hex chars.
   if (value.length < 56) return false;
   if (!/^[0-9a-f]+$/i.test(value)) return false;
   try {
@@ -156,7 +166,7 @@ async function main(): Promise<void> {
       "\nREMINDER: rotate the affected credentials (Jira API tokens, remote-agent bearer tokens).",
     );
     console.log(
-      "Also apply: migrations/0027_phase0d_clean_argocd_env.sql (removes ARGOCD_TOKEN from mcp_servers.env).",
+      "Also apply: migrations/0028_phase0d_clean_argocd_env.sql (removes ARGOCD_TOKEN from mcp_servers.env).",
     );
   } finally {
     await pool.end();
