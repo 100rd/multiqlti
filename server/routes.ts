@@ -53,6 +53,7 @@ import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
 import { registerArgoCdSettingsRoutes, autoConnectArgoCdFromEnv } from "./routes/argocd-settings";
 import { registerTaskGroupRoutes } from "./routes/task-groups";
+import { registerTaskGroupResolveRoute } from "./routes/task-group-resolve";
 import { registerConsiliumLoopRoutes } from "./routes/consilium-loops";
 import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consilium/consilium-loop-controller";
 import { WorkspaceManager } from "./workspace/manager";
@@ -281,6 +282,7 @@ export async function registerRoutes(
   const taskOrchestrator = new TaskOrchestrator(storage, wsManager, controller, gateway);
   taskOrchestrator.setTracer(taskTracer);
   registerTaskGroupRoutes(app, storage, taskOrchestrator);
+  registerTaskGroupResolveRoute(app);
   registerTaskIterationRoutes(app as unknown as Router, storage);
   registerTaskTemplateRoutes(app as unknown as Router, storage);
 

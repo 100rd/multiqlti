@@ -47,7 +47,8 @@ import {
 import { VerdictPanel } from "@/components/task-groups/verdict-panel";
 import { useToast } from "@/hooks/use-toast";
 import { useTaskGroupEvents } from "@/hooks/use-task-events";
-import { useActiveModels } from "@/hooks/use-pipeline";
+import { useActiveModels, apiRequest } from "@/hooks/use-pipeline";
+import { useProjects } from "@/hooks/use-projects";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -507,15 +508,41 @@ export default function TaskGroupPage() {
   const cancelMutation = useCancelTaskGroup();
   const retryMutation = useRetryTask();
   const { toast } = useToast();
+  const { projects, currentProject, selectProject } = useProjects();
   const activityEndRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState(false);
   // The iteration the user is browsing in the Iterations panel (null → none yet).
   const [selectedIteration, setSelectedIteration] = useState<number | null>(null);
+  // When the detail load fails because the group lives in another project, the
+  // resolver tells us which one (if any) so we can offer to switch to it.
+  const [otherProject, setOtherProject] = useState<{ id: string; name: string } | null>(null);
 
   // Auto-scroll activity stream
   useEffect(() => {
     activityEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [events.activity.length]);
+
+  // On a load error, ask the (unscoped) resolver which project this group lives
+  // in. If it's a project the user has but hasn't selected, surface a switch CTA.
+  useEffect(() => {
+    if (!isError || !id) {
+      setOtherProject(null);
+      return;
+    }
+    let cancelled = false;
+    apiRequest("GET", `/api/task-groups/${id}/project`)
+      .then((r: { projectId?: string } | null) => {
+        if (cancelled || !r?.projectId || r.projectId === currentProject?.id) return;
+        const proj = projects.find((p) => p.id === r.projectId);
+        if (proj) setOtherProject({ id: proj.id, name: proj.name });
+      })
+      .catch(() => {
+        /* resolver 403/404/500 → no switch CTA, just the plain error */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isError, id, currentProject?.id, projects]);
 
   // An error (403 owner-gate, 404 deleted/missing, …) must surface — otherwise
   // `!data` falls through to the loading branch and the page spins forever.
@@ -524,19 +551,33 @@ export default function TaskGroupPage() {
       error instanceof Error ? error.message : "Failed to load task group";
     const notFound = /not found/i.test(message);
     const forbidden = /forbidden/i.test(message);
+    const heading = notFound
+      ? "Task group not found"
+      : forbidden
+        ? "You don't have access to this task group"
+        : "Couldn't load this task group";
+    // Subtitle explains the situation rather than echoing the heading verbatim.
+    const subtitle = otherProject
+      ? `This task group belongs to the "${otherProject.name}" project, which isn't your current selection.`
+      : notFound
+        ? "It may have been deleted, or it belongs to a project you don't have selected."
+        : forbidden
+          ? "It belongs to another user."
+          : message;
     return (
       <div className="p-6 space-y-3">
-        <h1 className="text-lg font-semibold">
-          {notFound
-            ? "Task group not found"
-            : forbidden
-              ? "You don't have access to this task group"
-              : "Couldn't load this task group"}
-        </h1>
-        <p className="text-sm text-muted-foreground">{message}</p>
-        <Link href="/task-groups">
-          <Button variant="outline" size="sm">Back to task groups</Button>
-        </Link>
+        <h1 className="text-lg font-semibold">{heading}</h1>
+        <p className="text-sm text-muted-foreground">{subtitle}</p>
+        <div className="flex gap-2">
+          {otherProject && (
+            <Button size="sm" onClick={() => selectProject(otherProject.id)}>
+              Open in “{otherProject.name}”
+            </Button>
+          )}
+          <Link href="/task-groups">
+            <Button variant="outline" size="sm">Back to task groups</Button>
+          </Link>
+        </div>
       </div>
     );
   }
