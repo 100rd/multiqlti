@@ -62,6 +62,7 @@ import { registerTaskTraceRoutes } from "./routes/task-traces";
 import { registerTaskIterationRoutes } from "./routes/task-iterations";
 import { registerTaskTemplateRoutes } from "./routes/task-templates";
 import { registerTrackerRoutes } from "./routes/tracker";
+import { registerCredentialRoutes } from "./routes/credentials";
 import { TaskOrchestrator } from "./services/task-orchestrator";
 import { TaskTracer } from "./services/task-tracer";
 import { TaskSplitter } from "./services/task-splitter";
@@ -171,6 +172,7 @@ export async function registerRoutes(
   app.use("/api/lmstudio", requireAuth, requireProject);       // UNCERTAIN — see note above
   app.use("/api/skill-teams", requireAuth, requireProject);
   app.use("/api/tracker-connections", requireAuth, requireProject);
+  app.use("/api/credentials", requireAuth, requireProject);
   app.use("/api/remote-agents", requireAuth, requireProject);
   app.use("/api/skill-market", requireAuth, requireProject);   // UNCERTAIN — see note above
   // /api/workspaces/:id/knowledge is already covered by /api/workspaces above;
@@ -331,6 +333,7 @@ export async function registerRoutes(
   const taskSplitter = new TaskSplitter(gateway);
   const trackerSync = new TrackerSyncService(storage);
   registerTrackerRoutes(app, storage, taskSplitter, trackerSync, taskOrchestrator);
+  registerCredentialRoutes(app);
 
   // Phase 6.3 — Trigger subsystem
   let triggerService: TriggerService | null = null;

@@ -3237,3 +3237,50 @@ export interface EvaluatorResult {
   proofs: VerificationProof[];
   summary: string;
 }
+
+// ─── Credential Broker — API response types (ADR-001 §3.2) ───────────────────
+// Frontend-consumable type definitions for the read-only credentials API.
+// Structurally identical to the Drizzle-inferred schema types but defined here
+// to keep shared/types.ts import-free from shared/schema.ts (avoid circular dep).
+
+/** Credential access log row as returned by GET /api/credentials/access-log. */
+export interface CredentialAccessLogRow {
+  id: string;
+  /** Null for plan-time actions (list_metadata, get_metadata) that have no lease. */
+  leaseId: string | null;
+  credentialId: string;
+  projectId: string;
+  /** Null for plan-time actions with no run context. */
+  runId: string | null;
+  /** Null for plan-time actions with no stage context. */
+  stageId: string | null;
+  action:
+    | "list_metadata"
+    | "get_metadata"
+    | "lease_issued"
+    | "lease_used"
+    | "lease_revoked"
+    | "lease_expired"
+    | "secret_accessed";
+  requestedBy: string;
+  justification: string | null;
+  success: boolean;
+  errorMessage: string | null;
+  /** Only set for lease_issued actions. */
+  ttlSeconds: number | null;
+  createdAt: Date;
+}
+
+/** Credential lease row as returned by GET /api/credentials/leases. */
+export interface CredentialLeaseRow {
+  id: string;
+  credentialId: string;
+  projectId: string;
+  runId: string;
+  stageId: string;
+  requestedBy: string;
+  issuedAt: Date;
+  expiresAt: Date;
+  revokedAt: Date | null;
+  status: "active" | "revoked" | "expired";
+}
