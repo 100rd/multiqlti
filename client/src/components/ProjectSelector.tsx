@@ -16,6 +16,13 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import type { Project } from "@shared/schema";
+
+const SENTINEL_ID = "__default__";
+
+function projectDisplayName(p: Project): string {
+  return p.id === SENTINEL_ID ? "Default (legacy)" : p.name;
+}
 
 export function ProjectSelector() {
   const { projects, currentProject, selectProject, isLoadingProjects, refreshProjects } = useProjects();
@@ -29,8 +36,11 @@ export function ProjectSelector() {
     if (!name.trim()) return;
     try {
       setIsCreating(true);
-      await apiRequest("POST", "/api/projects", { name, description });
+      const res = await apiRequest("POST", "/api/projects", { name, description });
+      const created = await res.json() as Project;
       await refreshProjects();
+      // Auto-select the newly created project
+      selectProject(created.id);
       setIsDialogOpen(false);
       setName("");
       setDescription("");
@@ -46,6 +56,10 @@ export function ProjectSelector() {
     return <div className="h-9 w-[200px] bg-muted animate-pulse rounded-md" />;
   }
 
+  // Separate real projects from sentinel for display ordering
+  const realProjects = projects.filter(p => p.id !== SENTINEL_ID);
+  const sentinelProject = projects.find(p => p.id === SENTINEL_ID);
+
   const renderSelector = () => (
     <Select value={currentProject?.id || ""} onValueChange={selectProject}>
       <SelectTrigger className="w-[200px] bg-background border-input">
@@ -55,14 +69,22 @@ export function ProjectSelector() {
         </div>
       </SelectTrigger>
       <SelectContent>
-        {projects.length > 0 ? (
-          projects.map((p) => (
+        {realProjects.length > 0 ? (
+          realProjects.map((p) => (
             <SelectItem key={p.id} value={p.id}>
               {p.name}
             </SelectItem>
           ))
         ) : (
           <div className="p-2 text-sm text-muted-foreground text-center">No projects</div>
+        )}
+        {sentinelProject && (
+          <>
+            {realProjects.length > 0 && <SelectSeparator />}
+            <SelectItem key={sentinelProject.id} value={sentinelProject.id}>
+              {projectDisplayName(sentinelProject)}
+            </SelectItem>
+          </>
         )}
       </SelectContent>
     </Select>

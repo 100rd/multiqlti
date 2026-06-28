@@ -41,9 +41,17 @@ function getAuthToken(): string | null {
   return localStorage.getItem("auth_token");
 }
 
+function getProjectId(): string | null {
+  return localStorage.getItem("project_id");
+}
+
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const token = getAuthToken();
-  const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const projectId = getProjectId();
+  const authHeaders: Record<string, string> = {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(projectId ? { "x-project-id": projectId } : {}),
+  };
   const res = await fetch(url, {
     ...options,
     headers: { ...authHeaders, ...options?.headers },

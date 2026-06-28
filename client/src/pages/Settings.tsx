@@ -39,6 +39,7 @@ import {
   apiRequest,
 } from "@/hooks/use-pipeline";
 import { cn } from "@/lib/utils";
+import { useProjects } from "@/hooks/use-projects";
 import { useQueryClient, useMutation, useQuery } from "@tanstack/react-query";
 import { ArgocdSettings } from "@/components/settings/ArgocdSettings";
 import { SettingsSection } from "@/components/settings/SettingsSection";
@@ -88,6 +89,7 @@ export default function Settings() {
   const importModel = useImportModel();
   const probeEndpoint = useProbeEndpoint();
   const qc = useQueryClient();
+  const { currentProject } = useProjects();
 
   const [probeUrl, setProbeUrl] = useState("");
   const [probeType, setProbeType] = useState<"vllm" | "ollama">("ollama");
@@ -302,6 +304,11 @@ export default function Settings() {
       <div className="h-16 border-b border-border flex items-center px-6 bg-card shrink-0">
         <SettingsIcon className="h-5 w-5 mr-3 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Settings</h1>
+        {currentProject && (
+          <Badge variant="secondary" className="ml-3 text-xs font-normal">
+            Project: {currentProject.name}
+          </Badge>
+        )}
       </div>
 
       <ScrollArea className="flex-1">
@@ -994,7 +1001,7 @@ export default function Settings() {
                   </div>
                 ) : (
                   <div className="text-xs text-muted-foreground p-3 border border-dashed rounded-lg mb-3">
-                    No MCP servers configured.
+                    No MCP servers configured{currentProject ? " for this project" : ""}.
                   </div>
                 )}
 

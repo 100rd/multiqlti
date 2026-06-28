@@ -9,6 +9,8 @@ import NotFound from "@/pages/not-found";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { useAuth } from "@/hooks/use-auth";
+import { useProjects } from "@/hooks/use-projects";
+import { ProjectSelector } from "@/components/ProjectSelector";
 
 import MainLayout from "@/components/layout/MainLayout";
 import Dashboard from "@/pages/Dashboard";
@@ -51,8 +53,38 @@ import Activity from "@/pages/Activity";
 import ConsiliumLoopList from "@/pages/ConsiliumLoopList";
 import ConsiliumLoopDetail from "@/pages/ConsiliumLoopDetail";
 
+// ─── Project gate screens ─────────────────────────────────────────────────────
+
+function ProjectLoadingScreen() {
+  return (
+    <div className="flex h-screen items-center justify-center bg-background">
+      <div className="text-muted-foreground text-sm">Loading project...</div>
+    </div>
+  );
+}
+
+function NoProjectsScreen() {
+  return (
+    <div className="flex h-screen items-center justify-center bg-background">
+      <div className="flex flex-col items-center gap-6 max-w-sm text-center">
+        <div className="space-y-2">
+          <h1 className="text-lg font-semibold">Create your first project</h1>
+          <p className="text-sm text-muted-foreground">
+            Projects keep your pipelines, triggers, and secrets isolated from each other.
+            Click the&nbsp;<strong>+</strong>&nbsp;button to get started.
+          </p>
+        </div>
+        <ProjectSelector />
+      </div>
+    </div>
+  );
+}
+
+// ─── Routers ──────────────────────────────────────────────────────────────────
+
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
+  const { projects, isLoadingProjects } = useProjects();
 
   if (isLoading) {
     return (
@@ -64,6 +96,18 @@ function ProtectedRouter() {
 
   if (!user) {
     return <Redirect to="/login" />;
+  }
+
+  // Don't mount scoped pages until the project list has resolved — avoids
+  // race-condition 400s where x-project-id isn't in localStorage yet.
+  if (isLoadingProjects) {
+    return <ProjectLoadingScreen />;
+  }
+
+  // No projects → show create flow; never fire scoped requests against an
+  // empty project list (they would 400 with "x-project-id required").
+  if (projects.length === 0) {
+    return <NoProjectsScreen />;
   }
 
   return (

@@ -29,6 +29,7 @@ import {
   useTestArgoCd,
   type ArgoCdTestResult,
 } from "@/hooks/useArgoCdSettings";
+import { useProjects } from "@/hooks/use-projects";
 
 // ─── Status Badge ─────────────────────────────────────────────────────────────
 
@@ -99,6 +100,7 @@ interface ArgocdSettingsContentProps {
 }
 
 function ArgocdSettingsContent({ className }: ArgocdSettingsContentProps) {
+  const { currentProject } = useProjects();
   const { data: config, isLoading } = useArgoCdConfig();
   const saveConfig = useSaveArgoCdConfig();
   const deleteConfig = useDeleteArgoCdConfig();
@@ -165,6 +167,11 @@ function ArgocdSettingsContent({ className }: ArgocdSettingsContentProps) {
       {!isLoading && (
         <div className="flex items-center gap-3">
           <StatusBadge status={config?.healthStatus} />
+          {currentProject && (
+            <Badge variant="secondary" className="text-xs font-normal">
+              Project: {currentProject.name}
+            </Badge>
+          )}
           {config?.lastHealthCheckAt && (
             <span className="text-xs text-muted-foreground">
               Last checked: {new Date(config.lastHealthCheckAt).toLocaleString()}

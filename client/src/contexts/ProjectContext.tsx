@@ -1,6 +1,8 @@
 import { createContext, useState, useEffect, useCallback, ReactNode } from "react";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Project } from "@shared/schema";
+
+const SENTINEL_ID = "__default__";
 
 interface ProjectContextValue {
   projects: Project[];
@@ -25,11 +27,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
       const savedProjectId = localStorage.getItem("project_id");
       if (savedProjectId && data.find(p => p.id === savedProjectId)) {
+        // Respect explicitly saved preference (even if it's __default__)
         setCurrentProject(data.find(p => p.id === savedProjectId) || null);
       } else if (data.length > 0) {
-        // Auto select first project
-        setCurrentProject(data[0]);
-        localStorage.setItem("project_id", data[0].id);
+        // Auto-select: prefer non-sentinel projects
+        const realProjects = data.filter(p => p.id !== SENTINEL_ID);
+        const autoSelect = realProjects.length > 0 ? realProjects[0] : data[0];
+        setCurrentProject(autoSelect);
+        localStorage.setItem("project_id", autoSelect.id);
       }
     } catch (e) {
       console.error("Failed to fetch projects", e);
@@ -53,8 +58,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     if (p) {
       setCurrentProject(p);
       localStorage.setItem("project_id", projectId);
-      // Reload the page or invalidate queries
-      window.location.reload(); // Hard reload is easiest way to wipe old query cache
+      // Invalidate all cached queries so every scoped screen refetches
+      // with the new x-project-id that queryClient picks from localStorage.
+      void queryClient.invalidateQueries();
     }
   }, [projects]);
 

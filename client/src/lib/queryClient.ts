@@ -8,7 +8,7 @@ function getProjectId(): string | null {
   return localStorage.getItem("project_id");
 }
 
-function buildAuthHeaders(hasBody: boolean): Record<string, string> {
+export function buildAuthHeaders(hasBody: boolean): Record<string, string> {
   const headers: Record<string, string> = {};
   if (hasBody) headers["Content-Type"] = "application/json";
   const token = getAuthToken();
@@ -18,9 +18,22 @@ function buildAuthHeaders(hasBody: boolean): Record<string, string> {
   return headers;
 }
 
+/** Thrown when a backend 400 indicates a missing/invalid project header. */
+export class ProjectRequiredError extends Error {
+  readonly isProjectRequired = true as const;
+  constructor() {
+    super("No project selected. Please select a project to continue.");
+    this.name = "ProjectRequiredError";
+  }
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
+    // Surface a friendly message when the backend rejects due to missing project
+    if (res.status === 400 && /project.?id/i.test(text)) {
+      throw new ProjectRequiredError();
+    }
     throw new Error(`${res.status}: ${text}`);
   }
 }

@@ -11,11 +11,17 @@ function getAuthToken(): string | null {
   return localStorage.getItem("auth_token");
 }
 
+function getProjectId(): string | null {
+  return localStorage.getItem("project_id");
+}
+
 async function apiRequest(method: string, url: string, body?: unknown): Promise<unknown> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const token = getAuthToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
+  const projectId = getProjectId();
+  if (projectId) headers["x-project-id"] = projectId;
 
   const res = await fetch(url, {
     method,
