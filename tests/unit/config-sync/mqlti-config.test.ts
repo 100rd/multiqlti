@@ -34,12 +34,16 @@ import {
   expect,
   beforeEach,
   afterEach,
+  vi,
 } from "vitest";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
+
+// Increase timeout for all tests in this file since `npx tsx` is slow
+vi.setConfig({ testTimeout: 30000 });
 
 import {
   generateKeyPair,
