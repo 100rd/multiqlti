@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { useProjects } from "@/hooks/use-projects";
 import { Zap, Plus, Loader2, ZapOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TriggerCard } from "@/components/triggers/TriggerCard";
@@ -13,6 +15,7 @@ interface Pipeline {
 }
 
 export default function TriggersPage() {
+  const { currentProject } = useProjects();
   const { data: triggers, isLoading: triggersLoading, error } = useTriggers();
   const { data: pipelinesData } = usePipelines();
   const deleteTrigger = useDeleteTrigger();
@@ -48,7 +51,14 @@ export default function TriggersPage() {
       {/* Header */}
       <div className="h-16 border-b border-border flex items-center justify-between px-6 bg-card shrink-0">
         <div>
-          <h2 className="text-sm font-semibold">Triggers</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold">Triggers</h2>
+            {currentProject && (
+              <Badge variant="secondary" className="text-xs font-normal">
+                Project: {currentProject.name}
+              </Badge>
+            )}
+          </div>
           <p className="text-xs text-muted-foreground">
             Automate pipeline runs with webhooks, schedules, and events
           </p>
@@ -124,7 +134,7 @@ export default function TriggersPage() {
         {!triggersLoading && !error && triggerList.length === 0 && (
           <div className="flex flex-col items-center justify-center py-20 text-center">
             <Zap className="h-10 w-10 text-muted-foreground/40 mb-4" />
-            <p className="text-sm font-medium text-muted-foreground">No triggers yet</p>
+            <p className="text-sm font-medium text-muted-foreground">No triggers yet{currentProject ? " for " + currentProject.name : ""}</p>
             <p className="text-xs text-muted-foreground mt-1 mb-6">
               Add one to automate your pipeline runs.
             </p>

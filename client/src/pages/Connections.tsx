@@ -1,4 +1,5 @@
 import { useState, useId, useCallback } from "react";
+import { useProjects } from "@/hooks/use-projects";
 import { useRoute } from "wouter";
 import {
   Plus,
@@ -1086,6 +1087,7 @@ export default function Connections() {
 
   const { toast } = useToast();
   const { user } = useAuth();
+  const { currentProject } = useProjects();
   const isAdmin = user?.role === "admin";
 
   // Filters
@@ -1188,7 +1190,14 @@ export default function Connections() {
       {/* Header */}
       <div className="h-16 border-b border-border flex items-center justify-between px-6 bg-card shrink-0">
         <div>
-          <h2 className="text-sm font-semibold">External Connections</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold">External Connections</h2>
+            {currentProject && (
+              <Badge variant="secondary" className="text-xs font-normal">
+                Project: {currentProject.name}
+              </Badge>
+            )}
+          </div>
           <p className="text-xs text-muted-foreground">
             Manage integrations and credentials for this workspace
           </p>
@@ -1295,7 +1304,7 @@ export default function Connections() {
           <div className="flex flex-col items-center justify-center py-20 text-center">
             <Plug className="h-10 w-10 text-muted-foreground/40 mb-4" />
             <p className="text-sm font-medium text-muted-foreground">
-              No connections yet
+              No connections yet{currentProject ? " for " + currentProject.name : ""}
             </p>
             <p className="text-xs text-muted-foreground mt-1 mb-6">
               Connect external services to this workspace.
