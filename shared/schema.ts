@@ -1193,6 +1193,7 @@ export const tasks = pgTable(
     id: varchar("id")
       .primaryKey()
       .default(sql`gen_random_uuid()`),
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
     groupId: varchar("group_id")
       .notNull()
       .references(() => taskGroups.id, { onDelete: "cascade" }),
@@ -1252,6 +1253,7 @@ export const taskTemplates = pgTable(
     id: varchar("id")
       .primaryKey()
       .default(sql`gen_random_uuid()`),
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     description: text("description").notNull(),
     executionMode: text("execution_mode").notNull().default("direct_llm").$type<TaskExecutionMode>(),
@@ -1292,6 +1294,7 @@ export const taskGroupIterations = pgTable(
     id: varchar("id")
       .primaryKey()
       .default(sql`gen_random_uuid()`),
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
     groupId: varchar("group_id")
       .notNull()
       .references(() => taskGroups.id, { onDelete: "cascade" }),
@@ -1344,6 +1347,7 @@ export const taskExecutions = pgTable(
     id: varchar("id")
       .primaryKey()
       .default(sql`gen_random_uuid()`),
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
     iterationId: varchar("iteration_id")
       .notNull()
       .references(() => taskGroupIterations.id, { onDelete: "cascade" }),
@@ -2720,6 +2724,7 @@ export const consiliumLoops = pgTable(
   "consilium_loops",
   {
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
     // The consilium task group re-run each round (cascade with the group).
     groupId: varchar("group_id")
       .notNull()

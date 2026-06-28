@@ -1918,6 +1918,7 @@ export class MemStorage implements IStorage {
     const now = new Date();
     const row: ConsiliumLoopRow = {
       id: randomUUID(),
+      projectId: data.projectId ?? null,
       groupId: data.groupId,
       state,
       round: data.round ?? 0,
@@ -2309,6 +2310,7 @@ export class MemStorage implements IStorage {
     const id = randomUUID();
     const row: TaskRow = {
       id,
+      projectId: data.projectId ?? null,
       groupId: data.groupId,
       name: data.name,
       description: data.description,
@@ -3280,6 +3282,7 @@ export class MemStorage implements IStorage {
   private buildIterationRow(data: InsertTaskGroupIteration): TaskGroupIterationRow {
     return {
       id: randomUUID(),
+      projectId: data.projectId ?? null,
       groupId: data.groupId,
       iterationNumber: data.iterationNumber,
       status: (data.status as TaskGroupStatus) ?? "running",
@@ -3375,6 +3378,7 @@ export class MemStorage implements IStorage {
   private buildExecutionRow(data: InsertTaskExecution): TaskExecutionRow {
     return {
       id: randomUUID(),
+      projectId: data.projectId ?? null,
       iterationId: data.iterationId,
       taskId: data.taskId ?? null,
       taskName: data.taskName ?? null,
@@ -3485,6 +3489,7 @@ export class MemStorage implements IStorage {
     const now = new Date();
     const row: TaskTemplateRow = {
       id: randomUUID(),
+      projectId: data.projectId ?? null,
       name: data.name,
       description: data.description,
       executionMode: (data.executionMode as TaskExecutionMode) ?? "direct_llm",

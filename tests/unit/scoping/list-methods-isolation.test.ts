@@ -163,9 +163,12 @@ describe("Subquery scoping: traces and consilium_loops scope through a project-s
     expect(q.sql).not.toMatch(/"consilium_loops"\."project_id"/);
   });
 
-  it("traces / consilium_loops genuinely have NO project_id column (justifies the subquery)", () => {
+  it("traces genuinely has NO project_id column (justifies the subquery scoping)", () => {
     expect((traces as Record<string, unknown>).projectId).toBeUndefined();
-    expect((consiliumLoops as Record<string, unknown>).projectId).toBeUndefined();
+  });
+
+  it("consilium_loops now carries a project_id column (scoped on its own)", () => {
+    expect((consiliumLoops as Record<string, unknown>).projectId).toBeDefined();
   });
 });
 
