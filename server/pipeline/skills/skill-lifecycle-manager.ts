@@ -265,13 +265,13 @@ export class SkillStateMachine {
 
 export class SkillLifecycleManager {
   #skills: Map<string, LifecycleSkill> = new Map();
-  #observabilityService: ContourObservabilityService;
+  #observabilityService: IObservabilityService;
 
   constructor(observabilityService: IObservabilityService) {
     this.#observabilityService = observabilityService;
     
     // Register listener for automated trust-drift detection (R2)
-    this.#observabilityService.registerListener((skillId, rate) => {
+    this.#observabilityService.registerListener((skillId: string, rate: number) => {
       this.handleSuccessRateUpdate(skillId, rate);
     });
   }
