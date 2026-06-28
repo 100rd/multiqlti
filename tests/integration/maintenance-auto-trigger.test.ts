@@ -71,6 +71,11 @@ vi.mock("../../server/maintenance/scout.js", () => ({
 
 vi.mock("../../server/db.js", () => {
   return {
+    // Scoping helpers: pure WHERE builders the mock ignores; stubs need no context.
+    withProject: (_t: unknown, c?: unknown) => c,
+    withProjectList: (_t: unknown, c?: unknown) => c,
+    withProjectOrGlobal: (_t: unknown, c?: unknown) => c,
+    withProjectInsert: (_t: unknown, d: unknown) => d,
     db: {
       select: () => ({
         from: (tableRef: unknown) => ({
