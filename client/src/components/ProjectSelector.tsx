@@ -7,7 +7,7 @@ import {
   SelectValue,
   SelectSeparator,
 } from "@/components/ui/select";
-import { Folder, Plus, Loader2 } from "lucide-react";
+import { Folder, Plus, Loader2, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -18,12 +18,33 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
 export function ProjectSelector() {
-  const { projects, currentProject, selectProject, isLoadingProjects, refreshProjects } = useProjects();
+  const { projects, currentProject, selectProject, deleteProject, isLoadingProjects, refreshProjects } = useProjects();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const { toast } = useToast();
+
+  const handleDelete = async () => {
+    if (!currentProject) return;
+    if (!window.confirm(`Delete project "${currentProject.name}"? This removes all of its task groups, pipelines, skills and other data. This cannot be undone.`)) {
+      return;
+    }
+    try {
+      setIsDeleting(true);
+      await deleteProject(currentProject.id);
+      toast({ title: "Project deleted" });
+    } catch (e) {
+      toast({
+        title: "Failed to delete project",
+        description: e instanceof Error ? e.message : undefined,
+        variant: "destructive",
+      });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   const handleCreate = async () => {
     if (!name.trim()) return;
@@ -101,6 +122,17 @@ export function ProjectSelector() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Button
+        variant="outline"
+        size="icon"
+        className="h-9 w-9 shrink-0 text-destructive hover:text-destructive"
+        onClick={handleDelete}
+        disabled={!currentProject || isDeleting}
+        title="Delete current project"
+      >
+        {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+      </Button>
     </div>
   );
 }
