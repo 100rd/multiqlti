@@ -529,8 +529,9 @@ export async function registerRoutes(
     }
   }
 
-  // Seed default pipeline template. getPipelines() is an unscoped global select;
-  // createPipeline() uses withProjectInsert which sets projectId=null in system context.
+  // Seed default pipeline template. getPipelines() reads cross-project
+  // under the system context; createPipeline() uses withProjectInsert which sets
+  // projectId=null (a global template visible to every project).
   await runAsSystem("startup-seed-default-pipeline", async () => {
     const existingPipelines = await storage.getPipelines();
     if (existingPipelines.length === 0) {

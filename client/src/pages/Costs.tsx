@@ -31,6 +31,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { buildAuthHeaders, getAuthToken } from "@/lib/projectHeaders";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -97,17 +98,8 @@ interface BudgetsResponse {
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
 
-function getAuthToken(): string | null {
-  return localStorage.getItem("auth_token");
-}
-
-function authHeaders(): Record<string, string> {
-  const token = getAuthToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 async function apiGet<T>(url: string): Promise<T> {
-  const res = await fetch(url, { headers: authHeaders() });
+  const res = await fetch(url, { headers: buildAuthHeaders(false) });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error((err as { error?: string }).error ?? res.statusText);
@@ -118,7 +110,7 @@ async function apiGet<T>(url: string): Promise<T> {
 async function apiPost<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method: "POST",
-    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    headers: buildAuthHeaders(true),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -131,7 +123,7 @@ async function apiPost<T>(url: string, body: unknown): Promise<T> {
 async function apiPatch<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method: "PATCH",
-    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    headers: buildAuthHeaders(true),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -142,7 +134,7 @@ async function apiPatch<T>(url: string, body: unknown): Promise<T> {
 }
 
 async function apiDelete(url: string): Promise<void> {
-  const res = await fetch(url, { method: "DELETE", headers: authHeaders() });
+  const res = await fetch(url, { method: "DELETE", headers: buildAuthHeaders(false) });
   if (!res.ok && res.status !== 204) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error((err as { error?: string }).error ?? res.statusText);
@@ -439,7 +431,7 @@ function CostsView({ workspaceId }: { workspaceId: string }) {
     const a = document.createElement("a");
     // If auth is Bearer token, open in same tab (token in header not URL)
     if (token) {
-      void fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+      void fetch(url, { headers: buildAuthHeaders(false) })
         .then((r) => r.blob())
         .then((blob) => {
           const href = URL.createObjectURL(blob);

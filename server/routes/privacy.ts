@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { AnonymizerService } from "../privacy/anonymizer";
-import { db } from "../db";
+import { db, withProject, withProjectList, withProjectInsert } from "../db";
 import {
   anonymizationLog,
   anonymizationPatterns,
@@ -95,6 +95,7 @@ export function registerPrivacyRoutes(router: Router): void {
       const patterns = await db
         .select()
         .from(anonymizationPatterns)
+        .where(withProjectList(anonymizationPatterns))
         .orderBy(desc(anonymizationPatterns.createdAt));
       return res.json(patterns);
     } catch (err) {
@@ -123,14 +124,14 @@ export function registerPrivacyRoutes(router: Router): void {
     try {
       const [created] = await db
         .insert(anonymizationPatterns)
-        .values({
+        .values(withProjectInsert(anonymizationPatterns, {
           name: parsed.data.name,
           entityType: parsed.data.entityType,
           regexPattern: parsed.data.regexPattern,
           severity: parsed.data.severity,
           pseudonymTemplate: parsed.data.pseudonymTemplate ?? null,
           allowlist: parsed.data.allowlist,
-        })
+        }))
         .returning();
       return res.status(201).json(created);
     } catch (err) {
@@ -152,7 +153,7 @@ export function registerPrivacyRoutes(router: Router): void {
     try {
       await db
         .delete(anonymizationPatterns)
-        .where(eq(anonymizationPatterns.id, id));
+        .where(withProject(anonymizationPatterns, eq(anonymizationPatterns.id, id)));
       return res.status(204).send();
     } catch (err) {
       return res.status(500).json({ error: "Failed to delete pattern" });
@@ -169,6 +170,7 @@ export function registerPrivacyRoutes(router: Router): void {
       const query = db
         .select()
         .from(anonymizationLog)
+        .where(withProjectList(anonymizationLog))
         .orderBy(desc(anonymizationLog.createdAt))
         .limit(100);
 

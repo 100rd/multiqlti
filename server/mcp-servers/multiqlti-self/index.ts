@@ -29,6 +29,7 @@
  */
 
 import type { IStorage } from "../../storage";
+import { runAsSystem } from "../../context";
 import type { PipelineController } from "../../controller/pipeline-controller";
 import { recordToolCall } from "../../tools/audit";
 import {
@@ -232,7 +233,12 @@ export class MultiqltiMcpServer {
         `Token does not have access to workspace "${args.workspace_id}".`,
       );
     }
-    const pipelines = await this.storage.getPipelines();
+    // MCP self-server listing is workspace-token scoped, not project-scoped, so it
+    // reads cross-project under an audited system context. FLAG: consider scoping
+    // to the token's project/workspace once MCP token->project mapping is defined.
+    const pipelines = await runAsSystem("mcp-self-list-pipelines", () =>
+      this.storage.getPipelines(),
+    );
     return pipelines
       .filter((p) => !p.isTemplate)
       .map((p) => ({

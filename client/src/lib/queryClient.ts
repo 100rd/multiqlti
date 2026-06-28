@@ -1,22 +1,5 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
-
-function getAuthToken(): string | null {
-  return localStorage.getItem("auth_token");
-}
-
-function getProjectId(): string | null {
-  return localStorage.getItem("project_id");
-}
-
-function buildAuthHeaders(hasBody: boolean): Record<string, string> {
-  const headers: Record<string, string> = {};
-  if (hasBody) headers["Content-Type"] = "application/json";
-  const token = getAuthToken();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  const projectId = getProjectId();
-  if (projectId) headers["x-project-id"] = projectId;
-  return headers;
-}
+import { buildAuthHeaders, assertProjectSelected } from "./projectHeaders";
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
@@ -30,6 +13,10 @@ export async function apiRequest(
   url: string,
   data?: unknown | undefined,
 ): Promise<Response> {
+  // Surface a friendly "select a project" error instead of a doomed 400 when a
+  // project-scoped call is made with no project selected. Public paths are exempt.
+  assertProjectSelected(url);
+
   const res = await fetch(url, {
     method,
     headers: buildAuthHeaders(data !== undefined),
@@ -47,7 +34,10 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const res = await fetch(queryKey.join("/") as string, {
+    const url = queryKey.join("/") as string;
+    assertProjectSelected(url);
+
+    const res = await fetch(url, {
       headers: buildAuthHeaders(false),
       credentials: "include",
     });

@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "./use-pipeline";
+import { buildAuthHeaders, assertProjectSelected } from "@/lib/projectHeaders";
 
 // ─── Status-aware error ───────────────────────────────────────────────────────
 // The edit routes return 409 (non-pending / running) and 400 (cycle / dangling
@@ -16,23 +17,17 @@ export class TaskGroupApiError extends Error {
   }
 }
 
-function authHeaders(hasBody: boolean): Record<string, string> {
-  const headers: Record<string, string> = {};
-  if (hasBody) headers["Content-Type"] = "application/json";
-  const token = localStorage.getItem("auth_token");
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  return headers;
-}
-
 /** Like apiRequest, but throws a TaskGroupApiError carrying the HTTP status. */
 async function editRequest(
   method: string,
   url: string,
   body?: unknown,
 ): Promise<unknown> {
+  // Friendly typed error instead of a doomed 400 when no project is selected.
+  assertProjectSelected(url);
   const res = await fetch(url, {
     method,
-    headers: authHeaders(body !== undefined),
+    headers: buildAuthHeaders(body !== undefined),
     body: body !== undefined ? JSON.stringify(body) : undefined,
     credentials: "include",
   });
