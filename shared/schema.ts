@@ -2827,6 +2827,8 @@ export const CREDENTIAL_ACCESS_ACTIONS = [
   "lease_used",
   "lease_revoked",
   "lease_expired",
+  // [Wave-2] Non-lease direct secret accesses through the broker (ADR-001 PR-1d).
+  "secret_accessed",
 ] as const;
 export type CredentialAccessAction = typeof CREDENTIAL_ACCESS_ACTIONS[number];
 

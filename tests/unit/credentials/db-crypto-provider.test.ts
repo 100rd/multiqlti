@@ -1,5 +1,5 @@
 /**
- * Unit tests for DbCryptoCredentialProvider (ADR-001 Phase 1b).
+ * Unit tests for DbCryptoCredentialProvider (ADR-001 Phase 1b + Wave 2).
  *
  * Covers:
  *   1.  projectId-mismatch throws ForbiddenError on every public method.
@@ -15,6 +15,8 @@
  *       no active leases exist.
  *   9.  expireStaleLeases marks active leases past their expiresAt as 'expired'.
  *   10. Audit rows are written with correct action on each operation.
+ *   11. accessSecret (Wave-2): project-scope, system-context, audit, no-context throw.
+ *   12. No direct crypto.decrypt() import outside the broker (grep-style assertion).
  *
  * Strategy:
  *   - `server/db.js` is fully mocked: each test controls what the DB returns via
@@ -222,7 +224,8 @@ import {
   _resetRateLimitStore,
 } from "../../../server/credentials/db-crypto-provider.js";
 import { ForbiddenError } from "../../../server/credentials/types.js";
-import { runAsProject } from "../../../server/context.js";
+import { runAsProject, runAsSystem } from "../../../server/context.js";
+import type { CredentialLease } from "../../../server/credentials/types.js";
 
 // ─── Test fixtures ────────────────────────────────────────────────────────────
 
@@ -921,6 +924,213 @@ describe("DbCryptoCredentialProvider", () => {
       await expect(markLeaseUsed("unknown-lease", USER)).rejects.toThrow(
         /not found/,
       );
+    });
+  });
+
+  // ── 11. accessSecret — Wave-2 non-lease direct access ────────────────────────
+  //
+  // accessSecret is the SYSTEM/non-run analogue of issueLease.  It routes ALL
+  // remaining crypto.decrypt() calls through the broker with project-scope +
+  // audit enforcement (ADR-001 PR-1d).
+
+  describe("accessSecret", () => {
+    const CIPHERTEXT = "v2:enc-secret-abc";
+    const CRED_ID = "trackerConn:tc-1";
+    const PURPOSE = "test-purpose";
+
+    it("returns decrypted plaintext in project context", async () => {
+      const result = await runAsProject(PROJECT_A, () =>
+        provider.accessSecret({
+          ciphertext: CIPHERTEXT,
+          credentialId: CRED_ID,
+          projectId: PROJECT_A,
+          purpose: PURPOSE,
+        }),
+      );
+      // decrypt mock returns JSON.stringify({ API_TOKEN: "secret-value-123" })
+      expect(result).toBe(JSON.stringify({ API_TOKEN: "secret-value-123" }));
+    });
+
+    it("throws ForbiddenError in project context when projectId !== context", async () => {
+      // Project A context but requesting PROJECT_B credential — must be rejected.
+      await runAsProject(PROJECT_A, async () => {
+        await expect(
+          provider.accessSecret({
+            ciphertext: CIPHERTEXT,
+            credentialId: CRED_ID,
+            projectId: PROJECT_B,
+            purpose: PURPOSE,
+          }),
+        ).rejects.toThrow(ForbiddenError);
+      });
+    });
+
+    it("writes secret_accessed audit row on success (project context)", async () => {
+      await runAsProject(PROJECT_A, () =>
+        provider.accessSecret({
+          ciphertext: CIPHERTEXT,
+          credentialId: CRED_ID,
+          projectId: PROJECT_A,
+          purpose: PURPOSE,
+          requestedBy: USER,
+        }),
+      );
+
+      const auditRows = MOCK_DB.inserted.filter(
+        (i) => i.table === "credential_access_log",
+      );
+      expect(auditRows).toHaveLength(1);
+      const row = auditRows[0].values;
+      expect(row.action).toBe("secret_accessed");
+      expect(row.credentialId).toBe(CRED_ID);
+      expect(row.projectId).toBe(PROJECT_A);
+      expect(row.justification).toBe(PURPOSE);
+      expect(row.requestedBy).toBe(USER);
+      expect(row.success).toBe(true);
+    });
+
+    it("succeeds in system context without project assertion", async () => {
+      // In system context, getProjectId() would throw — but accessSecret skips
+      // assertProject() in system context and should succeed.
+      const result = await runAsSystem("test-system-context", () =>
+        provider.accessSecret({
+          ciphertext: CIPHERTEXT,
+          credentialId: CRED_ID,
+          projectId: PROJECT_B,  // arbitrary project — no assertion in system context
+          purpose: PURPOSE,
+        }),
+      );
+      expect(result).toBe(JSON.stringify({ API_TOKEN: "secret-value-123" }));
+    });
+
+    it("writes secret_accessed audit row in system context", async () => {
+      await runAsSystem("test-system-access", () =>
+        provider.accessSecret({
+          ciphertext: CIPHERTEXT,
+          credentialId: CRED_ID,
+          projectId: PROJECT_A,  // passed explicitly by caller for audit
+          purpose: PURPOSE,
+          requestedBy: "system-loader",
+        }),
+      );
+
+      const auditRows = MOCK_DB.inserted.filter(
+        (i) => i.table === "credential_access_log",
+      );
+      expect(auditRows).toHaveLength(1);
+      const row = auditRows[0].values;
+      expect(row.action).toBe("secret_accessed");
+      expect(row.projectId).toBe(PROJECT_A);
+      expect(row.requestedBy).toBe("system-loader");
+      expect(row.success).toBe(true);
+    });
+
+    it("throws when called outside any ALS context", async () => {
+      // No runAsProject / runAsSystem wrapper — should throw.
+      await expect(
+        provider.accessSecret({
+          ciphertext: CIPHERTEXT,
+          credentialId: CRED_ID,
+          projectId: PROJECT_A,
+          purpose: PURPOSE,
+        }),
+      ).rejects.toThrow(/requires an ALS context/);
+    });
+
+    it("skips audit and still decrypts when projectId is empty (legacy row)", async () => {
+      // Empty projectId signals a legacy row without a projectId column value.
+      // The broker should still decrypt but skip the audit write (with a warning).
+      const result = await runAsSystem("test-legacy-row", () =>
+        provider.accessSecret({
+          ciphertext: CIPHERTEXT,
+          credentialId: CRED_ID,
+          projectId: "",  // empty: audit row skipped, decrypt still succeeds
+          purpose: PURPOSE,
+        }),
+      );
+      expect(result).toBe(JSON.stringify({ API_TOKEN: "secret-value-123" }));
+      // No audit row should have been written for an empty projectId.
+      const auditRows = MOCK_DB.inserted.filter(
+        (i) => i.table === "credential_access_log",
+      );
+      expect(auditRows).toHaveLength(0);
+    });
+  });
+
+  // ── 12. No direct crypto.decrypt() import outside the broker ─────────────────
+  //
+  // Enforcement test: verifies that no server/ TypeScript file outside the
+  // credential broker (and a short allowlist of legitimately different decrypt
+  // implementations) imports `decrypt` from the main ../crypto module.
+  //
+  // After ADR-001 Wave-2, crypto.decrypt() must ONLY be called inside
+  // server/credentials/db-crypto-provider.ts (and rekey/migration scripts).
+
+  describe("ADR-001 PR-1d enforcement: no direct crypto.decrypt() outside broker", () => {
+    it("no server/ .ts file outside the allowlist imports decrypt from main crypto", async () => {
+      const { readFileSync, readdirSync, statSync } = await import("fs");
+      const { join } = await import("path");
+
+      // Resolve repo root from this test file's location.
+      // test is at tests/unit/credentials/ → root is 3 levels up.
+      const testDir = new URL(".", import.meta.url).pathname;
+      const root = join(testDir, "..", "..", "..");
+      const serverDir = join(root, "server");
+
+      // Walk server/ and collect all .ts files.
+      function walk(dir: string): string[] {
+        const out: string[] = [];
+        for (const entry of readdirSync(dir)) {
+          const full = join(dir, entry);
+          try {
+            if (statSync(full).isDirectory()) {
+              out.push(...walk(full));
+            } else if (entry.endsWith(".ts") && !entry.endsWith(".d.ts")) {
+              out.push(full);
+            }
+          } catch {
+            // ignore unreadable entries
+          }
+        }
+        return out;
+      }
+
+      // Files that are ALLOWED to reference decrypt from main crypto (or that have their
+      // own different decrypt function).
+      const ALLOWED = [
+        // The broker: the ONLY permitted caller of crypto.decrypt().
+        "server/credentials/db-crypto-provider.ts",
+        // The function definition itself.
+        "server/crypto.ts",
+        // age-crypto has its own decrypt(EncryptedFile, KeyObject) — different function.
+        "server/config-sync/age-crypto.ts",
+        // Federation encryption: class method, not main crypto.
+        "server/federation/encryption.ts",
+        "server/federation/transport.ts",
+        // TriggerCrypto.decrypt — different key (TRIGGER_SECRET_KEY), ADR-deferred.
+        "server/services/trigger-crypto.ts",
+        "server/services/trigger-service.ts",
+      ];
+
+      // Pattern: any import statement that includes { decrypt } or { ..., decrypt, ... }
+      // targeting the main crypto module (../crypto, ./crypto, ...crypto.js).
+      const IMPORT_RE = /import[^;'"]*\bdecrypt\b[^;'"]*from\s*['"][^'"]*\/crypto(?:\.js)?['"]/m;
+
+      const violations: string[] = [];
+      for (const file of walk(serverDir)) {
+        // Normalise to forward-slash relative path from repo root.
+        const rel = file.replace(/\\/g, "/").replace(root.replace(/\\/g, "/") + "/", "");
+        const isAllowed = ALLOWED.some((a) => rel === a || rel.endsWith("/" + a.replace("server/", "")));
+        if (isAllowed) continue;
+
+        const text = readFileSync(file, "utf-8");
+        if (IMPORT_RE.test(text)) {
+          violations.push(rel);
+        }
+      }
+
+      // All decrypt imports from the main crypto module outside the allowlist are violations.
+      expect(violations).toEqual([]);
     });
   });
 });

@@ -5,6 +5,12 @@
  *   PLAN-TIME  — listCredentials / getCredentialMetadata: metadata only, no secret material.
  *   EXEC-TIME  — issueLease: short-TTL scoped lease, approval + run-state gated, audited.
  *
+ * Wave 2 adds:
+ *   NON-LEASE  — accessSecret: direct decrypt with project-scope + audit, no lease gating.
+ *                Routes ALL crypto.decrypt() calls outside db-crypto-provider.ts through
+ *                the broker.  After Wave 2, crypto.decrypt() is called only inside
+ *                db-crypto-provider.ts.
+ *
  * CredentialSecret is discriminated by `type`.  Wave 1 only produces `static`.
  * `aws-sts` and `github-app-token` variants are reserved for Wave 2 (Vault backend).
  */
@@ -86,6 +92,51 @@ export interface CredentialLease {
   secret: CredentialSecret;
 }
 
+// ─── Non-lease access shape (Wave 2) ─────────────────────────────────────────
+
+/**
+ * Parameters for accessSecret — the non-lease, direct-decrypt surface.
+ *
+ * accessSecret is the SYSTEM/non-run analogue of issueLease.  It has no approval
+ * or run-state gate, but enforces project-scope and writes a secret_accessed audit
+ * row on every call.
+ *
+ * After Wave 2, crypto.decrypt() is called ONLY inside DbCryptoCredentialProvider
+ * (and rekey/migration scripts).  All other call sites use accessSecret.
+ */
+export interface AccessSecretParams {
+  /**
+   * The AES-256-GCM ciphertext to decrypt.  Pre-fetched from the DB by the caller,
+   * which is responsible for project-scoped query filtering via withProject /
+   * unscopedSystemQuery.
+   */
+  ciphertext: string;
+  /**
+   * Opaque identifier for the credential, written to the audit log.
+   * Recommended format: "<table>:<rowId>" — e.g. "trackerConn:abc123",
+   * "remoteAgent:agent-1", "providerKey:anthropic", "gitSkillPat:src-42".
+   */
+  credentialId: string;
+  /**
+   * Project that owns this credential.
+   *
+   * Project context: MUST equal getProjectId() — assertProject() throws
+   *   ForbiddenError on mismatch.
+   * System context: required for the audit-log row; the project assertion is
+   *   skipped because getProjectId() itself throws inside runAsSystem.
+   *   Pass "" if the row has no projectId (legacy); audit write will be skipped
+   *   with a console warning.
+   */
+  projectId: string;
+  /** Human-readable reason for this access (written to the audit log as justification). */
+  purpose: string;
+  /**
+   * Who is requesting the secret (written to audit log as requestedBy).
+   * Defaults to projectId in project context and "system" in system context.
+   */
+  requestedBy?: string;
+}
+
 // ─── Provider interface ───────────────────────────────────────────────────────
 
 /**
@@ -96,7 +147,11 @@ export interface CredentialLease {
  *   [R3-SEC-3] Every public method asserts `projectId === getProjectId()` at entry
  *   and throws ForbiddenError on mismatch.  System context (runAsSystem) causes
  *   getProjectId() to throw, so system-context callers structurally cannot call
- *   any broker method.
+ *   issueLease or lease-management methods.
+ *
+ *   accessSecret is the exception: it accepts BOTH project and system context,
+ *   enforcing project assertion only in project context and skipping it in system
+ *   context (while still auditing the access).
  *
  *   [R3-SEC-2] issueLease reads stage_executions.approvalStatus === 'approved' AND
  *   pipeline_runs.status === 'running' from the DB and throws ForbiddenError
@@ -115,6 +170,27 @@ export interface CredentialProvider {
     projectId: string,
     credentialId: string,
   ): Promise<CredentialMetadata | null>;
+
+  // ── NON-LEASE DIRECT ACCESS (Wave 2) ──────────────────────────────────────
+
+  /**
+   * Decrypt a pre-fetched ciphertext and write a credential_access_log row
+   * (action='secret_accessed').
+   *
+   * Context behaviour:
+   *   - Project context: asserts params.projectId === getProjectId() before decrypting.
+   *     The DB query that fetched the ciphertext must already be scoped via withProject.
+   *   - System context: skips the project assertion (getProjectId() would throw).
+   *     The caller is responsible for passing the correct projectId for audit.
+   *
+   * This is the SYSTEM/non-run analogue of issueLease — no approval/run gating but
+   * always project- or system-scoped and always audited.
+   *
+   * After Wave 2, the ONLY place crypto.decrypt() may be called is INSIDE the broker
+   * (DbCryptoCredentialProvider.accessSecret) and rekey/migration scripts.
+   * Add a CI-grep check to enforce this: no decrypt() outside credentials/ and scripts/.
+   */
+  accessSecret(params: AccessSecretParams): Promise<string>;
 
   // ── EXEC-TIME ─────────────────────────────────────────────────────────────
 

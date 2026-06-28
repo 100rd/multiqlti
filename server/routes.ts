@@ -97,6 +97,7 @@ import { MemoryFederationService } from "./federation/memory-federation";
 import { PipelineSyncService } from "./federation/pipeline-sync";
 import { getFederationManager } from "./federation/manager-state";
 import { runAsSystem } from "./context";
+import { expireStaleLeases } from "./credentials/db-crypto-provider";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -337,6 +338,19 @@ export async function registerRoutes(
   let cronScheduler: CronScheduler | null = null;
   let fileWatcherService: FileWatcherService | null = null;
 
+  // ADR-001 Wave-2: credential lease sweeper — runs every 60s as system context.
+  // Marks leases with expiresAt < now() as expired regardless of backend state.
+  const leaseSweeper = setInterval(async () => {
+    try {
+      const count = await runAsSystem("lease-sweeper", () => expireStaleLeases());
+      if (count > 0) {
+        log(`[credential-broker] sweeper expired ${count} stale lease(s)`, "sweeper");
+      }
+    } catch (e) {
+      log(`[credential-broker] sweeper error: ${(e as Error).message}`, "sweeper");
+    }
+  }, 60_000);
+
   try {
     triggerService = new TriggerService(storage);
 
@@ -448,6 +462,8 @@ export async function registerRoutes(
 
   // Graceful shutdown
   httpServer.on("close", async () => {
+    // ADR-001 Wave-2: clear the credential lease sweeper first.
+    clearInterval(leaseSweeper);
     cronScheduler?.stopAll();
     consiliumLoopPoller?.stop();
     fileWatcherService?.stopAll();

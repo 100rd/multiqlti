@@ -6,8 +6,9 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 import { db, withProject, withProjectInsert } from "../db";
 import { providerKeys } from "@shared/schema";
-import { encrypt, decrypt } from "../crypto";
+import { encrypt } from "../crypto";
 import { unscopedSystemQuery } from "../context";
+import { credentialProvider } from "../credentials/db-crypto-provider";
 import type { Gateway } from "../gateway/index";
 import { configLoader } from "../config/loader";
 import type { VersionsResponse } from "@shared/types";
@@ -268,7 +269,15 @@ export async function loadProviderKeysFromDb(): Promise<Map<string, string>> {
     const map = new Map<string, string>();
     for (const row of rows) {
       try {
-        map.set(row.provider, decrypt(row.apiKeyEncrypted));
+        // [ADR-001 Wave-2] Route through credential broker — no decrypt() outside broker.
+        const plaintext = await credentialProvider.accessSecret({
+          ciphertext: row.apiKeyEncrypted,
+          credentialId: `providerKey:${row.provider}`,
+          projectId: row.projectId ?? "",
+          purpose: "llm-gateway-provider-key-load",
+          requestedBy: "system-gateway-seeder",
+        });
+        map.set(row.provider, plaintext);
       } catch {
         console.warn(`[settings] Failed to decrypt key for provider: ${row.provider}`);
       }

@@ -19,7 +19,10 @@ import { eq, and } from "drizzle-orm";
 import { db } from "../db";
 import { gitSkillSources, skills } from "@shared/schema";
 import type { GitSkillSourceRow } from "@shared/schema";
-import { decrypt } from "../crypto";
+// [ADR-001 Wave-2] No longer imports crypto.decrypt() directly — all decryption
+// is routed through the credential broker.
+import { credentialProvider } from "../credentials/db-crypto-provider";
+import { getProjectId } from "../context";
 import { SkillYamlSchema } from "../skills/yaml-service";
 import yaml from "js-yaml";
 
@@ -197,7 +200,16 @@ export async function syncGitSkillSource(sourceId: string): Promise<void> {
     let cloneUrl = source.repoUrl;
     if (source.encryptedPat) {
       try {
-        const pat = decrypt(source.encryptedPat);
+        // [ADR-001 Wave-2] Route through credential broker (no direct decrypt).
+        // source.projectId may be null for legacy rows; fall back to getProjectId()
+        // in project context (syncGitSkillSource is called from route handlers).
+        const projectId = source.projectId ?? getProjectId();
+        const pat = await credentialProvider.accessSecret({
+          ciphertext: source.encryptedPat,
+          credentialId: `gitSkillPat:${source.id}`,
+          projectId,
+          purpose: "git-skill-source-clone-pat",
+        });
         cloneUrl = injectPat(source.repoUrl, pat);
       } catch (cryptoErr) {
         throw new Error(`Failed to decrypt PAT: ${(cryptoErr as Error).message}`);

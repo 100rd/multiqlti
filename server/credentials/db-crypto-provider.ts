@@ -19,7 +19,7 @@
 
 import { eq, and, lt } from "drizzle-orm";
 import { db } from "../db.js";
-import { getProjectId } from "../context.js";
+import { getProjectId, requestContext } from "../context.js";
 import { decrypt } from "../crypto.js";
 import {
   workspaceConnections,
@@ -34,6 +34,7 @@ import type {
   CredentialLease,
   CredentialProvider,
   CredentialSecret,
+  AccessSecretParams,
 } from "./types.js";
 import { ForbiddenError } from "./types.js";
 
@@ -559,6 +560,99 @@ export class DbCryptoCredentialProvider implements CredentialProvider {
         success: true,
       });
     }
+  }
+
+  // ── NON-LEASE DIRECT ACCESS (Wave 2, ADR-001 PR-1d) ────────────────────────────
+
+  /**
+   * Decrypt a pre-fetched ciphertext and write a credential_access_log row
+   * (action='secret_accessed').
+   *
+   * Context behaviour:
+   *   - Project context (getProjectId() returns a string): asserts
+   *     params.projectId === getProjectId() before decrypting.
+   *   - System context (requestContext.getStore()?.system === true): skips the
+   *     project assertion; getProjectId() would throw in system context.
+   *     The caller supplies the credential's projectId for the audit row.
+   *   - No ALS context at all: throws — requires runAsProject or runAsSystem.
+   *
+   * If params.projectId is empty (legacy row without projectId), the audit row is
+   * skipped with a console warning and the plaintext is still returned.
+   *
+   * After Wave 2 this is the ONLY permitted path to crypto.decrypt() outside of
+   * rekey/migration scripts.  A CI grep enforces this:
+   *   grep -rn "decrypt(" server/ | grep -v credentials/db-crypto-provider | grep -v scripts/
+   * must return nothing.
+   */
+  async accessSecret(params: AccessSecretParams): Promise<string> {
+    const ctx = requestContext.getStore();
+
+    if (!ctx) {
+      throw new Error(
+        "accessSecret requires an ALS context. " +
+          "Wrap the caller in runAsProject(projectId, fn) or runAsSystem(reason, fn).",
+      );
+    }
+
+    if (!ctx.system) {
+      // Project context: enforce that provided projectId matches the current context.
+      // assertProject throws ForbiddenError on mismatch (and if context has no projectId).
+      assertProject(params.projectId);
+    }
+    // System context: skip the project assertion — getProjectId() throws in system context.
+    // The caller (always a runAsSystem-wrapped function) must pass the correct projectId.
+
+    const requestedBy =
+      params.requestedBy ??
+      (ctx.system ? "system" : (ctx.projectId ?? params.projectId));
+
+    let plaintext: string;
+    try {
+      // ─── The ONLY permitted crypto.decrypt() call outside rekey/migration scripts. ───
+      plaintext = decrypt(params.ciphertext);
+    } catch (e) {
+      // Best-effort audit on decrypt failure.
+      if (params.projectId) {
+        await writeAccessLog({
+          credentialId: params.credentialId,
+          projectId: params.projectId,
+          action: "secret_accessed",
+          requestedBy,
+          justification: params.purpose,
+          success: false,
+          errorMessage: (e as Error).message,
+        }).catch((auditErr: unknown) => {
+          console.warn(
+            "[credential-broker] audit write failed on decrypt error:",
+            auditErr,
+          );
+        });
+      }
+      throw e;
+    }
+
+    // Write the audit row.
+    if (params.projectId) {
+      await writeAccessLog({
+        credentialId: params.credentialId,
+        projectId: params.projectId,
+        action: "secret_accessed",
+        requestedBy,
+        justification: params.purpose,
+        success: true,
+      }).catch((auditErr: unknown) => {
+        console.warn("[credential-broker] audit write failed:", auditErr);
+      });
+    } else {
+      console.warn(
+        "[credential-broker] accessSecret: no projectId for credential " +
+          params.credentialId +
+          " — audit log skipped (legacy unscoped row). Purpose: " +
+          params.purpose,
+      );
+    }
+
+    return plaintext;
   }
 
   // ── CREDENTIAL STORE ─────────────────────────────────────────────────────────
