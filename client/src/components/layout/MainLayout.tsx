@@ -33,6 +33,7 @@ import {
   ChevronDown,
   ChevronRight,
   Archive,
+  KeyRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -131,6 +132,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: Wrench, label: "Maintenance", href: "/maintenance" },
     { icon: Settings, label: "Settings", href: "/settings" },
     { icon: Radio, label: "Config Sync", href: "/settings/peers" },
+    { icon: KeyRound, label: "Credential Access", href: "/credentials" },
     // Admin-only: User Management
     ...(user?.role === "admin"
       ? [{ icon: Users, label: "Users", href: "/settings/users" }]

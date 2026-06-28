@@ -52,6 +52,7 @@ import ConfigSync from "@/pages/ConfigSync";
 import Activity from "@/pages/Activity";
 import ConsiliumLoopList from "@/pages/ConsiliumLoopList";
 import ConsiliumLoopDetail from "@/pages/ConsiliumLoopDetail";
+import CredentialAccess from "@/pages/CredentialAccess";
 
 // ─── Project gate screens ─────────────────────────────────────────────────────
 
@@ -239,6 +240,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/library" component={() => (
           <ErrorBoundary><Library /></ErrorBoundary>
+        )} />
+        <Route path="/credentials" component={() => (
+          <ErrorBoundary><CredentialAccess /></ErrorBoundary>
         )} />
         <Route component={NotFound} />
       </Switch>
