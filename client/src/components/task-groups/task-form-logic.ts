@@ -16,6 +16,7 @@
  * payload). The reducers preserve both through every edit.
  */
 import type { TaskGroupStatus } from "@shared/types";
+import { generateUUID } from "@/lib/uuid";
 
 export type ExecutionMode = "direct_llm" | "pipeline_run";
 
@@ -61,7 +62,7 @@ export interface SiblingOption {
 
 export function emptyTask(): TaskDraft {
   return {
-    id: crypto.randomUUID(),
+    id: generateUUID(),
     name: "",
     description: "",
     executionMode: "direct_llm",
@@ -191,7 +192,7 @@ function asExecutionMode(value: ExecutionMode | string | null | undefined): Exec
  */
 export function seedTaskFromTemplate(template: TemplateSeed): TaskDraft {
   return {
-    id: crypto.randomUUID(),
+    id: generateUUID(),
     name: template.name,
     description: template.description,
     executionMode: asExecutionMode(template.executionMode),

@@ -11,6 +11,7 @@
  * - Stage positions persisted in the DAG config
  */
 import { useState, useRef, useCallback } from "react";
+import { generateUUID } from "@/lib/uuid";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Plus, Trash2, GitMerge, X } from "lucide-react";
@@ -170,7 +171,7 @@ export default function DAGCanvas({
       if (!exists) {
         onEdgesChange([
           ...edges,
-          { id: `e-${crypto.randomUUID()}`, from: connecting, to: targetId },
+          { id: `e-${generateUUID()}`, from: connecting, to: targetId },
         ]);
       }
       setConnecting(null);
@@ -203,7 +204,7 @@ export default function DAGCanvas({
 
   const addStage = useCallback(() => {
     const newStage: DAGStageNode = {
-      id: `stage-${crypto.randomUUID()}`,
+      id: `stage-${generateUUID()}`,
       teamId: "planning",
       modelSlug: "mock",
       enabled: true,

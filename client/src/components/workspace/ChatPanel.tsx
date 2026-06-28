@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Send } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/hooks/use-pipeline";
+import { generateUUID } from "@/lib/uuid";
 
 interface Message {
   id: string;
@@ -44,7 +45,7 @@ export function ChatPanel({ workspaceId, modelSlug, contextFilePaths = [] }: Cha
     const text = input.trim();
     if (!text || isSending) return;
 
-    const userMsg: Message = { id: crypto.randomUUID(), role: "user", content: text };
+    const userMsg: Message = { id: generateUUID(), role: "user", content: text };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setIsSending(true);
@@ -52,7 +53,7 @@ export function ChatPanel({ workspaceId, modelSlug, contextFilePaths = [] }: Cha
     try {
       const reply = await sendChat(workspaceId, text, modelSlug, contextFilePaths);
       const assistantMsg: Message = {
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         role: "assistant",
         content: reply,
         model: modelSlug,
@@ -60,7 +61,7 @@ export function ChatPanel({ workspaceId, modelSlug, contextFilePaths = [] }: Cha
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (err) {
       const errMsg: Message = {
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         role: "assistant",
         content: `Error: ${(err as Error).message}`,
         model: modelSlug,
