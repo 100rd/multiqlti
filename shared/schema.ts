@@ -300,7 +300,10 @@ export const providerKeys = pgTable(
       .primaryKey()
       .default(sql`gen_random_uuid()`),
     // Per-project scoping: ADR-001 PR-0c
-    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    // ADR-001 PR-0c R3-HIGH: .notNull() ensures drizzle-kit push preserves the NOT NULL
+    // DB constraint. .$type<string|null> keeps TS nullable for withProjectInsert callers
+    // (which inject projectId at runtime) and MemStorage (uses null in-memory mock).
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull().$type<string | null>(),
     provider: text("provider").notNull(),
     apiKeyEncrypted: text("api_key_encrypted").notNull(),
     createdAt: timestamp("created_at").defaultNow(),
@@ -450,7 +453,8 @@ export const argoCdConfig = pgTable(
     // ADR-001 PR-0c converts the id=1 singleton to per-project rows.
     id: serial('id').primaryKey(),
     // Per-project scoping: one row per project — ADR-001 §3.1(e) [R3-SEC-5]
-    projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    // ADR-001 PR-0c R3-HIGH: see providerKeys.projectId comment above.
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }).notNull().$type<string | null>(),
     serverUrl: text('server_url'),
     tokenEnc: text('token_enc'),
     verifySsl: boolean('verify_ssl').notNull().default(true),
@@ -749,7 +753,8 @@ export const triggers = pgTable(
       .primaryKey()
       .default(sql`gen_random_uuid()`),
     // Denormalized from pipelines.projectId for direct query scoping: ADR-001 PR-0c §3.1(e)
-    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    // ADR-001 PR-0c R3-HIGH: see providerKeys.projectId comment above.
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull().$type<string | null>(),
     pipelineId: varchar("pipeline_id")
       .notNull()
       .references(() => pipelines.id, { onDelete: "cascade" }),
@@ -1798,7 +1803,8 @@ export const mcpToolCalls = pgTable(
     // Per-project scoping: ADR-001 PR-0c — resolves the column-not-found gap
     // that would cause fail-closed withProject(mcpToolCalls) to throw. Backfilled
     // from pipeline_runs.project_id via JOIN on pipeline_run_id.
-    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    // ADR-001 PR-0c R3-HIGH: see providerKeys.projectId comment above.
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }).notNull().$type<string | null>(),
     /** Nullable — tool calls may occur outside a pipeline run context. */
     pipelineRunId: varchar("pipeline_run_id"),
     /** DAG stage ID within the run, if applicable. */

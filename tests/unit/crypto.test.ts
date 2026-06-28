@@ -17,6 +17,7 @@
  *   4. encrypt() / decrypt() throw when ENCRYPTION_KEY is not configured
  *   5. isV2() correctly identifies format
  *   6. Rekey idempotency (v2: values re-read and re-encrypt cleanly)
+ *   7. Tamper-resistance: GCM auth-tag rejects payload bit-flip (R2-L1 fix)
  *
  * The configLoader is mocked so these tests work without a running server or
  * any real ENCRYPTION_KEY env var.
@@ -84,7 +85,9 @@ describe("decrypt() — v2: round-trip", () => {
     expect(decrypt(encrypt(plaintext))).toBe(plaintext);
   });
 
-  it("throws on a corrupted v2: payload", () => {
+  it("throws on a corrupted v2: payload (length guard path)", () => {
+    // "v2:deadbeef" is too short to be a valid ciphertext — hits the length guard
+    // before GCM auth-tag verification. See the tamper test for the GCM path.
     expect(() => decrypt("v2:deadbeef")).toThrow();
   });
 
@@ -92,6 +95,58 @@ describe("decrypt() — v2: round-trip", () => {
     const ciphertext = encrypt("something");
     mockEncryptionKey = undefined;
     expect(() => decrypt(ciphertext)).toThrow(/ENCRYPTION_KEY/);
+  });
+});
+
+describe("decrypt() — tamper resistance (R2-L1)", () => {
+  beforeEach(() => {
+    mockEncryptionKey = TEST_KEY_32;
+  });
+
+  /**
+   * R2-L1 fix: verifies GCM auth-tag rejection on ciphertext payload tampering.
+   *
+   * v2: wire format after the "v2:" prefix (hex-encoded binary):
+   *   salt    [32 bytes = 64 hex chars]
+   *   iv      [12 bytes = 24 hex chars]
+   *   authTag [16 bytes = 32 hex chars]
+   *   payload [N  bytes = 2N hex chars]  ← flip one char HERE
+   *
+   * Header = 32+12+16 = 60 bytes = 120 hex chars.
+   * Payload starts at hex index 120 (relative to start of the hex string).
+   *
+   * Flipping a hex char in the payload corrupts one nibble of the encrypted
+   * bytes. AES-256-GCM's auth tag covers the entire payload, so any change
+   * causes decipher.final() to throw — NOT the length guard.
+   *
+   * This test differs from "v2:deadbeef" (which hits the length guard) because
+   * the tampered value has the SAME length as a valid ciphertext.
+   */
+  it("throws (GCM auth-tag rejection, not length guard) when one payload nibble is flipped", () => {
+    const plaintext = "tamper-detection-test";
+    const ciphertext = encrypt(plaintext);
+
+    const V2_PREFIX = "v2:";
+    const hex = ciphertext.slice(V2_PREFIX.length);
+
+    // Header = salt(64) + iv(24) + authTag(32) = 120 hex chars.
+    const HEADER_HEX_LEN = 120;
+
+    // Sanity check: must have payload bytes to flip.
+    expect(hex.length).toBeGreaterThan(HEADER_HEX_LEN);
+
+    // Flip the first hex char of the payload (XOR nibble by 1 for guaranteed change).
+    const originalNibble = parseInt(hex[HEADER_HEX_LEN], 16);
+    const flippedNibble = (originalNibble ^ 0x01).toString(16);
+    const tampered =
+      V2_PREFIX +
+      hex.slice(0, HEADER_HEX_LEN) +
+      flippedNibble +
+      hex.slice(HEADER_HEX_LEN + 1);
+
+    // Same length as original — this is the GCM auth-tag path, not length guard.
+    expect(tampered.length).toBe(ciphertext.length);
+    expect(() => decrypt(tampered)).toThrow();
   });
 });
 
