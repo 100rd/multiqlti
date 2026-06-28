@@ -49,6 +49,46 @@ export interface AIProviderConfig {
   isEnabled: boolean;
 }
 
+export class ProviderError extends Error {
+  constructor(
+    message: string, 
+    public readonly providerId: string, 
+    public readonly status?: number, 
+    public readonly rawError?: any
+  ) {
+    super(`[${providerId}] ${message}`);
+    this.name = 'ProviderError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class RateLimitError extends ProviderError {
+  constructor(message: string, providerId: string, status = 429, rawError?: any) {
+    super(message, providerId, status, rawError);
+    this.name = 'RateLimitError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class NetworkError extends ProviderError {
+  constructor(message: string, providerId: string, rawError?: any) {
+    super(message, providerId, undefined, rawError);
+    this.name = 'NetworkError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class ProviderExhaustionError extends Error {
+  constructor(
+    message: string, 
+    public readonly errors: Array<{ providerId: string; error: Error }>
+  ) {
+    super(message);
+    this.name = 'ProviderExhaustionError';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 export class ProviderPoolRouter {
   private pool: ProviderNode[] = [];
   private readonly primaryProvider?: AIProvider;
@@ -57,6 +97,7 @@ export class ProviderPoolRouter {
   // Auditor compliance properties
   private isSevered: boolean = false;
   private providers: AIProviderConfig[] = [];
+  private rrIndex: number = 0;
 
   constructor(arg1?: ProviderNode[] | AIProvider, arg2?: AIProvider) {
     if (Array.isArray(arg1)) {
@@ -64,6 +105,8 @@ export class ProviderPoolRouter {
     } else if (arg1 && arg2) {
       this.primaryProvider = arg1 as AIProvider;
       this.fallbackProvider = arg2;
+    } else if (arg1) {
+      this.primaryProvider = arg1 as AIProvider;
     }
   }
 
@@ -83,9 +126,12 @@ export class ProviderPoolRouter {
       );
     }
 
-    // Simple routing matching model provider
-    const matched = healthy.find((node) => node.provider === model.provider);
-    return matched || healthy[0];
+    const matched = healthy.filter((node) => node.provider === model.provider);
+    const nodesToRoute = matched.length > 0 ? matched : healthy;
+
+    const node = nodesToRoute[this.rrIndex % nodesToRoute.length];
+    this.rrIndex++;
+    return node;
   }
 
   markUnhealthy(provider: string): void {
@@ -113,26 +159,53 @@ export class ProviderPoolRouter {
     try {
       return await this.primaryProvider.generate(request);
     } catch (primaryErr: any) {
-      errors.push({ providerId: this.primaryProvider.id, error: primaryErr });
+      let errorInstance: Error;
+      if (primaryErr instanceof Error) {
+        errorInstance = primaryErr;
+      } else {
+        errorInstance = new Error(primaryErr === null ? 'null error' : String(primaryErr));
+      }
+      errors.push({ providerId: this.primaryProvider.id, error: errorInstance });
 
-      const isRetryable = 
-        primaryErr.name === 'RateLimitError' ||
-        primaryErr.name === 'NetworkError' ||
-        primaryErr.status === 429 ||
-        (primaryErr.message && primaryErr.message.includes('429')) ||
-        (primaryErr.message && primaryErr.message.toLowerCase().includes('rate limit'));
+      // Safe error type guards
+      let isRetryable = false;
+      if (primaryErr && typeof primaryErr === 'object') {
+        const errObj = primaryErr as any;
+        isRetryable = 
+          errObj instanceof RateLimitError || 
+          errObj instanceof NetworkError ||
+          errObj.name === 'RateLimitError' ||
+          errObj.name === 'NetworkError' ||
+          errObj.status === 429 ||
+          (typeof errObj.message === 'string' && (
+            errObj.message.includes('429') ||
+            errObj.message.toLowerCase().includes('rate limit')
+          )) ||
+          // Non-standard error
+          (errObj.name !== 'Error' && errObj.name !== 'TypeError' && errObj.name !== 'RangeError' && errObj.name !== 'ReferenceError' && errObj.name !== 'SyntaxError');
+      } else {
+        // Null or non-object errors trigger fallback
+        isRetryable = true;
+      }
 
       if (isRetryable) {
         try {
           return await this.fallbackProvider.generate(request);
         } catch (fallbackErr: any) {
-          errors.push({ providerId: this.fallbackProvider.id, error: fallbackErr });
+          let fallbackErrorInstance: Error;
+          if (fallbackErr instanceof Error) {
+            fallbackErrorInstance = fallbackErr;
+          } else {
+            fallbackErrorInstance = new Error(fallbackErr === null ? 'null error' : String(fallbackErr));
+          }
+          errors.push({ providerId: this.fallbackProvider.id, error: fallbackErrorInstance });
         }
       }
     }
 
-    throw new Error(
-      `All providers exhausted. Primary failed with: ${errors[0].error.message}`
+    throw new ProviderExhaustionError(
+      `All providers exhausted. Primary failed with: ${errors[0].error.message}`,
+      errors
     );
   }
 
