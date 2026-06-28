@@ -98,7 +98,7 @@ export function withProject(table: any, condition?: SQL | undefined): SQL {
  *
  * Usage: db.insert(table).values(withProjectInsert(table, data))
  */
-export function withProjectInsert<T>(table: any, data: T): T {
+export function withProjectInsert<T>(table: any, data: T): T & { projectId: string | null } {
   const ctx = requestContext.getStore();
 
   if (!ctx) {
@@ -113,9 +113,9 @@ export function withProjectInsert<T>(table: any, data: T): T {
     // System context: insert with projectId=null (globally shared / unscoped data).
     // Use for system-level seeding that creates resources shared across all projects.
     if (Array.isArray(data)) {
-      return data.map((item) => ({ ...item, projectId: null })) as unknown as T;
+      return data.map((item) => ({ ...item, projectId: null })) as unknown as T & { projectId: string | null };
     }
-    return { ...data, projectId: null } as unknown as T;
+    return { ...data, projectId: null } as unknown as T & { projectId: string | null };
   }
 
   if (!ctx.projectId) {
@@ -126,9 +126,9 @@ export function withProjectInsert<T>(table: any, data: T): T {
   }
 
   if (Array.isArray(data)) {
-    return data.map((item) => ({ ...item, projectId: ctx.projectId! })) as unknown as T;
+    return data.map((item) => ({ ...item, projectId: ctx.projectId! })) as unknown as T & { projectId: string | null };
   }
-  return { ...data, projectId: ctx.projectId } as unknown as T;
+  return { ...data, projectId: ctx.projectId } as unknown as T & { projectId: string | null };
 }
 
 /**
