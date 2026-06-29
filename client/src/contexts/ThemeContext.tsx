@@ -6,7 +6,16 @@ import {
   type ReactNode,
 } from "react";
 
-export type AccentName = "default" | "blue" | "violet" | "emerald" | "rose" | "amber";
+export type AccentName =
+  | "default"
+  | "blue"
+  | "violet"
+  | "emerald"
+  | "rose"
+  | "amber"
+  | "slate"
+  | "ocean"
+  | "forest";
 
 export interface AccentConfig {
   name: AccentName;
@@ -53,6 +62,24 @@ export const ACCENTS: AccentConfig[] = [
     label: "Amber",
     lightPrimary: "38 92% 50%",
     darkPrimary: "41 96% 56%",
+  },
+  {
+    name: "slate",
+    label: "Slate",
+    lightPrimary: "215 25% 27%",
+    darkPrimary: "213 27% 62%",
+  },
+  {
+    name: "ocean",
+    label: "Ocean",
+    lightPrimary: "199 89% 38%",
+    darkPrimary: "190 85% 50%",
+  },
+  {
+    name: "forest",
+    label: "Forest",
+    lightPrimary: "142 64% 28%",
+    darkPrimary: "142 52% 47%",
   },
 ];
 

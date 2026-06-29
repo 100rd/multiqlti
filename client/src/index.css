@@ -400,3 +400,84 @@
   --chart-4: 43 74% 66%;
   --chart-5: 50 91% 60%;
 }
+
+[data-theme="slate"] {
+  --primary: 215 25% 27%;
+  --primary-foreground: 0 0% 100%;
+  --ring: 215 25% 27%;
+  --sidebar-primary: 215 25% 27%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-ring: 215 25% 27%;
+  --chart-1: 215 25% 27%;
+  --chart-2: 199 60% 42%;
+  --chart-3: 222 47% 50%;
+  --chart-4: 173 40% 42%;
+  --chart-5: 262 40% 52%;
+}
+.dark[data-theme="slate"] {
+  --primary: 213 27% 62%;
+  --primary-foreground: 215 28% 12%;
+  --ring: 213 27% 62%;
+  --sidebar-primary: 213 27% 62%;
+  --sidebar-primary-foreground: 215 28% 12%;
+  --sidebar-ring: 213 27% 62%;
+  --chart-1: 213 27% 62%;
+  --chart-2: 199 60% 55%;
+  --chart-3: 222 47% 65%;
+  --chart-4: 173 40% 55%;
+  --chart-5: 262 40% 65%;
+}
+
+[data-theme="ocean"] {
+  --primary: 199 89% 38%;
+  --primary-foreground: 0 0% 100%;
+  --ring: 199 89% 38%;
+  --sidebar-primary: 199 89% 38%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-ring: 199 89% 38%;
+  --chart-1: 199 89% 38%;
+  --chart-2: 187 80% 40%;
+  --chart-3: 210 90% 50%;
+  --chart-4: 172 66% 40%;
+  --chart-5: 224 76% 55%;
+}
+.dark[data-theme="ocean"] {
+  --primary: 190 85% 50%;
+  --primary-foreground: 200 90% 10%;
+  --ring: 190 85% 50%;
+  --sidebar-primary: 190 85% 50%;
+  --sidebar-primary-foreground: 200 90% 10%;
+  --sidebar-ring: 190 85% 50%;
+  --chart-1: 190 85% 50%;
+  --chart-2: 187 80% 52%;
+  --chart-3: 210 90% 60%;
+  --chart-4: 172 66% 52%;
+  --chart-5: 224 76% 65%;
+}
+
+[data-theme="forest"] {
+  --primary: 142 64% 28%;
+  --primary-foreground: 0 0% 100%;
+  --ring: 142 64% 28%;
+  --sidebar-primary: 142 64% 28%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-ring: 142 64% 28%;
+  --chart-1: 142 64% 28%;
+  --chart-2: 160 70% 35%;
+  --chart-3: 100 50% 40%;
+  --chart-4: 173 58% 39%;
+  --chart-5: 48 75% 45%;
+}
+.dark[data-theme="forest"] {
+  --primary: 142 52% 47%;
+  --primary-foreground: 142 60% 8%;
+  --ring: 142 52% 47%;
+  --sidebar-primary: 142 52% 47%;
+  --sidebar-primary-foreground: 142 60% 8%;
+  --sidebar-ring: 142 52% 47%;
+  --chart-1: 142 52% 47%;
+  --chart-2: 160 60% 48%;
+  --chart-3: 100 45% 50%;
+  --chart-4: 173 58% 50%;
+  --chart-5: 48 75% 55%;
+}
