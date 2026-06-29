@@ -2,7 +2,9 @@ import { eq } from "drizzle-orm";
 import { db, withProject, withProjectList } from "../db";
 import { runAsSystem } from "../context";
 import { remoteAgents, a2aTasks } from "@shared/schema";
-import { encrypt, decrypt } from "../crypto";
+import { encrypt } from "../crypto";
+// [ADR-001 Wave-2] credentialProvider routes all decrypt() calls through the broker.
+import { credentialProvider } from "../credentials/db-crypto-provider";
 import { A2AClient } from "./a2a-client";
 import { AgentDiscoveryService } from "./agent-discovery";
 import type {
@@ -107,7 +109,7 @@ export class RemoteAgentManager {
       })
       .returning();
 
-    return this.rowToConfig(created);
+    return await this.rowToConfig(created);
   }
 
   async unregisterAgent(agentId: string): Promise<void> {
@@ -256,7 +258,7 @@ export class RemoteAgentManager {
       .from(remoteAgents)
       .where(withProjectList(remoteAgents))
       .orderBy(remoteAgents.name);
-    return rows.map((r) => this.rowToConfig(r));
+    return Promise.all(rows.map((r) => this.rowToConfig(r)));
   }
 
   async getAgent(agentId: string): Promise<RemoteAgentConfig | null> {
@@ -264,7 +266,7 @@ export class RemoteAgentManager {
       .select()
       .from(remoteAgents)
       .where(withProject(remoteAgents, eq(remoteAgents.id, agentId)));
-    return row ? this.rowToConfig(row) : null;
+    return row ? await this.rowToConfig(row) : null;
   }
 
   getConnectionStatus(agentId: string): boolean {
@@ -295,9 +297,27 @@ export class RemoteAgentManager {
 
   // ── Helpers ────────────────────────────────────────────────────────
 
-  private rowToConfig(
+  /**
+   * [ADR-001 Wave-2] rowToConfig is now async — it routes authTokenEnc through
+   * the credential broker instead of calling crypto.decrypt() directly.
+   * All callers are updated to await this method or use Promise.all.
+   */
+  private async rowToConfig(
     row: typeof remoteAgents.$inferSelect,
-  ): RemoteAgentConfig {
+  ): Promise<RemoteAgentConfig> {
+    // Decrypt auth token via the broker (project or system context both accepted).
+    // row.projectId is the credential-owning project for the audit log.
+    // row.projectId may be null for legacy rows; passing "" triggers audit-skip
+    // with a warning in accessSecret but still decrypts correctly.
+    let authToken: string | null = null;
+    if (row.authTokenEnc) {
+      authToken = await credentialProvider.accessSecret({
+        ciphertext: row.authTokenEnc,
+        credentialId: `remoteAgent:${row.id}`,
+        projectId: row.projectId ?? "",
+        purpose: "remote-agent-auth-token-read",
+      });
+    }
     return {
       id: row.id,
       name: row.name,
@@ -307,9 +327,9 @@ export class RemoteAgentManager {
       cluster: row.cluster,
       namespace: row.namespace,
       labels: row.labels as Record<string, string> | null,
-      // Decrypt at the DB boundary so all callers receive the plaintext token.
-      // The DB column stores AES-256-GCM ciphertext; the config field holds plaintext.
-      authTokenEnc: row.authTokenEnc ? decrypt(row.authTokenEnc) : null,
+      // authToken is decrypted by the credential broker above.
+      // HTTP responses MUST strip this via toPublicAgent() in the route layer.
+      authTokenEnc: authToken,
       enabled: row.enabled,
       autoConnect: row.autoConnect,
       status: row.status as RemoteAgentConfig["status"],

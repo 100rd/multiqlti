@@ -5,8 +5,11 @@ import { spawnSync } from "child_process";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { db, withProject, withProjectInsert } from "../db";
+import { unscopedSystemQuery } from "../context";
 import { providerKeys } from "@shared/schema";
-import { encrypt, decrypt } from "../crypto";
+import { encrypt } from "../crypto";
+// [ADR-001 Wave-2] credentialProvider routes all decrypt() calls through the broker.
+import { credentialProvider } from "../credentials/db-crypto-provider";
 import type { Gateway } from "../gateway/index";
 import { configLoader } from "../config/loader";
 import type { VersionsResponse } from "@shared/types";
@@ -239,14 +242,37 @@ export function registerSettingsRoutes(router: Router, gateway: Gateway) {
   });
 }
 
-/** Load DB-stored keys and return a map of provider → decrypted key. */
+/**
+ * Load DB-stored keys and return a map of provider → decrypted key.
+ *
+ * M-8 fix: the query was unscoped and decrypted ALL projects' keys. It is now
+ * guarded by unscopedSystemQuery, which throws if called outside a runAsSystem()
+ * context. Callers MUST use:
+ *
+ *   await runAsSystem("startup-load-provider-keys", () => loadProviderKeysFromDb())
+ *
+ * Per-project gateway key resolution will move to the Phase-1 credential broker;
+ * this function is a transitional helper for startup-time gateway seeding only.
+ */
 export async function loadProviderKeysFromDb(): Promise<Map<string, string>> {
   try {
-    const rows = await db.select().from(providerKeys);
+    // unscopedSystemQuery throws if not called inside runAsSystem() — this ensures
+    // callers always establish an explicit audit context before reading all-project keys.
+    const rows = await unscopedSystemQuery("gateway-load-provider-keys", () =>
+      db.select().from(providerKeys),
+    );
     const map = new Map<string, string>();
     for (const row of rows) {
       try {
-        map.set(row.provider, decrypt(row.apiKeyEncrypted));
+        // [ADR-001 Wave-2] Route through credential broker — no decrypt() outside broker.
+        const plaintext = await credentialProvider.accessSecret({
+          ciphertext: row.apiKeyEncrypted,
+          credentialId: `providerKey:${row.provider}`,
+          projectId: row.projectId ?? "",
+          purpose: "llm-gateway-provider-key-load",
+          requestedBy: "system-gateway-seeder",
+        });
+        map.set(row.provider, plaintext);
       } catch {
         console.warn(`[settings] Failed to decrypt key for provider: ${row.provider}`);
       }

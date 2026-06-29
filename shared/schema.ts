@@ -2804,3 +2804,96 @@ export const insertConsiliumLoopRoundSchema = createInsertSchema(consiliumLoopRo
 });
 export type InsertConsiliumLoopRound = typeof consiliumLoopRounds.$inferInsert;
 export type ConsiliumLoopRoundRow = typeof consiliumLoopRounds.$inferSelect;
+
+// ─── Credential Broker — Phase 1 (ADR-001) ──────────────────────────────────
+//
+// credential_leases:    short-TTL scoped lease records (active | revoked | expired)
+// credential_access_log: append-only audit trail for all broker operations
+//
+// Both tables carry projectId NOT NULL to enforce hard project isolation.
+// The application-layer broker asserts projectId === getProjectId() on entry
+// before any DB access.
+//
+// Deploy: psql "$DATABASE_URL" -f migrations/0028_phase1_credential_broker.sql
+
+export const CREDENTIAL_LEASE_STATUSES = ["active", "revoked", "expired"] as const;
+export type CredentialLeaseStatus = typeof CREDENTIAL_LEASE_STATUSES[number];
+
+export const CREDENTIAL_ACCESS_ACTIONS = [
+  "list_metadata",
+  "get_metadata",
+  "lease_issued",
+  "lease_used",
+  "lease_revoked",
+  "lease_expired",
+  // [Wave-2] Non-lease direct secret accesses through the broker (ADR-001 PR-1d).
+  "secret_accessed",
+] as const;
+export type CredentialAccessAction = typeof CREDENTIAL_ACCESS_ACTIONS[number];
+
+export const credentialLeases = pgTable(
+  "credential_leases",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    credentialId: text("credential_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    stageId: text("stage_id").notNull(),
+    requestedBy: text("requested_by").notNull(),
+    issuedAt: timestamp("issued_at").notNull().defaultNow(),
+    expiresAt: timestamp("expires_at").notNull(),
+    revokedAt: timestamp("revoked_at"),
+    status: text("status")
+      .notNull()
+      .default("active")
+      .$type<CredentialLeaseStatus>(),
+  },
+  (table) => ({
+    projectIdx: index("credential_leases_project_id_idx").on(table.projectId),
+    runIdx: index("credential_leases_run_id_idx").on(table.runId),
+    statusIdx: index("credential_leases_status_idx").on(table.status),
+  }),
+);
+
+export type CredentialLease = typeof credentialLeases.$inferSelect;
+export type InsertCredentialLease = typeof credentialLeases.$inferInsert;
+
+export const credentialAccessLog = pgTable(
+  "credential_access_log",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    /** Null for plan-time actions (list_metadata, get_metadata) that have no lease. */
+    leaseId: text("lease_id"),
+    credentialId: text("credential_id").notNull(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    /** Null for plan-time actions that have no run context. */
+    runId: text("run_id"),
+    /** Null for plan-time actions that have no stage context. */
+    stageId: text("stage_id"),
+    action: text("action")
+      .notNull()
+      .$type<CredentialAccessAction>(),
+    requestedBy: text("requested_by").notNull(),
+    justification: text("justification"),
+    success: boolean("success").notNull().default(true),
+    errorMessage: text("error_message"),
+    /** TTL in seconds — only set for lease_issued actions. */
+    ttlSeconds: integer("ttl_seconds"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    projectIdx: index("credential_access_log_project_id_idx").on(table.projectId),
+    credentialIdx: index("credential_access_log_credential_id_idx").on(table.credentialId),
+  }),
+);
+
+export type CredentialAccessLogRow = typeof credentialAccessLog.$inferSelect;
+export type InsertCredentialAccessLog = typeof credentialAccessLog.$inferInsert;

@@ -51,6 +51,7 @@ import Activity from "@/pages/Activity";
 import ConsiliumLoopList from "@/pages/ConsiliumLoopList";
 import ConsiliumLoopDetail from "@/pages/ConsiliumLoopDetail";
 import ContourObservability from "@/pages/ContourObservability";
+import CredentialAccess from "@/pages/CredentialAccess";
 
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
@@ -199,6 +200,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/library" component={() => (
           <ErrorBoundary><Library /></ErrorBoundary>
+        )} />
+        <Route path="/credentials" component={() => (
+          <ErrorBoundary><CredentialAccess /></ErrorBoundary>
         )} />
         <Route component={NotFound} />
       </Switch>

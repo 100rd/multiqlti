@@ -64,6 +64,8 @@ import { registerTaskTraceRoutes } from "./routes/task-traces";
 import { registerTaskIterationRoutes } from "./routes/task-iterations";
 import { registerTaskTemplateRoutes } from "./routes/task-templates";
 import { registerTrackerRoutes } from "./routes/tracker";
+import { registerCredentialRoutes } from "./routes/credentials";
+import { expireStaleLeases } from "./credentials/db-crypto-provider";
 import { TaskOrchestrator } from "./services/task-orchestrator";
 import { TaskTracer } from "./services/task-tracer";
 import { TaskSplitter } from "./services/task-splitter";
@@ -174,6 +176,7 @@ export async function registerRoutes(
   app.use("/api/tracker-connections", requireAuth, requireProject);
   app.use("/api/remote-agents", requireAuth, requireProject);
   app.use("/api/skill-market", requireAuth, requireProject);   // UNCERTAIN — see note above
+  app.use("/api/credentials", requireAuth, requireProject);
   // /api/workspaces/:id/knowledge is already covered by /api/workspaces above;
   // keep this explicit mount for clarity and so the middleware fires even if the
   // /api/workspaces mount is ever narrowed.
@@ -335,6 +338,22 @@ export async function registerRoutes(
   const trackerSync = new TrackerSyncService(storage);
   registerTrackerRoutes(app, storage, taskSplitter, trackerSync, taskOrchestrator);
 
+  // ADR-001 Phase 1 — Credential broker read-only UI endpoints
+  registerCredentialRoutes(app);
+
+  // ADR-001 Wave-2: credential lease sweeper — runs every 60s as system context.
+  // Marks leases with expiresAt < now() as expired regardless of backend state.
+  const leaseSweeper = setInterval(async () => {
+    try {
+      const count = await runAsSystem("lease-sweeper", () => expireStaleLeases());
+      if (count > 0) {
+        log(`[credential-broker] sweeper expired ${count} stale lease(s)`, "sweeper");
+      }
+    } catch (e) {
+      log(`[credential-broker] sweeper error: ${(e as Error).message}`, "sweeper");
+    }
+  }, 60_000);
+
   // Phase 6.3 — Trigger subsystem
   let triggerService: TriggerService | null = null;
   let webhookRoutesRegistered = false;
@@ -452,6 +471,8 @@ export async function registerRoutes(
 
   // Graceful shutdown
   httpServer.on("close", async () => {
+    // ADR-001 Wave-2: clear the credential lease sweeper first.
+    clearInterval(leaseSweeper);
     cronScheduler?.stopAll();
     consiliumLoopPoller?.stop();
     fileWatcherService?.stopAll();
