@@ -412,6 +412,119 @@ function RoundRow({
   );
 }
 
+// ─── Result panel — the human-gate outcome surface ─────────────────────────────
+//
+// What did the latest SDLC round actually produce? The stepper shows WHERE the
+// loop is; this panel shows WHAT to decide on. It is rendered near the top so a
+// human arriving at `awaiting_merge` is never met with a blank gate. Every field
+// comes straight from the loop GET (loop.error, loop.prRef, the latest round's
+// openP0 / openActionPoints) — nothing is invented.
+//
+// SECURITY: error text and action-point titles are model/loop-authored and are
+// rendered as INERT React text; the PR link uses rel="noopener noreferrer".
+function ResultPanel({
+  loop,
+  terminal,
+}: {
+  loop: ConsiliumLoopDetailRow;
+  terminal: boolean;
+}) {
+  const rounds = Array.isArray(loop.rounds) ? loop.rounds : [];
+  const latest = rounds.length
+    ? [...rounds].sort((a, b) => b.round - a.round)[0]
+    : undefined;
+  const latestAps: ActionPoint[] = Array.isArray(latest?.openActionPoints)
+    ? (latest!.openActionPoints as ActionPoint[])
+    : [];
+  const awaiting = loop.state === "awaiting_merge";
+
+  // Nothing worth surfacing yet (a fresh/pending loop with no round, no error,
+  // no PR, not at the gate) — keep the page lean and skip the panel.
+  if (!loop.error && !loop.prRef && !awaiting && latest == null) return null;
+
+  return (
+    <Card className="border-amber-500/40">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm">Result</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Last-round error — the most important signal when a round degraded. */}
+        {loop.error && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+            <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="font-medium text-amber-700 dark:text-amber-300">Last round error</p>
+              {/* INERT loop-authored error text */}
+              <p className="text-amber-700/90 dark:text-amber-300/90 break-words">{loop.error}</p>
+            </div>
+          </div>
+        )}
+
+        {/* PR outcome — link when there is one, explicit note when there is not. */}
+        {loop.prRef ? (
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Draft PR ready for review</p>
+              <p className="font-mono text-xs text-muted-foreground truncate">{loop.prRef}</p>
+            </div>
+            <a
+              href={loop.prRef}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 shrink-0"
+            >
+              <ExternalLink className="h-4 w-4" />
+              Open Draft PR
+            </a>
+          </div>
+        ) : awaiting ? (
+          <div className="rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+            The SDLC round produced{" "}
+            <span className="font-medium text-foreground">no PR</span> — there is nothing
+            to merge. {loop.error ? "See the error above" : "No error was recorded"}; you
+            can cancel the loop, or approve to advance it against the current HEAD.
+          </div>
+        ) : null}
+
+        {/* Latest round's verdict — what the human is deciding on. */}
+        {latest && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                Round {latest.round} verdict
+              </span>
+              <ConvergenceMark converged={latest.converged} terminal={terminal} />
+              <span className={`tabular-nums font-medium ${p0ClassName(latest.openP0, terminal)}`}>
+                {latest.openP0 ?? "—"} open P0
+              </span>
+            </div>
+            {latestAps.length > 0 ? (
+              <ul className="space-y-1.5">
+                {latestAps.map((ap, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm">
+                    {ap.priority && (
+                      <Badge className={`${PRIORITY_COLOR[ap.priority] ?? "bg-muted"} shrink-0`}>
+                        {ap.priority}
+                      </Badge>
+                    )}
+                    {/* INERT model-authored text */}
+                    <span>{ap.title}</span>
+                  </li>
+                ))}
+                <p className="text-[11px] text-muted-foreground/70">{PRIORITY_LEGEND}</p>
+              </ul>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No open action points recorded for this round.
+              </p>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 export default function ConsiliumLoopDetail() {
@@ -572,6 +685,9 @@ export default function ConsiliumLoopDetail() {
       </header>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
+        {/* Result — the outcome the human gate decides on (near the top). */}
+        <ResultPanel loop={loop} terminal={terminal} />
+
         {/* FSM progress */}
         <Card>
           <CardHeader className="pb-3">
@@ -579,36 +695,8 @@ export default function ConsiliumLoopDetail() {
           </CardHeader>
           <CardContent className="space-y-3">
             <FsmStepper loop={loop} />
-            {loop.error && (
-              <div className="flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/5 p-3 text-sm">
-                <AlertTriangle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
-                {/* INERT loop-authored error text */}
-                <span className="text-red-700 dark:text-red-300">{loop.error}</span>
-              </div>
-            )}
           </CardContent>
         </Card>
-
-        {/* Draft PR call-out */}
-        {loop.prRef && (
-          <Card className="border-primary/40">
-            <CardContent className="flex items-center justify-between gap-4 py-4">
-              <div className="min-w-0">
-                <p className="text-sm font-medium">Draft PR ready for review</p>
-                <p className="font-mono text-xs text-muted-foreground truncate">{loop.prRef}</p>
-              </div>
-              <a
-                href={loop.prRef}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 shrink-0"
-              >
-                <ExternalLink className="h-4 w-4" />
-                Open Draft PR
-              </a>
-            </CardContent>
-          </Card>
-        )}
 
         {/* Key facts */}
         <Card>
@@ -729,11 +817,19 @@ export default function ConsiliumLoopDetail() {
             </AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="space-y-3">
-                <span className="block">
-                  You are approving the merge of autonomously-produced code toward{" "}
-                  <strong>main</strong>. This advances the loop to its next round and
-                  triggers a fresh review against the merged HEAD.
-                </span>
+                {loop.prRef ? (
+                  <span className="block">
+                    You are approving the merge of autonomously-produced code toward{" "}
+                    <strong>main</strong>. This advances the loop to its next round and
+                    triggers a fresh review against the merged HEAD.
+                  </span>
+                ) : (
+                  <span className="block">
+                    This round produced <strong>no PR</strong>, so there is nothing to
+                    merge. Approving simply advances the loop to its next round against the
+                    current <strong>main</strong> HEAD — review the recorded error first.
+                  </span>
+                )}
                 {loop.prRef && (
                   <a
                     href={loop.prRef}
