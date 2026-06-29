@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db";
 import { projects, projectMembers, insertProjectSchema } from "../../shared/schema";
-import { eq, or } from "drizzle-orm";
+import { eq, or, and } from "drizzle-orm";
 import { requireAuth } from "../auth/middleware";
 
 const router = Router();
@@ -48,6 +48,16 @@ router.post("/", requireAuth, async (req, res) => {
     const data = insertProjectSchema.omit({ ownerId: true }).parse(req.body);
     const userId = req.user!.id;
 
+    // Reject a duplicate name for the same owner (409). A DB unique index on
+    // (owner_id, name) is the hard backstop against the create-create race.
+    const [existing] = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.ownerId, userId), eq(projects.name, data.name)));
+    if (existing) {
+      return res.status(409).json({ error: `A project named "${data.name}" already exists` });
+    }
+
     const [newProject] = await db
       .insert(projects)
       .values({
@@ -58,6 +68,10 @@ router.post("/", requireAuth, async (req, res) => {
 
     res.status(201).json(newProject);
   } catch (error: any) {
+    // 23505 = Postgres unique_violation (the (owner_id, name) index backstop).
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: "A project with this name already exists" });
+    }
     console.error("Error creating project:", error);
     res.status(400).json({ error: error.message || "Failed to create project" });
   }
