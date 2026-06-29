@@ -110,11 +110,21 @@ export function registerTaskGroupRoutes(
       const visible = groups.filter((g) => isVisible(g.createdBy, req.user));
       const result = await Promise.all(
         visible.map(async (g) => {
+          // #3: `completedCount` must reflect the LATEST ITERATION's executions,
+          // not the task DEFINITION statuses (which stay blocked/ready, so a fully
+          // executed group used to show 0/N). taskCount = number of definitions;
+          // completedCount = executions with status "completed" in the latest
+          // iteration. One extra latest-iteration + executions read per group
+          // (project-scoped via the storage context) — bounded, no N+1 blow-up.
           const tasks = await storage.getTasksByGroup(g.id);
+          const latest = await storage.getLatestIteration(g.id);
+          const executions = latest
+            ? await storage.getExecutionsByIteration(g.id, latest.id)
+            : [];
           const row: Record<string, unknown> = {
             ...g,
             taskCount: tasks.length,
-            completedCount: tasks.filter((t) => t.status === "completed").length,
+            completedCount: executions.filter((e) => e.status === "completed").length,
           };
           // Owner attribution is admin-only; hide createdBy from non-admins.
           if (!isAdmin) delete row.createdBy;

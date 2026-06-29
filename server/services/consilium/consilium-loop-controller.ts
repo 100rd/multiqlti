@@ -30,7 +30,7 @@
  *     on KICKOFF (milliseconds), not after the child completes. `deriveReviewEvent`
  *     /`deriveDevEvent` then poll the settled child to advance — they are now the
  *     primary completion driver (§14.5), not vestigial.
- *   - The DEVELOPING→AWAITING_MERGE side effect runs `DevPrCloseout` (D.5) to
+ *   - The DEVELOPING→AWAITING_MERGE side effect runs the SDLC executor
  *     produce a REAL branch + Draft PR; `prRef` + `headCommitAtReview` are
  *     persisted on the won row (§14.4). The close-out runs ONLY on the CAS/claim
  *     winner (single-flight, §13) — a re-driven DEVELOPING never double-runs it;
@@ -47,9 +47,8 @@ import type { TaskOrchestrator } from "../task-orchestrator.js";
 import type { AppConfig } from "../../config/schema.js";
 import { readConvergence } from "../orchestrator/convergence.js";
 import { buildDiffContext } from "./diff-context.js";
-import { buildDevHandoffGroup } from "./dev-handoff.js";
-import { resolveLoopWorkspace, type WorkspaceBindStorage } from "./workspace-bind.js";
-import { DevPrCloseout, type DevCloseoutResult } from "./dev-closeout.js";
+import type { DevCloseoutResult } from "./dev-closeout.js";
+import { runSdlcHandoff } from "../sdlc/executor.js";
 
 // ─── FSM events (design §3 "Event / guard" column) ──────────────────────────
 
@@ -60,7 +59,7 @@ export type LoopEvent =
   | { kind: "review_completed"; verdict: ConvergenceVerdict }
   | { kind: "review_failed"; error: string }
   | { kind: "decided"; verdict: ConvergenceVerdict; priorOpenP0: number[] }
-  | { kind: "dev_completed"; prRef: string | null; headCommit: string }
+  | { kind: "dev_completed"; prRef: string | null; headCommit: string; error?: string }
   | { kind: "merge_approved" }
   | { kind: "cancel" };
 
@@ -72,6 +71,28 @@ export interface LoopTransition {
 }
 
 const ANTI_STALL_MIN_ROUND = 3;
+
+/**
+ * H-2: the developing-state crash-stranded grace MUST exceed the SDLC coder's
+ * hard timeout (executor/coder default 600s) — otherwise a normal long coder run
+ * is mistaken for a crash and a SECOND coder is launched mid-run. 600s + 60s.
+ */
+const SDLC_DEV_GRACE_MS = 660_000;
+
+/** Process-local handle for a BACKGROUND SDLC close-out run (H-2). */
+interface SdlcRun {
+  /** The loop round this run implements (guards a stale prior-round entry). */
+  round: number;
+  /** Flips true once the background close-out settles (success OR degraded). */
+  done: boolean;
+  /** The settled `{ prRef, headCommit, error? }`; absent while in-flight. */
+  result?: DevCloseoutResult;
+}
+
+/** Minimal error scrub (strip fs paths) for the background-run catch. */
+function scrubErr(raw: string): string {
+  return raw.replace(/\/[^\s'"]+/g, "<path>").replace(/\s+/g, " ").trim().slice(0, 200);
+}
 
 /**
  * Decide whether the open-P0 count failed to decrease across two consecutive
@@ -118,15 +139,19 @@ export function reduce(state: ConsiliumLoopState, event: LoopEvent): LoopTransit
 
     case "developing":
       if (event.kind === "dev_completed") {
-        // §14.4: the REAL `prRef` + `headCommit` are produced by `DevPrCloseout`
-        // in `runSideEffect` AFTER this CAS wins (so the close-out runs only on
-        // the winning path). The event carries placeholders here; the won row's
-        // follow-up `updateLoop` persists the real values. The transition still
-        // seeds whatever the event happens to carry (null/"" by default).
+        // H-2: the SDLC close-out ran in the BACKGROUND while the loop sat in
+        // `developing`; the event carries the REAL prRef/headCommit (+ optional
+        // error) the coder produced. The CAS persists them atomically with the
+        // state change, so AWAITING_MERGE always opens with a real PR (never a
+        // half-open gate).
         return {
           from: "developing",
           to: "awaiting_merge",
-          extra: { prRef: event.prRef, headCommitAtReview: event.headCommit },
+          extra: {
+            prRef: event.prRef,
+            headCommitAtReview: event.headCommit,
+            ...(event.error ? { error: event.error } : {}),
+          },
         };
       }
       return null;
@@ -186,16 +211,17 @@ export interface ConsiliumLoopControllerDeps {
    */
   readRepoHead?: (loop: ConsiliumLoopRow) => Promise<string>;
   /**
-   * §14.2/D.5 DEV→repo→PR close-out. Injectable so unit tests assert prRef flow
-   * with a fake (no real repo / gh). The default runs the real `DevPrCloseout`
-   * over the injected `closeoutManager` + the controller's `storage`.
+   * §14.2/§14.4 DEVELOPING→AWAITING_MERGE close-out. Injectable so unit tests
+   * assert the prRef/headCommit flow with a fake (no real repo / claude / gh).
+   * The default runs the REAL SDLC executor (`runSdlc` below).
    */
   runCloseout?: (loop: ConsiliumLoopRow, verdict: ConvergenceVerdict) => Promise<DevCloseoutResult>;
   /**
-   * The `WorkspaceManager`-shaped seam the default close-out drives (branch +
-   * write). Required only when `runCloseout` is NOT injected.
+   * The SDLC handoff: cut an ISOLATED worktree, run the agentic coder for REAL
+   * edits, commit + open a Draft PR. Defaults to the real `runSdlcHandoff`.
+   * Injectable so tests can assert the close-out path without a worktree/coder.
    */
-  closeoutManager?: ConstructorParameters<typeof DevPrCloseout>[0]["manager"];
+  runSdlc?: typeof runSdlcHandoff;
 }
 
 export class ConsiliumLoopController {
@@ -210,6 +236,14 @@ export class ConsiliumLoopController {
    * This lock + the grace guard below close that window. Both, not either.
    */
   private readonly inFlight = new Set<string>();
+
+  /**
+   * H-2: process-local registry of in-flight/settled BACKGROUND SDLC close-out
+   * runs, keyed by loopId. The coder runs OFF the tick path (it can take ~10 min),
+   * so a tick never blocks the sequential poller sweep; `deriveDevEvent` reads the
+   * settled result here and the developing->awaiting_merge CAS consumes it.
+   */
+  private readonly sdlcRuns = new Map<string, SdlcRun>();
 
   constructor(private readonly deps: ConsiliumLoopControllerDeps) {}
 
@@ -233,8 +267,12 @@ export class ConsiliumLoopController {
    * re-driven; only a loop whose `updatedAt` predates this window — i.e. the
    * state was persisted and then the process died — is re-driven.
    */
-  private redriveGraceMs(): number {
-    return Math.max(2 * this.loopConfig().pollIntervalMs, 30_000);
+  private redriveGraceMs(state?: ConsiliumLoopState): number {
+    const base = Math.max(2 * this.loopConfig().pollIntervalMs, 30_000);
+    // H-2: developing waits on a background coder (~10 min), so its grace must
+    // exceed the coder timeout or a normal long run looks stranded.
+    if (state === "developing") return Math.max(base, SDLC_DEV_GRACE_MS);
+    return base;
   }
 
   /** Begin round 1. 409s (returns null) unless the loop is PENDING. */
@@ -275,6 +313,7 @@ export class ConsiliumLoopController {
     const transition = reduce(loop.state, { kind: "cancel" });
     if (!transition) return null;
     await this.deps.taskOrchestrator.cancelGroup(loop.groupId).catch(() => undefined);
+    this.sdlcRuns.delete(loopId); // H-2: drop any in-flight SDLC handle (terminal).
     return this.commit(loop, transition);
   }
 
@@ -335,7 +374,7 @@ export class ConsiliumLoopController {
     if (!transition) return null;
 
     // H-3 (BLOCKER fix): CLAIM the transition with the CAS FIRST, then run any
-    // non-idempotent side effect (createTaskGroup / startGroup / the DevPrCloseout
+    // non-idempotent side effect (createTaskGroup / startGroup / the SDLC executor
     // branch+push+PR — all mint NEW external state with no idempotency key) ONLY
     // on the row that WON the CAS. Under multi-instance (>=2 pollers reading the
     // same `deciding`/`developing` row) exactly one CAS updates a row; the loser
@@ -387,13 +426,13 @@ export class ConsiliumLoopController {
     if (!nullRef) return null; // child ref set — not stranded, advance normally
 
     const ageMs = Date.now() - new Date(loop.updatedAt).getTime();
-    if (ageMs < this.redriveGraceMs()) {
+    if (ageMs < this.redriveGraceMs(loop.state)) {
       this.log(loop.id, `null child ref in ${loop.state} but within grace (${ageMs}ms) — assume in-flight, no re-drive`);
       return null; // in-flight side effect — must NOT re-drive (cheap pre-check)
     }
 
     // Cross-instance ATOMIC claim: only the winner proceeds (H-3 re-drive guard).
-    const claimed = await this.storage.claimRedrive(loop.id, loop.state, this.redriveGraceMs());
+    const claimed = await this.storage.claimRedrive(loop.id, loop.state, this.redriveGraceMs(loop.state));
     if (!claimed) {
       this.log(loop.id, `re-drive claim lost in ${loop.state} (another instance is re-driving) — no-op`);
       return null;
@@ -463,26 +502,20 @@ export class ConsiliumLoopController {
   }
 
   /**
-   * DEVELOPING: poll the DEV handoff group; completed → open the merge gate.
-   *
-   * §14.4: this returns a PLACEHOLDER `dev_completed` (prRef null / headCommit
-   * "") — the REAL `prRef` + `headCommit` come from `DevPrCloseout`, which runs
-   * in `runSideEffect` AFTER the `developing→awaiting_merge` CAS WINS, so the
-   * close-out (a non-idempotent branch+push+PR) runs ONLY on the winning path
-   * (single-flight, §13). Running it here would let a losing tick open a
-   * duplicate PR before the CAS rejects it.
+   * DEVELOPING (H-2): read the BACKGROUND SDLC run's settle from the process-local
+   * registry. The coder was dispatched OFF the tick path on entry
+   * (`startDevHandoff`) or by a redrive claim. Settled → `dev_completed` carrying
+   * the REAL prRef/headCommit/error → the developing->awaiting_merge CAS persists
+   * them. In-flight → null (no-op; the tick returns fast, never blocking the
+   * sweep). No local entry (crash/restart, or another instance is the dispatcher)
+   * → null; the developing redrive (null devGroupId past the coder-length grace)
+   * re-dispatches on this instance only after the dispatcher is presumed dead.
    */
-  private async deriveDevEvent(loop: ConsiliumLoopRow): Promise<LoopEvent | null> {
-    if (!loop.devGroupId) return null;
-    const group = await this.storage.getTaskGroup(loop.devGroupId);
-    if (!group) return null;
-    if (group.status === "completed") {
-      return { kind: "dev_completed", prRef: null, headCommit: "" };
-    }
-    if (group.status === "failed" || group.status === "cancelled") {
-      return { kind: "review_failed", error: `DEV group ${group.status}` };
-    }
-    return null;
+  private deriveDevEvent(loop: ConsiliumLoopRow): LoopEvent | null {
+    const run = this.sdlcRuns.get(loop.id);
+    if (!run || run.round !== loop.round || !run.done || !run.result) return null;
+    const { prRef, headCommit, error } = run.result;
+    return { kind: "dev_completed", prRef, headCommit, error };
   }
 
   /**
@@ -500,56 +533,37 @@ export class ConsiliumLoopController {
     if (transition.to === "developing" && event.kind === "decided") {
       return this.startDevHandoff(loop, event.verdict);
     }
-    // §14.4: DEVELOPING→AWAITING_MERGE — run the close-out on the WON row and
-    // persist the real prRef + reviewed HEAD. The verdict (open action points)
-    // is re-resolved here for the close-out artifact body.
-    if (transition.to === "awaiting_merge") return this.runDevCloseout(loop);
+    // §14.4 H-2: the SDLC close-out already ran in the BACKGROUND during
+    // `developing`; the `dev_completed` event carried prRef/headCommit/error which
+    // `reduce` wrote into this transition's extra. Nothing to run here — just drop
+    // the settled registry entry so it can never be re-read.
+    if (transition.to === "awaiting_merge") {
+      this.sdlcRuns.delete(loop.id);
+      return {};
+    }
     return {};
   }
 
-  /**
-   * DEVELOPING→AWAITING_MERGE side effect (§14.2/§14.4). Runs `DevPrCloseout`
-   * (real branch + Draft PR) and returns `{ prRef, headCommitAtReview, error? }`
-   * for the follow-up `updateLoop` on the won row. The close-out NEVER throws
-   * (branch-only fallback on any VCS failure) so the loop is never failed here.
-   * Runs ONLY on the CAS winner — a re-driven DEVELOPING never double-runs it.
-   */
-  private async runDevCloseout(loop: ConsiliumLoopRow): Promise<Record<string, unknown>> {
-    const verdict = await this.resolveVerdict(loop);
-    if (!verdict) {
-      this.log(loop.id, "close-out skipped — verdict unreadable; AWAITING_MERGE with null prRef");
-      return { prRef: null, error: "verdict unreadable at close-out" };
-    }
-    const result = await this.closeout(loop, verdict);
-    this.log(loop.id, `close-out done -> prRef=${result.prRef ?? "null"}${result.error ? ` (${result.error})` : ""}`);
-    return {
-      prRef: result.prRef,
-      headCommitAtReview: result.headCommit,
-      ...(result.error ? { error: result.error } : {}),
-    };
-  }
-
-  /** Resolve the close-out fn: injected fake (tests) or the real DevPrCloseout. */
+  /** Resolve the close-out fn: injected fake (tests) or the real SDLC executor. */
   private async closeout(
     loop: ConsiliumLoopRow,
     verdict: ConvergenceVerdict,
   ): Promise<DevCloseoutResult> {
     if (this.deps.runCloseout) return this.deps.runCloseout(loop, verdict);
     const cfg = this.loopConfig();
-    if (!this.deps.closeoutManager) {
-      return { prRef: null, headCommit: "", error: "no close-out manager configured" };
-    }
-    const closeout = new DevPrCloseout({
-      manager: this.deps.closeoutManager,
-      storage: this.storage as unknown as WorkspaceBindStorage,
-    });
-    return closeout.run({
+    const run = this.deps.runSdlc ?? runSdlcHandoff;
+    // REAL path: the SDLC executor cuts an ISOLATED worktree (NEVER the user's
+    // checkout), runs the agentic coder to make REAL multi-file edits, then
+    // commits + opens a Draft PR. baseRef defaults to the repo's default-branch
+    // HEAD (resolved inside the executor) so the PR diffs cleanly against it.
+    // Never throws (degrades to a no-PR result), so the loop is never failed here.
+    return run({
+      repoPath: loop.repoPath,
       loopId: loop.id,
       round: loop.round,
-      repoPath: loop.repoPath,
-      ownerId: loop.createdBy ?? "",
+      actionPoints: verdict.openActionPoints,
       allowedRepoPaths: cfg.allowedRepoPaths,
-      openActionPoints: verdict.openActionPoints,
+      ownerId: loop.createdBy ?? "",
     });
   }
 
@@ -600,56 +614,52 @@ export class ConsiliumLoopController {
   }
 
   /**
-   * DECIDING → DEVELOPING: persist the round audit row, resolve the loop's
-   * workspace (D.3, grounds the DEV pipeline's read tools §14.3), then hand the
-   * open action points to the DEV pipeline as a `pipeline_run` group started
-   * NON-BLOCKINGLY (D.1). `devGroupId` is persisted on KICKOFF (§14.5).
+   * DECIDING → DEVELOPING (H-2): persist the round audit row, then dispatch the
+   * SDLC close-out as a BACKGROUND job (`dispatchSdlc`). `devGroupId` is left NULL
+   * — it is the in-progress/stranded marker `claimRedrive(developing)` already
+   * understands, so a crash mid-coder is recoverable (M-1). The tick returns
+   * immediately (non-blocking); `deriveDevEvent` polls the background settle and
+   * the developing->awaiting_merge CAS consumes the prRef/headCommit.
+   *
+   * Single-flight: this runs ONLY on the deciding->developing CAS winner (or a
+   * redrive claim), so exactly one coder is launched per round per process.
    */
   private async startDevHandoff(
     loop: ConsiliumLoopRow,
     verdict: ConvergenceVerdict,
   ): Promise<Record<string, unknown>> {
-    const devPipelineId = loop.devPipelineId ?? this.loopConfig().devPipelineId;
-    if (!devPipelineId) {
-      return { state: "escalated", error: "no DEV pipeline configured", completedAt: new Date() };
-    }
     await this.recordRound(loop, verdict);
-    const workspaceId = await this.resolveWorkspaceId(loop); // §14.3 grounding.
-    const payload = buildDevHandoffGroup({
-      openActionPoints: verdict.openActionPoints,
-      devPipelineId,
-      source: loop.id,
-      createdBy: loop.createdBy ?? undefined,
-      workspaceId,
-    });
-    this.log(loop.id, `startDevHandoff -> createTaskGroup (${verdict.openActionPoints.length} action points, ws=${workspaceId ?? "none"})`);
-    const { group } = await this.deps.taskOrchestrator.createTaskGroup(payload);
-    // §14.5: NON-BLOCKING — `devGroupId` is persisted on KICKOFF; `deriveDevEvent`
-    // polls the DEV group's settle to open the merge gate.
-    await this.deps.taskOrchestrator.startGroupAsync(group.id, { triggeredBy: loop.createdBy });
-    this.log(loop.id, `startDevHandoff done -> devGroup ${group.id} (dispatched)`);
-    return { devGroupId: group.id, openP0: verdict.openP0 };
+    this.dispatchSdlc(loop, verdict);
+    // Persist openP0 + bump updatedAt so the freshly-entered developing loop reads
+    // as in-flight (within grace), not stranded. devGroupId stays null (marker).
+    return { openP0: verdict.openP0 };
   }
 
   /**
-   * §14.3: resolve (scan-or-create) the `local` workspace bound to the loop's
-   * repo so the DEV handoff's read tools are grounded in the repo. Best-effort:
-   * a bind failure (non-allowlisted path / fs error) must NOT block the handoff
-   * — it degrades to today's no-workspace behaviour (undefined).
+   * H-2: launch the SDLC close-out (isolated worktree + agentic coder + Draft PR)
+   * as a fire-and-forget BACKGROUND job tracked in the process-local registry.
+   * The coder may run ~10 min; running it inline would block the sequential
+   * poller sweep across ALL loops/projects (attacker-amplifiable via the untrusted
+   * action-point text driving coder runtime). The executor's own ConcurrencyLimiter
+   * bounds how many coders actually spawn at once. The close-out never throws; the
+   * catch is purely defensive so the registry ALWAYS settles (else the redrive
+   * recovers after the coder-length grace).
    */
-  private async resolveWorkspaceId(loop: ConsiliumLoopRow): Promise<string | undefined> {
-    try {
-      const ws = await resolveLoopWorkspace(
-        this.storage as unknown as WorkspaceBindStorage,
-        loop.repoPath,
-        loop.createdBy ?? "",
-        this.loopConfig().allowedRepoPaths,
-      );
-      return ws.id;
-    } catch (err) {
-      this.log(loop.id, `workspace bind failed (DEV runs without workspace): ${err instanceof Error ? err.message : String(err)}`);
-      return undefined;
-    }
+  private dispatchSdlc(loop: ConsiliumLoopRow, verdict: ConvergenceVerdict): void {
+    const run: SdlcRun = { round: loop.round, done: false };
+    this.sdlcRuns.set(loop.id, run);
+    this.log(loop.id, `dispatchSdlc -> background coder round ${loop.round} (${verdict.openActionPoints.length} action points)`);
+    void this.closeout(loop, verdict)
+      .then((result) => {
+        run.result = result;
+        run.done = true;
+        this.log(loop.id, `SDLC settled -> prRef=${result.prRef ?? "null"}${result.error ? ` (${result.error})` : ""}`);
+      })
+      .catch((err: unknown) => {
+        run.result = { prRef: null, headCommit: "", error: scrubErr(err instanceof Error ? err.message : String(err)) };
+        run.done = true;
+        this.log(loop.id, `SDLC threw (degraded) -> ${run.result.error}`);
+      });
   }
 
   /**

@@ -148,8 +148,10 @@ function isErrorWithStatus(err: unknown, status: number): boolean {
 //                           → the loop terminates FROM "deciding"; Develop and
 //                             Await-merge were NOT reached (dimmed "not reached").
 //       – failed | cancelled → may stop anywhere, so claim only what is evidenced:
-//                             Context/Review/Decide done iff a round row exists,
-//                             Develop iff devGroupId is set, Await iff prRef is set.
+//                             Context/Review/Decide/Develop done iff a round row
+//                             exists (the round row is written on entering
+//                             DEVELOPING; H-2 SDLC sets no devGroupId), Await iff
+//                             prRef is set.
 
 type StepStatus = "done" | "current" | "not_reached";
 
@@ -181,10 +183,9 @@ function roundStepStatuses(args: {
   isLast: boolean;
   hasRoundRow: boolean;
   state: ConsiliumLoopState;
-  devGroupId: string | null | undefined;
   prRef: string | null | undefined;
 }): StepStatus[] {
-  const { isLast, hasRoundRow, state, devGroupId, prRef } = args;
+  const { isLast, hasRoundRow, state, prRef } = args;
 
   // Produced a later round ⇒ fully traversed AND merged.
   if (!isLast) return ROUND_STEPS.map(() => "done");
@@ -207,9 +208,11 @@ function roundStepStatuses(args: {
 
   // failed | cancelled (and the pre-start `pending` fallback) — claim only what
   // the data evidences.
+  // H-2: the SDLC handoff no longer mints a DEV task group (devGroupId is always
+  // null), so a recorded round row (written on entering DEVELOPING) is the
+  // "developing reached" signal; prRef is the await/PR signal.
   const core: StepStatus = hasRoundRow ? "done" : "not_reached";
   return ROUND_STEPS.map((step) => {
-    if (step.key === "developing") return devGroupId ? "done" : "not_reached";
     if (step.key === "awaiting_merge") return prRef ? "done" : "not_reached";
     return core;
   });
@@ -265,7 +268,6 @@ function FsmStepper({ loop }: { loop: ConsiliumLoopDetailRow }) {
           isLast,
           hasRoundRow: !!d.row,
           state: loop.state,
-          devGroupId: loop.devGroupId,
           prRef: loop.prRef,
         });
         const developStatus = statuses[ROUND_STEP_IDX.developing];

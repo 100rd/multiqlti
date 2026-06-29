@@ -95,6 +95,19 @@ export function isValidLoopBranch(branch: string): boolean {
   return BRANCH_RE.test(branch);
 }
 
+/**
+ * Build the ONE server-derived branch shape (`consilium/loop-<uuid>/round-<n>`)
+ * from server-controlled `loopId` + `round` — NEVER from model/action-point text
+ * (B-3). Co-located with `BRANCH_RE`/`isValidLoopBranch` so the close-out (D.5)
+ * and the SDLC executor share a single source of truth for the shape; both gate
+ * the result through `isValidLoopBranch` before it reaches git/gh. A malformed
+ * `loopId` (non-uuid) yields a string the gate then REJECTS — it never silently
+ * widens the allowed shape.
+ */
+export function buildBranchName(loopId: string, round: number): string {
+  return `consilium/loop-${loopId}/round-${round}`;
+}
+
 function badBranch(branch: string): WrapFail {
   return { ok: false, kind: "bad-branch", message: `rejected branch name (B-3): ${branch}` };
 }
@@ -253,6 +266,11 @@ export async function openDraftPr(
   if (opts.head.startsWith("-") || !isValidLoopBranch(opts.head)) return badBranch(opts.head); // B-3 / B-3+.
   if (opts.title.startsWith("-")) {
     return { ok: false, kind: "bad-title", message: "rejected leading-dash title (B-3+ flag injection)" };
+  }
+  // L-1: `base` is a value-flag arg (`--base <base>`); reject a leading-dash base
+  // so a malformed/poisoned base can't be parsed by `gh` as a flag (option injection).
+  if (opts.base.startsWith("-")) {
+    return { ok: false, kind: "bad-title", message: "rejected leading-dash base (B-3+ flag injection)" };
   }
 
   const env = sanitizedEnv(); // H-7b

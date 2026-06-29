@@ -207,9 +207,21 @@ export function VerdictPanel({
         })),
       };
       const created = (await apiRequest("POST", "/api/task-groups", payload)) as { id: string };
+      // #2b: AUTO-START the handoff so it runs immediately instead of sitting
+      // pending until the user opens the group and clicks Run. The group already
+      // exists; a failed start is non-fatal (it can be retried from the group
+      // page), so we surface a softer toast rather than failing the whole handoff.
+      let started = true;
+      try {
+        await apiRequest("POST", `/api/task-groups/${created.id}/start`, {});
+      } catch {
+        started = false;
+      }
       toast({
-        title: "Передано на исполнение",
-        description: `${actionPoints.length} action points → ${pipeline?.name}. Откройте группу и нажмите Run.`,
+        title: started ? "Передано и запущено" : "Передано на исполнение",
+        description: started
+          ? `${actionPoints.length} action points → ${pipeline?.name}. Исполнение запущено.`
+          : `${actionPoints.length} action points → ${pipeline?.name}. Откройте группу и нажмите Run.`,
       });
       navigate(`/task-groups/${created.id}`);
     } catch (err) {
