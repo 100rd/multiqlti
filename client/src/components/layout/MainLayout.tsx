@@ -41,6 +41,7 @@ import { useAuth } from "@/hooks/use-auth";
 import type { UserRole } from "@shared/types";
 import { PeerStatusBadge } from "@/components/config-sync/PeerStatusBadge";
 import { ProjectSelector } from "@/components/ProjectSelector";
+import { ThemePicker } from "@/components/ThemePicker";
 
 interface MainLayoutProps {
   children: ReactNode;
@@ -151,7 +152,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
       {/* Sidebar */}
       <aside className="w-64 border-r border-border bg-sidebar flex flex-col justify-between">
         <div>
-          <div className="min-h-16 flex items-center px-6 border-b border-border py-3">
+          <div className="min-h-16 flex items-center justify-between px-6 border-b border-border py-3">
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center gap-2 text-primary font-medium tracking-tight">
               <ShieldAlert className="h-5 w-5" />
@@ -159,6 +160,8 @@ export default function MainLayout({ children }: MainLayoutProps) {
               </div>
               <PeerStatusBadge />
             </div>
+            {/* Appearance picker — opens a popover with mode + accent controls */}
+            <ThemePicker />
           </div>
           <div className="px-4 py-2">
             <ProjectSelector />
@@ -210,7 +213,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
                 <ChevronRight className="h-4 w-4" />
               )}
             </button>
-            
+
             {isV1Open && (
               <nav className="mt-1 space-y-1 pb-2">
                 {[
