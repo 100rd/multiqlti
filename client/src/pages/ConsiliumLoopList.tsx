@@ -1,15 +1,19 @@
 /**
- * ConsiliumLoopList — the caller's consilium loops (design §7). One row per loop:
- * the WORKSPACE name (P4), state pill, round n/maxRounds, open P0, a Draft-PR link
- * when set, and a relative updated-time. Clicking a row opens its detail at
- * /consilium-loops/:id. The list polls lightly (5s) for live state.
+ * ConsiliumLoopList — the caller's consilium loops (design §7), GROUPED BY
+ * WORKSPACE (P4). Many loops/rounds can target the same workspace, so a flat
+ * list became an undifferentiated pile. We now render one SECTION per workspace
+ * (header = workspace name + loop count), most-active workspace first, and within
+ * a section order loops most-recent first (updatedAt ?? createdAt). Each row keeps
+ * a clear identity even when several share a workspace: round n/maxRounds shown
+ * prominently, the state chip (LoopStateChipFor), a short id (id.slice(0,8)),
+ * open P0, an optional Draft-PR link, and a relative timestamp. Clicking a row
+ * opens its detail at /consilium-loops/:id. The list polls lightly (5s).
  *
- * P4 — the first column is a human WORKSPACE name. Loops only carry `repoPath`
- * (no workspaceId), so we fetch the workspaces list (via the shared apiRequest
+ * P4 — the workspace name is a human label. Loops only carry `repoPath` (no
+ * workspaceId), so we fetch the workspaces list (via the shared apiRequest
  * transport, which attaches `x-project-id`) and match by `path`. When no
- * workspace matches we fall back to the repo basename, and the full repoPath is
- * always kept in the cell's title/tooltip. The short loop id + round stay visible
- * so multiple loops targeting one workspace remain distinguishable.
+ * workspace matches we fall back to the repo basename; the full repoPath stays
+ * in each section/row tooltip.
  *
  * SECURITY: loop-derived text (repoPath, prRef) and the workspace name are
  * rendered as INERT React text; the PR link uses rel="noopener noreferrer".
@@ -46,6 +50,7 @@ function normalizePath(p: string): string {
   return p.replace(/\/+$/, "");
 }
 
+/** Relative "2h ago" label; empty string for missing/unparseable timestamps. */
 function whenLabel(ts: string | Date | null | undefined): string {
   if (!ts) return "";
   try {
@@ -53,6 +58,12 @@ function whenLabel(ts: string | Date | null | undefined): string {
   } catch {
     return "";
   }
+}
+
+/** Recency epoch-ms for ordering: prefer updatedAt, fall back to createdAt. */
+function recencyOf(loop: ConsiliumLoopListItem): number {
+  const t = new Date(loop.updatedAt ?? loop.createdAt).getTime();
+  return Number.isFinite(t) ? t : 0;
 }
 
 function OpenP0({ openP0 }: { openP0: number | null | undefined }) {
@@ -80,6 +91,12 @@ function useWorkspaces() {
   });
 }
 
+type LoopGroup = {
+  name: string;
+  loops: ConsiliumLoopListItem[];
+  recency: number;
+};
+
 export default function ConsiliumLoopList() {
   const [, navigate] = useLocation();
   const { data, isLoading } = useConsiliumLoops();
@@ -93,6 +110,22 @@ export default function ConsiliumLoopList() {
   }
   const workspaceName = (repoPath: string): string =>
     nameByPath.get(normalizePath(repoPath)) ?? repoBasename(repoPath);
+
+  // Group loops by resolved workspace name. Within a group: most-recent first.
+  // Group order: the workspace with the most recently active loop floats up.
+  const byWorkspace = new Map<string, ConsiliumLoopListItem[]>();
+  for (const loop of loops) {
+    const name = workspaceName(loop.repoPath);
+    const arr = byWorkspace.get(name);
+    if (arr) arr.push(loop);
+    else byWorkspace.set(name, [loop]);
+  }
+  const groups: LoopGroup[] = Array.from(byWorkspace.entries())
+    .map(([name, ls]) => {
+      const sorted = [...ls].sort((a, b) => recencyOf(b) - recencyOf(a));
+      return { name, loops: sorted, recency: sorted.length ? recencyOf(sorted[0]) : 0 };
+    })
+    .sort((a, b) => b.recency - a.recency);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -124,71 +157,94 @@ export default function ConsiliumLoopList() {
           </div>
         )}
 
-        {!isLoading && loops.length > 0 && (
-          <div className="rounded-md border overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Workspace</TableHead>
-                  <TableHead>State</TableHead>
-                  <TableHead>Round</TableHead>
-                  <TableHead>Open P0</TableHead>
-                  <TableHead>PR</TableHead>
-                  <TableHead>Updated</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {loops.map((loop) => (
-                  <TableRow
-                    key={loop.id}
-                    className="cursor-pointer"
-                    onClick={() => navigate(`/consilium-loops/${loop.id}`)}
+        {!isLoading && groups.length > 0 && (
+          <div className="space-y-6">
+            {groups.map((group) => (
+              <section key={group.name} data-testid="consilium-loop-group">
+                {/* Workspace header — groups many same-target loops so focus
+                    isn't lost. Full repoPath of the freshest loop in tooltip. */}
+                <div className="flex items-baseline gap-2 mb-2 px-1">
+                  <h2
+                    className="text-sm font-semibold truncate"
+                    title={group.loops[0]?.repoPath}
                   >
-                    <TableCell className="max-w-[18rem]">
-                      {/* Human workspace name first; short loop id beneath for
-                          disambiguation when several loops target one workspace.
-                          Full repoPath stays in the tooltip. */}
-                      <div className="min-w-0">
-                        <div className="truncate font-medium" title={loop.repoPath}>
-                          {workspaceName(loop.repoPath)}
-                        </div>
-                        <div className="font-mono text-[10px] text-muted-foreground truncate">
-                          {loop.id.slice(0, 8)}
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <LoopStateChipFor loop={loop} />
-                    </TableCell>
-                    <TableCell className="tabular-nums">
-                      {loop.round}/{loop.maxRounds}
-                    </TableCell>
-                    <TableCell>
-                      <OpenP0 openP0={loop.openP0} />
-                    </TableCell>
-                    <TableCell>
-                      {loop.prRef ? (
-                        <a
-                          href={loop.prRef}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="inline-flex items-center gap-1 text-primary hover:underline text-xs"
+                    {group.name}
+                  </h2>
+                  <span className="text-[11px] text-muted-foreground shrink-0">
+                    {group.loops.length} {group.loops.length === 1 ? "loop" : "loops"}
+                  </span>
+                </div>
+                <div className="rounded-md border overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Round</TableHead>
+                        <TableHead>State</TableHead>
+                        <TableHead>Loop</TableHead>
+                        <TableHead>Open P0</TableHead>
+                        <TableHead>PR</TableHead>
+                        <TableHead>Updated</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {group.loops.map((loop) => (
+                        <TableRow
+                          key={loop.id}
+                          className="cursor-pointer"
+                          onClick={() => navigate(`/consilium-loops/${loop.id}`)}
                         >
-                          <ExternalLink className="h-3 w-3" />
-                          PR
-                        </a>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                      {whenLabel(loop.updatedAt)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                          {/* Round n/maxRounds prominent — the primary
+                              disambiguator between same-workspace loops. */}
+                          <TableCell>
+                            <span className="font-semibold tabular-nums">
+                              {loop.round}/{loop.maxRounds}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <LoopStateChipFor loop={loop} />
+                          </TableCell>
+                          {/* Short loop id — second identity anchor. Full
+                              repoPath stays in the tooltip. */}
+                          <TableCell>
+                            <span
+                              className="font-mono text-[11px] text-muted-foreground"
+                              title={loop.repoPath}
+                            >
+                              {loop.id.slice(0, 8)}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <OpenP0 openP0={loop.openP0} />
+                          </TableCell>
+                          <TableCell>
+                            {loop.prRef ? (
+                              <a
+                                href={loop.prRef}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="inline-flex items-center gap-1 text-primary hover:underline text-xs"
+                              >
+                                <ExternalLink className="h-3 w-3" />
+                                PR
+                              </a>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell
+                            className="text-xs text-muted-foreground whitespace-nowrap"
+                            title={new Date(loop.updatedAt ?? loop.createdAt).toLocaleString()}
+                          >
+                            {whenLabel(loop.updatedAt ?? loop.createdAt)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </section>
+            ))}
           </div>
         )}
       </div>

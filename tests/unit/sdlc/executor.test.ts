@@ -240,18 +240,53 @@ describe("buildApCommitMessage — server-fixed subject, sanitized untrusted bod
   });
 });
 
-describe("buildPrStatusBody — per-action-point status summary", () => {
-  it("lists each action point's status + a commit count header", () => {
-    const outcomes: ApOutcome[] = [
-      { index: 1, priority: "P0", title: "alpha", status: "completed", committed: true },
-      { index: 2, priority: "P0", title: "beta", status: "partial", committed: true, note: "coder timed out" },
-      { index: 3, priority: "P1", title: "gamma", status: "failed", committed: false, note: "no changes" },
-    ];
-    const body = buildPrStatusBody(2, outcomes);
+describe("buildPrStatusBody — enriched header + addressed action points + outcome table", () => {
+  const outcomes: ApOutcome[] = [
+    { index: 1, priority: "P0", title: "alpha", status: "completed", committed: true },
+    { index: 2, priority: "P0", title: "beta", status: "partial", committed: true, note: "coder timed out" },
+    { index: 3, priority: "P1", title: "gamma", status: "failed", committed: false, note: "no changes" },
+  ];
+
+  it("renders provenance header (loop/round/repo), the per-AP outcome table + footer", () => {
+    const body = buildPrStatusBody({
+      loopId: LOOP,
+      round: 2,
+      repoName: "omniscience",
+      actionPoints: APS,
+      outcomes,
+    });
+    // Header provenance — server-controlled values.
+    expect(body).toContain("Automated SDLC Draft PR");
+    expect(body).toContain(`Loop: \`${LOOP}\``);
+    expect(body).toContain("Round: 2");
+    expect(body).toContain("Repo: `omniscience`");
+    // Per-AP outcome table (unchanged shape).
     expect(body).toContain("2/3 produced commits");
     expect(body).toContain("[completed] (P0) alpha");
     expect(body).toContain("[partial] (P0) beta — coder timed out");
     expect(body).toContain("[failed] (P1) gamma — no changes");
-    expect(body).toContain("Draft PR");
+    // Footer — paused human gate.
+    expect(body).toContain("paused at the human gate");
+  });
+
+  it("lists the verdict's action points addressed (priority + clamped title + 1-line rationale), control-stripped", () => {
+    const body = buildPrStatusBody({
+      loopId: LOOP,
+      round: 2,
+      repoName: "omniscience",
+      actionPoints: APS, // APS[0] has shell metachars + newlines in title/rationale
+      outcomes,
+    });
+    expect(body).toContain("Action points addressed");
+    // Untrusted title/rationale survive ONLY control-stripped (newlines collapsed).
+    expect(body).toContain("1. [P0] Fix `;rm -rf /` in parser with newline — unsanitized input");
+    expect(body).toContain("2. [P1] Add the redactor");
+    // The clamp/strip removed the raw newline — no multi-line injection.
+    expect(body).not.toContain("parser\nwith");
+  });
+
+  it("degrades to '_none recorded_' when there are no action points", () => {
+    const body = buildPrStatusBody({ loopId: LOOP, round: 2, repoName: "r", actionPoints: [], outcomes });
+    expect(body).toContain("_none recorded_");
   });
 });

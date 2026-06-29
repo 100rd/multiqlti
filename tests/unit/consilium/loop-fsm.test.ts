@@ -11,6 +11,7 @@ import {
   isAntiStall,
   pickJudgeOutput,
   ConsiliumLoopController,
+  SDLC_DEV_REDRIVE_GRACE_MS,
   type LoopEvent,
 } from "../../../server/services/consilium/consilium-loop-controller.js";
 import type { ConsiliumLoopState, ConsiliumLoopRow } from "@shared/schema";
@@ -198,8 +199,10 @@ const fakeConfig = () =>
     },
   }) as never;
 
-/** Past the DEVELOPING re-drive grace (SDLC coder timeout 600s + 60s buffer). */
-const DEV_STALE = new Date(Date.now() - 700_000);
+/** Past the DEVELOPING registry-EMPTY (cross-restart) re-drive grace — sized to a
+ *  WHOLE multi-AP round, not one coder run. Only relevant when the in-process
+ *  sdlcRuns registry is empty (a genuine crash/restart that lost it). */
+const DEV_STALE = new Date(Date.now() - SDLC_DEV_REDRIVE_GRACE_MS - 60_000);
 /** Flush microtasks + one macrotask so a fire-and-forget background run settles. */
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -345,11 +348,12 @@ describe("controller tick — crash-window re-drive of stranded loops", () => {
   const STALE = new Date(Date.now() - 120_000);
   const FRESH = new Date(); // within grace → in-flight, must NOT re-drive
 
-  it("DEVELOPING with null devGroupId, past coder-length grace → re-dispatches SDLC exactly once (M-1)", async () => {
-    // H-2 crash recovery: a crash mid-coder leaves developing+null devGroupId. The
-    // developing grace must EXCEED the coder timeout (660s) — STALE (120s) is
-    // WITHIN it, so we use DEV_STALE (700s). The redrive claim re-dispatches the
-    // SDLC close-out exactly once; the loop stays developing (background run).
+  it("REGISTRY-EMPTY re-drive (b): developing past grace + NO in-flight registry entry → re-dispatches SDLC exactly once (M-1)", async () => {
+    // BUG-1 (b): a genuine crash/restart LOST the in-process sdlcRuns registry, so
+    // a fresh controller sees developing+null devGroupId with NO registered run.
+    // Only THEN (registry empty + past the whole-round time fallback) does the
+    // redrive claim re-dispatch the SDLC close-out — exactly once; the loop stays
+    // developing (background run).
     const loop = makeLoop({ state: "developing", round: 2, devGroupId: null, currentIterationNumber: 2, updatedAt: DEV_STALE });
     const { storage } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
     const runCloseout = vi.fn(async () => ({ prRef: "https://github.com/x/y/pull/3", headCommit: "deadbeef" }));
@@ -368,10 +372,72 @@ describe("controller tick — crash-window re-drive of stranded loops", () => {
     expect(res?.state).toBe("developing"); // background run — stays developing
   });
 
+  it("REGISTRY GATE (a) (BUG-1): developing past the TIME grace WITH an in-flight registry run → NO second dispatch", async () => {
+    // The live double-dispatch: a per-AP round runs N SEQUENTIAL coders, so it
+    // routinely outlives any single-coder time grace. The process-local sdlcRuns
+    // registry is AUTHORITATIVE — an in-flight run means NOT stranded, so
+    // redriveStranded must NOT re-dispatch a 2nd runSdlcHandoff on the SAME branch
+    // (the old behavior produced "already used by worktree" + a null-prRef clobber).
+    const loop = makeLoop({ state: "deciding", round: 2, currentIterationNumber: 2 });
+    const { storage } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
+    let release: (r: { prRef: string | null; headCommit: string }) => void = () => {};
+    // A closeout that does NOT settle until released → the registry entry stays in-flight.
+    const runCloseout = vi.fn(
+      () => new Promise<{ prRef: string | null; headCommit: string }>((res) => { release = res; }),
+    );
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+      readIterationVerdict: async () => verdict(false, 2),
+      readRepoHead: async () => "abc",
+      runCloseout,
+    });
+    const t1 = await controller.tick(loop.id); // deciding → developing (dispatch; in-flight)
+    expect(t1?.state).toBe("developing");
+    expect(runCloseout).toHaveBeenCalledTimes(1);
+    // Age the developing row PAST the whole-round grace — a TIME-ONLY guard would
+    // now re-drive; the registry gate must override the timer.
+    await storage.updateLoop(loop.id, { updatedAt: DEV_STALE });
+    const t2 = await controller.tick(loop.id); // developing + null devGroupId + past grace
+    expect(t2).toBeNull(); // registry says in-flight → no-op, NO re-drive
+    expect(runCloseout).toHaveBeenCalledTimes(1); // NOT re-dispatched (BUG-1 fixed)
+    release({ prRef: "https://github.com/x/y/pull/77", headCommit: "abc" }); // settle the dangling run
+    await flush();
+  });
+
+  it("IDEMPOTENT SETTLE (c) (BUG-1): a late null-prRef settle CANNOT clobber a recorded non-null prRef", () => {
+    // Defensive: with the registry gate there is only one run per round, but a
+    // late/duplicate settle (pre-gate double dispatch, or a redrive after registry
+    // loss) must never downgrade a real Draft PR to a branch-only null.
+    const controller = new ConsiliumLoopController({
+      storage: {} as never,
+      taskOrchestrator: {} as never,
+      config: fakeConfig,
+    });
+    type Run = { round: number; done: boolean; result?: { prRef: string | null; headCommit: string; error?: string } };
+    const c = controller as unknown as {
+      sdlcRuns: Map<string, Run>;
+      settleSdlcRun(loopId: string, run: Run, result: { prRef: string | null; headCommit: string; error?: string }): void;
+    };
+    // The good run settles with a REAL PR.
+    const good: Run = { round: 2, done: false };
+    c.sdlcRuns.set("loop1", good);
+    c.settleSdlcRun("loop1", good, { prRef: "https://github.com/o/r/pull/7", headCommit: "abc" });
+    expect(c.sdlcRuns.get("loop1")?.result?.prRef).toBe("https://github.com/o/r/pull/7");
+    // A late/duplicate run for the SAME round settles branch-only (null prRef).
+    const late: Run = { round: 2, done: false };
+    c.settleSdlcRun("loop1", late, { prRef: null, headCommit: "def", error: "open PR manually" });
+    // The good PR is preserved — null did NOT clobber it; the late run mirrors it.
+    expect(c.sdlcRuns.get("loop1")?.result?.prRef).toBe("https://github.com/o/r/pull/7");
+    expect(late.result?.prRef).toBe("https://github.com/o/r/pull/7");
+  });
+
   it("CROSS-INSTANCE: two controllers re-driving the SAME stranded developing loop → EXACTLY ONE SDLC dispatch", async () => {
-    // Two pods, separate in-process locks, ONE storage. Both read the stranded
-    // null-devGroupId row past the coder-length grace; the atomic claimRedrive lets
-    // only ONE win → the SDLC close-out is dispatched exactly once (no double coder).
+    // Two pods, separate in-process locks AND separate (empty) sdlcRuns registries,
+    // ONE storage. Both read the stranded null-devGroupId row past the whole-round
+    // grace with NO registered run; the atomic claimRedrive lets only ONE win → the
+    // SDLC close-out is dispatched exactly once (no double coder).
     const loop = makeLoop({ state: "developing", round: 2, devGroupId: null, currentIterationNumber: 2, updatedAt: DEV_STALE });
     const { storage, claimRedrive } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
     const runCloseout = vi.fn(async () => ({ prRef: "https://github.com/x/y/pull/4", headCommit: "deadbeef" }));
