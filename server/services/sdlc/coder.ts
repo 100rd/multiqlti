@@ -8,7 +8,7 @@
  *
  * Invocation (the exact arg array; prompt via STDIN — never argv/shell):
  *   claude -p --output-format json --permission-mode acceptEdits \
- *          --allowedTools Edit Write Read Bash --add-dir <worktreeDir>
+ *          --allowedTools Edit Write Read --add-dir <worktreeDir>
  *   cwd = <worktreeDir> ; stdin = <prompt> ; hard timeout (default 600s)
  *
  * Spawn discipline is reused from `cli-spawn.ts` (the same module the

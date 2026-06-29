@@ -73,11 +73,36 @@ export interface LoopTransition {
 const ANTI_STALL_MIN_ROUND = 3;
 
 /**
- * H-2: the developing-state crash-stranded grace MUST exceed the SDLC coder's
- * hard timeout (executor/coder default 600s) — otherwise a normal long coder run
- * is mistaken for a crash and a SECOND coder is launched mid-run. 600s + 60s.
+ * Per-coder reference grace (one coder run + buffer). The SDLC coder's hard
+ * timeout is configurable (coder default 1_200_000ms / 20min); this is only a
+ * reference floor. The AUTHORITATIVE developing re-drive guard is the process-
+ * local `sdlcRuns` registry consulted in `redriveStranded` (H-2 / BUG-1), NOT a
+ * timer — a per-AP round runs N sequential coders and routinely outlives any
+ * single-coder grace.
  */
 const SDLC_DEV_GRACE_MS = 660_000;
+
+/**
+ * Upper bound on action points implemented in ONE round. A per-AP round runs N
+ * SEQUENTIAL coder sessions, so the round's wall-clock is N x the per-coder
+ * timeout — far longer than a single coder run. Used only to SIZE the cross-
+ * restart time fallback below.
+ */
+const SDLC_DEV_MAX_ACTION_POINTS = 24;
+
+/**
+ * Registry-EMPTY (cross-restart / lost-registry) developing re-drive grace: a
+ * WHOLE multi-AP round, not one coder run. Within a LIVE process the `sdlcRuns`
+ * registry gate — not this timer — prevents a double dispatch, so erring large
+ * here is safe: it only bounds how long a genuinely crashed (registry-lost) run
+ * waits before another process re-dispatches it.
+ *
+ * BUG-1: the old single-coder 660s grace mistook a long multi-AP run for a crash
+ * and `redriveStranded(developing)` re-dispatched a SECOND `runSdlcHandoff` on
+ * the SAME branch ("already used by worktree"), whose null-prRef settle then won
+ * the developing->awaiting_merge CAS and clobbered the real PR.
+ */
+export const SDLC_DEV_REDRIVE_GRACE_MS = SDLC_DEV_GRACE_MS * SDLC_DEV_MAX_ACTION_POINTS;
 
 /** Process-local handle for a BACKGROUND SDLC close-out run (H-2). */
 interface SdlcRun {
@@ -269,9 +294,11 @@ export class ConsiliumLoopController {
    */
   private redriveGraceMs(state?: ConsiliumLoopState): number {
     const base = Math.max(2 * this.loopConfig().pollIntervalMs, 30_000);
-    // H-2: developing waits on a background coder (~10 min), so its grace must
-    // exceed the coder timeout or a normal long run looks stranded.
-    if (state === "developing") return Math.max(base, SDLC_DEV_GRACE_MS);
+    // H-2 / BUG-1: developing waits on a BACKGROUND multi-AP coder round (N
+    // sequential coders). Its TIME fallback is sized to a WHOLE round and only
+    // governs the registry-empty (cross-restart) case; the authoritative
+    // in-process guard is the `sdlcRuns` registry consulted in redriveStranded.
+    if (state === "developing") return Math.max(base, SDLC_DEV_REDRIVE_GRACE_MS);
     return base;
   }
 
@@ -425,6 +452,24 @@ export class ConsiliumLoopController {
       (loop.state === "developing" && loop.devGroupId == null);
     if (!nullRef) return null; // child ref set — not stranded, advance normally
 
+    // BUG-1 (double-dispatch) REGISTRY GATE: for developing, the process-local
+    // `sdlcRuns` registry is AUTHORITATIVE. A per-AP round legitimately runs N
+    // sequential coders (N x the per-coder timeout), so it routinely outlives any
+    // single-coder time grace — a time-only check would mistake a LIVE long run
+    // for a crash and re-dispatch a SECOND `runSdlcHandoff` on the SAME branch
+    // ("already used by worktree"). If THIS process has a registered run for this
+    // loop+round it is NOT stranded: in-flight => wait; settled => deriveDevEvent
+    // advances it. Re-dispatch ONLY when the registry has NO entry for this
+    // loop+round (a genuine crash/restart that LOST the in-process registry),
+    // gated further by the whole-round time fallback below.
+    if (loop.state === "developing") {
+      const run = this.sdlcRuns.get(loop.id);
+      if (run && run.round === loop.round) {
+        this.log(loop.id, `developing has a registered SDLC run (round ${run.round}, done=${run.done}) — not stranded, no re-drive`);
+        return null;
+      }
+    }
+
     const ageMs = Date.now() - new Date(loop.updatedAt).getTime();
     if (ageMs < this.redriveGraceMs(loop.state)) {
       this.log(loop.id, `null child ref in ${loop.state} but within grace (${ageMs}ms) — assume in-flight, no re-drive`);
@@ -541,6 +586,20 @@ export class ConsiliumLoopController {
       this.sdlcRuns.delete(loop.id);
       return {};
     }
+    // Verdict-terminal exits (converged / stopped_cap / escalated) leave DECIDING
+    // WITHOUT entering developing, so recordRound (which otherwise runs inside
+    // startDevHandoff) was never called — the detail-page Rounds panel was empty
+    // for them. Record the round audit here too. appendLoopRound is idempotent
+    // (UNIQUE(loop,round)) and this runs only on the CAS winner.
+    if (
+      event.kind === "decided" &&
+      (transition.to === "converged" ||
+        transition.to === "stopped_cap" ||
+        transition.to === "escalated")
+    ) {
+      await this.recordRound(loop, event.verdict);
+      return {};
+    }
     return {};
   }
 
@@ -654,15 +713,46 @@ export class ConsiliumLoopController {
     this.log(loop.id, `dispatchSdlc -> background coder round ${loop.round} (${verdict.openActionPoints.length} action points)`);
     void this.closeout(loop, verdict)
       .then((result) => {
-        run.result = result;
-        run.done = true;
-        this.log(loop.id, `SDLC settled -> prRef=${result.prRef ?? "null"}${result.error ? ` (${result.error})` : ""}`);
+        this.settleSdlcRun(loop.id, run, result);
+        this.log(loop.id, `SDLC settled -> prRef=${run.result?.prRef ?? "null"}${run.result?.error ? ` (${run.result.error})` : ""}`);
       })
       .catch((err: unknown) => {
-        run.result = { prRef: null, headCommit: "", error: scrubErr(err instanceof Error ? err.message : String(err)) };
-        run.done = true;
-        this.log(loop.id, `SDLC threw (degraded) -> ${run.result.error}`);
+        this.settleSdlcRun(loop.id, run, {
+          prRef: null,
+          headCommit: "",
+          error: scrubErr(err instanceof Error ? err.message : String(err)),
+        });
+        this.log(loop.id, `SDLC threw (degraded) -> ${run.result?.error}`);
       });
+  }
+
+  /**
+   * Idempotent settle of a BACKGROUND SDLC run into the process-local registry
+   * (BUG-1, defensive). A `null` prRef must NEVER clobber a NON-null prRef already
+   * recorded for the SAME loop+round: with the redrive registry gate there is only
+   * one run per round, but a late/duplicate settle (a pre-gate double dispatch, or
+   * a redrive after a registry loss) must not downgrade a real Draft PR to a
+   * branch-only null. The good-PR entry stays authoritative and the late run
+   * mirrors it, so `deriveDevEvent` (and thus the developing->awaiting_merge
+   * persistence) can only ever observe the good PR.
+   */
+  private settleSdlcRun(loopId: string, run: SdlcRun, result: DevCloseoutResult): void {
+    const existing = this.sdlcRuns.get(loopId);
+    if (
+      existing &&
+      existing.done &&
+      existing.round === run.round &&
+      existing.result?.prRef &&
+      !result.prRef
+    ) {
+      this.log(loopId, `idempotent settle: null prRef IGNORED — keeping prRef=${existing.result.prRef} (round ${run.round})`);
+      run.result = existing.result;
+      run.done = true;
+      this.sdlcRuns.set(loopId, existing); // keep the good-PR entry authoritative
+      return;
+    }
+    run.result = result;
+    run.done = true;
   }
 
   /**

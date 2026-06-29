@@ -37,6 +37,12 @@
  *          URL instead of opening a duplicate.
  *   - M-7: `gh pr create` failing with "already exists" is treated as REUSE —
  *          recover the URL via `pr list` instead of stranding the loop (TOCTOU).
+ *   - M-8 (enrichment): the Draft PR is self-assigned (`--assignee @me`) and
+ *          tagged with a server-FIXED label set (ensured to exist idempotently
+ *          via `gh label create ... || true` first). Both assignee + label names
+ *          are SERVER CONSTANTS (never model text). Applying them is BEST-EFFORT:
+ *          a `gh` that rejects them degrades to a plain Draft PR — metadata never
+ *          fails the PR.
  */
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -89,6 +95,35 @@ const execFileAsync: ExecFileFn = promisify(execFile);
 const BRANCH_RE = /^consilium\/loop-[0-9a-f-]{36}\/round-[0-9]+$/;
 /** Well-formed `owner/repo` (GitHub slug chars only) — H-7 origin validation. */
 const OWNER_REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+// ─── Server-fixed PR metadata (assignee + labels) ─────────────────────────────
+//
+// SECURITY: assignee + label NAMES are SERVER CONSTANTS — they NEVER come from
+// model/action-point text, so they can never carry a flag/shell payload. They
+// are passed as arg-array elements to `gh`, and each is `^[a-z0-9@_-]+$`-shaped
+// (no leading dash) so it is option-safe even as an argv value. Applying them is
+// BEST-EFFORT: a `gh` that rejects `--assignee`/`--label` (old version, missing
+// scope, label race) degrades to a plain Draft PR — metadata never fails the PR.
+
+/** The PR is self-assigned to the invoking GH identity (server constant). */
+export const SDLC_PR_ASSIGNEE = "@me";
+
+/** A server-fixed label + its ensure-exists color/description (idempotent create). */
+interface LabelSpec {
+  name: string;
+  color: string; // 6-hex, no leading '#'
+  description: string;
+}
+
+/** Server-fixed labels applied to every SDLC Draft PR (ensured to exist first). */
+export const SDLC_PR_LABEL_SPECS: readonly LabelSpec[] = [
+  { name: "consilium-review", color: "5319e7", description: "Opened by the consilium reconciliation loop" },
+  { name: "sdlc", color: "1d76db", description: "Produced by the SDLC executor close-out" },
+  { name: "automated", color: "ededed", description: "Automated change — review before merge" },
+];
+
+/** Just the label NAMES, in apply order (server constants). */
+export const SDLC_PR_LABELS: readonly string[] = SDLC_PR_LABEL_SPECS.map((l) => l.name);
 
 /** True iff `branch` is a server-derived consilium branch (B-3). */
 export function isValidLoopBranch(branch: string): boolean {
@@ -283,6 +318,31 @@ export async function openDraftPr(
   return createDraftPr(ownerRepo, opts, execFileFn, env);
 }
 
+/**
+ * Idempotently ensure the server-fixed labels exist on the repo before `gh pr
+ * create --label` references them (a label that does not exist makes `gh pr
+ * create` fail). Mirrors `gh label create ... 2>/dev/null || true`: each create
+ * is best-effort and its failure (label already exists / gh missing / no scope)
+ * is SWALLOWED — never fatal. Label name/color/description are server constants.
+ */
+async function ensureLabels(
+  ownerRepo: string,
+  run: ExecFileFn,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  for (const spec of SDLC_PR_LABEL_SPECS) {
+    try {
+      await run(
+        "gh",
+        ["label", "create", spec.name, "--repo", ownerRepo, "--color", spec.color, "--description", spec.description],
+        { timeout: 30_000, env },
+      );
+    } catch {
+      // already exists / gh missing / no scope → idempotent no-op (|| true).
+    }
+  }
+}
+
 /** The create call + M-7 already-exists recovery. */
 async function createDraftPr(
   ownerRepo: string,
@@ -293,18 +353,42 @@ async function createDraftPr(
   const bodyFile = join(tmpdir(), `consilium-pr-${randomUUID()}.md`);
   try {
     await writeFile(bodyFile, opts.body, "utf8");
-    const { stdout } = await run(
-      "gh",
-      // server-fixed flags FIRST (H-6 --draft, --repo); body via --body-file
-      // (never argv). B-3+: `gh` has NO positional args and REJECTS
-      // `--end-of-options` (verified gh 2.94: "unknown flag"); `--base`/`--head`/
-      // `--title` are value-flags, so the flag-injection defense here is the
-      // leading-dash rejection of title+head above, NOT a terminator (which
-      // would break the command). `git push` DOES get a `--` terminator.
-      ["pr", "create", "--draft", "--repo", ownerRepo, "--body-file", bodyFile,
-        "--base", opts.base, "--head", opts.head, "--title", opts.title],
-      { timeout: 60_000, env },
-    );
+
+    // server-fixed flags FIRST (H-6 --draft, --repo); body via --body-file
+    // (never argv). B-3+: `gh` has NO positional args and REJECTS
+    // `--end-of-options` (verified gh 2.94: "unknown flag"); `--base`/`--head`/
+    // `--title` are value-flags, so the flag-injection defense here is the
+    // leading-dash rejection of title+head above, NOT a terminator (which would
+    // break the command). `git push` DOES get a `--` terminator.
+    const baseArgs = [
+      "pr", "create", "--draft", "--repo", ownerRepo, "--body-file", bodyFile,
+      "--base", opts.base, "--head", opts.head, "--title", opts.title,
+    ];
+
+    // Best-effort: ensure the server-fixed labels exist before referencing them.
+    await ensureLabels(ownerRepo, run, env);
+
+    // Enrich with server-fixed labels + assignee (all server constants, never
+    // model text). `--label`/`--assignee` are value-flags whose values are
+    // option-safe constants.
+    const enrichedArgs = [...baseArgs];
+    for (const name of SDLC_PR_LABELS) enrichedArgs.push("--label", name);
+    enrichedArgs.push("--assignee", SDLC_PR_ASSIGNEE);
+
+    let stdout: string;
+    try {
+      ({ stdout } = await run("gh", enrichedArgs, { timeout: 60_000, env }));
+    } catch (enrichErr) {
+      const m = enrichErr instanceof Error ? enrichErr.message : String(enrichErr);
+      // An already-exists race is REUSE, not a metadata problem — bubble it to the
+      // M-7 recovery in the outer catch.
+      if (isAlreadyExists(m)) throw enrichErr;
+      // The metadata flags may have caused it (old gh / no scope / bad label).
+      // Degrade gracefully: open a PLAIN Draft PR — metadata never fails the PR.
+      // eslint-disable-next-line no-console
+      console.warn(`[pr-wrapper] degraded: assignee/labels rejected, opening plain Draft PR: ${scrub(m)}`);
+      ({ stdout } = await run("gh", baseArgs, { timeout: 60_000, env }));
+    }
     const prUrl = parsePrUrl(stdout);
     if (!prUrl) return { ok: false, kind: "gh-failed", message: "gh returned no PR URL" };
     return { ok: true, prUrl };

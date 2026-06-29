@@ -45,6 +45,7 @@
  *     under a sanitized allowlisted env. The worktree is a server-minted temp dir.
  *   - Agents NEVER apply/merge: this opens a DRAFT PR only. No push to main.
  */
+import { basename } from "path";
 import type { ActionPoint } from "@shared/types";
 import { buildBranchName, isValidLoopBranch, pushBranch, openDraftPr } from "../consilium/pr-wrapper.js";
 import {
@@ -63,6 +64,7 @@ const COMMIT_BODY_RATIONALE_MAX = 1_000;
 const COMMIT_BODY_MAX = 4_000;
 const PRIORITY_MAX = 16;
 const PR_BODY_TITLE_MAX = 120;
+const PR_BODY_RATIONALE_MAX = 200; // 1-line rationale in the "addressed" list
 const PR_BODY_MAX = 16_000;
 
 /** Per-action-point outcome status surfaced in the Draft PR body. */
@@ -182,21 +184,73 @@ export function buildApCommitMessage(
   return { subject: subject.slice(0, 200), body: lines.join("\n").slice(0, COMMIT_BODY_MAX) };
 }
 
-/** Draft-PR body: server-fixed header + per-action-point status summary. */
-export function buildPrStatusBody(round: number, outcomes: readonly ApOutcome[]): string {
-  const lines = outcomes.map((o) => {
+/** Inputs to the enriched Draft-PR body (all values server-controlled EXCEPT the
+ *  untrusted action-point text, which is sanitized/clamped before it lands). */
+export interface PrStatusBodyInput {
+  /** Loop id (server-controlled; display-only provenance). */
+  loopId: string;
+  /** Round number (server-controlled). */
+  round: number;
+  /** Repo display name (server-derived from the allowlisted repoPath basename). */
+  repoName: string;
+  /** The verdict's open action points — UNTRUSTED text (sanitized + clamped). */
+  actionPoints: readonly ActionPoint[];
+  /** Per-AP execution outcomes the executor built. */
+  outcomes: readonly ApOutcome[];
+}
+
+/**
+ * Draft-PR body: a server-fixed provenance HEADER (loop id / round / repo), the
+ * verdict's ACTION POINTS ADDRESSED (priority + clamped title + 1-line clamped
+ * rationale — untrusted text, control-stripped via `sanitizeLine`, NEVER a shell
+ * string or argv), the PER-AP OUTCOME table (completed/partial/failed), and a
+ * FOOTER pointing at the paused human gate. Written to `--body-file` by
+ * pr-wrapper, so none of this untrusted text ever reaches argv.
+ */
+export function buildPrStatusBody(input: PrStatusBodyInput): string {
+  const { loopId, round, repoName, actionPoints, outcomes } = input;
+  const committed = outcomes.filter((o) => o.committed).length;
+
+  // Header — provenance (loopId/round/repoName are server-controlled, but still
+  // single-line sanitized as defense-in-depth).
+  const header = [
+    "## Automated SDLC Draft PR",
+    "",
+    "Opened by the **consilium reconciliation loop**'s SDLC executor (isolated worktree + agentic coder). The loop is PAUSED at the human review gate.",
+    "",
+    `- Loop: \`${sanitizeLine(loopId, 80)}\``,
+    `- Round: ${round}`,
+    `- Repo: \`${sanitizeLine(repoName, 120)}\``,
+  ];
+
+  // Action points addressed — from the verdict (UNTRUSTED -> sanitize + clamp).
+  const apLines = actionPoints.map((ap, i) => {
+    const priority = sanitizeLine(ap.priority ?? "-", PRIORITY_MAX) || "-";
+    const title = sanitizeLine(ap.title ?? "", PR_BODY_TITLE_MAX);
+    const rationale = sanitizeLine(ap.rationale ?? "", PR_BODY_RATIONALE_MAX);
+    const tail = rationale ? ` — ${rationale}` : "";
+    return `${i + 1}. [${priority}] ${title}${tail}`;
+  });
+
+  // Per-AP outcome table (existing shape).
+  const outcomeLines = outcomes.map((o) => {
     const tail = o.note ? ` — ${sanitizeLine(o.note, 120)}` : "";
     return `- [${o.status}] (${o.priority}) ${sanitizeLine(o.title, PR_BODY_TITLE_MAX)}${tail}`;
   });
-  const committed = outcomes.filter((o) => o.committed).length;
+
   return [
-    `Automated SDLC changes for consilium round ${round}.`,
+    ...header,
     "",
-    `Per action-point status (${committed}/${outcomes.length} produced commits):`,
+    "### Action points addressed (from the consilium verdict)",
     "",
-    ...lines,
+    ...(apLines.length > 0 ? apLines : ["_none recorded_"]),
     "",
-    "This is a Draft PR — a human must review and merge.",
+    `### Per action-point outcome (${committed}/${outcomes.length} produced commits)`,
+    "",
+    ...outcomeLines,
+    "",
+    "---",
+    "Draft — review the changes; the loop is paused at the human gate (a human must review and merge).",
   ].join("\n").slice(0, PR_BODY_MAX);
 }
 
@@ -363,7 +417,13 @@ async function pushAndOpenPr(
     base,
     head: branch,
     title: buildPrTitle(req.round), // server-derived; NO model text.
-    body: buildPrStatusBody(req.round, outcomes),
+    body: buildPrStatusBody({
+      loopId: req.loopId,
+      round: req.round,
+      repoName: basename(req.repoPath),
+      actionPoints: req.actionPoints,
+      outcomes,
+    }),
   });
   if (!pr.ok) {
     return { prRef: null, headCommit, error: `pushed branch ${branch}; open PR manually` };

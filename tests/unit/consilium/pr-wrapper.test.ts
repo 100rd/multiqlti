@@ -19,6 +19,8 @@ import {
   pushBranch,
   openDraftPr,
   isValidLoopBranch,
+  SDLC_PR_ASSIGNEE,
+  SDLC_PR_LABELS,
   type GitPushClient,
   type ExecFileFn,
 } from "../../../server/services/consilium/pr-wrapper.js";
@@ -59,15 +61,19 @@ function fakeGit(over: Partial<GitPushClient> = {}): GitPushClient & {
   };
 }
 
-/** Route gh invocations by sub-command; capture argv + env per call. */
+/** Route gh invocations by (group, sub-command); capture argv + env per call.
+ *  `gh label create` is routed SEPARATELY from `gh pr create` (createDraftPr now
+ *  ensures labels exist before opening the PR). */
 function fakeExec(handlers: {
   list?: (args: string[]) => Promise<{ stdout: string; stderr: string }>;
   create?: (args: string[]) => Promise<{ stdout: string; stderr: string }>;
+  label?: (args: string[]) => Promise<{ stdout: string; stderr: string }>;
 }): ExecFileFn & ReturnType<typeof vi.fn> {
   return vi.fn(async (file: string, args: string[]) => {
     expect(file).toBe("gh"); // never a shell
-    if (args[1] === "list") return (handlers.list ?? (async () => ({ stdout: "[]", stderr: "" })))(args);
-    if (args[1] === "create") return (handlers.create ?? (async () => ({ stdout: "", stderr: "" })))(args);
+    if (args[0] === "label" && args[1] === "create") return (handlers.label ?? (async () => ({ stdout: "", stderr: "" })))(args);
+    if (args[0] === "pr" && args[1] === "list") return (handlers.list ?? (async () => ({ stdout: "[]", stderr: "" })))(args);
+    if (args[0] === "pr" && args[1] === "create") return (handlers.create ?? (async () => ({ stdout: "", stderr: "" })))(args);
     return { stdout: "", stderr: "" };
   }) as ExecFileFn & ReturnType<typeof vi.fn>;
 }
@@ -244,5 +250,65 @@ describe("openDraftPr", () => {
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.prUrl).toBe("https://github.com/o/r/pull/55"); // M-7 recovery
     expect(listCalls).toBe(2); // pre-check + recovery
+  });
+
+  // ─── M-8: enrichment (server-fixed assignee + labels, graceful degrade) ──────
+
+  it("M-8: enriches the Draft PR with --assignee + every server-fixed --label, ensuring labels exist FIRST", async () => {
+    const labelCreates: string[][] = [];
+    let createArgs: string[] = [];
+    const exec = fakeExec({
+      label: async (args) => { labelCreates.push(args); return { stdout: "", stderr: "" }; },
+      create: async (args) => { createArgs = args; return { stdout: "https://github.com/o/r/pull/1\n", stderr: "" }; },
+    });
+    const res = await openDraftPr(REPO, OPTS, exec, fakeGit());
+    expect(res.ok).toBe(true);
+    // Assignee — SERVER CONSTANT, never model text, passed as an arg-array value.
+    expect(createArgs).toEqual(expect.arrayContaining(["--assignee", SDLC_PR_ASSIGNEE]));
+    // Every server-fixed label applied to `gh pr create`.
+    for (const name of SDLC_PR_LABELS) {
+      expect(createArgs).toEqual(expect.arrayContaining(["--label", name]));
+    }
+    // Labels ensured idempotently FIRST: one `gh label create` per label, --repo derived.
+    expect(labelCreates).toHaveLength(SDLC_PR_LABELS.length);
+    for (const c of labelCreates) {
+      expect(c.slice(0, 2)).toEqual(["label", "create"]);
+      expect(c).toEqual(expect.arrayContaining(["--repo", OWNER_REPO]));
+    }
+    // Still no shell metachars anywhere in the enriched argv.
+    expect(createArgs.some((a) => /[;&|`$]/.test(a))).toBe(false);
+  });
+
+  it("M-8: gh rejecting --assignee/--label DEGRADES to a plain Draft PR (never throws, never fails the PR)", async () => {
+    let createCalls = 0;
+    let plainArgs: string[] = [];
+    const exec = vi.fn(async (_file: string, args: string[]) => {
+      if (args[0] === "label" && args[1] === "create") return { stdout: "", stderr: "" };
+      if (args[0] === "pr" && args[1] === "list") return { stdout: "[]", stderr: "" };
+      if (args[0] === "pr" && args[1] === "create") {
+        createCalls += 1;
+        const hasMeta = args.includes("--assignee") || args.includes("--label");
+        if (hasMeta) throw new Error("unknown flag: --assignee"); // old gh rejects metadata
+        plainArgs = args;
+        return { stdout: "https://github.com/o/r/pull/2\n", stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    }) as ExecFileFn;
+    const res = await openDraftPr(REPO, OPTS, exec, fakeGit());
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.prUrl).toBe("https://github.com/o/r/pull/2"); // PR still opened
+    expect(createCalls).toBe(2); // enriched (rejected) → plain (success)
+    expect(plainArgs).not.toContain("--assignee"); // degraded — no metadata
+    expect(plainArgs).not.toContain("--label");
+  });
+
+  it("M-8: a failing `gh label create` is SWALLOWED — the Draft PR still opens", async () => {
+    const exec = fakeExec({
+      label: async () => { throw new Error("gh: missing 'repo' scope"); },
+      create: async () => ({ stdout: "https://github.com/o/r/pull/3\n", stderr: "" }),
+    });
+    const res = await openDraftPr(REPO, OPTS, exec, fakeGit());
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.prUrl).toBe("https://github.com/o/r/pull/3");
   });
 });
