@@ -1348,10 +1348,29 @@ export class PgStorage implements IStorage {
   }
 
   async getLoopRounds(loopId: string): Promise<ConsiliumLoopRoundRow[]> {
+    // consilium_loop_rounds has NO project_id (a round belongs to a loop, which
+    // belongs to a task group). Scope through loop → group → task_groups, like
+    // getLoops()/getTraces(). In a system context withProjectList returns all.
     return db
       .select()
       .from(consiliumLoopRounds)
-      .where(withProject(consiliumLoopRounds, eq(consiliumLoopRounds.loopId, loopId)))
+      .where(
+        and(
+          eq(consiliumLoopRounds.loopId, loopId),
+          inArray(
+            consiliumLoopRounds.loopId,
+            db
+              .select({ id: consiliumLoops.id })
+              .from(consiliumLoops)
+              .where(
+                inArray(
+                  consiliumLoops.groupId,
+                  db.select({ id: taskGroups.id }).from(taskGroups).where(withProjectList(taskGroups)),
+                ),
+              ),
+          ),
+        ),
+      )
       .orderBy(asc(consiliumLoopRounds.round));
   }
 

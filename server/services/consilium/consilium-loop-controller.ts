@@ -39,9 +39,10 @@
  *     (D.2/D.3) so the DEV pipeline's read tools are grounded in the loop's repo.
  */
 import type { IStorage } from "../../storage.js";
-import { runAsSystem } from "../../context.js";
-import type { ConsiliumLoopRow, ConsiliumLoopState } from "@shared/schema";
+import { runAsSystem, runAsProject } from "../../context.js";
+import type { ConsiliumLoopRow, ConsiliumLoopRoundRow, ConsiliumLoopState } from "@shared/schema";
 import type { ActionPoint, ConvergenceVerdict } from "@shared/types";
+import { P0_PRIORITY } from "@shared/types";
 import type { TaskOrchestrator } from "../task-orchestrator.js";
 import type { AppConfig } from "../../config/schema.js";
 import { readConvergence } from "../orchestrator/convergence.js";
@@ -563,12 +564,19 @@ export class ConsiliumLoopController {
     const cfg = this.loopConfig();
     const group = await this.storage.getTaskGroup(loop.groupId);
     const objective = group?.input ?? "";
+    // Enh1: for every review AFTER the first (loop.round >= 1), inject the prior
+    // rounds' still-open findings so the debaters VERIFY CLOSURE against the new
+    // diff instead of re-discovering or circling. Round 1 (loop.round === 0,
+    // baselineCommit null) is unchanged: objective-only, no history.
+    const priorFindings =
+      loop.round >= 1 ? await this.buildPriorFindings(loop, cfg.maxDiffBytes) : undefined;
     const ctx = await buildDiffContext({
       repoPath: loop.repoPath,
       baselineCommit: loop.lastReviewedCommit,
       objective,
       allowedRepoPaths: cfg.allowedRepoPaths,
       maxDiffBytes: cfg.maxDiffBytes,
+      priorFindings,
     });
     if (!ctx.ok) {
       // Surface the (scrubbed) git failure as a loop error; the next tick from
@@ -644,6 +652,27 @@ export class ConsiliumLoopController {
     }
   }
 
+  /**
+   * Enh1: assemble the "prior findings to verify" block for round > 1 from the
+   * persisted per-round verdict rows (`consilium_loop_rounds.openActionPoints`).
+   * Best-effort: a storage failure or empty history yields `undefined` (no
+   * history injected — round proceeds as before). Bounded oldest-first to
+   * `budgetBytes` by `formatPriorFindings`.
+   */
+  private async buildPriorFindings(
+    loop: ConsiliumLoopRow,
+    budgetBytes: number,
+  ): Promise<string | undefined> {
+    let rounds: ConsiliumLoopRoundRow[];
+    try {
+      rounds = await this.storage.getLoopRounds(loop.id);
+    } catch (err) {
+      this.log(loop.id, `buildPriorFindings: getLoopRounds failed (no history injected): ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+    return formatPriorFindings(rounds, budgetBytes) ?? undefined;
+  }
+
   /** Persist this round's audit row (NEVER the raw diff/input — H-4). */
   private async recordRound(loop: ConsiliumLoopRow, verdict: ConvergenceVerdict): Promise<void> {
     const head = await this.readRepoHead(loop);
@@ -716,6 +745,73 @@ export function pickJudgeOutput(outputs: unknown[]): unknown {
 }
 
 /**
+ * Enh1: format the round-history block injected into reviews after the first
+ * (round > 1). For each EARLIER round it lists the still-open action points
+ * (title + priority) persisted in `consilium_loop_rounds.openActionPoints`, plus
+ * the open-P0 trend across rounds, so the debaters confirm CLOSURE of prior items
+ * against the new diff rather than re-discovering them or circling.
+ *
+ * Bounding (treated as INERT prior-verdict text — never executed): the whole
+ * block is kept within `budgetBytes` by dropping WHOLE rounds OLDEST-first and
+ * noting how many were omitted. If even the newest round's detail will not fit,
+ * a header-only block (trend + a "detail omitted" note) is returned; if not even
+ * that fits, returns `null` (nothing injected). A `diff-context` byte clamp is a
+ * second, defensive backstop.
+ *
+ * Note on provenance: the per-round verdict (titles + priorities) IS persisted
+ * per round in `consilium_loop_rounds.openActionPoints` (jsonb ActionPoint[]),
+ * so no fallback-to-counts-only is needed; rows whose action points are absent
+ * (e.g. an unreadable verdict at record time) degrade to their openP0 count.
+ */
+export function formatPriorFindings(
+  rounds: ConsiliumLoopRoundRow[],
+  budgetBytes: number,
+): string | null {
+  if (rounds.length === 0) return null;
+  const ordered = [...rounds].sort((a, b) => a.round - b.round);
+
+  const trend = ordered.map((r) => r.openP0 ?? 0).join(" -> ");
+  const header =
+    "## Prior findings to verify (from earlier rounds)\n\n" +
+    "Earlier rounds flagged the items below. For EACH item: confirm it is ACTUALLY " +
+    "closed by the changes above, or flag it as still-open / regressed. Do NOT " +
+    "re-discover items already listed here — only raise genuinely NEW issues.\n\n" +
+    `Open P0 trend across rounds: ${trend}`;
+
+  const chunkFor = (r: ConsiliumLoopRoundRow): string => {
+    const aps = Array.isArray(r.openActionPoints) ? r.openActionPoints : [];
+    const p0 =
+      r.openP0 ??
+      aps.filter((a) => (a.priority ?? "").toUpperCase() === P0_PRIORITY).length;
+    const headline = `### Round ${r.round} (${aps.length} open${p0 ? `, ${p0} P0` : ""})`;
+    if (aps.length === 0) {
+      return `${headline}\n- _no structured action points recorded for this round (open P0: ${r.openP0 ?? "unknown"})_`;
+    }
+    const lines = aps.map((a) => `- [${(a.priority ?? "P?").toUpperCase()}] ${a.title}`);
+    return `${headline}\n${lines.join("\n")}`;
+  };
+
+  const chunks = ordered.map(chunkFor);
+  const assemble = (kept: string[], omitted: number): string => {
+    const note =
+      omitted > 0 ? `\n\n_(${omitted} earlier round(s) omitted to fit the size budget)_` : "";
+    return `${header}${note}\n\n${kept.join("\n\n")}`;
+  };
+
+  let kept = chunks.slice();
+  let omitted = 0;
+  while (kept.length > 0 && Buffer.byteLength(assemble(kept, omitted), "utf8") > budgetBytes) {
+    kept.shift(); // drop the OLDEST round first
+    omitted += 1;
+  }
+  if (kept.length === 0) {
+    const minimal = `${header}\n\n_(all ${omitted} round(s) of detail omitted to fit the size budget; see the P0 trend above)_`;
+    return Buffer.byteLength(minimal, "utf8") > budgetBytes ? null : minimal;
+  }
+  return assemble(kept, omitted);
+}
+
+/**
  * ConsiliumLoopPoller — the restart-safe backstop driver (design §7). On an
  * interval it sweeps every NON-terminal loop and `tick`s it. `tick` is single-
  * flight via the persisted CAS (H-3), so a poller tick that races an event-tick
@@ -754,7 +850,20 @@ export class ConsiliumLoopPoller {
         this.storage.getLoops(),
       );
       for (const loop of loops) {
-        await this.controller.tick(loop.id).catch(() => undefined);
+        // tick() calls project-scoped storage (getTaskGroup/updateLoop/startGroupAsync
+        // inserts) which fail-close without an ALS context. A loop belongs to a
+        // project via its group → run the tick inside that project's context so
+        // every scoped read/write resolves correctly. Fall back to a system
+        // context only if the group's project can't be resolved.
+        const group = await runAsSystem("consilium-loop-resolve-project", () =>
+          this.storage.getTaskGroup(loop.groupId),
+        ).catch(() => null);
+        const projectId = group?.projectId ?? null;
+        const runTick = () => this.controller.tick(loop.id);
+        await (projectId
+          ? runAsProject(projectId, runTick)
+          : runAsSystem("consilium-loop-tick", runTick)
+        ).catch(() => undefined);
       }
     } catch {
       // a transient storage error must not kill the interval

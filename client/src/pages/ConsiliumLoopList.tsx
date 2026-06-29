@@ -1,20 +1,30 @@
 /**
  * ConsiliumLoopList — the caller's consilium loops (design §7). One row per loop:
- * state pill, round n/maxRounds, repo basename, open P0, a Draft-PR link when set,
- * and a relative updated-time. Clicking a row opens its detail at
+ * the WORKSPACE name (P4), state pill, round n/maxRounds, open P0, a Draft-PR link
+ * when set, and a relative updated-time. Clicking a row opens its detail at
  * /consilium-loops/:id. The list polls lightly (5s) for live state.
  *
- * SECURITY: loop-derived text (repoPath, prRef) is rendered as INERT React text;
- * the PR link uses rel="noopener noreferrer".
+ * P4 — the first column is a human WORKSPACE name. Loops only carry `repoPath`
+ * (no workspaceId), so we fetch the workspaces list (via the shared apiRequest
+ * transport, which attaches `x-project-id`) and match by `path`. When no
+ * workspace matches we fall back to the repo basename, and the full repoPath is
+ * always kept in the cell's title/tooltip. The short loop id + round stay visible
+ * so multiple loops targeting one workspace remain distinguishable.
+ *
+ * SECURITY: loop-derived text (repoPath, prRef) and the workspace name are
+ * rendered as INERT React text; the PR link uses rel="noopener noreferrer".
  */
 import { useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import { Repeat, ExternalLink, Loader2 } from "lucide-react";
 import {
   useConsiliumLoops,
   type ConsiliumLoopListItem,
 } from "@/hooks/use-consilium-loops";
-import { LoopStateChip } from "@/components/consilium/loop-state";
+import { apiRequest } from "@/hooks/use-pipeline";
+import { LoopStateChipFor } from "@/components/consilium/loop-state";
+import type { WorkspaceRow } from "@shared/schema";
 import {
   Table,
   TableBody,
@@ -29,6 +39,11 @@ function repoBasename(repoPath: string): string {
   const trimmed = repoPath.replace(/\/+$/, "");
   const seg = trimmed.split("/").pop();
   return seg || repoPath;
+}
+
+/** Trailing-slash-insensitive path key, so `/repo` and `/repo/` match. */
+function normalizePath(p: string): string {
+  return p.replace(/\/+$/, "");
 }
 
 function whenLabel(ts: string | Date | null | undefined): string {
@@ -53,10 +68,31 @@ function OpenP0({ openP0 }: { openP0: number | null | undefined }) {
   );
 }
 
+/**
+ * Workspaces for the active project — used only to resolve a human name for a
+ * loop's repoPath. Uses the shared apiRequest transport so `x-project-id` is
+ * attached (same as every other project-scoped hook).
+ */
+function useWorkspaces() {
+  return useQuery<WorkspaceRow[]>({
+    queryKey: ["/api/workspaces"],
+    queryFn: () => apiRequest("GET", "/api/workspaces"),
+  });
+}
+
 export default function ConsiliumLoopList() {
   const [, navigate] = useLocation();
   const { data, isLoading } = useConsiliumLoops();
+  const { data: workspaceData } = useWorkspaces();
   const loops = (Array.isArray(data) ? data : []) as ConsiliumLoopListItem[];
+
+  // path → workspace name lookup (trailing-slash-insensitive).
+  const nameByPath = new Map<string, string>();
+  if (Array.isArray(workspaceData)) {
+    for (const ws of workspaceData) nameByPath.set(normalizePath(ws.path), ws.name);
+  }
+  const workspaceName = (repoPath: string): string =>
+    nameByPath.get(normalizePath(repoPath)) ?? repoBasename(repoPath);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -93,9 +129,9 @@ export default function ConsiliumLoopList() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead>Workspace</TableHead>
                   <TableHead>State</TableHead>
                   <TableHead>Round</TableHead>
-                  <TableHead>Repo</TableHead>
                   <TableHead>Open P0</TableHead>
                   <TableHead>PR</TableHead>
                   <TableHead>Updated</TableHead>
@@ -108,17 +144,24 @@ export default function ConsiliumLoopList() {
                     className="cursor-pointer"
                     onClick={() => navigate(`/consilium-loops/${loop.id}`)}
                   >
+                    <TableCell className="max-w-[18rem]">
+                      {/* Human workspace name first; short loop id beneath for
+                          disambiguation when several loops target one workspace.
+                          Full repoPath stays in the tooltip. */}
+                      <div className="min-w-0">
+                        <div className="truncate font-medium" title={loop.repoPath}>
+                          {workspaceName(loop.repoPath)}
+                        </div>
+                        <div className="font-mono text-[10px] text-muted-foreground truncate">
+                          {loop.id.slice(0, 8)}
+                        </div>
+                      </div>
+                    </TableCell>
                     <TableCell>
-                      <LoopStateChip state={loop.state} />
+                      <LoopStateChipFor loop={loop} />
                     </TableCell>
                     <TableCell className="tabular-nums">
                       {loop.round}/{loop.maxRounds}
-                    </TableCell>
-                    <TableCell
-                      className="font-mono text-xs max-w-[16rem] truncate"
-                      title={loop.repoPath}
-                    >
-                      {repoBasename(loop.repoPath)}
                     </TableCell>
                     <TableCell>
                       <OpenP0 openP0={loop.openP0} />

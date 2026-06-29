@@ -4,7 +4,9 @@
  * Builds the "Overall objective" markdown string fed to every debater + the
  * judge (`iteration.input`, direct-llm-prompt.ts:39) for one review round:
  *   objective + `## Changes since last review` (git diff base..HEAD) +
- *   `## Test results` (an opaque, bounded summary the DEV pipeline produced).
+ *   `## Test results` (an opaque, bounded summary the DEV pipeline produced) +
+ *   (Enh1, round > 1) `## Prior findings to verify` — the caller-supplied,
+ *   byte-bounded, INERT round-history block so debaters verify closure.
  *
  * Design constraints honoured here:
  *   - NEVER throws — returns `DiffContextResult | GitFail` (reuses the
@@ -51,6 +53,15 @@ export interface DiffContextRequest {
   maxDiffBytes: number;
   /** Bounded summary of the last DEV run's tests (opaque to A2). */
   testSummary?: string;
+  /**
+   * Enh1: round-history block (model-authored prior-round findings) injected
+   * for round > 1 so debaters VERIFY CLOSURE of earlier items against the diff
+   * below instead of re-discovering them or circling. Appended as a dedicated
+   * section AFTER the diff. Treated as INERT text (never executed, never
+   * logged) and hard-capped to `maxDiffBytes`; the caller pre-truncates the
+   * findings list oldest-first to stay within budget.
+   */
+  priorFindings?: string;
   /** Injected git client (tests pass a fake); defaults to simple-git(repoPath). */
   gitClient?: GitDiffClient;
 }
@@ -162,6 +173,8 @@ function assembleInput(
   objective: string,
   parts: DiffParts | null,
   testSummary: string | undefined,
+  priorFindings: string | undefined,
+  maxDiffBytes: number,
 ): { input: string; truncated: boolean } {
   const obj = objective.trim();
   const sections = [obj.length > 0 ? obj : "_No objective supplied; review the changes below._"];
@@ -176,6 +189,22 @@ function assembleInput(
     if (clamped.clipped) truncated = true;
     const note = clamped.clipped ? "\n\n_(test results truncated to the configured limit)_" : "";
     sections.push(`## Test results\n\n${clamped.text}${note}`);
+  }
+  // Enh1: prior-round findings to verify — appended AFTER the diff so the model
+  // reads objective -> changes-since-last-review -> (tests) -> items to confirm
+  // closed. The caller already bounded this oldest-first; we apply a DEFENSIVE
+  // byte clamp here so a round-history block can never exceed the diff's byte
+  // budget (it is inert, model-authored prior-verdict text). The block carries
+  // its own `## Prior findings to verify` header.
+  if (priorFindings && priorFindings.trim().length > 0) {
+    const raw = priorFindings.trim();
+    const overflow = Buffer.byteLength(raw, "utf8") > maxDiffBytes;
+    if (overflow) truncated = true;
+    const text = overflow
+      ? Buffer.from(raw, "utf8").subarray(0, maxDiffBytes).toString("utf8")
+      : raw;
+    const note = overflow ? "\n\n_(prior findings truncated to the configured byte limit)_" : "";
+    sections.push(`${text}${note}`);
   }
   return { input: sections.join("\n\n"), truncated };
 }
@@ -214,7 +243,7 @@ export async function buildDiffContext(
     if (req.objective.trim().length === 0) {
       return fail("unknown", "objective is empty and there is no diff (round 1); refusing to emit a blank review input");
     }
-    const built = assembleInput(req.objective, null, req.testSummary);
+    const built = assembleInput(req.objective, null, req.testSummary, undefined, req.maxDiffBytes);
     return { ok: true, input: built.input, headCommit: head, baselineCommit: null, truncated: built.truncated };
   }
 
@@ -224,7 +253,7 @@ export async function buildDiffContext(
   const parts = await collectDiff(git, baseline, head, req.maxDiffBytes);
   if (!("stat" in parts)) return parts;
 
-  const built = assembleInput(req.objective, parts, req.testSummary);
+  const built = assembleInput(req.objective, parts, req.testSummary, req.priorFindings, req.maxDiffBytes);
   return {
     ok: true,
     input: built.input,

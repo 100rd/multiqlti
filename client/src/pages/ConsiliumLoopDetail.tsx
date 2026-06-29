@@ -37,13 +37,13 @@ import {
   useApproveMerge,
   isTerminalLoopState,
   type ConsiliumLoopRoundRow,
+  type ConsiliumLoopDetail as ConsiliumLoopDetailRow,
 } from "@/hooks/use-consilium-loops";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import {
-  LOOP_LIFECYCLE,
   LOOP_STATE_STYLE,
-  LoopStateBadge,
+  LoopStateBadgeFor,
 } from "@/components/consilium/loop-state";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -129,44 +129,181 @@ function isErrorWithStatus(err: unknown, status: number): boolean {
   return false;
 }
 
-// ─── FSM stepper ──────────────────────────────────────────────────────────────
+// ─── Per-round FSM trajectory stepper (P3) ──────────────────────────────────
+//
+// The stepper reflects what ACTUALLY happened, PER ROUND — it never claims a
+// step that wasn't reached. All inference is presentation-only, from data the
+// loop GET already returns (state, round, the per-round rows, devGroupId, prRef):
+//
+//   • Every RECORDED round traversed Context → Review → Decide. The round row is
+//     written from the convergence read at "deciding", so its existence proves
+//     those three steps completed.
+//   • A round that is NOT the final one necessarily produced a SUBSEQUENT round —
+//     only possible via Develop → Await-merge → merge-approved. So every
+//     non-final round shows all five steps "done" (and a "merged" outcome).
+//   • The FINAL round's reach is derived from loop.state:
+//       – non-terminal      → steps before loop.state are done, loop.state is the
+//                             current step, later steps are "not reached".
+//       – verdict-terminal   (converged | stopped_cap | escalated)
+//                           → the loop terminates FROM "deciding"; Develop and
+//                             Await-merge were NOT reached (dimmed "not reached").
+//       – failed | cancelled → may stop anywhere, so claim only what is evidenced:
+//                             Context/Review/Decide done iff a round row exists,
+//                             Develop iff devGroupId is set, Await iff prRef is set.
 
-function FsmStepper({ state }: { state: ConsiliumLoopState }) {
-  const terminal = isTerminalLoopState(state);
-  // Where on the lifecycle are we? A terminal state sits "after" the whole
-  // non-terminal track, so every lifecycle step is treated as completed.
-  const currentIdx = terminal ? LOOP_LIFECYCLE.length : LOOP_LIFECYCLE.indexOf(state);
+type StepStatus = "done" | "current" | "not_reached";
+
+const ROUND_STEPS: { key: ConsiliumLoopState; label: string }[] = [
+  { key: "building_context", label: "Context" },
+  { key: "reviewing", label: "Review" },
+  { key: "deciding", label: "Decide" },
+  { key: "developing", label: "Develop" },
+  { key: "awaiting_merge", label: "Await merge" },
+];
+
+const ROUND_STEP_IDX: Record<string, number> = {
+  building_context: 0,
+  reviewing: 1,
+  deciding: 2,
+  developing: 3,
+  awaiting_merge: 4,
+};
+
+// Verdict-terminal states all exit FROM "deciding" — they never developed in the
+// final round (distinct from failed/cancelled, which can stop anywhere).
+const VERDICT_TERMINAL: ReadonlySet<ConsiliumLoopState> = new Set<ConsiliumLoopState>([
+  "converged",
+  "stopped_cap",
+  "escalated",
+]);
+
+function roundStepStatuses(args: {
+  isLast: boolean;
+  hasRoundRow: boolean;
+  state: ConsiliumLoopState;
+  devGroupId: string | null | undefined;
+  prRef: string | null | undefined;
+}): StepStatus[] {
+  const { isLast, hasRoundRow, state, devGroupId, prRef } = args;
+
+  // Produced a later round ⇒ fully traversed AND merged.
+  if (!isLast) return ROUND_STEPS.map(() => "done");
+
+  // Final round — derive reach from the loop's current / terminal state.
+  const idx = ROUND_STEP_IDX[state];
+  if (idx !== undefined) {
+    // Non-terminal round step: < idx done, == idx current, > idx not reached.
+    return ROUND_STEPS.map((_, i) =>
+      i < idx ? "done" : i === idx ? "current" : "not_reached",
+    );
+  }
+
+  if (VERDICT_TERMINAL.has(state)) {
+    // Exits from "deciding": Context/Review/Decide done, Develop/Await never reached.
+    return ROUND_STEPS.map((_, i) =>
+      i <= ROUND_STEP_IDX.deciding ? "done" : "not_reached",
+    );
+  }
+
+  // failed | cancelled (and the pre-start `pending` fallback) — claim only what
+  // the data evidences.
+  const core: StepStatus = hasRoundRow ? "done" : "not_reached";
+  return ROUND_STEPS.map((step) => {
+    if (step.key === "developing") return devGroupId ? "done" : "not_reached";
+    if (step.key === "awaiting_merge") return prRef ? "done" : "not_reached";
+    return core;
+  });
+}
+
+function RoundStepChip({
+  step,
+  status,
+}: {
+  step: { key: ConsiliumLoopState; label: string };
+  status: StepStatus;
+}) {
+  const cls =
+    status === "current"
+      ? LOOP_STATE_STYLE[step.key].badge
+      : status === "done"
+        ? "bg-muted text-muted-foreground line-through decoration-muted-foreground/40"
+        : "bg-muted/30 text-muted-foreground/50";
+  return (
+    <span
+      className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${cls}`}
+      title={status === "not_reached" ? "not reached" : undefined}
+      aria-label={status === "not_reached" ? `${step.label}: not reached` : undefined}
+    >
+      {step.label}
+    </span>
+  );
+}
+
+function FsmStepper({ loop }: { loop: ConsiliumLoopDetailRow }) {
+  const terminal = isTerminalLoopState(loop.state);
+  const rounds = [...(Array.isArray(loop.rounds) ? loop.rounds : [])].sort(
+    (a, b) => a.round - b.round,
+  );
+
+  // One display row per recorded round, plus a synthetic row for a round that is
+  // in-flight but hasn't recorded its convergence yet (loop.round ahead of rows).
+  const lastRecorded = rounds.length ? rounds[rounds.length - 1].round : 0;
+  const currentRound = loop.round && loop.round > 0 ? loop.round : 1;
+
+  const display: { round: number; row?: ConsiliumLoopRoundRow }[] = rounds.map((r) => ({
+    round: r.round,
+    row: r,
+  }));
+  if (currentRound > lastRecorded) display.push({ round: currentRound });
+  if (display.length === 0) display.push({ round: 1 });
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {LOOP_LIFECYCLE.map((step, i) => {
-        const isCurrent = !terminal && i === currentIdx;
-        const isDone = i < currentIdx;
+    <div className="space-y-2">
+      {display.map((d, i) => {
+        const isLast = i === display.length - 1;
+        const statuses = roundStepStatuses({
+          isLast,
+          hasRoundRow: !!d.row,
+          state: loop.state,
+          devGroupId: loop.devGroupId,
+          prRef: loop.prRef,
+        });
+        const developStatus = statuses[ROUND_STEP_IDX.developing];
+        const reachedDevelop = developStatus === "done" || developStatus === "current";
         return (
-          <div key={step} className="flex items-center gap-1.5">
-            <span
-              className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
-                isCurrent
-                  ? LOOP_STATE_STYLE[step].badge
-                  : isDone
-                    ? "bg-muted text-muted-foreground line-through decoration-muted-foreground/40"
-                    : "bg-muted/40 text-muted-foreground/60"
-              }`}
-            >
-              {LOOP_STATE_STYLE[step].label}
+          <div key={d.round} className="flex flex-wrap items-center gap-1.5">
+            <span className="mr-1 w-[4.5rem] shrink-0 text-[11px] font-medium text-muted-foreground tabular-nums">
+              Round {d.round}
             </span>
-            {i < LOOP_LIFECYCLE.length - 1 && (
-              <ChevronRight className="h-3 w-3 text-muted-foreground/40" />
+            {ROUND_STEPS.map((step, si) => (
+              <div key={step.key} className="flex items-center gap-1.5">
+                <RoundStepChip step={step} status={statuses[si]} />
+                {si < ROUND_STEPS.length - 1 && (
+                  <ChevronRight className="h-3 w-3 text-muted-foreground/40" />
+                )}
+              </div>
+            ))}
+            {/* Per-round outcome */}
+            {!isLast ? (
+              <span className="ml-1 inline-flex items-center gap-1 text-[10px] text-green-600 dark:text-green-400">
+                <GitMerge className="h-3 w-3" />
+                merged
+              </span>
+            ) : terminal ? (
+              <span className="ml-1">
+                <LoopStateBadgeFor loop={loop} />
+              </span>
+            ) : null}
+            {/* The P0 count that triggered DEV — only when this round actually
+                reached development (a verdict-terminal round shows none). */}
+            {reachedDevelop && d.row?.openP0 != null && d.row.openP0 > 0 && (
+              <span className="ml-1 text-[10px] text-muted-foreground tabular-nums">
+                {d.row.openP0} P0 → DEV
+              </span>
             )}
           </div>
         );
       })}
-      {terminal && (
-        <>
-          <ChevronRight className="h-3 w-3 text-muted-foreground/40" />
-          <LoopStateBadge state={state} />
-        </>
-      )}
     </div>
   );
 }
@@ -381,7 +518,7 @@ export default function ConsiliumLoopDetail() {
               <h1 className="text-base font-semibold leading-tight truncate">
                 Consilium Loop
               </h1>
-              <LoopStateBadge state={loop.state} />
+              <LoopStateBadgeFor loop={loop} />
             </div>
             <p className="font-mono text-[11px] text-muted-foreground">{loop.id}</p>
           </div>
@@ -439,7 +576,7 @@ export default function ConsiliumLoopDetail() {
             <CardTitle className="text-sm">Lifecycle</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <FsmStepper state={loop.state} />
+            <FsmStepper loop={loop} />
             {loop.error && (
               <div className="flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/5 p-3 text-sm">
                 <AlertTriangle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
