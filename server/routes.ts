@@ -50,7 +50,9 @@ import { requireAuth } from "./auth/middleware";
 import { requireProject } from "./middleware/project";
 import { tracer } from "./tracing/tracer";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
-import { CONSILIUM_LOOP_TERMINAL_STATES } from "@shared/schema";
+import { CONSILIUM_LOOP_TERMINAL_STATES, projects } from "@shared/schema";
+import { eq } from "drizzle-orm";
+import { db } from "./db";
 import { log } from "./index";
 import { registerArgoCdSettingsRoutes, autoConnectArgoCdFromEnv } from "./routes/argocd-settings";
 import { registerTaskGroupRoutes } from "./routes/task-groups";
@@ -421,6 +423,18 @@ export async function registerRoutes(
               : null,
             createReview: createConsiliumReview,
             runInProject: runAsProject,
+            // FK FIX: a trigger-launched review has no req.user; task_groups.created_by
+            // is an FK to users.id, so the old literal "system" violated the FK. Resolve
+            // the PROJECT OWNER (projects.ownerId, notNull). Run under runAsSystem so the
+            // lookup is NOT project-scoped away (fireTrigger is a cross-project system ctx).
+            resolveOwnerId: (projectId: string) =>
+              runAsSystem("resolve-trigger-owner", async () => {
+                const [row] = await db
+                  .select({ ownerId: projects.ownerId })
+                  .from(projects)
+                  .where(eq(projects.id, projectId));
+                return row?.ownerId ?? null;
+              }),
             log: (m) => log(m, "triggers"),
           },
           trigger,

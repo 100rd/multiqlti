@@ -134,6 +134,16 @@ export interface ConsiliumTriggerDispatchDeps {
   ) => Promise<ConsiliumLoopRow>;
   /** Project-scoped ALS runner (the route passes `runAsProject`). T3. */
   runInProject: <T>(projectId: string, fn: () => Promise<T>) => Promise<T>;
+  /**
+   * Resolve a REAL `users.id` to own the launched review's `task_groups` row.
+   * `task_groups.created_by` is an FK to `users.id`; the literal `"system"` is
+   * NOT a user row, so a trigger-launched review (no `req.user`) must resolve a
+   * concrete owner — the PROJECT OWNER (`projects.ownerId`, notNull). Returns
+   * `null` when the project/owner cannot be resolved → the review is SKIPPED
+   * (a review must have a valid owner). The route wires this under `runAsSystem`
+   * so the lookup is not project-scoped away. T3.
+   */
+  resolveOwnerId: (projectId: string) => Promise<string | null>;
   /** Structured logger (the route passes `(m) => log(m, "triggers")`). */
   log: (message: string) => void;
 }
@@ -144,7 +154,8 @@ export interface ConsiliumTriggerDispatchDeps {
  * inspecting logs:
  *   - "noop"          → no action (back-compat record-only path)
  *   - "skipped"       → action present but un-launchable (subsystem off / no
- *                       project / no repoPath) — logged, not an error
+ *                       project / no repoPath / no resolvable project owner) —
+ *                       logged, not an error
  *   - "skipped-dedup" → a non-terminal loop already runs for (project, repoPath)
  *                       on the TRIGGER path (T5) — logged, factory NOT called
  *   - "launched"      → factory invoked successfully
@@ -185,9 +196,23 @@ export async function maybeLaunchConsiliumReview(
   // T5: dedup key — match against the CANONICAL path the factory persists.
   const resolvedRepo = canonicalRepoPath(repoPath);
 
+  // FK FIX: a trigger-launched review has no `req.user`. `task_groups.created_by`
+  // is an FK to `users.id`, so the old literal `createdBy: "system"` violated
+  // `task_groups_created_by_users_id_fk` and every trigger review failed. Resolve
+  // the PROJECT OWNER (a real user id) instead. Inside the try so a lookup throw
+  // is caught (T4) rather than crashing the watcher loop.
   const reviewDeps = deps.reviewDeps;
   let dedupLoopId: string | undefined;
   try {
+    const createdBy = await deps.resolveOwnerId(projectId);
+    if (!createdBy) {
+      // No resolvable owner ⇒ no valid FK target ⇒ do NOT call the factory.
+      deps.log(
+        `consilium_review skipped for trigger ${trigger.id} — no resolvable owner for project ${projectId}`,
+      );
+      return "skipped";
+    }
+
     const loop = await deps.runInProject(projectId, async (): Promise<ConsiliumLoopRow | null> => {
       // T5 (FIX HIGH-1): active-loop DEDUP on the TRIGGER path. `getLoops()` is
       // project-scoped by this ALS context, so we only see THIS project's loops.
@@ -209,7 +234,8 @@ export async function maybeLaunchConsiliumReview(
         projectId,
         repoPath,
         preset: action.preset,
-        createdBy: "system",
+        // FK FIX: real `users.id` (project owner), NOT the literal "system".
+        createdBy,
         // T6 (FIX MED-2): FORCE review-only on the trigger path. An autonomous
         // file-event-driven run must NEVER reach DEVELOPING / the SDLC coder, so
         // we IGNORE `action.maxRounds` here (server-side, not config-trusted).
