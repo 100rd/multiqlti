@@ -136,25 +136,34 @@ describe("Task Groups API", () => {
       expect(Array.isArray(res.body)).toBe(true);
     });
 
-    it("returns groups with taskCount and completedCount properties", async () => {
-      // Create a group with tasks directly in storage
+    it("returns groups with taskCount (definitions) and completedCount (latest-iteration executions)", async () => {
+      // #3: completedCount reflects the LATEST ITERATION's executions, not the
+      // task DEFINITION statuses (which stay blocked/ready even after a full run).
       const group = await storage.createTaskGroup({
         name: "Count Test Group",
         description: "Testing counts",
         input: "test input",
         createdBy: TEST_ADMIN.id,
       });
-      await storage.createTask({ groupId: group.id, name: "Task 1", description: "d1", sortOrder: 0 });
+      const t1 = await storage.createTask({ groupId: group.id, name: "Task 1", description: "d1", sortOrder: 0 });
       const t2 = await storage.createTask({ groupId: group.id, name: "Task 2", description: "d2", sortOrder: 1 });
-      await storage.updateTask(t2.id, { status: "completed" });
+      // Definitions intentionally stay non-completed — the old bug counted these.
+      const iteration = await storage.createIteration({
+        groupId: group.id,
+        iterationNumber: 1,
+        status: "running",
+        input: "test input",
+      });
+      await storage.createExecution({ groupId: group.id, iterationId: iteration.id, taskId: t1.id, taskName: "Task 1", status: "completed" });
+      await storage.createExecution({ groupId: group.id, iterationId: iteration.id, taskId: t2.id, taskName: "Task 2", status: "running" });
 
       const res = await request(app).get("/api/task-groups");
       expect(res.status).toBe(200);
       const groups = res.body as Array<{ id: string; taskCount: number; completedCount: number }>;
       const found = groups.find((g) => g.id === group.id);
       expect(found).toBeDefined();
-      expect(found?.taskCount).toBe(2);
-      expect(found?.completedCount).toBe(1);
+      expect(found?.taskCount).toBe(2); // definitions
+      expect(found?.completedCount).toBe(1); // completed executions in the latest iteration
     });
   });
 

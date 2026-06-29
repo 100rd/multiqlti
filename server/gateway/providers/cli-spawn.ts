@@ -114,6 +114,20 @@ export interface CliSpawnRequest {
   signal?: AbortSignal;
   /** Extra env vars merged over process.env. */
   env?: Record<string, string>;
+  /**
+   * Working directory for the child. Used by agentic CLI callers (e.g. the SDLC
+   * coder) to confine the process to an isolated worktree; omitted = inherit the
+   * server cwd (the prior behaviour for short LLM callers).
+   */
+  cwd?: string;
+  /**
+   * COMPLETE replacement env for the child (H-1). When set, the child gets EXACTLY
+   * this map — `process.env` is NOT merged in — so a caller can spawn an agentic
+   * coder under a sanitized, allowlisted env that omits inherited secrets
+   * (DB creds, GH/AWS tokens, …). When undefined, the prior merge behaviour
+   * (`{...process.env, ...env}`) applies for the short LLM callers.
+   */
+  envOverride?: NodeJS.ProcessEnv;
 }
 
 export interface CliSpawnResult {
@@ -228,7 +242,8 @@ export function spawnCli(request: CliSpawnRequest): Promise<CliSpawnResult> {
 
   return new Promise<CliSpawnResult>((resolve, reject) => {
     const child = spawn(request.binary, request.args, {
-      env: { ...process.env, ...request.env },
+      cwd: request.cwd,
+      env: request.envOverride ?? { ...process.env, ...request.env },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -290,7 +305,8 @@ export async function* streamCliLines(
   const maxLineBytes = request.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
 
   const child = spawn(request.binary, request.args, {
-    env: { ...process.env, ...request.env },
+    cwd: request.cwd,
+    env: request.envOverride ?? { ...process.env, ...request.env },
     stdio: ["pipe", "pipe", "pipe"],
   });
 

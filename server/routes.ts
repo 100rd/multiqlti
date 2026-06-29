@@ -56,7 +56,6 @@ import { registerTaskGroupRoutes } from "./routes/task-groups";
 import { registerTaskGroupResolveRoute } from "./routes/task-group-resolve";
 import { registerConsiliumLoopRoutes } from "./routes/consilium-loops";
 import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consilium/consilium-loop-controller";
-import { WorkspaceManager } from "./workspace/manager";
 import { registerSkillTeamRoutes } from "./routes/skill-teams";
 import { registerModelSkillBindingRoutes } from "./routes/model-skill-bindings";
 import { registerGitSkillSourceRoutes } from "./routes/git-skill-sources";
@@ -298,9 +297,9 @@ export async function registerRoutes(
       storage,
       taskOrchestrator,
       config: () => appConfigLoader.get(),
-      // §14.2/D.5: the WorkspaceManager seam the DEV close-out drives (branch +
-      // write the bounded `.md` artifact); push/PR go through pr-wrapper (D.4).
-      closeoutManager: new WorkspaceManager(),
+      // §14.4: the DEVELOPING→AWAITING_MERGE close-out runs the SDLC executor
+      // (isolated worktree + agentic coder + Draft PR) by default — no manager
+      // seam needed here. Push/PR go through pr-wrapper (B-3/H-6/H-7/M-6/M-7).
     });
     registerConsiliumLoopRoutes(app, storage, consiliumLoopController, () => appConfigLoader.get());
     consiliumLoopPoller = new ConsiliumLoopPoller(
