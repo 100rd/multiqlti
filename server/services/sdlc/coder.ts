@@ -37,8 +37,12 @@ import { parseCompleteOutput } from "../../gateway/providers/claude-cli.js";
 import type { ActionPoint } from "@shared/types";
 
 const DEFAULT_BINARY = "claude";
-/** Hard wall-clock cap on a single coding session (bounded, never unbounded). */
-const DEFAULT_TIMEOUT_MS = 600_000; // 10 min
+/**
+ * Hard wall-clock cap on a single PER-ACTION-POINT coding run (bounded, never
+ * unbounded). The executor runs the coder once per action point, so this bounds
+ * ONE action point. Overridden per-call from `consiliumLoop.sdlcTimeoutMs`.
+ */
+const DEFAULT_TIMEOUT_MS = 1_200_000; // 20 min
 const DEFAULT_MAX_CONCURRENCY = 2;
 const SUMMARY_MAX = 4_000;
 const ERROR_MAX = 300;
@@ -113,7 +117,7 @@ export interface CoderResult {
 export interface CoderOptions {
   /** Binary name or absolute path. Defaults to "claude". */
   binary?: string;
-  /** Hard timeout for the session (ms). Defaults to 600_000. */
+  /** Hard timeout for this single per-action-point run (ms). Defaults to 1_200_000. */
   timeoutMs?: number;
   /** Cancels the session mid-flight. */
   signal?: AbortSignal;

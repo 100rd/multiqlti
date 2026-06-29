@@ -326,6 +326,14 @@ export const ConfigSchema = z.object({
       allowedRepoPaths: z.array(z.string()).default([]),
       /** Default DEV pipeline used for the loop's DEV handoff step (Phase B). */
       devPipelineId: z.string().optional(),
+      /**
+       * Hard wall-clock timeout PER action-point SDLC coder run (ms). The SDLC
+       * executor runs the agentic coder once per action point sequentially in one
+       * worktree, so this bounds a SINGLE action point, not the whole round.
+       * 60s..30min; default 20min (large architectural P0s need headroom — a too
+       * small cap discards real work on timeout). NaN/out-of-range fails load.
+       */
+      sdlcTimeoutMs: z.coerce.number().int().min(60_000).max(1_800_000).default(1_200_000),
     }).default({}),
   }).default({}),
 });

@@ -564,6 +564,9 @@ export class ConsiliumLoopController {
       actionPoints: verdict.openActionPoints,
       allowedRepoPaths: cfg.allowedRepoPaths,
       ownerId: loop.createdBy ?? "",
+      // Per-action-point coder timeout (configurable). The executor runs the
+      // coder once per action point sequentially; this bounds a SINGLE run.
+      coderTimeoutMs: cfg.sdlcTimeoutMs,
     });
   }
 

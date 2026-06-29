@@ -1,23 +1,26 @@
 /**
- * executor.test.ts — SDLC orchestration (component 5).
+ * executor.test.ts — SDLC orchestration (component 5), PER-ACTION-POINT model.
  *
  * Drives `runSdlcHandoff` over FULLY injected seams (worktree / coder / push /
  * openPr / git runner) — no real repo, no claude, no gh. Load-bearing:
- *   - CLEANUP GUARANTEE: the worktree is removed even when the coder THROWS
- *     (timeout / binary missing) — the removal runs in a `finally`.
- *   - the handoff NEVER throws — every failure degrades to `{ prRef:null, ... }`.
- *   - BRANCH GATING: a non-uuid loopId yields a non-B-3 branch → rejected BEFORE
- *     a worktree is ever cut.
- *   - happy path → `{ prRef:<url>, headCommit }`; the commit/PR title are
- *     server-derived (no model text); untrusted titles only reach the commit body.
- *   - no-changes / push-fail / pr-fail degrade correctly and STILL clean up.
+ *   - PER-AP loop: N action points → N coder runs + N commit attempts in ONE
+ *     worktree, sequentially.
+ *   - CONFIGURABLE timeout: `req.coderTimeoutMs` is threaded into every coder run.
+ *   - PARTIAL PRESERVE: a coder run that THROWS (timeout) but left edits is still
+ *     committed `[partial]` and the round still pushes + opens ONE Draft PR; the
+ *     PR body summarizes per-AP status.
+ *   - CLEANUP GUARANTEE: the worktree is removed even when a coder run throws.
+ *   - the handoff NEVER throws; ZERO commits → `{ prRef:null, error }`.
+ *   - BRANCH/PR title are server-derived; untrusted text only in commit/PR body.
  */
 import { describe, it, expect, vi } from "vitest";
 import {
   runSdlcHandoff,
-  buildCommitMessage,
+  buildApCommitMessage,
+  buildPrStatusBody,
   buildPrTitle,
   type SdlcHandoffRequest,
+  type ApOutcome,
 } from "../../../server/services/sdlc/executor.js";
 import type { ActionPoint } from "@shared/types";
 
@@ -27,7 +30,7 @@ const ROOTS = ["/allowlisted"];
 const BRANCH = `consilium/loop-${LOOP}/round-2`;
 
 const APS: ActionPoint[] = [
-  { title: "Fix `;rm -rf /` in parser\nwith newline", priority: "P0" },
+  { title: "Fix `;rm -rf /` in parser\nwith newline", priority: "P0", rationale: "unsanitized\ninput" },
   { title: "Add the redactor", priority: "P1" },
 ];
 
@@ -42,7 +45,7 @@ const baseReq = (over: Partial<SdlcHandoffRequest> = {}): SdlcHandoffRequest => 
 
 const FAKE_WT = { worktreeDir: "/tmp/sdlc-wt-XXXX/tree", baseDir: "/tmp/sdlc-wt-XXXX", branch: BRANCH, baseRef: "main" };
 
-/** git runner whose `status --porcelain` reports `hasChanges`. */
+/** git runner whose `status --porcelain` reports `hasChanges`; records all calls. */
 function makeGitRaw(hasChanges: boolean) {
   return vi.fn(async (_repo: string, args: string[]) => {
     if (args[0] === "status") return hasChanges ? " M server/x.ts\n" : "";
@@ -51,12 +54,22 @@ function makeGitRaw(hasChanges: boolean) {
   });
 }
 
+/** Commits the git runner was asked to make: [subject, body] pairs. */
+function commitMessages(gitRaw: ReturnType<typeof vi.fn>): Array<{ subject: string; body: string }> {
+  return gitRaw.mock.calls
+    .filter((c) => (c[1] as string[])[0] === "commit")
+    .map((c) => {
+      const args = c[1] as string[];
+      return { subject: args[2], body: args[4] };
+    });
+}
+
 function makeDeps(over: Record<string, unknown> = {}) {
   return {
     createWorktree: vi.fn(async () => FAKE_WT),
     removeWorktree: vi.fn(async () => undefined),
     resolveDefaultBranchFn: vi.fn(async () => "main"),
-    runCoder: vi.fn(async () => ({ ok: true, summary: "edited 2 files", tokensUsed: 5 })),
+    runCoder: vi.fn(async () => ({ ok: true, summary: "edited", tokensUsed: 5 })),
     push: vi.fn(async () => ({ ok: true as const, branch: BRANCH })),
     openPr: vi.fn(async () => ({ ok: true as const, prUrl: "https://github.com/x/y/pull/9" })),
     gitRaw: makeGitRaw(true),
@@ -64,29 +77,87 @@ function makeDeps(over: Record<string, unknown> = {}) {
   };
 }
 
-describe("runSdlcHandoff — cleanup guarantee", () => {
-  it("removes the worktree even when the coder THROWS (finally)", async () => {
-    const deps = makeDeps({
-      runCoder: vi.fn(async () => {
-        throw new Error("CLI timed out after 600000ms at /home/u/.claude");
-      }),
-    });
-    const res = await runSdlcHandoff(baseReq(), deps as never);
-    // No throw — degraded result.
-    expect(res.prRef).toBeNull();
-    expect(res.error).toBeDefined();
-    expect(res.error).not.toContain("/home/u"); // fs layout scrubbed
-    // The worktree was STILL removed.
-    expect(deps.removeWorktree).toHaveBeenCalledTimes(1);
-    expect(deps.removeWorktree).toHaveBeenCalledWith(REPO, FAKE_WT.worktreeDir, expect.objectContaining({ baseDir: FAKE_WT.baseDir }));
-  });
-
-  it("removes the worktree on the happy path too", async () => {
+describe("runSdlcHandoff — per-action-point loop", () => {
+  it("runs the coder ONCE PER action point (single-AP prompt) and commits each", async () => {
     const deps = makeDeps();
     const res = await runSdlcHandoff(baseReq(), deps as never);
+    // N action points → N coder runs, each handed a SINGLE-element AP array.
+    expect(deps.runCoder).toHaveBeenCalledTimes(APS.length);
+    for (let i = 0; i < APS.length; i++) {
+      const [dir, aps] = (deps.runCoder as ReturnType<typeof vi.fn>).mock.calls[i];
+      expect(dir).toBe(FAKE_WT.worktreeDir);
+      expect(aps).toHaveLength(1); // one action point per run
+      expect(aps[0]).toBe(APS[i]);
+    }
+    // One commit per AP (all dirty), then ONE PR aggregating them.
+    expect(commitMessages(deps.gitRaw as ReturnType<typeof vi.fn>)).toHaveLength(APS.length);
+    expect(deps.openPr).toHaveBeenCalledTimes(1);
     expect(res.prRef).toBe("https://github.com/x/y/pull/9");
     expect(res.headCommit).toBe("headsha000");
     expect(deps.removeWorktree).toHaveBeenCalledTimes(1);
+  });
+
+  it("threads the CONFIGURABLE per-AP timeout into every coder run", async () => {
+    const deps = makeDeps();
+    await runSdlcHandoff(baseReq({ coderTimeoutMs: 1_234_000 }), deps as never);
+    for (const call of (deps.runCoder as ReturnType<typeof vi.fn>).mock.calls) {
+      expect(call[2]?.timeoutMs).toBe(1_234_000);
+    }
+  });
+});
+
+describe("runSdlcHandoff — partial preserve on timeout/error", () => {
+  it("a coder run that THROWS but left edits is committed [partial]; the round STILL opens a PR", async () => {
+    // AP0 runs clean; AP1 times out (throws) but the worktree is dirty → its work
+    // is preserved as a [partial] commit. The round still pushes + opens ONE PR.
+    const runCoder = vi
+      .fn()
+      .mockImplementationOnce(async () => ({ ok: true, summary: "did ap0", tokensUsed: 1 }))
+      .mockImplementationOnce(async () => {
+        throw new Error("CLI timed out after 1200000ms at /home/u/.claude");
+      });
+    const deps = makeDeps({ runCoder });
+    const res = await runSdlcHandoff(baseReq(), deps as never);
+
+    const commits = commitMessages(deps.gitRaw as ReturnType<typeof vi.fn>);
+    expect(commits).toHaveLength(2); // BOTH APs committed — partial work preserved
+    const partial = commits.find((c) => c.body.includes("[partial]"));
+    expect(partial).toBeDefined();
+    expect(partial?.body).not.toContain("/home/u"); // scrubbed note
+    // The PR still opens, aggregating the work.
+    expect(res.prRef).toBe("https://github.com/x/y/pull/9");
+    const [, opts] = (deps.openPr as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(opts.body).toMatch(/\[completed\]/);
+    expect(opts.body).toMatch(/\[partial\]/);
+    expect(deps.removeWorktree).toHaveBeenCalledTimes(1);
+  });
+
+  it("ZERO commits (all runs failed, nothing staged) → prRef null + error, worktree removed", async () => {
+    const runCoder = vi.fn(async () => {
+      throw new Error("CLI binary not installed");
+    });
+    const deps = makeDeps({ runCoder, gitRaw: makeGitRaw(false) }); // nothing dirty
+    const res = await runSdlcHandoff(baseReq(), deps as never);
+    expect(res.prRef).toBeNull();
+    expect(res.error).toMatch(/no commits/);
+    expect(deps.openPr).not.toHaveBeenCalled();
+    expect(deps.removeWorktree).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runSdlcHandoff — cleanup guarantee", () => {
+  it("removes the worktree even when a coder run throws (finally)", async () => {
+    const deps = makeDeps({
+      runCoder: vi.fn(async () => {
+        throw new Error("CLI timed out after 1200000ms at /home/u/.claude");
+      }),
+      gitRaw: makeGitRaw(false), // no edits preserved → no PR, but cleanup still runs
+    });
+    const res = await runSdlcHandoff(baseReq(), deps as never);
+    expect(res.prRef).toBeNull();
+    expect(res.error).not.toContain("/home/u"); // scrubbed
+    expect(deps.removeWorktree).toHaveBeenCalledTimes(1);
+    expect(deps.removeWorktree).toHaveBeenCalledWith(REPO, FAKE_WT.worktreeDir, expect.objectContaining({ baseDir: FAKE_WT.baseDir }));
   });
 });
 
@@ -98,6 +169,14 @@ describe("runSdlcHandoff — branch gating", () => {
     expect(res.error).toMatch(/B-3/);
     expect(deps.createWorktree).not.toHaveBeenCalled();
     expect(deps.removeWorktree).not.toHaveBeenCalled();
+  });
+
+  it("REJECTS an empty action-point list before cutting a worktree", async () => {
+    const deps = makeDeps();
+    const res = await runSdlcHandoff(baseReq({ actionPoints: [] }), deps as never);
+    expect(res.prRef).toBeNull();
+    expect(res.error).toMatch(/no action points/);
+    expect(deps.createWorktree).not.toHaveBeenCalled();
   });
 });
 
@@ -112,27 +191,9 @@ describe("runSdlcHandoff — server-derived branch/PR title, untrusted text quar
     expect(opts.head).toBe(BRANCH); // server-derived branch
     expect(opts.base).toBe("main");
   });
-
-  it("commit subject is server-fixed; untrusted titles only in the sanitized body", () => {
-    const { subject, body } = buildCommitMessage(2, APS);
-    expect(subject).toBe("consilium: SDLC changes for round 2");
-    expect(subject).not.toMatch(/rm -rf/);
-    // The body carries the title but with control chars / newlines stripped.
-    expect(body).toContain("Add the redactor");
-    expect(body).not.toMatch(/\n.*rm -rf.*\n.*with newline/); // newline inside title collapsed
-  });
 });
 
 describe("runSdlcHandoff — degraded paths still clean up", () => {
-  it("no changes produced → no PR, error note, worktree removed", async () => {
-    const deps = makeDeps({ gitRaw: makeGitRaw(false) });
-    const res = await runSdlcHandoff(baseReq(), deps as never);
-    expect(res.prRef).toBeNull();
-    expect(res.error).toMatch(/no changes/);
-    expect(deps.openPr).not.toHaveBeenCalled();
-    expect(deps.removeWorktree).toHaveBeenCalledTimes(1);
-  });
-
   it("push fail → branch-only, openPr NOT attempted, worktree removed", async () => {
     const deps = makeDeps({ push: vi.fn(async () => ({ ok: false, kind: "unknown", message: "no remote" })) });
     const res = await runSdlcHandoff(baseReq(), deps as never);
@@ -149,5 +210,48 @@ describe("runSdlcHandoff — degraded paths still clean up", () => {
     expect(res.headCommit).toBe("headsha000");
     expect(res.error).toMatch(/open PR manually/);
     expect(deps.removeWorktree).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("buildApCommitMessage — server-fixed subject, sanitized untrusted body", () => {
+  const ap: ActionPoint = { title: "Fix `;rm -rf /`\nthing", priority: "P0", rationale: "because\nreasons" };
+
+  it("subject is the server shape `Consilium round N: <prio> <clamped title>` (single line)", () => {
+    const { subject } = buildApCommitMessage(2, ap, 1, 3, false);
+    expect(subject.startsWith("Consilium round 2: P0 ")).toBe(true);
+    expect(subject).toContain("Fix `;rm -rf /` thing"); // control chars / newline collapsed
+    expect(subject).not.toContain("\n");
+  });
+
+  it("body carries the sanitized title + rationale (newlines collapsed)", () => {
+    const { body } = buildApCommitMessage(2, ap, 1, 3, false);
+    expect(body).toContain("Fix `;rm -rf /` thing");
+    expect(body).toContain("Rationale: because reasons");
+    expect(body).toContain("Action point 1/3 (priority P0)");
+    expect(body).not.toContain("[partial]");
+  });
+
+  it("a partial run adds the [partial] marker + a sanitized note", () => {
+    // buildApCommitMessage sanitizes (control-strips) but does NOT path-scrub —
+    // runActionPoint scrubs the throw message before passing it as the note.
+    const { body } = buildApCommitMessage(2, ap, 2, 3, true, "coder timed out");
+    expect(body).toContain("[partial] coder run timed out or errored");
+    expect(body).toContain("Note: coder timed out");
+  });
+});
+
+describe("buildPrStatusBody — per-action-point status summary", () => {
+  it("lists each action point's status + a commit count header", () => {
+    const outcomes: ApOutcome[] = [
+      { index: 1, priority: "P0", title: "alpha", status: "completed", committed: true },
+      { index: 2, priority: "P0", title: "beta", status: "partial", committed: true, note: "coder timed out" },
+      { index: 3, priority: "P1", title: "gamma", status: "failed", committed: false, note: "no changes" },
+    ];
+    const body = buildPrStatusBody(2, outcomes);
+    expect(body).toContain("2/3 produced commits");
+    expect(body).toContain("[completed] (P0) alpha");
+    expect(body).toContain("[partial] (P0) beta — coder timed out");
+    expect(body).toContain("[failed] (P1) gamma — no changes");
+    expect(body).toContain("Draft PR");
   });
 });
