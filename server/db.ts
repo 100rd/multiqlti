@@ -23,7 +23,7 @@ pool.on("error", (err: Error) => {
 export const db = drizzle(pool, { schema });
 
 import { requestContext } from "./context";
-import { SQL, and, eq } from "drizzle-orm";
+import { SQL, and, eq, or, isNull } from "drizzle-orm";
 
 /**
  * Helper to wrap any Drizzle query condition with the current project ID filter.
@@ -84,6 +84,126 @@ export function withProject(table: any, condition?: SQL | undefined): SQL {
 
   const projectFilter = eq(table.projectId, ctx.projectId);
   return condition ? and(projectFilter, condition)! : projectFilter;
+}
+
+/**
+ * Project-scoping helper for NON-SECRET LIST tables (pipelines, pipeline_runs,
+ * skills, task_groups, and the parent tables used to scope traces / consilium
+ * loops).
+ *
+ * Same per-project filter as withProject in a request context, but — unlike
+ * withProject — a SYSTEM context (runAsSystem) is permitted to read
+ * cross-project even with NO extra condition: it returns the (possibly
+ * undefined) condition, i.e. "no project filter = all rows", audited by the
+ * surrounding runAsSystem() call. This is exactly what legitimate cross-project
+ * background callers need: config-sync CLI, federation peer sync, catalog
+ * reconcile, the consilium-loop sweep poller, and startup seeds.
+ *
+ * withProject (strict — throws on system + no-condition) is deliberately
+ * retained for SECRET tables (provider_keys, argocd_config, …) so system code
+ * cannot silently enumerate every project's secret rows. Use withProjectList
+ * ONLY for non-secret, listable data.
+ *
+ * FAIL-CLOSED on missing context.
+ *
+ * Usage: db.select().from(pipelines).where(withProjectList(pipelines))
+ */
+export function withProjectList(table: any, condition?: SQL | undefined): SQL | undefined {
+  const ctx = requestContext.getStore();
+
+  if (!ctx) {
+    throw new Error(
+      "withProjectList: no request context — wrap background/startup callers in " +
+        "runAsProject(projectId, fn) or runAsSystem(reason, fn). See server/context.ts.",
+    );
+  }
+
+  if (ctx.system) {
+    // System context: cross-project read, audited by runAsSystem().
+    // undefined condition → no WHERE filter → all rows across every project.
+    return condition;
+  }
+
+  if (!ctx.projectId) {
+    throw new Error(
+      "withProjectList: no projectId in context — ensure the x-project-id header " +
+        "is sent and requireProject middleware is wired, or use runAsProject(projectId, fn).",
+    );
+  }
+
+  if (table.projectId === undefined) {
+    throw new Error(
+      'withProjectList: table has no "projectId" column — use a subquery through a ' +
+        "project-scoped parent table instead.",
+    );
+  }
+
+  const projectFilter = eq(table.projectId, ctx.projectId);
+  return condition ? and(projectFilter, condition)! : projectFilter;
+}
+
+/**
+ * Project-scoping helper for GLOBAL-CATALOG tables (e.g. `models`).
+ *
+ * Unlike withProject (strict per-project isolation), this implements
+ * "global-or-current-project" visibility:
+ *
+ *     project_id IS NULL          -- the shared, cross-project catalog
+ *   OR project_id = <ctx.projectId>  -- this project's own private entries
+ *
+ * Product decision (ADR-001 / strict-project-isolation): the LLM model catalog
+ * is GLOBAL. Rows seeded by the startup reconcile run in system context and are
+ * stamped projectId=NULL (see withProjectInsert), so they remain visible in
+ * every project. A model created inside a specific project (non-null projectId)
+ * is visible ONLY in that project.
+ *
+ * FAIL-CLOSED on missing context, same as withProject.
+ *
+ * System context (runAsSystem) sees ALL rows (global + every project) so the
+ * startup seed/reconcile can compare against, upsert, and deactivate the whole
+ * catalog. This is audited by the surrounding runAsSystem() call. Returns
+ * `undefined` (no WHERE filter) when no extra condition is supplied in system
+ * context — Drizzle treats `.where(undefined)` as "no filter".
+ *
+ * Usage: db.select().from(models).where(withProjectOrGlobal(models, eq(models.isActive, true)))
+ */
+export function withProjectOrGlobal(table: any, condition?: SQL | undefined): SQL | undefined {
+  const ctx = requestContext.getStore();
+
+  if (!ctx) {
+    throw new Error(
+      "withProjectOrGlobal: no request context — this path runs outside a request handler. " +
+        "Wrap background/startup callers in runAsProject(projectId, fn) or runAsSystem(reason, fn). " +
+        "See server/context.ts and ADR-001 §3.1(c)/(d).",
+    );
+  }
+
+  if (ctx.system) {
+    // System context: catalog reconcile/seed must see the WHOLE catalog (global
+    // rows + every project's private rows) so it can diff/upsert/deactivate.
+    // Audited by the surrounding runAsSystem() call. No project filter applied.
+    return condition;
+  }
+
+  if (!ctx.projectId) {
+    throw new Error(
+      "withProjectOrGlobal: no projectId in context — ensure the x-project-id header is sent " +
+        "and requireProject middleware is wired (PR-0b), " +
+        "or use runAsProject(projectId, fn) for background callers.",
+    );
+  }
+
+  if (table.projectId === undefined) {
+    throw new Error(
+      'withProjectOrGlobal: table has no "projectId" column — global-catalog visibility ' +
+        "requires a nullable project_id column on the table.",
+    );
+  }
+
+  // Global-or-current visibility: shared catalog rows (project_id IS NULL) PLUS
+  // the current project's own rows.
+  const visibility = or(isNull(table.projectId), eq(table.projectId, ctx.projectId))!;
+  return condition ? and(visibility, condition)! : visibility;
 }
 
 /**

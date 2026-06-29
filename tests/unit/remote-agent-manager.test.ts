@@ -12,10 +12,12 @@ const mockDb = {
 
 vi.mock("../../server/db", () => ({
   db: mockDb,
-  // H-5/H-6/H-4 fix: pass through so the manager can call them without error.
-  // Project-scoping behaviour is tested separately in remote-agents-isolation.test.ts.
-  withProject: (_t: unknown, cond?: unknown) => cond ?? {},
-  withProjectInsert: (_t: unknown, data: unknown) => data,
+  // Scoping helpers are pure WHERE-fragment builders; the chainable mock ignores
+  // the condition it's handed, so stubs that echo the (optional) condition suffice.
+  withProject: (_table: unknown, condition?: unknown) => condition,
+  withProjectList: (_table: unknown, condition?: unknown) => condition,
+  withProjectOrGlobal: (_table: unknown, condition?: unknown) => condition,
+  withProjectInsert: (_table: unknown, data: unknown) => data,
 }));
 
 // Build a chainable query-builder mock that mimics drizzle's API.
@@ -467,6 +469,7 @@ describe("RemoteAgentManager", () => {
       // getAllAgents() (cross-project) calls .select().from().orderBy() — no .where()
       mockDb.select.mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnThis(),
           orderBy: vi.fn().mockReturnValue([row1, row2]),
         }),
       });

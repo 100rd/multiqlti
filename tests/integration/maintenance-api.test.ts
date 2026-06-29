@@ -56,6 +56,13 @@ vi.mock("../../server/db.js", () => {
 
   // We return a proxy-like object; routes use drizzle builder API
   return {
+    // Project-scoping helpers are pure WHERE-fragment builders; the mock's
+    // .where() ignores the condition, so stubs that echo it suffice (and, unlike
+    // the real helpers, they require no ALS request context).
+    withProject: (_t: unknown, c?: unknown) => c,
+    withProjectList: (_t: unknown, c?: unknown) => c,
+    withProjectOrGlobal: (_t: unknown, c?: unknown) => c,
+    withProjectInsert: (_t: unknown, d: unknown) => d,
     db: {
       select: () => ({
         from: (tableRef: unknown) => {

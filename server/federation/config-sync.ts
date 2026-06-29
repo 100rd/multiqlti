@@ -37,6 +37,7 @@ import type { FederationMessage, PeerInfo } from "./types.js";
 import type { ConfigEventOperation } from "@shared/schema";
 import type { TriggerType, TriggerConfig } from "@shared/types";
 import type { IStorage } from "../storage.js";
+import { runAsSystem } from "../context.js";
 import type { PeerQueueService, SendEventFn } from "./peer-queue.js";
 import type { ConflictDetector } from "./config-conflict.js";
 
@@ -497,7 +498,11 @@ async function applyPipelineEvent(
   const name = typeof payload["name"] === "string" ? payload["name"] : null;
   if (!name) return;
 
-  const pipelines = await storage.getPipelines();
+  // Federation peer sync is cross-project system work: read all pipelines under
+  // an audited system context. (The create/update writes below are unchanged.)
+  const pipelines = await runAsSystem("federation-apply-pipeline-event", () =>
+    storage.getPipelines(),
+  );
   const existing = pipelines.find((p) => p.name === name);
 
   if (operation === "create" || (!existing && operation === "update")) {

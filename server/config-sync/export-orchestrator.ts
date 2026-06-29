@@ -25,6 +25,7 @@ import { exportSkills } from "./exporters/skill-exporter.js";
 import { exportConnections } from "./exporters/connection-exporter.js";
 import { exportProviderKeys } from "./exporters/provider-key-exporter.js";
 import { exportPreferences } from "./exporters/preferences-exporter.js";
+import { runAsSystem } from "../context.js";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -74,6 +75,10 @@ export async function runExport(
   repoPath: string,
   options: ExportOptions = {},
 ): Promise<ExportResult> {
+  // config-sync export is a cross-project CLI operation: run under an audited
+  // system context so the (now project-scoped) storage reads are explicitly
+  // cross-project (getAll*System).
+  return runAsSystem("config-sync-export", async (): Promise<ExportResult> => {
   const exportedAt = new Date().toISOString();
   const results: ExporterResult[] = [];
 
@@ -126,6 +131,7 @@ export async function runExport(
   };
 
   return { exportedAt, repoPath, exporters: results, summary };
+  });
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────

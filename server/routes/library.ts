@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { eq, desc, ilike, sql, and } from "drizzle-orm";
-import { db } from "../db";
+import { db, withProject, withProjectList, withProjectInsert } from "../db";
 import { libraryChannels, libraryItems, LIBRARY_CHANNEL_TYPES } from "@shared/schema";
 import { fetchRSSFeed } from "../services/rss-fetcher";
 
@@ -37,6 +37,7 @@ export function registerLibraryRoutes(app: Router): void {
       const channels = await db
         .select()
         .from(libraryChannels)
+        .where(withProjectList(libraryChannels))
         .orderBy(desc(libraryChannels.createdAt));
       return res.json(channels);
     } catch {
@@ -51,11 +52,11 @@ export function registerLibraryRoutes(app: Router): void {
     try {
       const [channel] = await db
         .insert(libraryChannels)
-        .values({
+        .values(withProjectInsert(libraryChannels, {
           ...parsed.data,
           config: parsed.data.config ?? {},
           createdBy: (req as unknown as { user?: { id: string } }).user?.id ?? null,
-        })
+        }))
         .returning();
       return res.status(201).json(channel);
     } catch {
@@ -71,7 +72,7 @@ export function registerLibraryRoutes(app: Router): void {
       const [updated] = await db
         .update(libraryChannels)
         .set({ ...parsed.data, updatedAt: new Date() })
-        .where(eq(libraryChannels.id, req.params.id))
+        .where(withProject(libraryChannels, eq(libraryChannels.id, req.params.id)))
         .returning();
       if (!updated) return res.status(404).json({ error: "Channel not found" });
       return res.json(updated);
@@ -82,7 +83,7 @@ export function registerLibraryRoutes(app: Router): void {
 
   app.delete("/api/library/channels/:id", async (req, res) => {
     try {
-      await db.delete(libraryChannels).where(eq(libraryChannels.id, req.params.id));
+      await db.delete(libraryChannels).where(withProject(libraryChannels, eq(libraryChannels.id, req.params.id)));
       return res.status(204).send();
     } catch {
       return res.status(500).json({ error: "Failed to delete channel" });
@@ -95,7 +96,7 @@ export function registerLibraryRoutes(app: Router): void {
       const [channel] = await db
         .select()
         .from(libraryChannels)
-        .where(eq(libraryChannels.id, req.params.id));
+        .where(withProject(libraryChannels, eq(libraryChannels.id, req.params.id)));
       if (!channel) return res.status(404).json({ error: "Channel not found" });
       if (channel.type !== "rss" || !channel.url) {
         return res.status(400).json({ error: "Only RSS channels with a URL can be polled" });
@@ -134,7 +135,7 @@ export function registerLibraryRoutes(app: Router): void {
       await db
         .update(libraryChannels)
         .set({ lastPolledAt: new Date(), errorMessage: null, updatedAt: new Date() })
-        .where(eq(libraryChannels.id, channel.id));
+        .where(withProject(libraryChannels, eq(libraryChannels.id, channel.id)));
 
       return res.json({ fetched: feedItems.length, inserted });
     } catch (e) {
@@ -143,7 +144,7 @@ export function registerLibraryRoutes(app: Router): void {
       await db
         .update(libraryChannels)
         .set({ errorMessage: msg, updatedAt: new Date() })
-        .where(eq(libraryChannels.id, req.params.id))
+        .where(withProject(libraryChannels, eq(libraryChannels.id, req.params.id)))
         .catch(() => {});
       return res.status(500).json({ error: `Poll failed: ${msg}` });
     }

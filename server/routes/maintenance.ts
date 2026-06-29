@@ -1,6 +1,6 @@
 import type { Router } from "express";
 import { z } from "zod";
-import { db } from "../db";
+import { db, withProject, withProjectList, withProjectInsert } from "../db";
 import { maintenancePolicies, maintenanceScans, pipelineRuns, autoTriggerAudit } from "@shared/schema";
 import { eq, desc, and } from "drizzle-orm";
 import type {
@@ -85,6 +85,7 @@ export function registerMaintenanceRoutes(router: Router): void {
       const rows = await db
         .select()
         .from(maintenancePolicies)
+        .where(withProjectList(maintenancePolicies))
         .orderBy(desc(maintenancePolicies.createdAt));
       res.json(rows);
     } catch (err) {
@@ -101,7 +102,7 @@ export function registerMaintenanceRoutes(router: Router): void {
     try {
       const [row] = await db
         .insert(maintenancePolicies)
-        .values({
+        .values(withProjectInsert(maintenancePolicies, {
           workspaceId: parsed.data.workspaceId ?? null,
           enabled: parsed.data.enabled,
           schedule: parsed.data.schedule,
@@ -109,7 +110,7 @@ export function registerMaintenanceRoutes(router: Router): void {
           severityThreshold: parsed.data.severityThreshold,
           autoMerge: parsed.data.autoMerge,
           notifyChannels: parsed.data.notifyChannels,
-        })
+        }))
         .returning();
 
       return res.status(201).json(row);
@@ -128,7 +129,7 @@ export function registerMaintenanceRoutes(router: Router): void {
       const [existing] = await db
         .select()
         .from(maintenancePolicies)
-        .where(eq(maintenancePolicies.id, req.params.id));
+        .where(withProject(maintenancePolicies, eq(maintenancePolicies.id, req.params.id)));
 
       if (!existing) {
         return res.status(404).json({ error: "Policy not found" });
@@ -148,7 +149,7 @@ export function registerMaintenanceRoutes(router: Router): void {
       const [updated] = await db
         .update(maintenancePolicies)
         .set(updateData)
-        .where(eq(maintenancePolicies.id, req.params.id))
+        .where(withProject(maintenancePolicies, eq(maintenancePolicies.id, req.params.id)))
         .returning();
 
       return res.json(updated);
@@ -162,7 +163,7 @@ export function registerMaintenanceRoutes(router: Router): void {
       const [existing] = await db
         .select()
         .from(maintenancePolicies)
-        .where(eq(maintenancePolicies.id, req.params.id));
+        .where(withProject(maintenancePolicies, eq(maintenancePolicies.id, req.params.id)));
 
       if (!existing) {
         return res.status(404).json({ error: "Policy not found" });
@@ -170,7 +171,7 @@ export function registerMaintenanceRoutes(router: Router): void {
 
       await db
         .delete(maintenancePolicies)
-        .where(eq(maintenancePolicies.id, req.params.id));
+        .where(withProject(maintenancePolicies, eq(maintenancePolicies.id, req.params.id)));
 
       return res.json({ message: "Policy deleted" });
     } catch (err) {
@@ -188,9 +189,9 @@ export function registerMaintenanceRoutes(router: Router): void {
         ? await db
             .select()
             .from(maintenanceScans)
-            .where(eq(maintenanceScans.workspaceId, workspaceId))
+            .where(withProject(maintenanceScans, eq(maintenanceScans.workspaceId, workspaceId)))
             .orderBy(desc(maintenanceScans.createdAt))
-        : await db.select().from(maintenanceScans).orderBy(desc(maintenanceScans.createdAt));
+        : await db.select().from(maintenanceScans).where(withProjectList(maintenanceScans)).orderBy(desc(maintenanceScans.createdAt));
 
       res.json(rows);
     } catch (err) {
@@ -203,7 +204,7 @@ export function registerMaintenanceRoutes(router: Router): void {
       const [row] = await db
         .select()
         .from(maintenanceScans)
-        .where(eq(maintenanceScans.id, req.params.id));
+        .where(withProject(maintenanceScans, eq(maintenanceScans.id, req.params.id)));
 
       if (!row) {
         return res.status(404).json({ error: "Scan not found" });
@@ -225,7 +226,7 @@ export function registerMaintenanceRoutes(router: Router): void {
       const [policy] = await db
         .select()
         .from(maintenancePolicies)
-        .where(eq(maintenancePolicies.id, parsed.data.policyId));
+        .where(withProject(maintenancePolicies, eq(maintenancePolicies.id, parsed.data.policyId)));
 
       if (!policy) {
         return res.status(404).json({ error: "Policy not found" });
@@ -260,13 +261,13 @@ export function registerMaintenanceRoutes(router: Router): void {
       // Create scan record in running state
       const [scan] = await db
         .insert(maintenanceScans)
-        .values({
+        .values(withProjectInsert(maintenanceScans, {
           policyId: policy.id,
           workspaceId: policy.workspaceId,
           status: "running",
           findings: [],
           importantCount: 0,
-        })
+        }))
         .returning();
 
       // Run scout synchronously
@@ -286,7 +287,7 @@ export function registerMaintenanceRoutes(router: Router): void {
         await db
           .update(maintenanceScans)
           .set({ status: "failed", completedAt: new Date() })
-          .where(eq(maintenanceScans.id, scan.id));
+          .where(withProject(maintenanceScans, eq(maintenanceScans.id, scan.id)));
         return res.status(500).json({ error: (scoutErr as Error).message });
       }
 
@@ -299,7 +300,7 @@ export function registerMaintenanceRoutes(router: Router): void {
           importantCount: scoutResult.importantCount,
           completedAt: new Date(),
         })
-        .where(eq(maintenanceScans.id, scan.id))
+        .where(withProject(maintenanceScans, eq(maintenanceScans.id, scan.id)))
         .returning();
 
       // ── Auto-trigger pipeline on critical findings ─────────────────────────
@@ -313,7 +314,7 @@ export function registerMaintenanceRoutes(router: Router): void {
         try {
           const [run] = await db
             .insert(pipelineRuns)
-            .values({
+            .values(withProjectInsert(pipelineRuns, {
               pipelineId: policy.autoTriggerPipelineId,
               status: "pending",
               input: JSON.stringify({
@@ -323,7 +324,7 @@ export function registerMaintenanceRoutes(router: Router): void {
               }),
               triggeredBy: req.user.id,
               dagMode: false,
-            })
+            }))
             .returning();
 
           const auditRows = criticalFindings.map((f) => ({
@@ -334,7 +335,7 @@ export function registerMaintenanceRoutes(router: Router): void {
           }));
 
           if (auditRows.length > 0) {
-            await db.insert(autoTriggerAudit).values(auditRows);
+            await db.insert(autoTriggerAudit).values(withProjectInsert(autoTriggerAudit, auditRows));
           }
         } catch {
           // Auto-trigger failure is non-fatal — scan result is still returned
@@ -364,7 +365,7 @@ export function registerMaintenanceRoutes(router: Router): void {
       const [scan] = await db
         .select()
         .from(maintenanceScans)
-        .where(eq(maintenanceScans.id, parsed.data.scanId));
+        .where(withProject(maintenanceScans, eq(maintenanceScans.id, parsed.data.scanId)));
 
       if (!scan) {
         return res.status(404).json({ error: "Scan not found" });
@@ -387,7 +388,7 @@ export function registerMaintenanceRoutes(router: Router): void {
       const [updated] = await db
         .update(maintenanceScans)
         .set({ findings: updatedFindings })
-        .where(eq(maintenanceScans.id, parsed.data.scanId))
+        .where(withProject(maintenanceScans, eq(maintenanceScans.id, parsed.data.scanId)))
         .returning();
 
       return res.json({ finding: updatedFindings[findingIndex], scan: updated });
@@ -401,10 +402,11 @@ export function registerMaintenanceRoutes(router: Router): void {
   router.get("/api/maintenance/dashboard", async (_req, res) => {
     try {
       const [policies, scans] = await Promise.all([
-        db.select().from(maintenancePolicies),
+        db.select().from(maintenancePolicies).where(withProjectList(maintenancePolicies)),
         db
           .select()
           .from(maintenanceScans)
+          .where(withProjectList(maintenanceScans))
           .orderBy(desc(maintenanceScans.createdAt)),
       ]);
 
@@ -444,10 +446,10 @@ export function registerMaintenanceRoutes(router: Router): void {
         .select()
         .from(maintenanceScans)
         .where(
-          and(
+          withProject(maintenanceScans, and(
             eq(maintenanceScans.workspaceId, workspaceId),
             eq(maintenanceScans.status, "completed"),
-          ),
+          )),
         )
         .orderBy(desc(maintenanceScans.completedAt));
 
@@ -531,6 +533,7 @@ export function registerMaintenanceRoutes(router: Router): void {
       const rows = await db
         .select()
         .from(autoTriggerAudit)
+        .where(withProjectList(autoTriggerAudit))
         .orderBy(desc(autoTriggerAudit.triggeredAt));
 
       return res.json(rows as AutoTriggerAuditRow[]);
@@ -549,15 +552,15 @@ export function registerMaintenanceRoutes(router: Router): void {
         db
           .select()
           .from(maintenancePolicies)
-          .where(eq(maintenancePolicies.workspaceId, workspaceId)),
+          .where(withProject(maintenancePolicies, eq(maintenancePolicies.workspaceId, workspaceId))),
         db
           .select()
           .from(maintenanceScans)
           .where(
-            and(
+            withProject(maintenanceScans, and(
               eq(maintenanceScans.workspaceId, workspaceId),
               eq(maintenanceScans.status, "completed"),
-            ),
+            )),
           )
           .orderBy(desc(maintenanceScans.completedAt)),
       ]);

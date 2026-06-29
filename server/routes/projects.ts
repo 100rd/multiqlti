@@ -63,4 +63,31 @@ router.post("/", requireAuth, async (req, res) => {
   }
 });
 
+// Delete a project. Owner-or-admin only (mirrors the isVisible gate used by the
+// run / task-group routes): members can read but not delete. All dependent rows
+// (task_groups, pipelines, skills, … — 31 child tables) are removed by the
+// ON DELETE CASCADE foreign keys, so this single delete tears down the tree.
+router.delete("/:id", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user!.id;
+    const isAdmin = req.user!.role === "admin";
+    const id = String(req.params.id);
+
+    const [project] = await db.select().from(projects).where(eq(projects.id, id));
+    if (!project) {
+      return res.status(404).json({ error: "Project not found" });
+    }
+
+    if (project.ownerId !== userId && !isAdmin) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    await db.delete(projects).where(eq(projects.id, id));
+    res.status(204).end();
+  } catch (error) {
+    console.error("Error deleting project:", error);
+    res.status(500).json({ error: "Failed to delete project" });
+  }
+});
+
 export default router;

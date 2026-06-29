@@ -53,6 +53,7 @@ import Activity from "@/pages/Activity";
 import ConsiliumLoopList from "@/pages/ConsiliumLoopList";
 import ConsiliumLoopDetail from "@/pages/ConsiliumLoopDetail";
 import CredentialAccess from "@/pages/CredentialAccess";
+import ContourObservability from "@/pages/ContourObservability";
 
 // ─── Project gate screens ─────────────────────────────────────────────────────
 
@@ -216,6 +217,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/memories" component={() => (
           <ErrorBoundary><Memory /></ErrorBoundary>
+        )} />
+        <Route path="/contour" component={() => (
+          <ErrorBoundary><ContourObservability /></ErrorBoundary>
         )} />
         <Route path="/task-groups/new" component={() => (
           <ErrorBoundary><CreateTaskGroup /></ErrorBoundary>

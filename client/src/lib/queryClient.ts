@@ -1,39 +1,9 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
-
-function getAuthToken(): string | null {
-  return localStorage.getItem("auth_token");
-}
-
-function getProjectId(): string | null {
-  return localStorage.getItem("project_id");
-}
-
-export function buildAuthHeaders(hasBody: boolean): Record<string, string> {
-  const headers: Record<string, string> = {};
-  if (hasBody) headers["Content-Type"] = "application/json";
-  const token = getAuthToken();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  const projectId = getProjectId();
-  if (projectId) headers["x-project-id"] = projectId;
-  return headers;
-}
-
-/** Thrown when a backend 400 indicates a missing/invalid project header. */
-export class ProjectRequiredError extends Error {
-  readonly isProjectRequired = true as const;
-  constructor() {
-    super("No project selected. Please select a project to continue.");
-    this.name = "ProjectRequiredError";
-  }
-}
+import { buildAuthHeaders, assertProjectSelected } from "./projectHeaders";
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
-    // Surface a friendly message when the backend rejects due to missing project
-    if (res.status === 400 && /project.?id/i.test(text)) {
-      throw new ProjectRequiredError();
-    }
     throw new Error(`${res.status}: ${text}`);
   }
 }
@@ -43,6 +13,10 @@ export async function apiRequest(
   url: string,
   data?: unknown | undefined,
 ): Promise<Response> {
+  // Surface a friendly "select a project" error instead of a doomed 400 when a
+  // project-scoped call is made with no project selected. Public paths are exempt.
+  assertProjectSelected(url);
+
   const res = await fetch(url, {
     method,
     headers: buildAuthHeaders(data !== undefined),
@@ -60,7 +34,10 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const res = await fetch(queryKey.join("/") as string, {
+    const url = queryKey.join("/") as string;
+    assertProjectSelected(url);
+
+    const res = await fetch(url, {
       headers: buildAuthHeaders(false),
       credentials: "include",
     });

@@ -1,25 +1,17 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { wsClient } from "@/lib/websocket";
-
-function getAuthToken(): string | null {
-  return localStorage.getItem("auth_token");
-}
-
-function getProjectId(): string | null {
-  return localStorage.getItem("project_id");
-}
+import {
+  buildAuthHeaders,
+  assertProjectSelected,
+} from "@/lib/projectHeaders";
 
 export async function apiRequest(method: string, url: string, body?: unknown) {
-  const headers: Record<string, string> = {};
-  if (body) headers["Content-Type"] = "application/json";
-  const token = getAuthToken();
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  const projectId = getProjectId();
-  if (projectId) headers["x-project-id"] = projectId;
+  // Friendly typed error instead of a doomed 400 when no project is selected.
+  assertProjectSelected(url);
 
   const res = await fetch(url, {
     method,
-    headers,
+    headers: buildAuthHeaders(body !== undefined),
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
@@ -370,11 +362,11 @@ export function useRejectStage() {
 export function useExportRun() {
   return useMutation({
     mutationFn: async ({ runId, format }: { runId: string; format: "markdown" | "zip" }) => {
-      const token = getAuthToken();
-      const headers: Record<string, string> = {};
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-
-      const res = await fetch(`/api/runs/${runId}/export?format=${format}`, { headers });
+      // Export is project-scoped — carry auth + x-project-id via the canonical helper.
+      assertProjectSelected(`/api/runs/${runId}/export`);
+      const res = await fetch(`/api/runs/${runId}/export?format=${format}`, {
+        headers: buildAuthHeaders(false),
+      });
       if (!res.ok) {
         const errText = await res.text().catch(() => res.statusText);
         throw new Error(errText || res.statusText);

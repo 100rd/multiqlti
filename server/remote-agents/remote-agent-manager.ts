@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { db, withProject, withProjectInsert } from "../db";
+import { db, withProject, withProjectList, withProjectInsert } from "../db";
 import { runAsSystem, unscopedSystemQuery } from "../context";
 import { remoteAgents, a2aTasks } from "@shared/schema";
 import { encrypt } from "../crypto";
@@ -281,7 +281,7 @@ export class RemoteAgentManager {
     const rows = await db
       .select()
       .from(remoteAgents)
-      .where(withProject(remoteAgents))
+      .where(withProjectList(remoteAgents))
       .orderBy(remoteAgents.name);
     return Promise.all(rows.map((r) => this.rowToConfig(r)));
   }

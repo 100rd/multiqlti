@@ -227,6 +227,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
                   { icon: ShoppingBag, label: "Skill Market", href: "/skills/market" },
                   { icon: BookOpen, label: "Library", href: "/library" },
                   { icon: Brain, label: "Memory", href: "/memories" },
+                  { icon: ShieldAlert, label: "Contour Trust", href: "/contour" },
                   { icon: ShieldCheck, label: "Privacy", href: "/privacy" },
                 ].map((item) => {
                   const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));

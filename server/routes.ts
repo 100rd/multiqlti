@@ -23,6 +23,7 @@ import { registerSandboxRoutes } from "./routes/sandbox";
 import { registerSettingsRoutes } from "./routes/settings";
 import { registerMaintenanceRoutes } from "./routes/maintenance";
 import { registerSpecializationRoutes } from "./routes/specialization";
+import { registerContourObservabilityRoutes } from "./routes/observability";
 import { registerSkillRoutes } from "./routes/skills";
 import { registerGuardrailRoutes } from "./routes/guardrails";
 import { registerDelegationRoutes } from "./routes/delegations";
@@ -52,6 +53,7 @@ import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
 import { log } from "./index";
 import { registerArgoCdSettingsRoutes, autoConnectArgoCdFromEnv } from "./routes/argocd-settings";
 import { registerTaskGroupRoutes } from "./routes/task-groups";
+import { registerTaskGroupResolveRoute } from "./routes/task-group-resolve";
 import { registerConsiliumLoopRoutes } from "./routes/consilium-loops";
 import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consilium/consilium-loop-controller";
 import { WorkspaceManager } from "./workspace/manager";
@@ -187,11 +189,11 @@ export async function registerRoutes(
   app.use("/api/sandbox", requireAuth);
   // /api/federation — cross-instance infrastructure, inherently cross-project
   app.use("/api/federation", requireAuth);
+  app.use("/api/observability", requireAuth);
 
   // /api/pipeline-run-stats — was entirely unprotected (bug); add both guards now.
   // This inline endpoint reads pipeline runs (project-scoped data).
   app.use("/api/pipeline-run-stats", requireAuth, requireProject);
-
   // Register route implementations
   registerModelRoutes(app, storage);
   registerPipelineRoutes(app, storage, gateway);
@@ -208,6 +210,7 @@ export async function registerRoutes(
   registerToolRoutes(app, storage);
   registerWorkspaceRoutes(app, gateway, wsManager, storage);
   registerConnectionRoutes(app, storage);
+  registerContourObservabilityRoutes(app);
   registerConnectionsYamlRoutes(app, storage);
   registerInventoryRoutes(app, storage);
   registerWorkspaceTraceRoutes(app, storage);
@@ -282,6 +285,7 @@ export async function registerRoutes(
   const taskOrchestrator = new TaskOrchestrator(storage, wsManager, controller, gateway);
   taskOrchestrator.setTracer(taskTracer);
   registerTaskGroupRoutes(app, storage, taskOrchestrator);
+  registerTaskGroupResolveRoute(app);
   registerTaskIterationRoutes(app as unknown as Router, storage);
   registerTaskTemplateRoutes(app as unknown as Router, storage);
 
@@ -546,8 +550,9 @@ export async function registerRoutes(
     }
   }
 
-  // Seed default pipeline template. getPipelines() is an unscoped global select;
-  // createPipeline() uses withProjectInsert which sets projectId=null in system context.
+  // Seed default pipeline template. getPipelines() reads cross-project
+  // under the system context; createPipeline() uses withProjectInsert which sets
+  // projectId=null (a global template visible to every project).
   await runAsSystem("startup-seed-default-pipeline", async () => {
     const existingPipelines = await storage.getPipelines();
     if (existingPipelines.length === 0) {

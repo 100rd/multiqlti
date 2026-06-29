@@ -109,6 +109,7 @@ export function buildVirtualIteration(group: TaskGroupRow, tasks: TaskRow[]): Vi
   const virtualIterationId = `virtual:${group.id}:1`;
   const iteration: TaskGroupIterationRow = {
     id: virtualIterationId,
+    projectId: group.projectId ?? null,
     groupId: group.id,
     iterationNumber: 1,
     status: group.status,
@@ -123,6 +124,7 @@ export function buildVirtualIteration(group: TaskGroupRow, tasks: TaskRow[]): Vi
   };
   const executions: TaskExecutionRow[] = tasks.map((t) => ({
     id: `virtual:${t.id}`,
+    projectId: group.projectId ?? null,
     iterationId: virtualIterationId,
     taskId: t.id,
     taskName: t.name,

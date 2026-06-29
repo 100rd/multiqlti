@@ -1,6 +1,8 @@
 import { ObservabilityStore, TaskExecutionRecord } from "./observability-store";
 import { AlertChannel } from "./alert-channel";
 
+export type ObservabilityListener = (skillId: string, rate: number) => void;
+
 export interface YieldMetrics {
   totalAnalyzedRuns: number;
   successfulRuns: number;
@@ -28,6 +30,7 @@ export class ContourObservabilityService {
   private store: ObservabilityStore;
   private alertChannel: AlertChannel;
   private config: ContourObservabilityConfig;
+  private listeners: ObservabilityListener[] = [];
 
   constructor(
     store: ObservabilityStore,
@@ -50,8 +53,9 @@ export class ContourObservabilityService {
     timestamp: number = Date.now()
   ): void {
     this.store.recordTaskExecution(taskId, initialVerdict, skillId, timestamp);
-    // Escape rate isn't usually recalculated on successful run instantly, 
-    // but a failure might trigger a quick check.
+    if (skillId) {
+      this.notifySkillListeners(skillId);
+    }
   }
 
   reportEscapedIncident(taskId: string, timestamp: number = Date.now()): void {
@@ -59,6 +63,29 @@ export class ContourObservabilityService {
     
     // Evaluate if this new incident breached the escape rate threshold
     this.evaluateTrustDrift();
+
+    // Since a task escaped, we need to notify listeners of the updated skill rate
+    // We fetch the skillId from the store
+    const allRecords = this.store.getAllRecords();
+    const record = allRecords.find(r => r.taskId === taskId);
+    if (record && record.skillId) {
+      this.notifySkillListeners(record.skillId);
+    }
+  }
+
+  registerListener(callback: ObservabilityListener): void {
+    this.listeners.push(callback);
+  }
+
+  private notifySkillListeners(skillId: string): void {
+    const rate = this.getSkillSuccessRate(skillId) / 100; // Manager expects 0.0 to 1.0
+    for (const listener of this.listeners) {
+      try {
+        listener(skillId, rate);
+      } catch (err) {
+        console.error(`Error executing listener callback for skill "${skillId}":`, err);
+      }
+    }
   }
 
   /**
@@ -129,3 +156,8 @@ export class ContourObservabilityService {
     }
   }
 }
+
+export const contourObservability = new ContourObservabilityService(
+  new ObservabilityStore(),
+  new AlertChannel()
+);
