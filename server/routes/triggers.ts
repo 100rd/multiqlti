@@ -15,6 +15,7 @@ import { randomUUID } from "crypto";
 import type { TriggerService } from "../services/trigger-service.js";
 import type { IStorage } from "../storage.js";
 import { requireRole, requireOwnerOrRole } from "../auth/middleware.js";
+import { CONSILIUM_REVIEW_PRESETS } from "@shared/types";
 
 // ─── Correlation ID helper ────────────────────────────────────────────────────
 
@@ -54,11 +55,26 @@ const GitHubConfigSchema = z.object({
   refFilter: z.string().max(500).optional(),
 });
 
+// A file_change trigger MAY carry an embedded action (no schema migration — it
+// lives in the existing config JSONB). Today the only kind is `consilium_review`,
+// which `fireTrigger` dispatches to the review factory. The factory RE-VALIDATES
+// `repoPath` against the fail-closed allowlist, so this schema only shape-checks
+// it (1..4096 chars) — it is NOT the security boundary. Without this field the
+// strict z.object would SILENTLY STRIP `action`, turning the trigger into a
+// permanent no-op; declaring it here makes the action persist.
+const ConsiliumReviewActionSchema = z.object({
+  kind: z.literal("consilium_review"),
+  preset: z.enum(CONSILIUM_REVIEW_PRESETS),
+  maxRounds: z.number().int().min(1).max(6).optional(),
+  repoPath: z.string().min(1).max(4096).optional(),
+});
+
 const FileChangeConfigSchema = z.object({
   watchPath: z.string().min(1).max(4096),
   patterns: z.array(z.string().min(1).max(500)).optional(),
   debounceMs: z.number().int().min(0).max(30_000).optional(),
   input: z.string().max(100_000).optional(),
+  action: ConsiliumReviewActionSchema.optional(),
 });
 
 type TriggerTypeValue = "webhook" | "schedule" | "github_event" | "file_change";

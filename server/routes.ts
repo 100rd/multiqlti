@@ -56,6 +56,9 @@ import { registerArgoCdSettingsRoutes, autoConnectArgoCdFromEnv } from "./routes
 import { registerTaskGroupRoutes } from "./routes/task-groups";
 import { registerTaskGroupResolveRoute } from "./routes/task-group-resolve";
 import { registerConsiliumLoopRoutes } from "./routes/consilium-loops";
+import { registerConsiliumReviewRoutes } from "./routes/consilium-reviews";
+import { createConsiliumReview } from "./services/consilium/review-factory";
+import { maybeLaunchConsiliumReview } from "./services/consilium/trigger-dispatch";
 import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consilium/consilium-loop-controller";
 import { registerSkillTeamRoutes } from "./routes/skill-teams";
 import { registerModelSkillBindingRoutes } from "./routes/model-skill-bindings";
@@ -100,7 +103,7 @@ import { ConflictResolutionService } from "./federation/conflict-resolution";
 import { MemoryFederationService } from "./federation/memory-federation";
 import { PipelineSyncService } from "./federation/pipeline-sync";
 import { getFederationManager } from "./federation/manager-state";
-import { runAsSystem } from "./context";
+import { runAsSystem, runAsProject } from "./context";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -169,6 +172,7 @@ export async function registerRoutes(
   app.use("/api/traces", requireAuth, requireProject);         // UNCERTAIN — see note above
   app.use("/api/task-groups", requireAuth, requireProject);
   app.use("/api/consilium-loops", requireAuth, requireProject);
+  app.use("/api/consilium-reviews", requireAuth, requireProject);
   app.use("/api/task-templates", requireAuth, requireProject);
   app.use("/api/library", requireAuth, requireProject);
   app.use("/api/lmstudio", requireAuth, requireProject);       // UNCERTAIN — see note above
@@ -293,8 +297,13 @@ export async function registerRoutes(
   // the controller + routes + poller are only wired when explicitly enabled, so
   // a normal boot is fully inert. Mirrors the cron-scheduler bootstrap below.
   let consiliumLoopPoller: ConsiliumLoopPoller | null = null;
+  // Hoisted to the registerRoutes scope (was a block-local const) so the
+  // file-change `fireTrigger` closure below can launch consilium reviews via the
+  // SAME controller. Stays null when the kill-switch is off — fireTrigger then
+  // treats a consilium_review action as an inert no-op (logs + skips).
+  let consiliumLoopController: ConsiliumLoopController | null = null;
   if (appConfigLoader.get().pipeline.consiliumLoop.enabled) {
-    const consiliumLoopController = new ConsiliumLoopController({
+    consiliumLoopController = new ConsiliumLoopController({
       storage,
       taskOrchestrator,
       config: () => appConfigLoader.get(),
@@ -303,6 +312,16 @@ export async function registerRoutes(
       // seam needed here. Push/PR go through pr-wrapper (B-3/H-6/H-7/M-6/M-7).
     });
     registerConsiliumLoopRoutes(app, storage, consiliumLoopController, () => appConfigLoader.get());
+    // POST /api/consilium-reviews — the UI "New consilium review" button. Same
+    // factory + same fail-closed allowlist as the trigger path. Registered ONLY
+    // inside the kill-switch block (inert otherwise), mounted behind
+    // requireAuth + requireProject above.
+    registerConsiliumReviewRoutes(app, {
+      storage,
+      orchestrator: taskOrchestrator,
+      controller: consiliumLoopController,
+      config: () => appConfigLoader.get(),
+    });
     consiliumLoopPoller = new ConsiliumLoopPoller(
       consiliumLoopController,
       storage,
@@ -372,11 +391,41 @@ export async function registerRoutes(
       await runAsSystem("fire-trigger", async () => {
         const pipeline = await storage.getPipeline(trigger.pipelineId);
         if (!pipeline) {
+          // pipelineId is NOT NULL in the schema; a consilium_review action does
+          // not USE the pipeline, but a dangling pipelineId still means a broken
+          // trigger config — keep the historical record-only no-op (no fire).
           log(`[triggers] Pipeline not found for trigger ${trigger.id}`, "triggers");
           return;
         }
+        // ALWAYS record lastTriggeredAt — for EVERY trigger type, action or not.
         await storage.updateTrigger(trigger.id, { lastTriggeredAt: new Date() });
         log(`[triggers] Fired trigger ${trigger.id} for pipeline ${pipeline.id}`, "triggers");
+
+        // ── Action dispatch (file_change triggers only) ─────────────────────────
+        // ABSENT action ⇒ the record-only no-op above (back-compat for webhook /
+        // schedule / github / plain file_change triggers). Present + consilium_review
+        // ⇒ launch via the SAME factory the HTTP route uses. The changed-file path +
+        // watchPath are UNTRUSTED → they reach ONLY objectiveExtra, which the factory
+        // control-strips + clamps. repoPath is re-validated against the fail-closed
+        // allowlist INSIDE the factory. The launch runs under runAsProject so all
+        // rows stay project-scoped. `reviewDeps: null` (kill-switch off) ⇒ skipped.
+        await maybeLaunchConsiliumReview(
+          {
+            reviewDeps: consiliumLoopController
+              ? {
+                  storage,
+                  orchestrator: taskOrchestrator,
+                  controller: consiliumLoopController,
+                  config: () => appConfigLoader.get(),
+                }
+              : null,
+            createReview: createConsiliumReview,
+            runInProject: runAsProject,
+            log: (m) => log(m, "triggers"),
+          },
+          trigger,
+          payload,
+        );
       });
     };
 
