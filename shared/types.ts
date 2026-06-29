@@ -1460,6 +1460,41 @@ export interface FileChangeTriggerConfig {
   patterns: string[];    // micromatch glob patterns, e.g. ["**/*.ts", "!node_modules/**"]
   debounceMs?: number;   // default 500
   input?: string;        // optional pipeline input template; may reference {{filePath}}
+  /**
+   * Optional ACTION to launch when the trigger fires (embedded in the existing
+   * `config` JSONB — NO schema migration). When ABSENT, the trigger keeps its
+   * historical record-only no-op behaviour (back-compat). When present and
+   * `kind === "consilium_review"`, `fireTrigger` launches a consilium review via
+   * `createConsiliumReview` under `runAsProject(trigger.projectId)`.
+   */
+  action?: ConsiliumReviewTriggerAction;
+}
+
+/**
+ * The canonical consilium-review preset set. Shared between the HTTP body enum
+ * (POST /api/consilium-reviews), the file-change trigger action, and the
+ * server-side factory (`review-factory.ts`). The preset NAMES + the per-preset
+ * task/model structure are SERVER CONSTANTS — never derived from caller text.
+ */
+export const CONSILIUM_REVIEW_PRESETS = [
+  "sdlc-cross-review",
+  "diff-pr-review",
+  "full-viability",
+] as const;
+export type ConsiliumReviewPreset = (typeof CONSILIUM_REVIEW_PRESETS)[number];
+
+/**
+ * A file-change trigger ACTION that launches a consilium review. Embedded in the
+ * trigger's `config` JSONB. `repoPath`, when present, MUST resolve inside the
+ * consilium-loop allowlist (re-validated INSIDE the factory — never trusted from
+ * the stored config). `preset` is a server enum; `maxRounds` is bounded 1..6.
+ */
+export interface ConsiliumReviewTriggerAction {
+  kind: "consilium_review";
+  preset: ConsiliumReviewPreset;
+  maxRounds?: number;
+  /** Target repo; defaults to the watchPath's repo root when omitted. */
+  repoPath?: string;
 }
 
 export type TriggerConfig =
