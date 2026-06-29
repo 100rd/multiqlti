@@ -1,31 +1,50 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Activity, Cpu, MessageCircleQuestion } from "lucide-react";
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
+import { Cpu, Layers, MessageCircleQuestion, Repeat } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useModels, usePendingQuestions, useGatewayStatus } from "@/hooks/use-pipeline";
 
-interface StatsSummary {
-  totalRuns: number;
-  activePipelines: number;
-  modelsConfigured: number;
-  runsLast7Days: number[];
+interface Loops24h {
+  passed: number;
+  broke: number;
+  stopped: number;
+  waiting: number;
+  running: number;
+  total: number;
 }
+
+interface StatsSummary {
+  modelsConfigured: number;
+  taskGroupsTotal: number;
+  taskGroupsActive: number;
+  consiliumLoopsTotal: number;
+  consiliumLoopsActive: number;
+  // 24h status breakdown of consilium loops (see /api/stats/summary). Optional
+  // on the wire so an older/partial response never crashes the card.
+  loops24h?: Loops24h;
+}
+
+// Display order + tone for the 24h pills. Greens/reds/ambers loosely track the
+// loop-state palette (components/consilium/loop-state.tsx). `mark` is a tiny
+// glyph cue; pills with a zero count are hidden to keep the card compact.
+const LOOP_24H_PILLS: {
+  key: keyof Omit<Loops24h, "total">;
+  label: string;
+  mark: string;
+  className: string;
+}[] = [
+  { key: "passed", label: "passed", mark: "\u2713", className: "text-green-600 dark:text-green-400" },
+  { key: "broke", label: "broke", mark: "\u2717", className: "text-red-600 dark:text-red-400" },
+  { key: "waiting", label: "waiting", mark: "\u23f3", className: "text-amber-600 dark:text-amber-400" },
+  { key: "stopped", label: "stopped", mark: "\u25cf", className: "text-yellow-600 dark:text-yellow-400" },
+  { key: "running", label: "running", mark: "\u25cf", className: "text-blue-600 dark:text-blue-400" },
+];
 
 function useStatsSummary() {
   return useQuery<StatsSummary>({
     queryKey: ["/api/stats/summary"],
     refetchInterval: 30_000,
-  });
-}
-
-function buildChartData(runsLast7Days: number[]): Array<{ day: string; runs: number }> {
-  const now = new Date();
-  return runsLast7Days.map((runs, i) => {
-    const d = new Date(now);
-    d.setDate(d.getDate() - (6 - i));
-    const label = d.toLocaleDateString("en-US", { weekday: "short" });
-    return { day: label, runs };
   });
 }
 
@@ -38,21 +57,23 @@ export default function Dashboard() {
   const pendingCount = Array.isArray(pendingQuestions) ? pendingQuestions.length : 0;
   const gwMode = gwStatus?.vllm ? 'vLLM' : gwStatus?.ollama ? 'Ollama' : 'Mock';
 
-  const totalRuns = stats?.totalRuns ?? 0;
-  const activePipelines = stats?.activePipelines ?? 0;
   const modelsConfigured = stats?.modelsConfigured ?? 0;
-  const chartData = buildChartData(stats?.runsLast7Days ?? Array(7).fill(0));
+  const taskGroupsTotal = stats?.taskGroupsTotal ?? 0;
+  const taskGroupsActive = stats?.taskGroupsActive ?? 0;
+  const consiliumLoopsTotal = stats?.consiliumLoopsTotal ?? 0;
+  const consiliumLoopsActive = stats?.consiliumLoopsActive ?? 0;
+  const loops24h = stats?.loops24h;
 
   return (
     <div className="p-8 h-full overflow-y-auto">
       <div className="mb-8">
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">Overview</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          SDLC pipeline orchestration status. Gateway: <span className="font-mono text-xs">{gwMode}</span>
+          Task group &amp; consilium orchestration status. Gateway: <span className="font-mono text-xs">{gwMode}</span>
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <Card className="border-border shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Active Models</CardTitle>
@@ -64,16 +85,52 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        <Card className="border-border shadow-sm">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Pipeline Runs</CardTitle>
-            <Activity className="h-4 w-4 text-primary" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{totalRuns}</div>
-            <p className="text-xs text-muted-foreground mt-1">{activePipelines} active pipeline{activePipelines !== 1 ? "s" : ""}</p>
-          </CardContent>
-        </Card>
+        <Link href="/task-groups" data-testid="link-stat-task-groups">
+          <Card className="border-border shadow-sm cursor-pointer hover:bg-accent/40 transition-colors">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">Task Groups</CardTitle>
+              <Layers className="h-4 w-4 text-primary" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{taskGroupsTotal}</div>
+              <p className="text-xs text-muted-foreground mt-1">{taskGroupsActive} running</p>
+            </CardContent>
+          </Card>
+        </Link>
+
+        <Link href="/consilium-loops" data-testid="link-stat-consilium-loops">
+          <Card className="border-border shadow-sm cursor-pointer hover:bg-accent/40 transition-colors">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">Consilium Loops</CardTitle>
+              <Repeat className="h-4 w-4 text-primary" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{consiliumLoopsTotal}</div>
+              <p className="text-xs text-muted-foreground mt-1">{consiliumLoopsActive} active</p>
+              <div className="mt-2 border-t border-border/60 pt-2">
+                {loops24h && loops24h.total > 0 ? (
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    {LOOP_24H_PILLS.filter((pill) => (loops24h[pill.key] ?? 0) > 0).map(
+                      (pill, i, shown) => (
+                        <span key={pill.key} className="inline-flex items-center">
+                          <span className={cn("text-[11px] font-medium tabular-nums", pill.className)}>
+                            {pill.mark} {loops24h[pill.key]} {pill.label}
+                          </span>
+                          {i < shown.length - 1 && (
+                            <span className="ml-2 text-muted-foreground/40 text-[11px]">&middot;</span>
+                          )}
+                        </span>
+                      ),
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground/70">no loop activity in 24h</p>
+                )}
+                <p className="mt-0.5 text-[10px] uppercase tracking-wide text-muted-foreground/50">last 24h</p>
+              </div>
+            </CardContent>
+          </Card>
+        </Link>
 
         <Card className="border-border shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -87,35 +144,7 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card className="col-span-2 border-border shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-base font-medium">Pipeline Runs — Last 7 Days</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-[300px] w-full mt-4">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData}>
-                  <defs>
-                    <linearGradient id="colorRuns" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.1}/>
-                      <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                  <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: 'hsl(var(--muted-foreground))' }} />
-                  <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: 'hsl(var(--muted-foreground))' }} allowDecimals={false} />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: 'hsl(var(--card))', borderRadius: '8px', border: '1px solid hsl(var(--border))' }}
-                    itemStyle={{ color: 'hsl(var(--foreground))' }}
-                  />
-                  <Area type="monotone" dataKey="runs" stroke="hsl(var(--primary))" strokeWidth={2} fillOpacity={1} fill="url(#colorRuns)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </CardContent>
-        </Card>
-
+      <div className="grid grid-cols-1 gap-6">
         <Card className="border-border shadow-sm">
           <CardHeader>
             <CardTitle className="text-base font-medium">Registered Models</CardTitle>

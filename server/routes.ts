@@ -50,6 +50,7 @@ import { requireAuth } from "./auth/middleware";
 import { requireProject } from "./middleware/project";
 import { tracer } from "./tracing/tracer";
 import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
+import { CONSILIUM_LOOP_TERMINAL_STATES } from "@shared/schema";
 import { log } from "./index";
 import { registerArgoCdSettingsRoutes, autoConnectArgoCdFromEnv } from "./routes/argocd-settings";
 import { registerTaskGroupRoutes } from "./routes/task-groups";
@@ -620,30 +621,103 @@ export async function registerRoutes(
     res.json(stats);
   });
 
-  // Stats summary endpoint (protected by /api/stats middleware above)
+  // Stats summary endpoint (protected by /api/stats middleware above —
+  // requireAuth + requireProject, so every storage read is project-scoped via
+  // the request ALS context). Surfaces the home dashboard's headline counts:
+  // active models, task groups, and consilium loops for the CURRENT project.
   app.get("/api/stats/summary", async (_req, res) => {
-    const [allRuns, allPipelines, allModels] = await Promise.all([
-      storage.getPipelineRuns(),
-      storage.getPipelines(),
+    const [allModels, allGroups, allLoops] = await Promise.all([
       storage.getModels(),
+      storage.getTaskGroups(),
+      storage.getLoops(),
     ]);
 
-    const totalRuns = allRuns.length;
-    const activePipelines = allPipelines.filter((p) => !p.isTemplate).length;
     const modelsConfigured = allModels.filter((m) => m.isActive).length;
 
-    const now = Date.now();
-    const dayMs = 86_400_000;
-    const runsLast7Days: number[] = Array.from({ length: 7 }, (_, offset) => {
-      const dayStart = now - (6 - offset) * dayMs;
-      const dayEnd = dayStart + dayMs;
-      return allRuns.filter((r) => {
-        const ts = r.startedAt ? new Date(r.startedAt).getTime() : 0;
-        return ts >= dayStart && ts < dayEnd;
-      }).length;
-    });
+    // Task groups: total + how many are currently running. "Running" is read
+    // from the LATEST ITERATION's status (the authoritative run state — the
+    // same source the /api/task-groups list route uses), not the task
+    // definitions which stay blocked/ready. One latest-iteration read per
+    // group — bounded by the project's group count, no executions fetch.
+    const taskGroupsTotal = allGroups.length;
+    const latestIterations = await Promise.all(
+      allGroups.map((g) => storage.getLatestIteration(g.id)),
+    );
+    const taskGroupsActive = latestIterations.filter(
+      (it) => it?.status === "running",
+    ).length;
 
-    res.json({ totalRuns, activePipelines, modelsConfigured, runsLast7Days });
+    // Consilium loops: total + non-terminal (still ticking). Terminal set is
+    // the shared source of truth (converged/stopped_cap/escalated/failed/
+    // cancelled).
+    const consiliumLoopsTotal = allLoops.length;
+    const consiliumLoopsActive = allLoops.filter(
+      (l) =>
+        !CONSILIUM_LOOP_TERMINAL_STATES.includes(
+          l.state as (typeof CONSILIUM_LOOP_TERMINAL_STATES)[number],
+        ),
+    ).length;
+
+    // Consilium loops: 24h status breakdown. Bucket each loop by a coarse status
+    // derived from its FSM `state`, counting ONLY loops whose relevant timestamp
+    // falls in the last 24h: completedAt for terminal loops (the moment they
+    // settled), updatedAt for still-active ones (their last tick). Buckets:
+    //   passed   = converged
+    //   broke    = failed + escalated
+    //   stopped  = stopped_cap + cancelled
+    //   waiting  = awaiting_merge   (the human merge gate)
+    //   running  = pending + building_context + reviewing + deciding + developing
+    // Reuses the same single `allLoops` read above — no extra fetch, bounded by
+    // the project's loop count and project-scoped via the request ALS context.
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const since = Date.now() - DAY_MS;
+    const LOOP_STATE_BUCKET: Record<
+      string,
+      "passed" | "broke" | "stopped" | "waiting" | "running"
+    > = {
+      converged: "passed",
+      failed: "broke",
+      escalated: "broke",
+      stopped_cap: "stopped",
+      cancelled: "stopped",
+      awaiting_merge: "waiting",
+      pending: "running",
+      building_context: "running",
+      reviewing: "running",
+      deciding: "running",
+      developing: "running",
+    };
+    const loops24h = {
+      passed: 0,
+      broke: 0,
+      stopped: 0,
+      waiting: 0,
+      running: 0,
+      total: 0,
+    };
+    for (const l of allLoops) {
+      const isTerminal = CONSILIUM_LOOP_TERMINAL_STATES.includes(
+        l.state as (typeof CONSILIUM_LOOP_TERMINAL_STATES)[number],
+      );
+      // Terminal loops carry completedAt; fall back to updatedAt if (defensively)
+      // unset. Active loops are dated by their last tick (updatedAt).
+      const ts = isTerminal ? (l.completedAt ?? l.updatedAt) : l.updatedAt;
+      if (!ts) continue;
+      if (new Date(ts).getTime() < since) continue;
+      const bucket = LOOP_STATE_BUCKET[l.state];
+      if (!bucket) continue;
+      loops24h[bucket] += 1;
+      loops24h.total += 1;
+    }
+
+    res.json({
+      modelsConfigured,
+      taskGroupsTotal,
+      taskGroupsActive,
+      consiliumLoopsTotal,
+      consiliumLoopsActive,
+      loops24h,
+    });
   });
 
   return httpServer;
