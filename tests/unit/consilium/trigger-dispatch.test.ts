@@ -52,6 +52,7 @@ function makeDeps(
   runInProject: ReturnType<typeof vi.fn>;
   log: ReturnType<typeof vi.fn>;
   getLoops: ReturnType<typeof vi.fn>;
+  resolveOwnerId: ReturnType<typeof vi.fn>;
 } {
   const createReview = vi
     .fn()
@@ -61,14 +62,19 @@ function makeDeps(
   // FIX HIGH-1: the dedup read goes through reviewDeps.storage.getLoops() — empty
   // by default (no active loop) so existing dispatch tests launch as before.
   const getLoops = vi.fn().mockResolvedValue([] as ConsiliumLoopRow[]);
+  // FK FIX: a trigger-launched review must own its task_groups row with a REAL
+  // users.id. The dispatch resolves the PROJECT OWNER; mock it to a fake user id
+  // so the factory is called with createdBy === "owner-1" (NOT the literal "system").
+  const resolveOwnerId = vi.fn().mockResolvedValue("owner-1");
   const deps: ConsiliumTriggerDispatchDeps = {
     reviewDeps: { storage: { getLoops } } as unknown as ConsiliumTriggerDispatchDeps["reviewDeps"],
     createReview,
     runInProject,
+    resolveOwnerId,
     log,
     ...over,
   };
-  return { deps, createReview, runInProject, log, getLoops };
+  return { deps, createReview, runInProject, log, getLoops, resolveOwnerId };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -130,7 +136,8 @@ describe("maybeLaunchConsiliumReview", () => {
     expect(params.repoPath).toBe("/allowed/omnius"); // action.repoPath wins
     expect(params.preset).toBe("sdlc-cross-review");
     expect(params.maxRounds).toBe(1);
-    expect(params.createdBy).toBe("system");
+    // FK FIX: the resolved PROJECT OWNER (a real users.id), NOT the literal "system".
+    expect(params.createdBy).toBe("owner-1");
     // UNTRUSTED changed-file path carried ONLY via objectiveExtra (T1).
     expect(params.objectiveExtra).toMatch(/\/allowed\/omnius\/specs\/00-overview\.md/);
   });
@@ -225,6 +232,19 @@ describe("maybeLaunchConsiliumReview", () => {
     const trigger = makeTrigger({ watchPath: "/allowed/omnius", patterns: ["**/*.md"], action: CONSILIUM_ACTION });
     expect(await maybeLaunchConsiliumReview(deps, trigger, {})).toBe("launched");
     expect(createReview).toHaveBeenCalledTimes(1);
+  });
+
+  // ─── FK FIX: a review must have a REAL owner (task_groups.created_by → users.id) ─
+
+  it("resolveOwnerId returns null (no project/owner) → skipped, factory NOT called", async () => {
+    const resolveOwnerId = vi.fn().mockResolvedValue(null);
+    const { deps, createReview, log } = makeDeps({ resolveOwnerId });
+    const trigger = makeTrigger({ watchPath: "/allowed/omnius", patterns: ["**/*.md"], action: CONSILIUM_ACTION });
+    const result = await maybeLaunchConsiliumReview(deps, trigger, {});
+    expect(result).toBe("skipped");
+    // No valid FK target ⇒ never insert a task_groups row with a bogus owner.
+    expect(createReview).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/no resolvable owner/));
   });
 
   // ─── FIX MED-2: trigger path forces review-only (maxRounds=1) (T6) ───────────
