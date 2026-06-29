@@ -1,7 +1,7 @@
 import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, inArray, sql as drizzleSql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db, withProject, withProjectList, withProjectInsert, withProjectOrGlobal } from "./db";
-import { unscopedSystemQuery } from "./context";
+import { unscopedSystemQuery, getProjectId } from "./context";
 import type { IStorage, PracticeCardFilters, MorningBriefFilters, NewsItemFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint, RunHistoryQuery, PipelineRunHistoryRow, TaskGroupHistoryRow } from "./storage";
 import {
   TASK_GROUP_V2_MAX_LIMIT,
@@ -141,7 +141,9 @@ import {
 import type { LessonRecallFilter } from "./memory/lessons/types";
 import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome } from "@shared/types";
 
-import { encrypt, decrypt } from "./crypto";
+import { encrypt } from "./crypto";
+// [ADR-001 Wave-2] credentialProvider routes all decrypt() calls through the broker.
+import { credentialProvider } from "./credentials/db-crypto-provider";
 
 export class PgStorage implements IStorage {
 
@@ -1641,18 +1643,30 @@ export class PgStorage implements IStorage {
 
   // ─── Tracker Connections (Issue Tracker Integration) ────────────────────────
 
-  /** Decrypt the api_token column for a tracker connection row. Null-safe. */
-  private decryptTrackerToken(row: typeof trackerConnections.$inferSelect): TrackerConnectionRow {
-    return {
-      ...row,
-      apiToken: row.apiToken ? decrypt(row.apiToken) : null,
-    };
+  /**
+   * Decrypt the api_token column for a tracker connection row. Null-safe.
+   * [ADR-001 Wave-2] Routes crypto.decrypt() through the credential broker.
+   */
+  private async decryptTrackerToken(row: typeof trackerConnections.$inferSelect): Promise<TrackerConnectionRow> {
+    if (!row.apiToken) {
+      return { ...row, apiToken: null };
+    }
+    // In project context row.projectId should always be set (withProject scoping).
+    // Fall back to getProjectId() for legacy null-projectId rows to avoid empty string.
+    const projectId = row.projectId ?? getProjectId();
+    const plaintext = await credentialProvider.accessSecret({
+      ciphertext: row.apiToken,
+      credentialId: `trackerConn:${row.id}`,
+      projectId,
+      purpose: "tracker-api-token-read",
+    });
+    return { ...row, apiToken: plaintext };
   }
 
   async getTrackerConnectionsByGroup(taskGroupId: string): Promise<TrackerConnectionRow[]> {
     const rows = await db.select().from(trackerConnections)
       .where(withProject(trackerConnections, eq(trackerConnections.taskGroupId, taskGroupId)));
-    return rows.map((r) => this.decryptTrackerToken(r));
+    return Promise.all(rows.map((r) => this.decryptTrackerToken(r)));
   }
 
   async getTrackerConnection(id: string): Promise<TrackerConnectionRow | undefined> {
