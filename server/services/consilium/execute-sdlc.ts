@@ -392,7 +392,11 @@ export class SdlcExecutionService {
 
     // MED-2: arm the anti-wedge watchdog BEFORE dispatch so even a synchronously
     // hung promise is covered. `finalize` clears it on a normal settle.
-    const budgetMs = cfg.sdlcTimeoutMs + WATCHDOG_MARGIN_MS;
+    // The run codes each action point SEQUENTIALLY, each bounded by sdlcTimeoutMs,
+    // so the WHOLE-run budget is N x sdlcTimeoutMs (+ margin) — sizing it for a
+    // single coder would force-settle a HEALTHY multi-AP run mid-way (the #417
+    // per-AP-vs-single-coder lesson, here applied to the watchdog).
+    const budgetMs = Math.max(1, run.actionPointCount) * cfg.sdlcTimeoutMs + WATCHDOG_MARGIN_MS;
     run.watchdog = setTimeout(() => {
       this.finalize(groupId, run, {
         status: "failed",
