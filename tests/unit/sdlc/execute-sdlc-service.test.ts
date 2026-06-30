@@ -298,8 +298,8 @@ describe("SdlcExecutionService — MED-2 watchdog + settled-row GC", () => {
       const first = await service.execute(GROUP, OWNER);
       expect(service.getStatus(GROUP)?.status).toBe("running");
 
-      // Advance just past coderTimeoutMs + the watchdog margin.
-      await vi.advanceTimersByTimeAsync(SDLC_TIMEOUT_MS + WATCHDOG_MARGIN_MS + 1);
+      // Advance just past the WHOLE-run budget: actionPoints(2) x coderTimeoutMs + margin.
+      await vi.advanceTimersByTimeAsync(2 * SDLC_TIMEOUT_MS + WATCHDOG_MARGIN_MS + 1);
 
       const settled = service.getStatus(GROUP)!;
       expect(settled.status).toBe("failed");
@@ -324,7 +324,8 @@ describe("SdlcExecutionService — MED-2 watchdog + settled-row GC", () => {
       const { service } = makeService(makeStorage({}), runSdlc as never);
 
       await service.execute(GROUP, OWNER);
-      await vi.advanceTimersByTimeAsync(SDLC_TIMEOUT_MS + WATCHDOG_MARGIN_MS + 1);
+      // WHOLE-run budget: actionPoints(2) x coderTimeoutMs + margin.
+      await vi.advanceTimersByTimeAsync(2 * SDLC_TIMEOUT_MS + WATCHDOG_MARGIN_MS + 1);
 
       const forced = service.getStatus(GROUP)!;
       expect(forced.status).toBe("failed");
