@@ -5,19 +5,29 @@
  *
  * It POSTs `{ repoPath, preset, maxRounds?, baselineCommit? }` to
  * `/api/consilium-reviews` via the shared apiRequest transport (carries auth +
- * `x-project-id`, same as every project-scoped call). That endpoint is being
- * built by a parallel backend agent — we code against the agreed contract; a
- * runtime 404 until their PR lands is EXPECTED and surfaces as a failure toast
- * (it never blocks the page).
+ * `x-project-id`, same as every project-scoped call).
+ *
+ * REPO SELECTION: instead of free-typing a path that may not be allowlisted, the
+ * user PICKS from the active project's workspaces (passed in by the page, which
+ * already runs the project-scoped `/api/workspaces` query). Each option labels
+ * the workspace `name` and submits its `path`, defaulting to the first. Two
+ * escape hatches keep it from ever being a dead end:
+ *   1. NO workspaces registered → we fall back to the original free-text input
+ *      (with a hint), so the project can still launch a review.
+ *   2. "Advanced: enter a custom path" toggle → reveals the free-text input for a
+ *      repo that is allowlisted server-side but not registered as a workspace.
+ * The server still re-validates repoPath against its allowlist; a rejection comes
+ * back as a 400 whose `error` text we surface VERBATIM in the failure toast (so
+ * "...is not in the allowed repo paths" is actionable, not a mystery).
  *
  * On success we invalidate the loops list and, if the response carries an id
  * (id / loopId / loop.id — defensive, the exact envelope is the backend's), we
  * navigate to the new loop's detail.
  *
- * SECURITY: the only free-text the user supplies (repoPath / baselineCommit) is
- * sent as a JSON body to an allowlist-validated server route; nothing is
- * interpolated into a URL path or shell. The server re-validates repoPath
- * against its allowlist.
+ * SECURITY: the only free-text the user supplies (custom repoPath / baselineCommit)
+ * is sent as a JSON body to an allowlist-validated server route; nothing is
+ * interpolated into a URL path or shell. The server re-validates repoPath against
+ * its allowlist.
  */
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
@@ -52,6 +62,9 @@ const PRESETS = [
 ] as const;
 type Preset = (typeof PRESETS)[number]["value"];
 
+/** The slice of a workspace this dialog needs — a human `name` and a repo `path`. */
+export type ReviewWorkspaceOption = { id?: string; name: string; path: string };
+
 /** Best-effort id extraction — the exact create envelope is the backend's call. */
 function createdLoopId(res: unknown): string | undefined {
   if (!res || typeof res !== "object") return undefined;
@@ -61,14 +74,24 @@ function createdLoopId(res: unknown): string | undefined {
 }
 
 export function NewConsiliumReviewDialog({
-  defaultRepoPath,
+  workspaces,
 }: {
-  /** Pre-fill from the active project's first workspace path, when known. */
-  defaultRepoPath?: string;
+  /**
+   * The active project's workspaces (already fetched by the page). When present,
+   * the repo control is a dropdown over these; when empty/undefined, the dialog
+   * falls back to a free-text path input so it is never a dead end.
+   */
+  workspaces?: ReviewWorkspaceOption[];
 }) {
+  const wsList = workspaces ?? [];
+  const hasWorkspaces = wsList.length > 0;
+
   const [open, setOpen] = useState(false);
   const [preset, setPreset] = useState<Preset>("sdlc-cross-review");
-  const [repoPath, setRepoPath] = useState(defaultRepoPath ?? "");
+  const [repoPath, setRepoPath] = useState(wsList[0]?.path ?? "");
+  // "Advanced: enter a custom path" — reveals the free-text input even when
+  // workspaces exist (for an allowlisted repo not registered as a workspace).
+  const [customMode, setCustomMode] = useState(false);
   const [maxRounds, setMaxRounds] = useState("1");
   const [baselineCommit, setBaselineCommit] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -76,11 +99,31 @@ export function NewConsiliumReviewDialog({
   const qc = useQueryClient();
   const { toast } = useToast();
 
-  // Seed the repo path once the workspaces query resolves, but never clobber a
-  // value the user has already typed (functional update keeps repoPath out of deps).
+  // Whether to show the free-text input: no workspaces to pick from, or the user
+  // explicitly opted into a custom path.
+  const freeText = !hasWorkspaces || customMode;
+
+  // Seed the repo path once the workspaces query resolves (it may arrive after
+  // mount), but never clobber a value already chosen/typed and never override a
+  // custom path. Functional update keeps repoPath out of the dep array.
   useEffect(() => {
-    if (defaultRepoPath) setRepoPath((cur) => cur || defaultRepoPath);
-  }, [defaultRepoPath]);
+    if (hasWorkspaces && !customMode) {
+      setRepoPath((cur) => cur || wsList[0].path);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasWorkspaces, customMode, wsList[0]?.path]);
+
+  const enterCustomPath = () => {
+    // Carry the current selection into the input as a starting point.
+    setCustomMode(true);
+  };
+  const useWorkspacePicker = () => {
+    setCustomMode(false);
+    // If the typed path isn't one of the workspaces, snap back to the first one
+    // so the dropdown always has a valid selection.
+    const known = wsList.some((w) => w.path === repoPath);
+    if (!known) setRepoPath(wsList[0]?.path ?? "");
+  };
 
   const handleSubmit = async () => {
     const path = repoPath.trim();
@@ -110,6 +153,9 @@ export function NewConsiliumReviewDialog({
       const id = createdLoopId(created);
       if (id) navigate(`/consilium-loops/${id}`);
     } catch (e) {
+      // Surface the server's message VERBATIM — apiRequest threads the 400's
+      // `error` text into Error.message, so the user sees e.g. "...is not in the
+      // allowed repo paths" rather than a generic failure.
       toast({
         title: "Failed to start review",
         description: e instanceof Error ? e.message : undefined,
@@ -150,13 +196,51 @@ export function NewConsiliumReviewDialog({
           </div>
 
           <div className="space-y-2">
-            <Label>Repo path</Label>
-            <Input
-              value={repoPath}
-              onChange={(e) => setRepoPath(e.target.value)}
-              placeholder="/path/to/allowlisted/repo"
-              data-testid="new-review-repo-path"
-            />
+            <div className="flex items-baseline justify-between gap-2">
+              <Label>Repository</Label>
+              {/* Advanced affordance — only meaningful when there ARE workspaces
+                  to pick from; with none, the free-text input is already shown. */}
+              {hasWorkspaces && (
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                  onClick={freeText ? useWorkspacePicker : enterCustomPath}
+                  data-testid="new-review-toggle-custom-path"
+                >
+                  {freeText ? "Pick a workspace instead" : "Advanced: enter a custom path"}
+                </button>
+              )}
+            </div>
+
+            {freeText ? (
+              <>
+                <Input
+                  value={repoPath}
+                  onChange={(e) => setRepoPath(e.target.value)}
+                  placeholder="/path/to/allowlisted/repo"
+                  data-testid="new-review-repo-path"
+                />
+                {!hasWorkspaces && (
+                  <p className="text-xs text-muted-foreground">
+                    No workspaces registered for this project — enter a repo path
+                    that the server allowlists.
+                  </p>
+                )}
+              </>
+            ) : (
+              <Select value={repoPath} onValueChange={setRepoPath}>
+                <SelectTrigger data-testid="new-review-repo-select">
+                  <SelectValue placeholder="Select a workspace" />
+                </SelectTrigger>
+                <SelectContent>
+                  {wsList.map((w, i) => (
+                    <SelectItem key={w.id ?? w.path ?? i} value={w.path}>
+                      {w.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
 
           <div className="space-y-2">

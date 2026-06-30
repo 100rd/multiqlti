@@ -355,8 +355,9 @@ export default function ConsiliumLoopList() {
   const workspaceName = (repoPath: string): string =>
     nameByPath.get(normalizePath(repoPath)) ?? repoBasename(repoPath);
 
-  // Seed the New-review dialog with the project's first workspace path, if any.
-  const defaultRepoPath = Array.isArray(workspaceData) ? workspaceData[0]?.path : undefined;
+  // Hand the New-review dialog the project.s workspaces so the user PICKS a repo
+  // (dropdown) instead of free-typing a possibly-unallowlisted path.
+  const workspaceOptions = Array.isArray(workspaceData) ? workspaceData : [];
 
   // Group loops by resolved workspace name. Within a group: most-recent first.
   // Group order: the workspace with the most recently active loop floats up.
@@ -394,7 +395,7 @@ export default function ConsiliumLoopList() {
           </p>
         </div>
         <div className="ml-auto">
-          <NewConsiliumReviewDialog defaultRepoPath={defaultRepoPath} />
+          <NewConsiliumReviewDialog workspaces={workspaceOptions} />
         </div>
       </header>
 
