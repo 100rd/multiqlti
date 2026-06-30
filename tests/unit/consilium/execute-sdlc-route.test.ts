@@ -20,7 +20,7 @@ import express from "express";
 import request from "supertest";
 import type { AppConfig } from "../../../server/config/schema.js";
 import type { IStorage } from "../../../server/storage.js";
-import type { SdlcHandoffResult } from "../../../server/services/sdlc/executor.js";
+import type { SdlcHandoffResult, SdlcProgress } from "../../../server/services/sdlc/executor.js";
 import { SdlcExecutionService } from "../../../server/services/consilium/execute-sdlc.js";
 import { registerExecuteSdlcRoutes } from "../../../server/routes/execute-sdlc.js";
 
@@ -239,6 +239,36 @@ describe("GET /api/task-groups/:groupId/execute-sdlc/status", () => {
     expect(done.body.status).toBe("done");
     expect(done.body.prRef).toBe("https://gh/pr/42");
     expect(done.body.headCommit).toBe("deadbeef");
+  });
+
+  it("surfaces the per-AP PROGRESS beat for a running run", async () => {
+    // The executor emits one synchronous beat, then stays running.
+    const runSdlc = vi.fn((_req: unknown, _deps: unknown, onProgress?: (p: SdlcProgress) => void) => {
+      onProgress?.({
+        phase: "coding",
+        actionPointIndex: 1,
+        actionPointTotal: 2,
+        actionPointTitle: "SERVER AP1",
+        completedCount: 0,
+      });
+      return new Promise<SdlcHandoffResult>(() => {}); // stay running
+    });
+    const { app } = makeApp(makeStorage(), runSdlc as never);
+
+    const post = await request(app).post(`/api/task-groups/${GROUP}/execute-sdlc`).send({});
+    expect(post.status).toBe(202);
+
+    const status = await request(app).get(`/api/task-groups/${GROUP}/execute-sdlc/status`);
+    expect(status.status).toBe(200);
+    expect(status.body.status).toBe("running");
+    // The progress is surfaced ALONGSIDE the existing fields.
+    expect(status.body.progress).toMatchObject({
+      phase: "coding",
+      actionPointIndex: 1,
+      actionPointTotal: 2,
+      actionPointTitle: "SERVER AP1",
+      completedCount: 0,
+    });
   });
 
   it("a non-owner cannot read another user's run status (403)", async () => {

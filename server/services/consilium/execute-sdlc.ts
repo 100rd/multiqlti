@@ -61,7 +61,7 @@ import { randomUUID } from "crypto";
 import type { IStorage } from "../../storage.js";
 import type { AppConfig } from "../../config/schema.js";
 import type { ActionPoint } from "@shared/types";
-import { runSdlcHandoff } from "../sdlc/executor.js";
+import { runSdlcHandoff, type SdlcProgress } from "../sdlc/executor.js";
 import { pickJudgeOutput } from "./consilium-loop-controller.js";
 import { extractActionPoints } from "../orchestrator/convergence.js";
 import { assertAllowedRepoPath } from "./repo-allowlist.js";
@@ -129,6 +129,10 @@ export interface ExecuteSdlcStatus {
   startedAt: number;
   /** epoch ms the run settled (absent while running). */
   settledAt?: number;
+  /** Latest per-action-point progress beat (display-only): which phase + index/
+   *  total + clamped title + completed count. The LAST-SEEN beat while running;
+   *  retained as the last-seen beat once settled. Absent before the first beat. */
+  progress?: SdlcProgress;
 }
 
 /** The 202 handle the route returns (a subset of the status, plus `deduped`). */
@@ -153,6 +157,9 @@ interface ExecuteSdlcRun {
   error?: string;
   startedAt: number;
   settledAt?: number;
+  /** Latest display-only progress beat (written synchronously by the executor's
+   *  onProgress sink while the run is `running`; never after settle). */
+  progress?: SdlcProgress;
   /** MED-2: the anti-wedge timer, armed at dispatch and cleared on settle. */
   watchdog?: ReturnType<typeof setTimeout>;
 }
@@ -283,6 +290,7 @@ export class SdlcExecutionService {
       error: run.error,
       startedAt: run.startedAt,
       settledAt: run.settledAt,
+      progress: run.progress,
     };
   }
 
@@ -395,15 +403,28 @@ export class SdlcExecutionService {
     }, budgetMs);
     if (typeof run.watchdog.unref === "function") run.watchdog.unref();
 
-    void exec({
-      repoPath,
-      loopId: run.runId, // fresh uuid → server-derived branch consilium/loop-<id>/round-1
-      round: run.round, // 1 — round-shape invariant
-      actionPoints,
-      allowedRepoPaths: cfg.allowedRepoPaths,
-      ownerId,
-      coderTimeoutMs: cfg.sdlcTimeoutMs,
-    })
+    // Record the LATEST progress beat onto the registry row so the status poll can
+    // show WHAT the executor is doing (coding AP i/N, pushing, opening PR, done).
+    // GUARD on `running`: a late beat must NEVER resurrect / mutate a settled
+    // (done / failed / force-settled) row. Synchronous + single-process → no lock.
+    const onProgress = (p: SdlcProgress): void => {
+      if (run.status !== "running") return;
+      run.progress = p;
+    };
+
+    void exec(
+      {
+        repoPath,
+        loopId: run.runId, // fresh uuid → server-derived branch consilium/loop-<id>/round-1
+        round: run.round, // 1 — round-shape invariant
+        actionPoints,
+        allowedRepoPaths: cfg.allowedRepoPaths,
+        ownerId,
+        coderTimeoutMs: cfg.sdlcTimeoutMs,
+      },
+      undefined,
+      onProgress,
+    )
       .then((result) => {
         this.finalize(groupId, run, {
           status: result.error && result.prRef === null ? "failed" : "done",

@@ -20,6 +20,13 @@
  * shared worktree → avoid edit conflicts); the coder's ConcurrencyLimiter still
  * bounds concurrent coders ACROSS loops.
  *
+ * PROGRESS (optional, display-only): the per-AP loop + commit/push/PR phases emit
+ * a cheap SYNCHRONOUS {@link SdlcProgress} beat through an OPTIONAL `onProgress`
+ * callback, so a UI can show WHAT the executor is doing (coding AP 2/3, pushing,
+ * opening PR, done) instead of only a binary running/done. The consilium LOOP
+ * caller passes no callback ⇒ zero behavior change. The untrusted action-point
+ * title in a beat is control-stripped + clamped (`sanitizeLine`) — never a sink.
+ *
  * Lifecycle (cleanup GUARANTEED):
  *   1. createSdlcWorktree(repo, B-3 branch, baseRef=default-branch HEAD)
  *   2. for each action point, sequentially:
@@ -37,10 +44,11 @@
  * SECURITY (BINDING — adversarial-review surface; UNCHANGED from before):
  *   - branch + PR title are SERVER-DERIVED ONLY (buildBranchName / fixed prefix).
  *     Action-point text NEVER reaches a branch, a PR title, or any shell string.
- *   - Untrusted action-point text reaches: the coder prompt (stdin only) and the
- *     commit SUBJECT + BODY + PR-body status lines — all sanitized (control chars
- *     stripped) + clamped and passed as arg-array elements (commit via `-m`, PR
- *     body via `--body-file` in pr-wrapper), NEVER a shell string.
+ *   - Untrusted action-point text reaches: the coder prompt (stdin only), the
+ *     commit SUBJECT + BODY + PR-body status lines, AND the display-only progress
+ *     `actionPointTitle` — all sanitized (control chars stripped) + clamped and
+ *     passed as arg-array elements (commit via `-m`, PR body via `--body-file`) or
+ *     as a JSON field (progress), NEVER a shell string.
  *   - The coder is confined to the worktree (cwd + --add-dir); NO Bash; spawned
  *     under a sanitized allowlisted env. The worktree is a server-minted temp dir.
  *   - Agents NEVER apply/merge: this opens a DRAFT PR only. No push to main.
@@ -66,6 +74,7 @@ const PRIORITY_MAX = 16;
 const PR_BODY_TITLE_MAX = 120;
 const PR_BODY_RATIONALE_MAX = 200; // 1-line rationale in the "addressed" list
 const PR_BODY_MAX = 16_000;
+const PROGRESS_TITLE_MAX = 120; // display-only progress title clamp (matches PR_BODY_TITLE_MAX)
 
 /** Per-action-point outcome status surfaced in the Draft PR body. */
 export type ApStatus = "completed" | "partial" | "failed";
@@ -85,6 +94,37 @@ export interface ApOutcome {
   /** Short server-generated note (e.g. "coder timed out", "no file changes"). */
   note?: string;
 }
+
+/**
+ * A cheap, SYNCHRONOUS progress beat emitted at each meaningful SDLC step so a UI
+ * can show WHAT the executor is doing right now (not just running/done). This is
+ * DISPLAY-ONLY JSON.
+ *
+ * SECURITY: `actionPointTitle` is UNTRUSTED verdict text. It is already
+ * control-stripped + clamped via `sanitizeLine` (the SAME clamp/scrub used on the
+ * commit/PR path) BEFORE it lands here, and it NEVER reaches a shell / branch /
+ * PR title through this path — it is only ever serialized into the status JSON.
+ *
+ * The consilium LOOP caller passes NO callback, so emitting is zero-overhead and a
+ * complete no-op for it (behavior identical to before this field existed).
+ */
+export interface SdlcProgress {
+  /** Which phase the executor is in right now. */
+  phase: "coding" | "committing" | "pushing" | "opening_pr" | "done";
+  /** 1-based position of the action point being worked. For the push/opening_pr/
+   *  done phases (no single AP) this carries the action-point TOTAL. */
+  actionPointIndex: number;
+  /** How many action points this round carries (one coder run + commit each). */
+  actionPointTotal: number;
+  /** The current action point's title — UNTRUSTED, control-stripped + clamped
+   *  (`sanitizeLine`). Empty for the push/opening_pr/done phases. Display only. */
+  actionPointTitle: string;
+  /** How many action points have produced a commit so far. */
+  completedCount: number;
+}
+
+/** Optional progress sink threaded through the per-AP loop + push/PR phases. */
+export type SdlcProgressFn = (progress: SdlcProgress) => void;
 
 export interface SdlcHandoffRequest {
   /** Allowlisted repo to operate on. */
@@ -137,8 +177,9 @@ function scrub(raw: string): string {
 
 /**
  * Sanitize UNTRUSTED model text for a SINGLE-LINE field (commit subject / PR
- * status line): strip control chars / newlines, collapse whitespace, clamp.
- * Passed only as arg-array / body-file content — never a shell string.
+ * status line / progress title): strip control chars / newlines, collapse
+ * whitespace, clamp. Passed only as arg-array / body-file content / display JSON
+ * — never a shell string.
  */
 function sanitizeLine(value: string, max: number): string {
   return value
@@ -255,12 +296,33 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
 }
 
 /**
+ * Wrap the optional progress sink so a THROWING callback can NEVER break the
+ * executor's NEVER-THROWS guarantee (the sink is best-effort + display-only).
+ * Returns a no-op when no callback was supplied (the consilium LOOP path).
+ */
+function makeEmit(onProgress?: SdlcProgressFn): SdlcProgressFn {
+  if (!onProgress) return () => {};
+  return (p: SdlcProgress) => {
+    try {
+      onProgress(p);
+    } catch {
+      // Progress is best-effort; a bad sink must not affect the SDLC run.
+    }
+  };
+}
+
+/**
  * Run the full SDLC handoff for one round. Never throws. The worktree is removed
  * in a `finally`, so it is cleaned up even when a coder run throws / times out.
+ *
+ * @param onProgress OPTIONAL display-only progress sink. The consilium LOOP caller
+ *   passes nothing ⇒ zero behavior change; the human-triggered service passes one
+ *   to surface per-AP progress on the status poll.
  */
 export async function runSdlcHandoff(
   req: SdlcHandoffRequest,
   deps: SdlcExecutorDeps = {},
+  onProgress?: SdlcProgressFn,
 ): Promise<SdlcHandoffResult> {
   const gitRaw = deps.gitRaw ?? defaultGitRaw;
   const createWorktree = deps.createWorktree ?? createSdlcWorktree;
@@ -269,6 +331,7 @@ export async function runSdlcHandoff(
   const runCoder = deps.runCoder ?? ((dir, aps, opts) => sharedCoder.run(dir, aps, opts));
   const push = deps.push ?? pushBranch;
   const openPr = deps.openPr ?? openDraftPr;
+  const emit = makeEmit(onProgress);
 
   // B-3: server-derived branch; defensively re-gate before anything runs.
   const branch = buildBranchName(req.loopId, req.round);
@@ -292,21 +355,37 @@ export async function runSdlcHandoff(
       // SEQUENTIAL per-action-point runs in the ONE shared worktree (avoid edit
       // conflicts). Each `runActionPoint` NEVER throws — a coder timeout/error is
       // caught, its work committed `[partial]`, and the loop continues.
+      const total = req.actionPoints.length;
       const outcomes: ApOutcome[] = [];
       let committedCount = 0;
-      for (let i = 0; i < req.actionPoints.length; i++) {
+      for (let i = 0; i < total; i++) {
         const outcome = await runActionPoint(
-          { gitRaw, runCoder },
+          { gitRaw, runCoder, emit, completedBefore: committedCount },
           wt,
           req,
           req.actionPoints[i],
           i + 1,
-          req.actionPoints.length,
+          total,
         );
         outcomes.push(outcome);
         if (outcome.committed) committedCount += 1;
       }
-      return await pushAndOpenPr(req, branch, base, wt, outcomes, committedCount, { gitRaw, push, openPr });
+      const result = await pushAndOpenPr(req, branch, base, wt, outcomes, committedCount, {
+        gitRaw,
+        push,
+        openPr,
+        emit,
+      });
+      // Terminal beat — the executor finished its work for this round (the SERVICE
+      // separately classifies done/failed from the result; this is phase-only).
+      emit({
+        phase: "done",
+        actionPointIndex: total,
+        actionPointTotal: total,
+        actionPointTitle: "",
+        completedCount: committedCount,
+      });
+      return result;
     } finally {
       // Cleanup GUARANTEE: remove the worktree even on any failure above.
       await removeWorktree(req.repoPath, wt.worktreeDir, { baseDir: wt.baseDir, gitRaw });
@@ -320,10 +399,17 @@ export async function runSdlcHandoff(
 /**
  * Run ONE action point: coder → `git add -A` → commit (partial-preserve on
  * timeout/error). NEVER throws — every failure is captured into the returned
- * outcome so the round continues and partial work is preserved.
+ * outcome so the round continues and partial work is preserved. Emits a `coding`
+ * beat before the coder runs and a `committing` beat before the commit.
  */
 async function runActionPoint(
-  io: { gitRaw: GitRunner; runCoder: NonNullable<SdlcExecutorDeps["runCoder"]> },
+  io: {
+    gitRaw: GitRunner;
+    runCoder: NonNullable<SdlcExecutorDeps["runCoder"]>;
+    emit: SdlcProgressFn;
+    /** Commits produced by EARLIER action points (this AP not yet counted). */
+    completedBefore: number;
+  },
   wt: CreateWorktreeResult,
   req: SdlcHandoffRequest,
   ap: ActionPoint,
@@ -332,7 +418,18 @@ async function runActionPoint(
 ): Promise<ApOutcome> {
   const priority = sanitizeLine(ap.priority ?? "-", PRIORITY_MAX) || "-";
   const title = sanitizeLine(ap.title ?? "", PR_BODY_TITLE_MAX);
+  // Display-only progress title — clamped + control-stripped (UNTRUSTED text).
+  const progressTitle = sanitizeLine(ap.title ?? "", PROGRESS_TITLE_MAX);
   const base: Omit<ApOutcome, "status" | "committed" | "note"> = { index, priority, title };
+
+  // 0. Beat: about to run the coder for THIS action point.
+  io.emit({
+    phase: "coding",
+    actionPointIndex: index,
+    actionPointTotal: total,
+    actionPointTitle: progressTitle,
+    completedCount: io.completedBefore,
+  });
 
   // 1. Run the coder for THIS action point only. A throw (timeout / binary
   //    missing) is caught — its partial edits are still committed below.
@@ -371,6 +468,14 @@ async function runActionPoint(
   const isPartial = threw || (coder !== null && !coder.ok);
   const note = isPartial ? (runNote ?? coder?.error ?? "coder did not finish") : undefined;
   const { subject, body } = buildApCommitMessage(req.round, ap, index, total, isPartial, note);
+  // Beat: about to commit THIS action point's work.
+  io.emit({
+    phase: "committing",
+    actionPointIndex: index,
+    actionPointTotal: total,
+    actionPointTitle: progressTitle,
+    completedCount: io.completedBefore,
+  });
   try {
     // Arg-array `-m` elements — never a shell string. Untrusted text only here.
     await io.gitRaw(wt.worktreeDir, ["commit", "-m", subject, "-m", body]);
@@ -388,6 +493,7 @@ async function runActionPoint(
 /**
  * After all action points: if ANY commit exists, push the branch + open ONE Draft
  * PR whose body summarizes per-AP status. ZERO commits → `{ prRef: null }` + error.
+ * Emits a `pushing` beat before the push and an `opening_pr` beat before gh.
  */
 async function pushAndOpenPr(
   req: SdlcHandoffRequest,
@@ -396,8 +502,9 @@ async function pushAndOpenPr(
   wt: CreateWorktreeResult,
   outcomes: readonly ApOutcome[],
   committedCount: number,
-  io: { gitRaw: GitRunner; push: typeof pushBranch; openPr: typeof openDraftPr },
+  io: { gitRaw: GitRunner; push: typeof pushBranch; openPr: typeof openDraftPr; emit: SdlcProgressFn },
 ): Promise<SdlcHandoffResult> {
+  const total = req.actionPoints.length;
   if (committedCount === 0) {
     // Every action point failed / produced nothing — no branch to PR (as today).
     const failed = outcomes.find((o) => o.note)?.note;
@@ -406,12 +513,30 @@ async function pushAndOpenPr(
 
   const headCommit = (await io.gitRaw(wt.worktreeDir, ["rev-parse", "HEAD"])).trim();
 
+  // Beat: pushing the branch.
+  io.emit({
+    phase: "pushing",
+    actionPointIndex: total,
+    actionPointTotal: total,
+    actionPointTitle: "",
+    completedCount: committedCount,
+  });
+
   // Push from the worktree (shares the repo's object store + remotes). pr-wrapper
   // re-gates the branch (B-3) and runs under a sanitized env (H-7).
   const pushed = await io.push(wt.worktreeDir, branch);
   if (!pushed.ok) {
     return { prRef: null, headCommit, error: scrub(`push failed: ${pushed.message}`) };
   }
+
+  // Beat: opening the Draft PR.
+  io.emit({
+    phase: "opening_pr",
+    actionPointIndex: total,
+    actionPointTotal: total,
+    actionPointTitle: "",
+    completedCount: committedCount,
+  });
 
   const pr = await io.openPr(wt.worktreeDir, {
     base,

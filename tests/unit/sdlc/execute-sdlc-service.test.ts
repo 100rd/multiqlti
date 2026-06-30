@@ -23,7 +23,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { AppConfig } from "../../../server/config/schema.js";
 import type { IStorage } from "../../../server/storage.js";
-import type { SdlcHandoffResult } from "../../../server/services/sdlc/executor.js";
+import type { SdlcHandoffResult, SdlcProgress } from "../../../server/services/sdlc/executor.js";
 import {
   SdlcExecutionService,
   ExecuteSdlcError,
@@ -377,5 +377,77 @@ describe("SdlcExecutionService — MED-2 watchdog + settled-row GC", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("SdlcExecutionService — per-AP progress recording", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const beat = (over: Partial<SdlcProgress> = {}): SdlcProgress => ({
+    phase: "coding",
+    actionPointIndex: 1,
+    actionPointTotal: 2,
+    actionPointTitle: "AP1",
+    completedCount: 0,
+    ...over,
+  });
+
+  it("records the LATEST progress beat onto the run row; the status surfaces it", async () => {
+    // A runSdlc that emits two beats SYNCHRONOUSLY, then stays running (holds the row).
+    const runSdlc = vi.fn((_req: unknown, _deps: unknown, onProgress?: (p: SdlcProgress) => void) => {
+      onProgress?.(beat({ phase: "coding", actionPointIndex: 1, completedCount: 0 }));
+      onProgress?.(beat({ phase: "committing", actionPointIndex: 2, actionPointTitle: "AP2", completedCount: 1 }));
+      return new Promise<SdlcHandoffResult>(() => {}); // never settles → stays running
+    });
+    const { service } = makeService(makeStorage({}), runSdlc as never);
+
+    await service.execute(GROUP, OWNER);
+    const status = service.getStatus(GROUP)!;
+    expect(status.status).toBe("running");
+    // The LATEST beat (committing AP2) wins — not the earlier coding beat.
+    expect(status.progress).toEqual({
+      phase: "committing",
+      actionPointIndex: 2,
+      actionPointTotal: 2,
+      actionPointTitle: "AP2",
+      completedCount: 1,
+    });
+  });
+
+  it("a progress beat AFTER settle does NOT mutate / resurrect a settled run", async () => {
+    let captured: ((p: SdlcProgress) => void) | undefined;
+    // Emit one beat, capture the sink, then RESOLVE (settles the row to done).
+    const runSdlc = vi.fn(async (_req: unknown, _deps: unknown, onProgress?: (p: SdlcProgress) => void) => {
+      captured = onProgress;
+      onProgress?.(beat({ phase: "coding", actionPointIndex: 1, completedCount: 0 }));
+      return PR_RESULT;
+    });
+    const { service } = makeService(makeStorage({}), runSdlc as never);
+
+    await service.execute(GROUP, OWNER);
+    await vi.waitFor(() => expect(service.getStatus(GROUP)?.status).toBe("done"));
+    const settled = service.getStatus(GROUP)!;
+    const progressAtSettle = settled.progress;
+
+    // A LATE beat arrives after the run settled — the running-guard must drop it.
+    captured?.(beat({ phase: "done", actionPointIndex: 2, actionPointTitle: "LATE", completedCount: 2 }));
+
+    const after = service.getStatus(GROUP)!;
+    expect(after.status).toBe("done"); // unchanged — not resurrected
+    expect(after.progress).toEqual(progressAtSettle); // the late beat did NOT overwrite it
+    expect(after.progress?.actionPointTitle).not.toBe("LATE");
+  });
+
+  it("status carries the LAST-SEEN progress once a run is settled (done)", async () => {
+    const runSdlc = vi.fn(async (_req: unknown, _deps: unknown, onProgress?: (p: SdlcProgress) => void) => {
+      onProgress?.(beat({ phase: "opening_pr", actionPointIndex: 2, actionPointTitle: "", completedCount: 2 }));
+      return PR_RESULT;
+    });
+    const { service } = makeService(makeStorage({}), runSdlc as never);
+    await service.execute(GROUP, OWNER);
+    await vi.waitFor(() => expect(service.getStatus(GROUP)?.status).toBe("done"));
+    const status = service.getStatus(GROUP)!;
+    expect(status.prRef).toBe("https://gh/pr/1"); // final fields kept
+    expect(status.progress?.phase).toBe("opening_pr"); // last-seen progress retained
   });
 });

@@ -21,6 +21,7 @@ import { apiRequest } from "@/hooks/use-pipeline";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { copyText } from "@/lib/clipboard";
 import {
@@ -131,11 +132,51 @@ function buildFullText(data: VerdictOutput, groupName: string, source: string): 
   return lines.join("\n");
 }
 
+/**
+ * Live progress emitted by the SDLC executor mid-run. EVERY subfield is optional:
+ * older status responses omit `progress` entirely, and any individual field may be
+ * missing for a given poll — so every read below is defensive.
+ */
+interface SdlcProgress {
+  phase?: "coding" | "committing" | "pushing" | "opening_pr" | "done";
+  actionPointIndex?: number;
+  actionPointTotal?: number;
+  actionPointTitle?: string;
+  completedCount?: number;
+}
+
+/**
+ * Humanize the current phase into a single Russian status line. Falls back to a
+ * generic "SDLC идёт…" whenever `progress` (or the specific phase) is absent.
+ */
+function humanizePhase(progress: SdlcProgress | undefined, total: number): string {
+  switch (progress?.phase) {
+    case "committing":
+      return "Коммичу…";
+    case "pushing":
+      return "Пушу ветку…";
+    case "opening_pr":
+      return "Открываю Draft PR…";
+    case "coding": {
+      const idx = progress?.actionPointIndex;
+      const pos =
+        typeof idx === "number" ? `${idx + 1}${total > 0 ? `/${total}` : ""}` : "";
+      const title = progress?.actionPointTitle;
+      const titlePart = title ? `: «${title}»` : "";
+      return pos
+        ? `Кодирую action point ${pos}${titlePart}`
+        : `Кодирую action point${titlePart}`;
+    }
+    default:
+      return "SDLC идёт…";
+  }
+}
+
 /** SDLC hand-off lifecycle. Drives the primary action button + the PR callout. */
 type ExecState =
   | { status: "idle" }
   | { status: "starting" }
-  | { status: "running" }
+  | { status: "running"; progress?: SdlcProgress }
   | { status: "done"; prRef?: string }
   | { status: "failed"; error?: string };
 
@@ -143,6 +184,7 @@ interface SdlcStatusResponse {
   status: "running" | "done" | "failed";
   prRef?: string;
   error?: string;
+  progress?: SdlcProgress;
 }
 
 export function VerdictPanel({
@@ -191,8 +233,10 @@ export function VerdictPanel({
             title: "SDLC не удался",
             description: s.error || "Исполнение завершилось ошибкой.",
           });
+        } else {
+          // still running — refresh the live progress so the panel re-renders.
+          setExec({ status: "running", progress: s.progress });
         }
-        // else: still running — keep polling.
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : String(err);
@@ -397,6 +441,48 @@ export function VerdictPanel({
               </Button>
             </div>
 
+            {exec.status === "running" &&
+              (() => {
+                const progress = exec.progress;
+                const total = progress?.actionPointTotal ?? actionPoints.length;
+                const completedRaw =
+                  typeof progress?.completedCount === "number"
+                    ? Math.max(0, progress.completedCount)
+                    : undefined;
+                const completed =
+                  completedRaw !== undefined && total > 0
+                    ? Math.min(completedRaw, total)
+                    : completedRaw;
+                const pct =
+                  total > 0 && completed !== undefined
+                    ? Math.round((completed / total) * 100)
+                    : 0;
+                return (
+                  <div className="space-y-2 rounded-md border border-primary/30 bg-primary/5 p-3">
+                    <div className="flex items-center gap-2 text-sm font-medium">
+                      <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+                      <span>{humanizePhase(progress, total)}</span>
+                    </div>
+
+                    {total > 0 && (
+                      <div className="space-y-1">
+                        <Progress value={pct} className="h-2" />
+                        <div className="text-xs tabular-nums text-muted-foreground">
+                          {completed ?? 0}/{total} готово
+                        </div>
+                      </div>
+                    )}
+
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      SDLC-агент кодит каждый action point в изолированном
+                      git-worktree (твоё рабочее дерево не затрагивается), коммитит
+                      по одному на пункт, затем откроет Draft PR. Агенты не
+                      мержат — ревью и merge за тобой.
+                    </p>
+                  </div>
+                );
+              })()}
+
             {exec.status === "done" && (
               <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-green-600/40 bg-green-600/5 p-3 text-sm">
                 <Check className="h-4 w-4 text-green-600" />
@@ -419,6 +505,12 @@ export function VerdictPanel({
                   <span className="text-muted-foreground">ссылка недоступна</span>
                 )}
               </div>
+            )}
+
+            {exec.status === "done" && (
+              <p className="text-xs text-muted-foreground">
+                Дальше: проверь и смержи Draft PR.
+              </p>
             )}
 
             {exec.status === "failed" && exec.error && (
