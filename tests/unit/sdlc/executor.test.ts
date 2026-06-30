@@ -21,6 +21,7 @@ import {
   buildPrTitle,
   type SdlcHandoffRequest,
   type ApOutcome,
+  type SdlcProgress,
 } from "../../../server/services/sdlc/executor.js";
 import type { ActionPoint } from "@shared/types";
 
@@ -288,5 +289,90 @@ describe("buildPrStatusBody — enriched header + addressed action points + outc
   it("degrades to '_none recorded_' when there are no action points", () => {
     const body = buildPrStatusBody({ loopId: LOOP, round: 2, repoName: "r", actionPoints: [], outcomes });
     expect(body).toContain("_none recorded_");
+  });
+});
+
+describe("runSdlcHandoff — progress reporting (onProgress)", () => {
+  /** Collect a deep copy of every beat (the executor may reuse fields across emits). */
+  function collect() {
+    const events: SdlcProgress[] = [];
+    return { events, onProgress: (p: SdlcProgress) => events.push({ ...p }) };
+  }
+
+  it("emits coding+committing per AP with INCREASING index, then pushing→opening_pr→done", async () => {
+    const deps = makeDeps(); // both APs dirty → both commit
+    const { events, onProgress } = collect();
+    await runSdlcHandoff(baseReq(), deps as never, onProgress);
+
+    const phases = events.map((e) => e.phase);
+    // One coding + one committing beat per AP (both committed), then the tail phases.
+    expect(phases.filter((p) => p === "coding")).toHaveLength(APS.length);
+    expect(phases.filter((p) => p === "committing")).toHaveLength(APS.length);
+    expect(phases).toContain("pushing");
+    expect(phases).toContain("opening_pr");
+    // The LAST beat is the terminal "done".
+    expect(phases[phases.length - 1]).toBe("done");
+
+    // coding indices increase 1..N and carry the right total.
+    const codingIdx = events.filter((e) => e.phase === "coding").map((e) => e.actionPointIndex);
+    expect(codingIdx).toEqual([1, 2]);
+    expect(events.every((e) => e.actionPointTotal === APS.length)).toBe(true);
+
+    // completedCount climbs as commits land: AP1 coding sees 0 committed, AP2 coding sees 1.
+    const coding = events.filter((e) => e.phase === "coding");
+    expect(coding[0].completedCount).toBe(0);
+    expect(coding[1].completedCount).toBe(1);
+    // The terminal beat reports all N committed.
+    expect(events[events.length - 1]).toMatchObject({
+      phase: "done",
+      actionPointIndex: APS.length,
+      actionPointTotal: APS.length,
+      completedCount: APS.length,
+    });
+  });
+
+  it("CLAMPS + control-strips the UNTRUSTED action-point title in every coding beat", async () => {
+    const deps = makeDeps();
+    const { events, onProgress } = collect();
+    await runSdlcHandoff(baseReq(), deps as never, onProgress);
+
+    const coding0 = events.find((e) => e.phase === "coding" && e.actionPointIndex === 1)!;
+    // APS[0].title carries shell metachars + a newline — survives ONLY control-stripped.
+    expect(coding0.actionPointTitle).not.toMatch(/[\n\r]/);
+    expect(coding0.actionPointTitle).toBe("Fix `;rm -rf /` in parser with newline");
+    // The tail phases carry no AP title.
+    expect(events.find((e) => e.phase === "pushing")!.actionPointTitle).toBe("");
+    expect(events.find((e) => e.phase === "done")!.actionPointTitle).toBe("");
+  });
+
+  it("a THROWING onProgress sink never breaks the executor's NEVER-THROWS guarantee", async () => {
+    const deps = makeDeps();
+    const res = await runSdlcHandoff(baseReq(), deps as never, () => {
+      throw new Error("malicious progress sink");
+    });
+    // The run still completes + opens the PR; the bad sink is swallowed.
+    expect(res.prRef).toBe("https://github.com/x/y/pull/9");
+    expect(deps.removeWorktree).toHaveBeenCalledTimes(1);
+  });
+
+  it("omitting onProgress (the consilium LOOP path) is a zero-behavior-change no-op", async () => {
+    const deps = makeDeps();
+    const res = await runSdlcHandoff(baseReq(), deps as never);
+    expect(res.prRef).toBe("https://github.com/x/y/pull/9");
+    expect(res.headCommit).toBe("headsha000");
+  });
+
+  it("ZERO-commit round still emits a terminal done (no pushing/opening_pr beats)", async () => {
+    // Nothing dirty → no commits → no push/PR — but the terminal done still fires.
+    const deps = makeDeps({ gitRaw: makeGitRaw(false) });
+    const { events, onProgress } = collect();
+    await runSdlcHandoff(baseReq(), deps as never, onProgress);
+    const phases = events.map((e) => e.phase);
+    expect(phases).toContain("coding");
+    expect(phases).not.toContain("committing"); // never reached the commit step
+    expect(phases).not.toContain("pushing");
+    expect(phases).not.toContain("opening_pr");
+    expect(phases[phases.length - 1]).toBe("done");
+    expect(events[events.length - 1].completedCount).toBe(0);
   });
 });
