@@ -53,10 +53,16 @@ export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliu
         return res.status(201).json(loop);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        // The factory re-validates repoPath against the allowlist; surface that
-        // (and a bad baseline) as a 400 without leaking fs layout.
-        if (/allowlist|outside every allowed|denied system|traversal|fail-closed|baselineCommit/i.test(message)) {
-          return res.status(400).json({ error: "repoPath is not in the configured allowlist or the request is invalid" });
+        // The factory re-validates repoPath against the allowlist; surface an
+        // ACTIONABLE 400 that names the rejected path + how to fix it, rather than
+        // an opaque "invalid" (the path is the user's own input, not an fs leak).
+        if (/baselineCommit/i.test(message)) {
+          return res.status(400).json({ error: "baselineCommit must be a 7–64 char hex commit SHA" });
+        }
+        if (/allowlist|outside every allowed|denied system|traversal|fail-closed/i.test(message)) {
+          return res.status(400).json({
+            error: `repoPath "${body.repoPath}" is not in the allowed repo paths. Add it to consiliumLoop.allowedRepoPaths in config.yaml (then restart), or pick an already-allowed workspace.`,
+          });
         }
         return res.status(500).json({ error: "Failed to create consilium review" });
       }
