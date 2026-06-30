@@ -17,7 +17,7 @@
  *
  * SECURITY: all model-authored text is rendered as INERT React text.
  */
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { useIterationDetail } from "@/hooks/use-task-iterations";
 import { useDevelopLoop } from "@/hooks/use-consilium-loops";
@@ -130,6 +130,17 @@ function buildFullText(data: VerdictOutput, groupName: string, source: string): 
           `| ${i + 1} | ${ap.title} | ${ap.priority ?? "—"} | ${ap.effort ?? "—"} | ${ap.rationale ?? "—"} | ${ap.tradeoff ?? "—"} |`,
       ),
     );
+    // DoD criteria are full sentences, not a table column — list them separately
+    // when at least one action point carries one (older verdicts simply omit it).
+    if (data.action_points.some((ap) => ap.acceptanceCriterion)) {
+      lines.push(
+        "",
+        "## Критерии приёмки (DoD)",
+        ...data.action_points.map(
+          (ap, i) => `${i + 1}. ${ap.acceptanceCriterion ?? "—"}`,
+        ),
+      );
+    }
   }
   return lines.join("\n");
 }
@@ -303,20 +314,39 @@ export function VerdictPanel({
                 </thead>
                 <tbody className="divide-y divide-border">
                   {actionPoints.map((ap, i) => (
-                    <tr key={i} className="align-top">
-                      <td className="px-3 py-2 text-muted-foreground tabular-nums">{i + 1}</td>
-                      <td className="px-3 py-2 font-medium">{ap.title}</td>
-                      <td className="px-3 py-2">
-                        {ap.priority && (
-                          <Badge className={PRIORITY_COLOR[ap.priority] ?? "bg-muted"}>
-                            {ap.priority}
-                          </Badge>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 tabular-nums">{ap.effort ?? "—"}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{ap.rationale ?? "—"}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{ap.tradeoff ?? "—"}</td>
-                    </tr>
+                    <Fragment key={i}>
+                      <tr className="align-top">
+                        <td className="px-3 py-2 text-muted-foreground tabular-nums">{i + 1}</td>
+                        <td className="px-3 py-2 font-medium">{ap.title}</td>
+                        <td className="px-3 py-2">
+                          {ap.priority && (
+                            <Badge className={PRIORITY_COLOR[ap.priority] ?? "bg-muted"}>
+                              {ap.priority}
+                            </Badge>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 tabular-nums">{ap.effort ?? "—"}</td>
+                        <td className="px-3 py-2 text-muted-foreground">{ap.rationale ?? "—"}</td>
+                        <td className="px-3 py-2 text-muted-foreground">{ap.tradeoff ?? "—"}</td>
+                      </tr>
+                      {/* DoD criterion — a full sentence, so it spans the whole row
+                          beneath its action point rather than being a 7th column.
+                          INERT model-authored text; guarded to "—" when absent. */}
+                      <tr className="border-t-0">
+                        <td className="px-3 pb-2 pt-0" />
+                        <td
+                          className="px-3 pb-2 pt-0 text-xs text-muted-foreground"
+                          colSpan={5}
+                        >
+                          <span className="font-medium uppercase tracking-wide text-muted-foreground/70">
+                            Критерий приёмки (DoD):
+                          </span>{" "}
+                          <span className="text-foreground/80">
+                            {ap.acceptanceCriterion ?? "—"}
+                          </span>
+                        </td>
+                      </tr>
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

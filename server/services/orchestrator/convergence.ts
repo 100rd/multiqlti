@@ -27,6 +27,9 @@ const actionPointSchema = z.object({
   effort: z.string().optional(),
   rationale: z.string().optional(),
   tradeoff: z.string().optional(),
+  // Stage 1 (design §3.B): an OPTIONAL per-AP verifiable "When … Then …" DoD.
+  // Optional ⇒ an unmodified judge still yields a valid verdict (back-compat).
+  acceptanceCriterion: z.string().optional(),
 });
 
 /** The trusted `output.convergence` object, when the judge emits one. */
@@ -57,6 +60,9 @@ const NOT_CONVERGED: ConvergenceVerdict = {
 const MAX_ACTION_POINTS = 50;
 const MAX_TITLE_LEN = 500;
 const MAX_FIELD_LEN = 1000;
+// Stage 1: the per-AP acceptance criterion is UNTRUSTED model text — clamp it the
+// same way as the other free-text fields so a huge criterion can't bloat the row.
+const MAX_CRITERION_LEN = 1000;
 
 /** Truncate a string to `max` chars; pass through `undefined`. */
 function clampStr(v: string | undefined, max: number): string | undefined {
@@ -72,6 +78,10 @@ function boundActionPoint(p: ActionPoint): ActionPoint {
     effort: clampStr(p.effort, MAX_FIELD_LEN),
     rationale: clampStr(p.rationale, MAX_FIELD_LEN),
     tradeoff: clampStr(p.tradeoff, MAX_FIELD_LEN),
+    // Stage 1: this object is REBUILT from a fixed field list, so a field NOT
+    // copied here is silently stripped on persist/read. Carry the criterion
+    // through (clamped) so it survives the verdict round-trip + DEV handoff.
+    acceptanceCriterion: clampStr(p.acceptanceCriterion, MAX_CRITERION_LEN),
   };
 }
 

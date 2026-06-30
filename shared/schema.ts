@@ -17,7 +17,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider, DebateDetails, ArbitratorVerdict, OrchestratorStepType, OrchestratorStepArgs, ResearchFinding, OrchestratorRunStatus, OrchestratorStepStatus, StopReason, Confidence, ConsensusVerdict, ConsensusRunStatus, ConsensusRoundPhase, ActionPoint } from "./types.js";
+import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider, DebateDetails, ArbitratorVerdict, OrchestratorStepType, OrchestratorStepArgs, ResearchFinding, OrchestratorRunStatus, OrchestratorStepStatus, StopReason, Confidence, ConsensusVerdict, ConsensusRunStatus, ConsensusRoundPhase, ActionPoint, Archetype, ArchetypeSource } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -2720,6 +2720,7 @@ export const CONSILIUM_LOOP_TERMINAL_STATES = [
   "cancelled",
 ] as const satisfies readonly ConsiliumLoopState[];
 
+
 export const consiliumLoops = pgTable(
   "consilium_loops",
   {
@@ -2740,6 +2741,18 @@ export const consiliumLoops = pgTable(
     // tip + tree this review targets (content read AT THAT REF, no checkout).
     // null ⇒ working-tree HEAD (existing behavior; full back-compat).
     reviewRef: text("review_ref"),
+    // Stage 1 (0031): OPTIONAL human "engineer instruction" — free-text steering
+    // the dispute objective (factory objectiveExtra) AND the planner. UNTRUSTED:
+    // fenced-as-data in prompts, inert in storage; never a shell/branch/PR sink.
+    engineerInstruction: text("engineer_instruction"),
+    // Stage 1 (0032): intent→archetype planner output / human override. All
+    // nullable; written by a PLAIN partial update (NOT casLoopState) so persisting
+    // an archetype on a terminal loop never transitions it.
+    archetype: text("archetype").$type<Archetype>(),
+    archetypeSource: text("archetype_source").$type<ArchetypeSource>(),
+    archetypeRationale: text("archetype_rationale"),
+    archetypeParams: jsonb("archetype_params").$type<Record<string, string>>(),
+    archetypeDecidedAt: timestamp("archetype_decided_at"),
     currentIterationNumber: integer("current_iteration_number"),
     devPipelineId: varchar("dev_pipeline_id"),
     devGroupId: varchar("dev_group_id"),

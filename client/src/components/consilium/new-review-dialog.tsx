@@ -3,7 +3,7 @@
  * for ConsiliumLoopList. Mirrors ProjectSelector's create-dialog pattern (the
  * shared Dialog primitive + a controlled form + a toast on settle).
  *
- * It POSTs `{ repoPath, preset, maxRounds?, baselineCommit?, ref? }` to
+ * It POSTs `{ repoPath, preset, maxRounds?, baselineCommit?, ref?, engineerInstruction? }` to
  * `/api/consilium-reviews` via the shared apiRequest transport (carries auth +
  * `x-project-id`, same as every project-scoped call).
  *
@@ -62,6 +62,7 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { apiRequest } from "@/hooks/use-pipeline";
 import { useToast } from "@/hooks/use-toast";
@@ -73,6 +74,13 @@ const PRESETS = [
   { value: "full-viability", label: "Full viability assessment" },
 ] as const;
 type Preset = (typeof PRESETS)[number]["value"];
+
+/**
+ * Soft cap on the optional engineer instruction (mirrors the server bound). The
+ * counter warns past this; the server is the final arbiter (a 400 surfaces its
+ * `error` text verbatim).
+ */
+const MAX_INSTRUCTION_LEN = 8000;
 
 /**
  * The slice of a workspace this dialog needs — a human `name`, a repo `path`, the
@@ -151,6 +159,9 @@ export function NewConsiliumReviewDialog({
   const [branch, setBranch] = useState("");
   const [maxRounds, setMaxRounds] = useState("1");
   const [baselineCommit, setBaselineCommit] = useState("");
+  // Optional free-text instruction (tone / requirements for the evaluation). Sent
+  // as `engineerInstruction` only when non-empty; the server fences it as data.
+  const [engineerInstruction, setEngineerInstruction] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [, navigate] = useLocation();
   const qc = useQueryClient();
@@ -253,6 +264,7 @@ export function NewConsiliumReviewDialog({
       maxRounds?: number;
       baselineCommit?: string;
       ref?: string;
+      engineerInstruction?: string;
     } = { repoPath: path, preset };
 
     const rounds = Number(maxRounds);
@@ -271,6 +283,11 @@ export function NewConsiliumReviewDialog({
     ) {
       body.ref = chosenBranch;
     }
+    // Optional instruction — send only when non-empty. The server validates the
+    // length (≤8000) and fences the text as data; we don't hard-truncate here so
+    // the soft counter, not silent loss, signals an over-limit value.
+    const instruction = engineerInstruction.trim();
+    if (instruction) body.engineerInstruction = instruction;
 
     try {
       setSubmitting(true);
@@ -448,6 +465,41 @@ export function NewConsiliumReviewDialog({
               />
             </div>
           )}
+
+          {/* Optional free-text instruction for the evaluators — tone, emphasis,
+              acceptance bar. Sent as `engineerInstruction`; the server fences it
+              as data and bounds the length. */}
+          <div className="space-y-2">
+            <div className="flex items-baseline justify-between gap-2">
+              <Label htmlFor="new-review-engineer-instruction">
+                Инструкции инженеру{" "}
+                <span className="text-muted-foreground">(тон/требования для оценки)</span>
+              </Label>
+              <span
+                className={
+                  engineerInstruction.length > MAX_INSTRUCTION_LEN
+                    ? "text-xs tabular-nums text-destructive"
+                    : "text-xs tabular-nums text-muted-foreground"
+                }
+                data-testid="new-review-engineer-instruction-counter"
+              >
+                {engineerInstruction.length}/{MAX_INSTRUCTION_LEN}
+              </span>
+            </div>
+            <Textarea
+              id="new-review-engineer-instruction"
+              value={engineerInstruction}
+              onChange={(e) => setEngineerInstruction(e.target.value)}
+              placeholder="Напр.: оценивай строго по безопасности; требуй тесты на каждый P0; тон — без воды."
+              rows={3}
+              data-testid="new-review-engineer-instruction"
+            />
+            {engineerInstruction.length > MAX_INSTRUCTION_LEN && (
+              <p className="text-xs text-destructive">
+                Слишком длинно — сервер примет не более {MAX_INSTRUCTION_LEN} символов.
+              </p>
+            )}
+          </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>

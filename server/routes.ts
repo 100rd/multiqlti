@@ -309,6 +309,10 @@ export async function registerRoutes(
       storage,
       taskOrchestrator,
       config: () => appConfigLoader.get(),
+      // Stage 1 (§6): the OUT-OF-BAND intent→archetype planner calls the model via
+      // the SAME gateway path direct_llm tasks use. Structurally satisfies
+      // PlannerGateway; the planner is also gated by consiliumLoop.planner.enabled.
+      gateway,
       // §14.4: the DEVELOPING→AWAITING_MERGE close-out runs the SDLC executor
       // (isolated worktree + agentic coder + Draft PR) by default — no manager
       // seam needed here. Push/PR go through pr-wrapper (B-3/H-6/H-7/M-6/M-7).

@@ -1926,6 +1926,13 @@ export class MemStorage implements IStorage {
       repoPath: data.repoPath,
       lastReviewedCommit: data.lastReviewedCommit ?? null,
       reviewRef: data.reviewRef ?? null,
+      // Stage 1: engineer instruction + archetype planner columns (all nullable).
+      engineerInstruction: data.engineerInstruction ?? null,
+      archetype: data.archetype ?? null,
+      archetypeSource: data.archetypeSource ?? null,
+      archetypeRationale: data.archetypeRationale ?? null,
+      archetypeParams: data.archetypeParams ?? null,
+      archetypeDecidedAt: data.archetypeDecidedAt ?? null,
       currentIterationNumber: data.currentIterationNumber ?? null,
       devPipelineId: data.devPipelineId ?? null,
       devGroupId: data.devGroupId ?? null,

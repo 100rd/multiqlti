@@ -334,6 +334,24 @@ export const ConfigSchema = z.object({
        * small cap discards real work on timeout). NaN/out-of-range fails load.
        */
       sdlcTimeoutMs: z.coerce.number().int().min(60_000).max(1_800_000).default(1_200_000),
+      /**
+       * Stage 1 (design §6): the intent→archetype PLANNER — a single OUT-OF-BAND
+       * lightweight model call (NOT a DAG task, NOT an FSM state) that proposes one
+       * of a fixed enum of archetypes for a verdict-terminal loop. The whole planner
+       * surface is ALSO gated by the parent `consiliumLoop.enabled` kill-switch
+       * (the routes are only registered then), so this is a second, finer toggle.
+       */
+      planner: z.object({
+        /** Finer kill-switch: false → POST /:id/plan is inert (the override
+         *  PATCH /:id/archetype, which makes no model call, stays available). */
+        enabled: z.boolean().default(true),
+        /**
+         * The model slug the planner calls via the SAME gateway path direct_llm
+         * tasks use. Defaults to the task system's default model — NEVER "mock"
+         * (a mock model would "decide" an archetype from canned garbage at cost 0).
+         */
+        model: z.string().min(1).default(DEFAULT_TASK_MODEL),
+      }).default({}),
     }).default({}),
   }).default({}),
 });

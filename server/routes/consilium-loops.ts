@@ -17,7 +17,9 @@ import type { IStorage } from "../storage.js";
 import type {
   ConsiliumLoopController,
   DevelopErrorCode,
+  PlanErrorCode,
 } from "../services/consilium/consilium-loop-controller.js";
+import { ARCHETYPES } from "@shared/types";
 import type { AppConfig } from "../config/schema.js";
 import { requireRole } from "../auth/middleware.js";
 import { validateBody } from "../middleware/validate.js";
@@ -34,6 +36,11 @@ const CreateLoopSchema = z.object({
   maxRounds: z.coerce.number().int().min(1).max(6).optional(),
   // H-2: a baseline supplied at create time MUST be a strict hex sha (no refs).
   lastReviewedCommit: z.string().regex(SHA_RE).optional(),
+});
+
+// Stage 1 (§6): the human archetype OVERRIDE body — enum-clamped (no model call).
+const ArchetypeOverrideSchema = z.object({
+  archetype: z.enum(ARCHETYPES),
 });
 
 /** Mask the loop row for non-admins: hide createdBy attribution. */
@@ -121,6 +128,9 @@ export function registerConsiliumLoopRoutes(
     // ephemeral — degrades to undefined cross-instance; DB state stays authoritative).
     const devProgress = controller.getDevProgress(auth.loop.id);
     const isAdmin = req.user?.role === "admin";
+    // Stage 1: the new loop columns (engineerInstruction, archetype, archetypeSource,
+    // archetypeRationale, archetypeParams, archetypeDecidedAt) ride the maskLoop
+    // spread of `auth.loop` automatically — no per-field allowlist to keep in sync.
     res.json({ ...maskLoop({ ...auth.loop }, !!isAdmin), rounds, devProgress });
   });
 
@@ -173,6 +183,47 @@ export function registerConsiliumLoopRoutes(
     return mapDevelopError(res, result.code);
   });
 
+  // ── Plan (Stage 1 §6: OUT-OF-BAND intent→archetype planner) ─────────────────
+  // Owner-or-admin (authorizeConsiliumLoop, 404-on-mismatch). Idempotent: a no-op
+  // returning the existing archetype unless `?replan=1`. NO_VERDICT (409) when the
+  // loop has no readable judge verdict. A single lightweight model call (NOT a DAG
+  // task / FSM state); it writes the archetype columns via a PLAIN partial update
+  // and so never transitions a terminal loop. FAIL-SOFT: a bad/unparseable model
+  // reply yields 200 with archetype null (the column stays null).
+  app.post("/api/consilium-loops/:id/plan", async (req: Request, res: Response) => {
+    const auth = await authorizeConsiliumLoop(req, res, storage, String(req.params.id));
+    if (!auth) return;
+    const replan = req.query.replan === "1" || req.query.replan === "true";
+    const result = await controller.plan(auth.loop.id, { replan });
+    if (result.ok) {
+      const isAdmin = req.user?.role === "admin";
+      return res.json({
+        ...maskLoop({ ...result.loop }, !!isAdmin),
+        // Echo what the planner produced this call (null = ran but no usable archetype).
+        plannedArchetype: result.archetype,
+      });
+    }
+    return mapPlanError(res, result.code);
+  });
+
+  // ── Archetype override (Stage 1 §6: human sets archetype, NO model call) ─────
+  // Owner-or-admin. Sets archetype + archetype_source='override' + decided_at via a
+  // PLAIN partial update (never a transition); a later planner run will NOT clobber
+  // an override. Body enum-clamped to ARCHETYPES.
+  app.patch(
+    "/api/consilium-loops/:id/archetype",
+    validateBody(ArchetypeOverrideSchema),
+    async (req: Request, res: Response) => {
+      const auth = await authorizeConsiliumLoop(req, res, storage, String(req.params.id));
+      if (!auth) return;
+      const body = req.body as z.infer<typeof ArchetypeOverrideSchema>;
+      const result = await controller.setArchetype(auth.loop.id, body.archetype);
+      if (!result.ok) return res.status(404).json({ error: "Consilium loop not found" });
+      const isAdmin = req.user?.role === "admin";
+      return res.json(maskLoop({ ...result.loop }, !!isAdmin));
+    },
+  );
+
   // ── Cancel (any non-terminal → CANCELLED) ───────────────────────────────────
   app.post("/api/consilium-loops/:id/cancel", async (req: Request, res: Response) => {
     const auth = await authorizeConsiliumLoop(req, res, storage, String(req.params.id));
@@ -220,5 +271,24 @@ function mapDevelopError(res: Response, code: DevelopErrorCode): Response {
       return res.status(404).json({ error: "Consilium loop not found" });
     default:
       return res.status(400).json({ error: "develop rejected" });
+  }
+}
+
+/**
+ * Map a typed {@link PlanErrorCode} to HTTP. Disabled planner / no readable verdict
+ * → 409 (a conflict with the loop's current state); a vanished loop → 404.
+ */
+function mapPlanError(res: Response, code: PlanErrorCode): Response {
+  switch (code) {
+    case "PLANNER_DISABLED":
+      return res.status(409).json({ error: "the intent planner is disabled" });
+    case "NO_VERDICT":
+      return res
+        .status(409)
+        .json({ error: "no readable verdict to plan from: run/await the consilium review first." });
+    case "NOT_FOUND":
+      return res.status(404).json({ error: "Consilium loop not found" });
+    default:
+      return res.status(400).json({ error: "plan rejected" });
   }
 }
