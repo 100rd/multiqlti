@@ -18,7 +18,15 @@
  *   M-2  `round` only ever increments (on entering REVIEWING); cancel/recreate
  *        or a 2nd start can never reset it to buy another `maxRounds` — the cap
  *        binds the loop row's lifetime, and a NEW loop on the same group is
- *        blocked while the old one is non-terminal.
+ *        blocked while the old one is non-terminal. A verdict-terminal loop
+ *        (converged / stopped_cap / escalated) MAY be explicitly re-opened to
+ *        DEVELOPING by an AUTHORIZED HUMAN command (`controller.develop`, the
+ *        `develop_requested` event) — but that promotion is CAS-guarded and
+ *        ROUND-PRESERVING (it never passes through `startReviewRound`, the sole
+ *        round-bump site, so it buys no extra `maxRounds`), and is subject to the
+ *        same one-active-per-group gate as creation. "Terminal never transitions"
+ *        means terminal never transitions *autonomously* (tick / reduce / poller);
+ *        an authorized, single-flight human re-open is the documented exception.
  *   M-3  `headCommitAtReview` is captured on entering AWAITING_MERGE;
  *        `onMergeApproved` records the server-read merged HEAD as the next
  *        baseline and the delta vs `headCommitAtReview` (never a client sha).
@@ -45,10 +53,12 @@ import type { ActionPoint, ConvergenceVerdict } from "@shared/types";
 import { P0_PRIORITY } from "@shared/types";
 import type { TaskOrchestrator } from "../task-orchestrator.js";
 import type { AppConfig } from "../../config/schema.js";
-import { readConvergence } from "../orchestrator/convergence.js";
+import { readConvergence, extractActionPoints } from "../orchestrator/convergence.js";
 import { buildDiffContext } from "./diff-context.js";
 import type { DevCloseoutResult } from "./dev-closeout.js";
-import { runSdlcHandoff } from "../sdlc/executor.js";
+import { runSdlcHandoff, type SdlcProgress } from "../sdlc/executor.js";
+import { assertAllowedRepoPath } from "./repo-allowlist.js";
+import { assertRepoIsProjectWorkspace } from "./review-factory.js";
 
 // ─── FSM events (design §3 "Event / guard" column) ──────────────────────────
 
@@ -61,6 +71,10 @@ export type LoopEvent =
   | { kind: "decided"; verdict: ConvergenceVerdict; priorOpenP0: number[] }
   | { kind: "dev_completed"; prRef: string | null; headCommit: string; error?: string }
   | { kind: "merge_approved" }
+  // HUMAN-only: an authorized re-open of a verdict-terminal loop back to
+  // DEVELOPING (injected ONLY by `controller.develop`, NEVER by `deriveEvent` —
+  // the poller must never emit it). Round-preserving + CAS-guarded.
+  | { kind: "develop_requested" }
   | { kind: "cancel" };
 
 /** A single FSM transition: CAS `from → to`, plus optional column updates. */
@@ -69,6 +83,22 @@ export interface LoopTransition {
   to: ConsiliumLoopState;
   extra?: Record<string, unknown>;
 }
+
+/** Stable, route-mappable failure codes for {@link ConsiliumLoopController.develop}. */
+export type DevelopErrorCode =
+  | "NOT_FOUND" // loop vanished between auth and the controller read → 404
+  | "WRONG_STATE" // loop is not a developable verdict-terminal state → 409
+  | "NO_ACTION_POINTS" // the verdict carries no action points → 400
+  | "REPO_NOT_ALLOWED" // repoPath outside the fail-closed global allowlist → 400
+  | "REPO_NOT_WORKSPACE" // allowlisted but not a workspace of this project → 400
+  | "ACTIVE_LOOP_EXISTS" // another active loop already holds this group → 409
+  | "CAS_LOST" // concurrent op won the terminal→developing CAS / lock → 409
+  | "BUSY"; // R1 global human-dev concurrency cap reached → 429
+
+/** Typed result of an authorized DEVELOP re-open (no exceptions on the happy path). */
+export type DevelopResult =
+  | { ok: true; loop: ConsiliumLoopRow }
+  | { ok: false; code: DevelopErrorCode };
 
 const ANTI_STALL_MIN_ROUND = 3;
 
@@ -104,6 +134,19 @@ const SDLC_DEV_MAX_ACTION_POINTS = 24;
  */
 export const SDLC_DEV_REDRIVE_GRACE_MS = SDLC_DEV_GRACE_MS * SDLC_DEV_MAX_ACTION_POINTS;
 
+/**
+ * R1 — process GLOBAL ceiling on simultaneously in-flight HUMAN-triggered dev
+ * handoffs (`controller.develop`). Each spawns a real agentic coder + worktree,
+ * so the human surface must be bounded just as the removed execute-sdlc path was
+ * (`MAX_CONCURRENT_EXECUTE_SDLC = 3`). A `develop()` beyond this is refused with a
+ * typed `BUSY` (route → 429), NOT queued. The AUTONOMOUS deciding→developing path
+ * is NOT gated by this (gating it would strand a freshly-promoted loop behind the
+ * multi-hour developing re-drive grace); it stays bounded by the executor's own
+ * global ConcurrencyLimiter (concurrent coder subprocesses). Only command-
+ * initiated runs (`SdlcRun.viaCommand`) are counted here.
+ */
+export const MAX_CONCURRENT_DEV_HANDOFFS = 3;
+
 /** Process-local handle for a BACKGROUND SDLC close-out run (H-2). */
 interface SdlcRun {
   /** The loop round this run implements (guards a stale prior-round entry). */
@@ -112,6 +155,13 @@ interface SdlcRun {
   done: boolean;
   /** The settled `{ prRef, headCommit, error? }`; absent while in-flight. */
   result?: DevCloseoutResult;
+  /** Latest per-AP progress beat (display-only) for the loop's DEVELOPING phase;
+   *  written by the `dispatchSdlc` onProgress sink while the run is in flight. */
+  progress?: SdlcProgress;
+  /** True when this run was launched by the HUMAN `develop()` command (vs the
+   *  autonomous deciding→developing path). Only command runs count toward the
+   *  human-surface concurrency cap (R1). */
+  viaCommand?: boolean;
 }
 
 /** Minimal error scrub (strip fs paths) for the background-run catch. */
@@ -140,6 +190,19 @@ export function reduce(state: ConsiliumLoopState, event: LoopEvent): LoopTransit
   if (event.kind === "cancel") {
     if (isTerminal(state)) return null;
     return { from: state, to: "cancelled", extra: { completedAt: new Date() } };
+  }
+
+  // HUMAN re-open: an authorized `develop_requested` promotes a VERDICT-terminal
+  // loop back to DEVELOPING to implement its action points. ROUND-PRESERVING (it
+  // does NOT pass through `startReviewRound`, so `round` is unchanged — M-2) and
+  // injected ONLY by `controller.develop` (never `deriveEvent` — the poller can
+  // never emit it), exactly like `merge_approved`. `completedAt`/`error` are
+  // cleared so the re-opened loop reads as active again. Any other state → no-op.
+  if (event.kind === "develop_requested") {
+    if (state === "stopped_cap" || state === "converged" || state === "escalated") {
+      return { from: state, to: "developing", extra: { completedAt: null, error: null } };
+    }
+    return null;
   }
 
   switch (state) {
@@ -221,6 +284,12 @@ function isTerminal(state: ConsiliumLoopState): boolean {
   );
 }
 
+/** The VERDICT-terminal states an authorized human `develop()` may re-open. A
+ *  `failed`/`cancelled` loop is NOT promotable (no verdict to implement). */
+function isDevelopPromotable(state: ConsiliumLoopState): boolean {
+  return state === "stopped_cap" || state === "converged" || state === "escalated";
+}
+
 // ─── Controller (impure shell around the pure reducer) ──────────────────────
 
 export interface ConsiliumLoopControllerDeps {
@@ -269,6 +338,18 @@ export class ConsiliumLoopController {
    * settled result here and the developing->awaiting_merge CAS consumes it.
    */
   private readonly sdlcRuns = new Map<string, SdlcRun>();
+
+  /**
+   * R1 ATOMICITY (Security HIGH): synchronously-reserved companion to the derived
+   * `inFlightDevCommandCount()`. A human dev run only lands in `sdlcRuns` LATER
+   * (inside `dispatchSdlc`, after the awaited CAS), so a burst of concurrent
+   * `develop()` calls on DISTINCT loops could all read count<cap before any
+   * registers. The cap CHECK + this RESERVE are a single synchronous step (no
+   * await between), so the run-to-completion guarantee serializes the burst — the
+   * exact discipline of execute-sdlc's MED-1 `runningCount`. Released in `develop`'s
+   * `finally`, by which point a successful run is already in `sdlcRuns`.
+   */
+  private devCommandReservations = 0;
 
   constructor(private readonly deps: ConsiliumLoopControllerDeps) {}
 
@@ -331,6 +412,149 @@ export class ConsiliumLoopController {
       lastReviewedCommit: mergedHead || loop.headCommitAtReview,
       error,
     });
+  }
+
+  /**
+   * Authorized HUMAN re-open of a verdict-terminal loop into DEVELOPING to
+   * implement its action points (mirrors `onMergeApproved`'s human-gate shape).
+   * Promotion is ROUND-PRESERVING (it does NOT pass through `startReviewRound`, so
+   * `round` is unchanged — M-2) and authorized-only (the `develop_requested` event
+   * is fed ONLY here, never by `deriveEvent`/the poller).
+   *
+   * Layered guards (all BEFORE any side effect; nothing minted on rejection):
+   *   - WRONG_STATE unless the loop is a promotable verdict-terminal state.
+   *   - NO_ACTION_POINTS unless the verdict carries a non-empty FULL action-point
+   *     list (ALL priorities, like the removed execute-sdlc button — a CONVERGED
+   *     loop with non-P0 items is therefore promotable).
+   *   - REPO_NOT_ALLOWED / REPO_NOT_WORKSPACE: the persisted repoPath is RE-VALIDATED
+   *     through the fail-closed global allowlist AND the per-project workspace gate
+   *     (never trust the stored row).
+   *   - ACTIVE_LOOP_EXISTS: a two-layer one-active-per-group guard — an app-level
+   *     pre-check PLUS catching the DB partial-unique violation the terminal→
+   *     developing CAS re-asserts on UPDATE (it moves the row back into the active
+   *     set), mirroring the create route.
+   *   - BUSY (R1): the global human-dev concurrency cap.
+   *   - CAS_LOST: the in-process single-flight lock (R5) or a lost CAS.
+   *
+   * On the CAS winner it dispatches the SAME background SDLC handoff the autonomous
+   * developing phase runs, via a synthetic verdict carrying the FULL action-point
+   * list (the close-out reads only `verdict.openActionPoints`).
+   */
+  async develop(loopId: string): Promise<DevelopResult> {
+    const loop = await this.storage.getLoop(loopId);
+    if (!loop) return { ok: false, code: "NOT_FOUND" };
+    if (!isDevelopPromotable(loop.state)) return { ok: false, code: "WRONG_STATE" };
+
+    // FULL action points (ALL priorities) — SERVER-READ from the verdict; the
+    // close-out reads only `openActionPoints`, but openP0 feeds the round audit.
+    const actionPoints = await this.resolveDevActionPoints(loop);
+    if (actionPoints.length === 0) return { ok: false, code: "NO_ACTION_POINTS" };
+
+    // Re-validate the persisted repoPath: global allowlist THEN project workspace.
+    const cfg = this.loopConfig();
+    let resolvedRepo: string;
+    try {
+      resolvedRepo = assertAllowedRepoPath(loop.repoPath, cfg.allowedRepoPaths);
+    } catch {
+      return { ok: false, code: "REPO_NOT_ALLOWED" };
+    }
+    try {
+      await assertRepoIsProjectWorkspace(resolvedRepo, this.storage);
+    } catch {
+      return { ok: false, code: "REPO_NOT_WORKSPACE" };
+    }
+
+    // H-3 layer 1: an active loop already holds this group (app-level pre-check).
+    const active = await this.storage.getActiveLoopByGroup(loop.groupId);
+    if (active) return { ok: false, code: "ACTIVE_LOOP_EXISTS" };
+
+    // R1 ATOMICITY (Security HIGH): the cap CHECK and the slot RESERVE are a SINGLE
+    // synchronous step — NO await between reading the count and the `+= 1` — so a
+    // burst of concurrent develop() on DISTINCT loops can't all read count<cap
+    // before any registers its run. `inFlightDevCommandCount()` derives from
+    // `sdlcRuns`, populated only LATER inside dispatchSdlc (after the awaited CAS),
+    // so the synchronously-bumped `devCommandReservations` covers the gap between
+    // reserve and registration. A BUSY rejection returns BEFORE the reserve, so it
+    // never holds (or frees) a slot. The reservation is released in the `finally`
+    // below — by then a SUCCESSFUL run is already in `sdlcRuns` (dispatchSdlc set it
+    // synchronously), so total = derived + reserved never under-counts a live run.
+    if (this.inFlightDevCommandCount() + this.devCommandReservations >= MAX_CONCURRENT_DEV_HANDOFFS) {
+      return { ok: false, code: "BUSY" };
+    }
+    this.devCommandReservations += 1;
+    try {
+      // R5: in-process single-flight lock (belt-and-suspenders with the CAS) — a
+      // concurrent develop/tick for THIS loop is rejected rather than double-driven.
+      if (this.inFlight.has(loopId)) return { ok: false, code: "CAS_LOST" };
+      this.inFlight.add(loopId);
+      try {
+        const transition = reduce(loop.state, { kind: "develop_requested" });
+        if (!transition) return { ok: false, code: "WRONG_STATE" };
+        const verdict: ConvergenceVerdict = {
+          converged: false,
+          openP0: actionPoints.filter((ap) => ap.priority === P0_PRIORITY).length,
+          openActionPoints: [...actionPoints],
+        };
+        let won: ConsiliumLoopRow | null;
+        try {
+          // H-3 layer 2: the terminal→developing CAS moves the row back INTO the
+          // active set, so Postgres re-asserts `one_active_per_group` on the UPDATE.
+          won = await this.commit(loop, transition);
+        } catch (err) {
+          if (err instanceof Error && err.message.includes("one_active_per_group")) {
+            return { ok: false, code: "ACTIVE_LOOP_EXISTS" };
+          }
+          throw err;
+        }
+        if (!won) return { ok: false, code: "CAS_LOST" };
+        this.log(won.id, `develop: CAS won ${transition.from}->developing (round ${won.round} preserved)`);
+        // startDevHandoff → dispatchSdlc registers the run in `sdlcRuns` SYNCHRONOUSLY
+        // (before this method's finally runs), so handing the slot from the reservation
+        // to the derived count below has no gap.
+        const extra = await this.startDevHandoff(won, verdict, true);
+        const updated =
+          Object.keys(extra).length === 0 ? won : await this.storage.updateLoop(won.id, extra);
+        return { ok: true, loop: updated };
+      } finally {
+        this.inFlight.delete(loopId);
+      }
+    } finally {
+      // Release the reserved slot on EVERY post-reserve path. A successful run is
+      // already represented in `sdlcRuns` (set synchronously in dispatchSdlc), so
+      // the derived count takes over with no window where a live run is uncounted;
+      // a failed/rejected path that never dispatched simply frees the slot.
+      this.devCommandReservations -= 1;
+    }
+  }
+
+  /** Display-only per-AP progress of the loop's DEVELOPING phase (process-local). */
+  getDevProgress(loopId: string): SdlcProgress | undefined {
+    return this.sdlcRuns.get(loopId)?.progress;
+  }
+
+  /** Count in-flight HUMAN-command dev runs (R1 cap denominator). */
+  private inFlightDevCommandCount(): number {
+    let n = 0;
+    for (const run of this.sdlcRuns.values()) {
+      if (!run.done && run.viaCommand) n += 1;
+    }
+    return n;
+  }
+
+  /**
+   * SERVER-READ the FULL action-point list (ALL priorities) from the loop's
+   * current iteration's judge verdict, via `pickJudgeOutput`→`extractActionPoints`
+   * (the SAME server-read path the removed execute-sdlc button used). Returns `[]`
+   * for a missing iteration / unparseable verdict (→ NO_ACTION_POINTS).
+   */
+  private async resolveDevActionPoints(loop: ConsiliumLoopRow): Promise<ActionPoint[]> {
+    const n = loop.currentIterationNumber;
+    if (n == null) return [];
+    const iteration = await this.storage.getIteration(loop.groupId, n);
+    if (!iteration) return [];
+    const executions = await this.storage.getExecutionsByIteration(loop.groupId, iteration.id);
+    const judgeOutput = pickJudgeOutput(executions.map((e) => e.output));
+    return extractActionPoints(judgeOutput);
   }
 
   /** Cancel + cascade-cancel the child group; terminal. */
@@ -607,6 +831,7 @@ export class ConsiliumLoopController {
   private async closeout(
     loop: ConsiliumLoopRow,
     verdict: ConvergenceVerdict,
+    onProgress?: (p: SdlcProgress) => void,
   ): Promise<DevCloseoutResult> {
     if (this.deps.runCloseout) return this.deps.runCloseout(loop, verdict);
     const cfg = this.loopConfig();
@@ -626,7 +851,7 @@ export class ConsiliumLoopController {
       // Per-action-point coder timeout (configurable). The executor runs the
       // coder once per action point sequentially; this bounds a SINGLE run.
       coderTimeoutMs: cfg.sdlcTimeoutMs,
-    });
+    }, undefined, onProgress);
   }
 
   /**
@@ -692,9 +917,10 @@ export class ConsiliumLoopController {
   private async startDevHandoff(
     loop: ConsiliumLoopRow,
     verdict: ConvergenceVerdict,
+    viaCommand = false,
   ): Promise<Record<string, unknown>> {
     await this.recordRound(loop, verdict);
-    this.dispatchSdlc(loop, verdict);
+    this.dispatchSdlc(loop, verdict, viaCommand);
     // Persist openP0 + bump updatedAt so the freshly-entered developing loop reads
     // as in-flight (within grace), not stranded. devGroupId stays null (marker).
     return { openP0: verdict.openP0 };
@@ -710,11 +936,18 @@ export class ConsiliumLoopController {
    * catch is purely defensive so the registry ALWAYS settles (else the redrive
    * recovers after the coder-length grace).
    */
-  private dispatchSdlc(loop: ConsiliumLoopRow, verdict: ConvergenceVerdict): void {
-    const run: SdlcRun = { round: loop.round, done: false };
+  private dispatchSdlc(loop: ConsiliumLoopRow, verdict: ConvergenceVerdict, viaCommand = false): void {
+    const run: SdlcRun = { round: loop.round, done: false, viaCommand };
     this.sdlcRuns.set(loop.id, run);
-    this.log(loop.id, `dispatchSdlc -> background coder round ${loop.round} (${verdict.openActionPoints.length} action points)`);
-    void this.closeout(loop, verdict)
+    this.log(loop.id, `dispatchSdlc -> background coder round ${loop.round} (${verdict.openActionPoints.length} action points${viaCommand ? ", via develop command" : ""})`);
+    // Display-only progress sink: capture the LATEST per-AP beat onto the run row
+    // so `getDevProgress` (and the loop GET) can show WHAT the coder is doing.
+    // GUARD on `!run.done`: a late beat must NEVER mutate a settled run.
+    const onProgress = (p: SdlcProgress): void => {
+      if (run.done) return;
+      run.progress = p;
+    };
+    void this.closeout(loop, verdict, onProgress)
       .then((result) => {
         this.settleSdlcRun(loop.id, run, result);
         this.log(loop.id, `SDLC settled -> prRef=${run.result?.prRef ?? "null"}${run.result?.error ? ` (${run.result.error})` : ""}`);

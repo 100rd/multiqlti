@@ -11,6 +11,7 @@ import {
   isAntiStall,
   pickJudgeOutput,
   ConsiliumLoopController,
+  MAX_CONCURRENT_DEV_HANDOFFS,
   SDLC_DEV_REDRIVE_GRACE_MS,
   type LoopEvent,
 } from "../../../server/services/consilium/consilium-loop-controller.js";
@@ -683,5 +684,260 @@ describe("controller — D.6 non-blocking startGroupAsync + prRef close-out flow
     expect(runCloseout).toHaveBeenCalledTimes(1); // the CAS gate prevents a duplicate coder
     const winners = [a, b].filter((r) => r !== null && r.state === "developing");
     expect(winners).toHaveLength(1);
+  });
+});
+
+// ─── develop_requested: authorized terminal re-open (reduce + controller) ────
+
+describe("reduce — develop_requested (round-preserving terminal re-open)", () => {
+  for (const from of ["stopped_cap", "converged", "escalated"] as const) {
+    it(`${from} + develop_requested → DEVELOPING (completedAt/error cleared)`, () => {
+      const t = reduce(from, { kind: "develop_requested" });
+      expect(t).not.toBeNull();
+      expect(t?.from).toBe(from);
+      expect(t?.to).toBe("developing");
+      // Round-preserving: the transition carries NO `round` mutation (M-2).
+      expect(t?.extra).toMatchObject({ completedAt: null, error: null });
+      expect(t?.extra && "round" in t.extra).toBe(false);
+    });
+  }
+
+  for (const from of [
+    "pending",
+    "building_context",
+    "reviewing",
+    "deciding",
+    "developing",
+    "awaiting_merge",
+    "failed",
+    "cancelled",
+  ] as const) {
+    it(`${from} + develop_requested → null (only verdict-terminal states promote)`, () => {
+      expect(reduce(from, { kind: "develop_requested" })).toBeNull();
+    });
+  }
+});
+
+const JUDGE_WITH_APS = {
+  verdict: "needs work",
+  action_points: [
+    { title: "DEV AP1", priority: "P0" },
+    { title: "DEV AP2", priority: "P2" },
+  ],
+};
+
+/** Fake storage tailored to controller.develop (one promotable terminal loop). */
+function makeDevStorage(
+  loop: ConsiliumLoopRow,
+  opts: { active?: unknown; executions?: { output: unknown }[]; workspaces?: { path: string }[] } = {},
+) {
+  let current = loop;
+  const cas = vi.fn(async (id: string, expected: LoopState, next: LoopState, extra?: Record<string, unknown>) => {
+    if (id !== current.id || current.state !== expected) return undefined;
+    current = { ...current, ...(extra ?? {}), state: next };
+    return current;
+  });
+  const executions = opts.executions ?? [{ output: JUDGE_WITH_APS }];
+  const workspaces = opts.workspaces ?? [{ path: process.cwd() }];
+  const storage = {
+    getLoop: vi.fn(async () => current),
+    getActiveLoopByGroup: vi.fn(async () => opts.active),
+    getIteration: vi.fn(async () => ({ id: "it1", iterationNumber: current.currentIterationNumber ?? 1, status: "completed" })),
+    getExecutionsByIteration: vi.fn(async () => executions),
+    getWorkspaces: vi.fn(async () => workspaces),
+    getLoopRounds: vi.fn(async () => []),
+    appendLoopRound: vi.fn(async () => ({})),
+    casLoopState: cas,
+    updateLoop: vi.fn(async (_id: string, extra?: Record<string, unknown>) => {
+      current = { ...current, ...(extra ?? {}) };
+      return current;
+    }),
+  };
+  return { storage, cas, get: () => current };
+}
+
+function makeDevController(storage: unknown, runSdlc: ReturnType<typeof vi.fn>) {
+  return new ConsiliumLoopController({
+    storage: storage as never,
+    taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+    config: fakeConfig,
+    readRepoHead: async () => "abc1234",
+    runSdlc: runSdlc as never,
+  });
+}
+
+describe("controller.develop — authorized terminal re-open", () => {
+  const PR = { prRef: "https://github.com/o/r/pull/7", headCommit: "abc1234" };
+
+  it("CAS win: promotes a CONVERGED loop → developing and dispatches the FULL action-point list", async () => {
+    const loop = makeLoop({ state: "converged", round: 2, currentIterationNumber: 2 });
+    const { storage } = makeDevStorage(loop);
+    const runSdlc = vi.fn(async () => PR);
+    const controller = makeDevController(storage, runSdlc);
+
+    const res = await controller.develop(loop.id);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.loop.state).toBe("developing");
+    expect(res.loop.round).toBe(2); // round PRESERVED (M-2)
+    expect(runSdlc).toHaveBeenCalledTimes(1);
+    // FULL list (ALL priorities), not just open P0s.
+    const aps = (runSdlc.mock.calls[0][0] as { actionPoints: { title: string }[] }).actionPoints;
+    expect(aps.map((a) => a.title)).toEqual(["DEV AP1", "DEV AP2"]);
+  });
+
+  it("NO_ACTION_POINTS: a verdict with no action points is rejected, executor never run", async () => {
+    const loop = makeLoop({ state: "escalated", round: 3, currentIterationNumber: 3 });
+    const { storage } = makeDevStorage(loop, { executions: [{ output: { verdict: "ok" } }] });
+    const runSdlc = vi.fn(async () => PR);
+    const controller = makeDevController(storage, runSdlc);
+
+    const res = await controller.develop(loop.id);
+    expect(res).toEqual({ ok: false, code: "NO_ACTION_POINTS" });
+    expect(runSdlc).not.toHaveBeenCalled();
+  });
+
+  it("ACTIVE_LOOP_EXISTS: a second active loop on the group blocks the re-open", async () => {
+    const loop = makeLoop({ state: "stopped_cap", round: 6, currentIterationNumber: 6 });
+    const { storage } = makeDevStorage(loop, { active: { id: "other", state: "reviewing" } });
+    const runSdlc = vi.fn(async () => PR);
+    const controller = makeDevController(storage, runSdlc);
+
+    const res = await controller.develop(loop.id);
+    expect(res).toEqual({ ok: false, code: "ACTIVE_LOOP_EXISTS" });
+    expect(runSdlc).not.toHaveBeenCalled();
+  });
+
+  it("CAS_LOST: a concurrent winner of the terminal→developing CAS → CAS_LOST, no dispatch", async () => {
+    const loop = makeLoop({ state: "converged", round: 2, currentIterationNumber: 2 });
+    const { storage, cas } = makeDevStorage(loop);
+    cas.mockImplementation(async () => undefined); // lost the race
+    const runSdlc = vi.fn(async () => PR);
+    const controller = makeDevController(storage, runSdlc);
+
+    const res = await controller.develop(loop.id);
+    expect(res).toEqual({ ok: false, code: "CAS_LOST" });
+    expect(runSdlc).not.toHaveBeenCalled();
+  });
+
+  it("getDevProgress surfaces the latest per-AP beat of the developing phase", async () => {
+    const loop = makeLoop({ state: "converged", round: 2, currentIterationNumber: 2 });
+    const { storage } = makeDevStorage(loop);
+    const runSdlc = vi.fn((_req: unknown, _deps: unknown, onProgress?: (p: unknown) => void) => {
+      onProgress?.({ phase: "coding", actionPointIndex: 1, actionPointTotal: 2, actionPointTitle: "DEV AP1", completedCount: 0 });
+      return new Promise(() => {}); // stay running so the beat persists
+    });
+    const controller = makeDevController(storage, runSdlc as never);
+
+    const res = await controller.develop(loop.id);
+    expect(res.ok).toBe(true);
+    expect(controller.getDevProgress(loop.id)).toMatchObject({
+      phase: "coding",
+      actionPointIndex: 1,
+      actionPointTotal: 2,
+      actionPointTitle: "DEV AP1",
+      completedCount: 0,
+    });
+    // An unknown loop has no progress.
+    expect(controller.getDevProgress("nope")).toBeUndefined();
+  });
+
+  it("R1 global cap: the 4th concurrent in-flight human dev handoff → BUSY", async () => {
+    const ids = ["L1", "L2", "L3", "L4"];
+    const loops = new Map(
+      ids.map((id) => [id, makeLoop({ id, groupId: `grp-${id}`, state: "converged", round: 2, currentIterationNumber: 2 })]),
+    );
+    const storage = {
+      getLoop: vi.fn(async (id: string) => loops.get(id)),
+      getActiveLoopByGroup: vi.fn(async () => undefined),
+      getIteration: vi.fn(async () => ({ id: "it", iterationNumber: 2, status: "completed" })),
+      getExecutionsByIteration: vi.fn(async () => [{ output: JUDGE_WITH_APS }]),
+      getWorkspaces: vi.fn(async () => [{ path: process.cwd() }]),
+      getLoopRounds: vi.fn(async () => []),
+      appendLoopRound: vi.fn(async () => ({})),
+      casLoopState: vi.fn(async (id: string, expected: LoopState, next: LoopState, extra?: Record<string, unknown>) => {
+        const cur = loops.get(id);
+        if (!cur || cur.state !== expected) return undefined;
+        const upd = { ...cur, ...(extra ?? {}), state: next } as ConsiliumLoopRow;
+        loops.set(id, upd);
+        return upd;
+      }),
+      updateLoop: vi.fn(async (id: string, extra?: Record<string, unknown>) => {
+        const upd = { ...loops.get(id)!, ...(extra ?? {}) } as ConsiliumLoopRow;
+        loops.set(id, upd);
+        return upd;
+      }),
+    };
+    const runSdlc = vi.fn(() => new Promise(() => {})); // every run stays in-flight
+    const controller = makeDevController(storage, runSdlc as never);
+
+    for (const id of ["L1", "L2", "L3"]) {
+      const r = await controller.develop(id);
+      expect(r.ok).toBe(true);
+    }
+    const over = await controller.develop("L4");
+    expect(over).toEqual({ ok: false, code: "BUSY" });
+    expect(runSdlc).toHaveBeenCalledTimes(3); // L4 never dispatched
+  });
+});
+
+describe("controller.develop — R1 cap atomicity under a concurrent burst", () => {
+  /** A multi-loop storage where each id resolves to its OWN promotable loop. */
+  function makeBurstStorage(ids: string[]) {
+    const loops = new Map<string, ConsiliumLoopRow>(
+      ids.map((id) => [id, makeLoop({ id, groupId: `g-${id}`, state: "converged", round: 2, currentIterationNumber: 2 })]),
+    );
+    return {
+      getLoop: vi.fn(async (id: string) => loops.get(id)),
+      getActiveLoopByGroup: vi.fn(async () => undefined),
+      getIteration: vi.fn(async () => ({ id: "it", iterationNumber: 2, status: "completed" })),
+      getExecutionsByIteration: vi.fn(async () => [{ output: JUDGE_WITH_APS }]),
+      getWorkspaces: vi.fn(async () => [{ path: process.cwd() }]),
+      getLoopRounds: vi.fn(async () => []),
+      appendLoopRound: vi.fn(async () => ({})),
+      casLoopState: vi.fn(async (id: string, expected: LoopState, next: LoopState, extra?: Record<string, unknown>) => {
+        const cur = loops.get(id);
+        if (!cur || cur.state !== expected) return undefined;
+        const upd = { ...cur, ...(extra ?? {}), state: next } as ConsiliumLoopRow;
+        loops.set(id, upd);
+        return upd;
+      }),
+      updateLoop: vi.fn(async (id: string, extra?: Record<string, unknown>) => {
+        const upd = { ...loops.get(id)!, ...(extra ?? {}) } as ConsiliumLoopRow;
+        loops.set(id, upd);
+        return upd;
+      }),
+    };
+  }
+
+  it("a BURST of concurrent develop() on DISTINCT loops dispatches AT MOST the cap; the rest are BUSY", async () => {
+    const ids = ["B1", "B2", "B3", "B4", "B5"]; // 5 > cap(3)
+    const storage = makeBurstStorage(ids);
+    // A runSdlc that NEVER resolves on its own → every winner stays in-flight, so
+    // the derived count + reservation accounting is exercised across the whole burst.
+    const resolvers: Array<(r: { prRef: string | null; headCommit: string }) => void> = [];
+    const runSdlc = vi.fn(() => new Promise<{ prRef: string | null; headCommit: string }>((res) => { resolvers.push(res); }));
+    const controller = makeDevController(storage, runSdlc as never);
+
+    // Fire all 5 CONCURRENTLY — the pre-fix derived-count race would let all 5 pass.
+    const results = await Promise.all(ids.map((id) => controller.develop(id)));
+    const ok = results.filter((r) => r.ok);
+    const busy = results.filter((r) => !r.ok && r.code === "BUSY");
+
+    expect(ok.length).toBeLessThanOrEqual(MAX_CONCURRENT_DEV_HANDOFFS); // the cap is airtight
+    expect(ok.length).toBe(MAX_CONCURRENT_DEV_HANDOFFS); // deterministic with immediate-resolve fakes
+    expect(ok.length + busy.length).toBe(ids.length); // every non-winner is BUSY
+    expect(runSdlc).toHaveBeenCalledTimes(ok.length); // ONLY winners dispatched a coder
+
+    // After a winner SETTLES, its slot frees and a previously-BUSY loop can re-develop
+    // (no leaked reservation). resolvers[0] is the first dispatched (a winner).
+    resolvers[0]({ prRef: "https://github.com/o/r/pull/1", headCommit: "abc1234" });
+    await flush(); // settleSdlcRun flips the winner's run done=true → drops the derived count
+
+    const busyId = ids.find((_id, i) => !results[i].ok);
+    expect(busyId).toBeDefined();
+    const retry = await controller.develop(busyId!);
+    expect(retry.ok).toBe(true); // a freed slot is immediately reusable
+    expect(runSdlc).toHaveBeenCalledTimes(MAX_CONCURRENT_DEV_HANDOFFS + 1);
   });
 });

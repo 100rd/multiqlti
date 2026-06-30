@@ -7,21 +7,23 @@
  * finds that execution in the latest iteration and renders it as a real UI block
  * (verdict callout + pros/cons + an Action Points TABLE) instead of raw JSON.
  *
- * It also closes the loop: the action points can be HANDED OFF directly to SDLC
- * execution. One click runs the verdict's action points — each coded in an
- * isolated worktree — and opens a single Draft PR. There is no pipeline and no
- * re-review; this is the "planning → execution" transition. Handing off is
- * optional (the user decides whether to send them on).
+ * It also closes the loop: the action points can be HANDED OFF to SDLC execution.
+ * That hand-off is no longer a hidden background job on the task group — it is a
+ * VISIBLE `developing` round on the group's consilium LOOP. One click POSTs to
+ * the loop's `/develop` endpoint and navigates the user to the loop detail page
+ * to OBSERVE the live stepper. Resolving WHICH loop belongs to this group is the
+ * parent's job (it passes `loopId`); when no loop exists the hand-off is disabled
+ * with an explanatory note (creating one is deferred to a later stage).
  *
  * SECURITY: all model-authored text is rendered as INERT React text.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useLocation } from "wouter";
 import { useIterationDetail } from "@/hooks/use-task-iterations";
-import { apiRequest } from "@/hooks/use-pipeline";
+import { useDevelopLoop } from "@/hooks/use-consilium-loops";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { copyText } from "@/lib/clipboard";
 import {
@@ -32,7 +34,7 @@ import {
   Loader2,
   Copy,
   Check,
-  ExternalLink,
+  Info,
 } from "lucide-react";
 import type { IterationExecution } from "@/lib/task-iterations";
 import type { ActionPoint } from "@shared/types";
@@ -132,73 +134,26 @@ function buildFullText(data: VerdictOutput, groupName: string, source: string): 
   return lines.join("\n");
 }
 
-/**
- * Live progress emitted by the SDLC executor mid-run. EVERY subfield is optional:
- * older status responses omit `progress` entirely, and any individual field may be
- * missing for a given poll — so every read below is defensive.
- */
-interface SdlcProgress {
-  phase?: "coding" | "committing" | "pushing" | "opening_pr" | "done";
-  actionPointIndex?: number;
-  actionPointTotal?: number;
-  actionPointTitle?: string;
-  completedCount?: number;
-}
-
-/**
- * Humanize the current phase into a single Russian status line. Falls back to a
- * generic "SDLC идёт…" whenever `progress` (or the specific phase) is absent.
- */
-function humanizePhase(progress: SdlcProgress | undefined, total: number): string {
-  switch (progress?.phase) {
-    case "committing":
-      return "Коммичу…";
-    case "pushing":
-      return "Пушу ветку…";
-    case "opening_pr":
-      return "Открываю Draft PR…";
-    case "coding": {
-      const idx = progress?.actionPointIndex;
-      const pos =
-        typeof idx === "number" ? `${idx + 1}${total > 0 ? `/${total}` : ""}` : "";
-      const title = progress?.actionPointTitle;
-      const titlePart = title ? `: «${title}»` : "";
-      return pos
-        ? `Кодирую action point ${pos}${titlePart}`
-        : `Кодирую action point${titlePart}`;
-    }
-    default:
-      return "SDLC идёт…";
-  }
-}
-
-/** SDLC hand-off lifecycle. Drives the primary action button + the PR callout. */
-type ExecState =
-  | { status: "idle" }
-  | { status: "starting" }
-  | { status: "running"; progress?: SdlcProgress }
-  | { status: "done"; prRef?: string }
-  | { status: "failed"; error?: string };
-
-interface SdlcStatusResponse {
-  status: "running" | "done" | "failed";
-  prRef?: string;
-  error?: string;
-  progress?: SdlcProgress;
-}
-
 export function VerdictPanel({
   groupId,
   iterationNumber,
   groupName,
+  loopId,
 }: {
   groupId: string;
   iterationNumber: number;
   groupName: string;
+  /**
+   * The consilium loop that owns this group, resolved by the parent from the
+   * owner-scoped loops list. `undefined` ⇒ no loop exists for the group, so the
+   * hand-off is disabled (execution runs THROUGH a loop — see the muted note).
+   */
+  loopId?: string;
 }) {
   const detail = useIterationDetail(groupId, iterationNumber);
   const { toast } = useToast();
-  const [exec, setExec] = useState<ExecState>({ status: "idle" });
+  const [, navigate] = useLocation();
+  const developLoop = useDevelopLoop();
   const [copied, setCopied] = useState(false);
 
   const result = useMemo(
@@ -206,62 +161,10 @@ export function VerdictPanel({
     [detail.data],
   );
 
-  // Poll the SDLC status while a hand-off is running. Re-runs whenever the
-  // lifecycle phase changes; only the "running" phase arms the 4s interval, so
-  // it self-stops on done/failed and tears down on unmount.
-  useEffect(() => {
-    if (exec.status !== "running") return;
-    let cancelled = false;
-
-    const poll = async () => {
-      try {
-        const s = (await apiRequest(
-          "GET",
-          `/api/task-groups/${groupId}/execute-sdlc/status`,
-        )) as SdlcStatusResponse;
-        if (cancelled) return;
-        if (s.status === "done") {
-          setExec({ status: "done", prRef: s.prRef });
-          toast({
-            title: "SDLC завершён",
-            description: s.prRef ? `Draft PR готов: ${s.prRef}` : "Draft PR готов.",
-          });
-        } else if (s.status === "failed") {
-          setExec({ status: "failed", error: s.error });
-          toast({
-            variant: "destructive",
-            title: "SDLC не удался",
-            description: s.error || "Исполнение завершилось ошибкой.",
-          });
-        } else {
-          // still running — refresh the live progress so the panel re-renders.
-          setExec({ status: "running", progress: s.progress });
-        }
-      } catch (err) {
-        if (cancelled) return;
-        const message = err instanceof Error ? err.message : String(err);
-        setExec({ status: "failed", error: message });
-        toast({
-          variant: "destructive",
-          title: "SDLC не удался",
-          description: message,
-        });
-      }
-    };
-
-    void poll(); // immediate first check, then every ~4s
-    const id = window.setInterval(poll, 4000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [exec.status, groupId, toast]);
-
   if (!result) return null;
   const { data, source } = result;
   const actionPoints = data.action_points;
   const fullText = buildFullText(data, groupName, source);
-  const busy = exec.status === "starting" || exec.status === "running";
 
   async function copyFullText() {
     if (await copyText(fullText)) {
@@ -280,24 +183,24 @@ export function VerdictPanel({
     }
   }
 
-  async function executeSdlc() {
-    if (actionPoints.length === 0 || busy) return;
-    setExec({ status: "starting" });
+  /**
+   * Hand off the verdict's action points to the loop's `developing` round, then
+   * navigate to the loop detail page to OBSERVE. The server is the arbiter:
+   * 4xx (NO_ACTION_POINTS / REPO_NOT_* / WRONG_STATE / ACTIVE_LOOP_EXISTS /
+   * CAS_LOST) — and the pre-backend 404 — surface verbatim as a destructive
+   * toast; only a 200 navigates. There is no in-panel polling anymore.
+   */
+  async function handleDevelop() {
+    if (!loopId || actionPoints.length === 0 || developLoop.isPending) return;
     try {
-      // Empty body: the server reads the verdict's action_points and resolves
-      // the repo path itself (project-scoped via x-project-id). 202 = accepted,
-      // executor runs in the background → one Draft PR.
-      await apiRequest("POST", `/api/task-groups/${groupId}/execute-sdlc`, {});
-      setExec({ status: "running" });
+      await developLoop.mutateAsync(loopId);
       toast({
         title: "Передано в SDLC",
-        description: `${actionPoints.length} action points исполняются → Draft PR.`,
+        description: "Раунд developing запущен — открываю луп для наблюдения.",
       });
+      navigate(`/consilium-loops/${loopId}`);
     } catch (err) {
-      // Covers the 400 contract (no action points / repo not allowlisted / not a
-      // workspace) AND the pre-backend 404 — server `error` text is surfaced verbatim.
       const message = err instanceof Error ? err.message : String(err);
-      setExec({ status: "failed", error: message });
       toast({
         variant: "destructive",
         title: "Не удалось передать в SDLC",
@@ -423,99 +326,29 @@ export function VerdictPanel({
 
         {actionPoints.length > 0 && (
           <div className="space-y-3 border-t pt-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm text-muted-foreground">
-                Фаза планирования завершена. Исполнить action points напрямую:
-              </span>
-              <Button
-                size="sm"
-                onClick={executeSdlc}
-                disabled={actionPoints.length === 0 || busy}
-              >
-                {busy ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <GitPullRequest className="mr-2 h-4 w-4" />
-                )}
-                {busy ? "SDLC идёт…" : "Передать в SDLC → Draft PR"}
-              </Button>
-            </div>
-
-            {exec.status === "running" &&
-              (() => {
-                const progress = exec.progress;
-                const total = progress?.actionPointTotal ?? actionPoints.length;
-                const completedRaw =
-                  typeof progress?.completedCount === "number"
-                    ? Math.max(0, progress.completedCount)
-                    : undefined;
-                const completed =
-                  completedRaw !== undefined && total > 0
-                    ? Math.min(completedRaw, total)
-                    : completedRaw;
-                const pct =
-                  total > 0 && completed !== undefined
-                    ? Math.round((completed / total) * 100)
-                    : 0;
-                return (
-                  <div className="space-y-2 rounded-md border border-primary/30 bg-primary/5 p-3">
-                    <div className="flex items-center gap-2 text-sm font-medium">
-                      <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
-                      <span>{humanizePhase(progress, total)}</span>
-                    </div>
-
-                    {total > 0 && (
-                      <div className="space-y-1">
-                        <Progress value={pct} className="h-2" />
-                        <div className="text-xs tabular-nums text-muted-foreground">
-                          {completed ?? 0}/{total} готово
-                        </div>
-                      </div>
-                    )}
-
-                    <p className="text-xs leading-relaxed text-muted-foreground">
-                      SDLC-агент кодит каждый action point в изолированном
-                      git-worktree (твоё рабочее дерево не затрагивается), коммитит
-                      по одному на пункт, затем откроет Draft PR. Агенты не
-                      мержат — ревью и merge за тобой.
-                    </p>
-                  </div>
-                );
-              })()}
-
-            {exec.status === "done" && (
-              <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-green-600/40 bg-green-600/5 p-3 text-sm">
-                <Check className="h-4 w-4 text-green-600" />
-                <span className="font-medium text-green-700 dark:text-green-400">Draft PR создан:</span>
-                {exec.prRef ? (
-                  /^https?:\/\//.test(exec.prRef) ? (
-                    <a
-                      href={exec.prRef}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 font-medium text-primary underline underline-offset-2"
-                    >
-                      {exec.prRef}
-                      <ExternalLink className="h-3.5 w-3.5" />
-                    </a>
+            {loopId ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm text-muted-foreground">
+                  Фаза планирования завершена. Передать action points в SDLC —
+                  исполнение пройдёт видимым раундом <code>developing</code> на
+                  консилиум-лупе:
+                </span>
+                <Button size="sm" onClick={handleDevelop} disabled={developLoop.isPending}>
+                  {developLoop.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   ) : (
-                    <span className="font-mono text-foreground">{exec.prRef}</span>
-                  )
-                ) : (
-                  <span className="text-muted-foreground">ссылка недоступна</span>
-                )}
+                    <GitPullRequest className="mr-2 h-4 w-4" />
+                  )}
+                  Передать в SDLC (develop-раунд)
+                </Button>
               </div>
-            )}
-
-            {exec.status === "done" && (
-              <p className="text-xs text-muted-foreground">
-                Дальше: проверь и смержи Draft PR.
-              </p>
-            )}
-
-            {exec.status === "failed" && exec.error && (
-              <div className="rounded-md border border-red-600/40 bg-red-600/5 p-3 text-sm text-red-700 dark:text-red-400">
-                {exec.error}
+            ) : (
+              <div className="flex items-start gap-2 rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+                <Info className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>
+                  Для этой группы нет консилиум-лупа — исполнение action points
+                  запускается через луп. Создание лупа из вердикта появится позже.
+                </span>
               </div>
             )}
           </div>

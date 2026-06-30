@@ -34,6 +34,7 @@ import {
   ChevronRight,
   Archive,
   KeyRound,
+  Layers,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingQuestions } from "@/hooks/use-pipeline";
@@ -56,6 +57,7 @@ const ROLE_BADGE: Record<UserRole, { label: string; className: string }> = {
 export default function MainLayout({ children }: MainLayoutProps) {
   const [location, navigate] = useLocation();
   const [isV1Open, setIsV1Open] = useState(false);
+  const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const { data: pendingQuestions } = usePendingQuestions();
   const pendingList = Array.isArray(pendingQuestions)
     ? (pendingQuestions as Array<{ runId?: string; pipelineName?: string | null }>)
@@ -76,7 +78,6 @@ export default function MainLayout({ children }: MainLayoutProps) {
 
   const navItems = [
     { icon: LayoutDashboard, label: "Dashboard", href: "/" },
-    { icon: ListChecks, label: "Task Groups", href: "/task-groups" },
     { icon: BookMarked, label: "Task Library", href: "/task-library" },
     { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: Repeat, label: "Consilium Loops", href: "/consilium-loops" },
@@ -197,6 +198,51 @@ export default function MainLayout({ children }: MainLayoutProps) {
               );
             })}
           </nav>
+
+          {/* Advanced — power-user surfaces demoted out of the primary nav but kept
+              one click away (the route stays fully reachable). */}
+          <div className="px-4 py-2 mt-2 border-t border-border/50">
+            <button
+              onClick={() => setIsAdvancedOpen(!isAdvancedOpen)}
+              className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <Layers className="h-4 w-4" />
+                <span>Advanced</span>
+              </div>
+              {isAdvancedOpen ? (
+                <ChevronDown className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
+            </button>
+
+            {isAdvancedOpen && (
+              <nav className="mt-1 space-y-1 pb-2">
+                {[
+                  { icon: ListChecks, label: "Task Groups", href: "/task-groups" },
+                ].map((item) => {
+                  const isActive =
+                    location === item.href ||
+                    (item.href !== "/" && location.startsWith(item.href));
+                  const Icon = item.icon;
+                  return (
+                    <Link key={item.href} href={item.href}>
+                      <div className={cn(
+                        "flex items-center gap-3 px-3 py-1.5 rounded-md transition-colors cursor-pointer text-xs font-medium",
+                        isActive
+                          ? "bg-primary/10 text-primary"
+                          : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground",
+                      )}>
+                        <Icon className="h-3.5 w-3.5" />
+                        <span className="flex-1">{item.label}</span>
+                      </div>
+                    </Link>
+                  );
+                })}
+              </nav>
+            )}
+          </div>
 
           <div className="px-4 py-2 mt-2 border-t border-border/50">
             <button

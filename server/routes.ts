@@ -59,8 +59,6 @@ import { registerTaskGroupRoutes } from "./routes/task-groups";
 import { registerTaskGroupResolveRoute } from "./routes/task-group-resolve";
 import { registerConsiliumLoopRoutes } from "./routes/consilium-loops";
 import { registerConsiliumReviewRoutes } from "./routes/consilium-reviews";
-import { registerExecuteSdlcRoutes } from "./routes/execute-sdlc";
-import { SdlcExecutionService } from "./services/consilium/execute-sdlc";
 import { createConsiliumReview } from "./services/consilium/review-factory";
 import { maybeLaunchConsiliumReview } from "./services/consilium/trigger-dispatch";
 import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consilium/consilium-loop-controller";
@@ -326,16 +324,11 @@ export async function registerRoutes(
       controller: consiliumLoopController,
       config: () => appConfigLoader.get(),
     });
-    // POST /api/task-groups/:groupId/execute-sdlc (+ /status) — EXECUTE a
-    // consilium verdict's action_points directly via the SDLC executor (one
-    // isolated worktree + coder/commit per action point + ONE Draft PR). Same
-    // fail-closed allowlist + per-project workspace gate as the review path;
-    // action points are SERVER-READ from the verdict. Inert outside this block.
-    registerExecuteSdlcRoutes(
-      app,
-      storage,
-      new SdlcExecutionService({ storage, config: () => appConfigLoader.get() }),
-    );
+    // NOTE: the standalone POST /api/task-groups/:groupId/execute-sdlc surface was
+    // REMOVED — "execute a verdict's action points" is now the consilium loop's own
+    // visible DEVELOPING phase, re-openable on a terminal loop via
+    // POST /api/consilium-loops/:id/develop (registered above). It runs the SAME
+    // `runSdlcHandoff` executor; nothing else feeds it.
     consiliumLoopPoller = new ConsiliumLoopPoller(
       consiliumLoopController,
       storage,
