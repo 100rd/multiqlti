@@ -49,8 +49,21 @@
  *       dedup's `getLoops()` relies on. Fail-closed: a project with NO matching
  *       workspace ⇒ NO repo is reviewable for it. Both checks run BEFORE
  *       createTaskGroup/createLoop, so nothing is persisted on rejection.
+ *   S6. REPO DIGEST (content-bug fix). `sdlc-cross-review` is a CONTENT review of
+ *       the repo's current state, but a ONE-SHOT (maxRounds:1) review has no
+ *       round-2 diff to attach — so an instruction-only objective gave the
+ *       reviewers NOTHING to review and they (correctly) refused. The objective
+ *       now embeds a BOUNDED `composeRepoDigest` (file tree + a budgeted,
+ *       prioritized sample of source files) read AT the target ref via the SAME
+ *       read-at-ref machinery as the spec embed (#423): every git call is an
+ *       arg-array pinned behind `--end-of-options`; paths come from `ls-tree`
+ *       (server-listed, NEVER caller text); blob SIZE from `ls-tree -l` gates the
+ *       read BEFORE `git show` (the MED-1 memory-DoS guard); every file body is
+ *       wrapped in a strictly-longer backtick fence so repo content is treated as
+ *       DATA, not instructions; the whole objective stays under `INPUT_CAP_BYTES`.
+ *       Filesystem fallback (working-tree HEAD) when no ref is supplied.
  */
-import { readdirSync, readFileSync, statSync } from "fs";
+import { readdirSync, readFileSync, statSync, type Dirent } from "fs";
 import { basename, join } from "path";
 import simpleGit from "simple-git";
 import type { IStorage } from "../../storage.js";
@@ -435,13 +448,14 @@ async function listSpecFilesAtRef(git: SpecGitClient, ref: string): Promise<Spec
 }
 
 /**
- * Read ONE spec blob AT a git ref via `git show <ref>:<path>` (NO checkout, no
- * working-tree read). SECURITY: `--end-of-options` precedes the `<ref>:<path>`
- * object spec; both `ref` (strict-validated) and `path` (server-listed from
- * ls-tree, never caller text) are arg-array elements. Returns null on any error
- * so one unreadable blob is skipped rather than failing the whole review.
+ * Read ONE blob AT a git ref via `git show <ref>:<path>` (NO checkout, no
+ * working-tree read). Used by BOTH the spec embed and the repo digest. SECURITY:
+ * `--end-of-options` precedes the `<ref>:<path>` object spec; both `ref`
+ * (strict-validated) and `path` (server-listed from ls-tree, never caller text)
+ * are arg-array elements. Returns null on any error so one unreadable blob is
+ * skipped rather than failing the whole review.
  */
-async function readSpecAtRef(git: SpecGitClient, ref: string, path: string): Promise<string | null> {
+async function readBlobAtRef(git: SpecGitClient, ref: string, path: string): Promise<string | null> {
   try {
     return await git.raw(["show", "--end-of-options", `${ref}:${path}`]);
   } catch {
@@ -497,7 +511,7 @@ async function embedSpecSetAtRef(
       used += omitBytes;
       continue;
     }
-    const content = await readSpecAtRef(git, ref, path);
+    const content = await readBlobAtRef(git, ref, path);
     if (content === null) continue; // skip an unreadable blob
     // FIX MED-1: fence the spec BODY in a strictly-longer backtick run so the
     // untrusted spec markdown is treated as DATA and cannot inject instructions.
@@ -529,14 +543,316 @@ async function embedSpecSetAtRef(
   return header + body + note;
 }
 
+// ─── Repo digest (sdlc-cross-review, round 1) ───────────────────────────────
+//
+// WHY: `sdlc-cross-review` is a CONTENT review of the repo's current state, but a
+// one-shot (maxRounds:1) review attaches NO round-2 diff — so an instruction-only
+// objective handed the reviewers nothing and they refused ("No repository context
+// … provided in the input context {}"). The digest gives them a real, BOUNDED
+// view: a file tree (structure) + a budgeted, prioritized sample of source files
+// (content), read AT the ref with the SAME #423 machinery as the spec embed.
+
+/** Hard cap on the number of paths listed in the digest's file-tree section. */
+const DIGEST_MAX_TREE_PATHS = 400;
+/**
+ * Source-file extensions sampled into the digest's priority-file set. A small,
+ * deliberate allowlist of human-authored code/markup — not data/binary blobs.
+ */
+const DIGEST_SOURCE_EXTS = new Set<string>([
+  ".ts", ".tsx", ".js", ".py", ".go", ".rs", ".java", ".rb", ".hcl", ".tf", ".md",
+]);
+/** Directory segments never listed in the tree nor sampled (noise / huge / VCS). */
+const DIGEST_SKIP_DIRS = new Set<string>([
+  "node_modules", "dist", "build", ".git", "vendor",
+]);
+/** Lockfiles excluded from the priority-file sample (huge, low signal). */
+const DIGEST_LOCKFILES = new Set<string>([
+  "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json",
+  "pipfile.lock", "poetry.lock", "cargo.lock", "go.sum", "gemfile.lock",
+  "composer.lock",
+]);
+/**
+ * Manifest basenames read right after the README — the project's shape at a
+ * glance (deps, entrypoints, toolchain). Compared case-insensitively.
+ */
+const DIGEST_MANIFESTS = new Set<string>([
+  "package.json", "pyproject.toml", "go.mod", "cargo.toml", "pom.xml",
+  "build.gradle", "gemfile", "requirements.txt", "composer.json", "pubspec.yaml",
+]);
+
+/** One repo file under consideration for the digest: repo-relative path + size. */
+interface RepoFile {
+  path: string;
+  size: number;
+}
+
+/** A path whose DIRECTORY segments hit a skip-dir (node_modules/.git/…) — pruned. */
+function digestDirExcluded(path: string): boolean {
+  const segs = path.split("/");
+  for (let i = 0; i < segs.length - 1; i++) {
+    if (DIGEST_SKIP_DIRS.has(segs[i])) return true;
+  }
+  return false;
+}
+
+/** Lowercased file extension incl. the dot (".ts"), or "" when none. */
+function fileExt(path: string): string {
+  const base = basename(path).toLowerCase();
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(dot) : ""; // dot>0: a leading-dot dotfile has no ext
+}
+
+/**
+ * Priority tier for a repo-relative path, or null when it is NOT a digest
+ * candidate. Lower tier = higher priority:
+ *   0 — a root README* (case-insensitive)
+ *   1 — a manifest (package.json / go.mod / …), any depth
+ *   2 — a source file by extension (.ts/.py/.go/…)
+ * Lockfiles are explicitly NOT candidates even though some share an extension.
+ */
+function digestTier(path: string): number | null {
+  const base = basename(path).toLowerCase();
+  if (DIGEST_LOCKFILES.has(base)) return null;
+  if (!path.includes("/") && base.startsWith("readme")) return 0; // root README*
+  if (DIGEST_MANIFESTS.has(base)) return 1;
+  if (DIGEST_SOURCE_EXTS.has(fileExt(path))) return 2;
+  return null;
+}
+
+/** Slash count = path depth (root files are depth 0) — drives shallow-first sort. */
+function pathDepth(path: string): number {
+  let n = 0;
+  for (let i = 0; i < path.length; i++) if (path.charCodeAt(i) === 0x2f /* / */) n += 1;
+  return n;
+}
+
+/**
+ * Select + DETERMINISTICALLY order the digest's priority files from a listing:
+ * by tier (README → manifests → source), then shallowest path first, then
+ * lexical. Skip-dir paths and lockfiles are dropped. Pure (no I/O) so both the
+ * fs and ref twins share one selection heuristic.
+ */
+function selectDigestFiles(listing: readonly RepoFile[]): RepoFile[] {
+  const scored: { f: RepoFile; tier: number; depth: number }[] = [];
+  for (const f of listing) {
+    if (digestDirExcluded(f.path)) continue;
+    const tier = digestTier(f.path);
+    if (tier === null) continue;
+    scored.push({ f, tier, depth: pathDepth(f.path) });
+  }
+  scored.sort(
+    (a, b) => a.tier - b.tier || a.depth - b.depth || a.f.path.localeCompare(b.f.path),
+  );
+  return scored.map((s) => s.f);
+}
+
+/** A single fenced priority-file block (FIX MED-1: strictly-longer fence). */
+function digestFileBlock(path: string, content: string): string {
+  const fence = backtickFence(content);
+  return `\n### ${sanitizeLine(path, 200)}\n\n${fence}\n${content}\n${fence}\n`;
+}
+
+/**
+ * Render the file-tree section from server-listed paths: lexical order, capped at
+ * `DIGEST_MAX_TREE_PATHS` AND at `maxBytes` (so a giant repo can't let the tree
+ * crowd out the file contents), with a truncation note. Paths are server-listed
+ * (ls-tree / fs walk) but still fenced as data (defence in depth).
+ */
+function renderFileTree(paths: readonly string[], maxBytes: number): string {
+  const sorted = [...paths].sort((a, b) => a.localeCompare(b));
+  const total = sorted.length;
+  const shownLines: string[] = [];
+  let bytes = 0;
+  for (const p of sorted) {
+    if (shownLines.length >= DIGEST_MAX_TREE_PATHS) break;
+    const add = Buffer.byteLength(p + "\n", "utf8");
+    if (bytes + add > maxBytes) break;
+    shownLines.push(p);
+    bytes += add;
+  }
+  const shown = shownLines.length;
+  const lines = shownLines.join("\n");
+  const fence = backtickFence(lines);
+  const truncNote =
+    total > shown ? `\n_(file tree truncated: ${shown} of ${total} path(s) shown)_` : "";
+  return (
+    `\n### File tree (${total} file(s)${total > shown ? `, ${shown} shown` : ""})\n\n` +
+    `${fence}\n${lines}\n${fence}\n${truncNote}`
+  );
+}
+
+const DIGEST_HEADER = "\n\n## Repository digest (embedded snapshot for round 1)\n";
+
+/**
+ * Assemble the digest body from an ALREADY-built listing + a (sync or async) file
+ * reader, shared by both twins. The tree goes first (uses up to half the budget);
+ * then priority files in `selectDigestFiles` order, each gated by its KNOWN size
+ * BEFORE the read (MED-1) so an oversized file is omitted, never buffered. The
+ * loop keeps scanning after an omission so a smaller later file can still fit.
+ * `readFile` returns the body or null (unreadable → skipped). Returns the body
+ * string; the caller stitches it after the SDLC header and the final clamp.
+ */
+async function assembleDigest(
+  listing: readonly RepoFile[],
+  budgetBytes: number,
+  readFile: (path: string) => string | null | Promise<string | null>,
+): Promise<string> {
+  if (listing.length === 0) {
+    return (
+      DIGEST_HEADER +
+      "\n_No readable files found in the repository; reviewing on the objective alone._\n"
+    );
+  }
+
+  const tree = renderFileTree(
+    listing.map((f) => f.path),
+    Math.max(0, Math.floor(budgetBytes / 2)),
+  );
+
+  const candidates = selectDigestFiles(listing);
+  let body = DIGEST_HEADER + tree;
+  let used = Buffer.byteLength(body, "utf8");
+  let included = 0;
+  let omitted = 0;
+
+  for (const f of candidates) {
+    const remaining = budgetBytes - used;
+    // MED-1: skip on the KNOWN size BEFORE reading (+64 leaves room for the fenced
+    // block's own framing). A multi-GB blob is never buffered into memory.
+    if (!Number.isFinite(f.size) || f.size + 64 > remaining) {
+      omitted += 1;
+      continue;
+    }
+    const content = await readFile(f.path);
+    if (content === null) {
+      omitted += 1;
+      continue;
+    }
+    const block = digestFileBlock(f.path, content);
+    const blockBytes = Buffer.byteLength(block, "utf8");
+    if (used + blockBytes > budgetBytes) {
+      omitted += 1;
+      continue; // keep scanning — a smaller later file may still fit
+    }
+    body += block;
+    used += blockBytes;
+    included += 1;
+  }
+
+  const note =
+    `\n\n_(repo digest: ${included} priority file(s) embedded` +
+    (omitted ? `, ${omitted} omitted to fit the ${budgetBytes}-byte budget` : "") +
+    `)_`;
+  return body + note;
+}
+
+/**
+ * Walk the WORKING TREE under `repoPath` (sync), collecting every regular file's
+ * repo-relative path + on-disk byte size. Skip-dirs (node_modules/.git/…) are
+ * never descended into (so the tree stays bounded and a symlinked node_modules is
+ * never followed). Best-effort: unreadable dirs/stats are skipped.
+ */
+function listRepoFilesFs(repoPath: string): RepoFile[] {
+  const out: RepoFile[] = [];
+  const walk = (dir: string, rel: string): void => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const name = e.name;
+      const childRel = rel ? `${rel}/${name}` : name;
+      if (e.isDirectory()) {
+        if (DIGEST_SKIP_DIRS.has(name)) continue;
+        walk(join(dir, name), childRel);
+      } else if (e.isFile()) {
+        let size = Number.POSITIVE_INFINITY;
+        try {
+          size = statSync(join(dir, name)).size;
+        } catch {
+          /* unreadable stat → keep Infinity so the size-gate omits it */
+        }
+        out.push({ path: childRel, size });
+      }
+      // symlinks (incl. a symlinked node_modules) are neither dir nor file here → skipped
+    }
+  };
+  walk(repoPath, "");
+  return out;
+}
+
+/**
+ * List every blob AT a git ref via `git ls-tree -r -l --end-of-options <ref>`,
+ * returning each path + on-disk SIZE (the `-l` long format — a superset of
+ * `--name-only`, so ONE call yields both the tree AND the MED-1 size gate). Skip
+ * -dir paths are pruned. SECURITY: `--end-of-options` pins the (strict-validated)
+ * ref; no caller text reaches git. Best-effort: any git error ⇒ empty list.
+ */
+async function listRepoFilesAtRef(git: SpecGitClient, ref: string): Promise<RepoFile[]> {
+  let out: string;
+  try {
+    out = await git.raw(["ls-tree", "-r", "-l", "--end-of-options", ref]);
+  } catch {
+    return [];
+  }
+  const files: RepoFile[] = [];
+  for (const line of out.split("\n")) {
+    const tab = line.indexOf("\t");
+    if (tab < 0) continue;
+    const meta = line.slice(0, tab).trim().split(/\s+/);
+    const path = line.slice(tab + 1).trim();
+    if (meta.length < 4 || meta[1] !== "blob" || path.length === 0) continue;
+    if (digestDirExcluded(path)) continue;
+    const size = Number.parseInt(meta[3], 10);
+    files.push({ path, size: Number.isFinite(size) ? size : Number.POSITIVE_INFINITY });
+  }
+  return files;
+}
+
+/**
+ * WORKING-TREE digest (no ref): walk the filesystem under `repoPath` and embed a
+ * bounded file tree + prioritized source sample within `budgetBytes`. The fs
+ * fallback used when no review ref is supplied (twin of `composeRepoDigestAtRef`).
+ */
+export async function composeRepoDigest(repoPath: string, budgetBytes: number): Promise<string> {
+  const listing = listRepoFilesFs(repoPath);
+  return assembleDigest(listing, budgetBytes, (rel) => {
+    try {
+      return readFileSync(join(repoPath, rel), "utf8");
+    } catch {
+      return null;
+    }
+  });
+}
+
+/**
+ * REF-TARGETED digest: read the file tree + prioritized source sample AT `ref`
+ * via the git client (`ls-tree -r -l` for the tree + sizes, `git show <ref>:path`
+ * for bodies) — NEVER the working tree. Same bounded budget + MED-1 size gate +
+ * fenced bodies as `composeRepoDigest`. SECURITY: every git call is an arg-array
+ * pinned behind `--end-of-options`; paths are server-listed from ls-tree.
+ */
+export async function composeRepoDigestAtRef(
+  git: SpecGitClient,
+  ref: string,
+  budgetBytes: number,
+): Promise<string> {
+  const listing = await listRepoFilesAtRef(git, ref);
+  return assembleDigest(listing, budgetBytes, (rel) => readBlobAtRef(git, ref, rel));
+}
+
 // ─── Objective composition (per preset) ─────────────────────────────────────
 
 const SDLC_HEADER =
   "# Consilium SDLC cross-review\n\n" +
   "Review the repository's CURRENT state for SDLC quality: correctness, " +
-  "security, design coherence, test coverage, and operability. This is round 1 — " +
-  "argue from the objective and the diff/context the loop attaches each round. " +
-  "Surface concrete, actionable issues; the Judge will prioritise them.";
+  "security, design coherence, test coverage, and operability. A bounded " +
+  "snapshot of the repository (file tree + a prioritized sample of source files) " +
+  "is embedded below as the round-1 context; argue from it (and, on later rounds, " +
+  "the diff the loop attaches). Surface concrete, actionable issues with " +
+  "`file:line` evidence; the Judge will prioritise them.";
 
 const DIFF_HEADER =
   "# Consilium diff / PR review\n\n" +
@@ -556,13 +872,16 @@ const FULL_VIABILITY_HEADER =
  * Compose the group `input` (objective) for a preset. `repoPath` is the
  * ALREADY-validated canonical path. `objectiveExtra` is UNTRUSTED (clamped).
  * The whole objective is byte-clamped to `INPUT_CAP_BYTES` (defence in depth —
- * the spec embed already budgets against it).
+ * the spec/digest embeds already budget against it).
+ *
+ * `sdlc-cross-review` embeds a WORKING-TREE `composeRepoDigest` (the fs fallback
+ * used when no ref is supplied); `composeObjectiveAtRef` is its ref-targeted twin.
  */
-export function composeObjective(
+export async function composeObjective(
   preset: ConsiliumReviewPreset,
   repoPath: string,
   objectiveExtra: string | undefined,
-): string {
+): Promise<string> {
   const extraBlock = untrustedExtraBlock(objectiveExtra);
 
   let objective: string;
@@ -574,7 +893,11 @@ export function composeObjective(
   } else if (preset === "diff-pr-review") {
     objective = DIFF_HEADER + extraBlock;
   } else {
-    objective = SDLC_HEADER + extraBlock;
+    // sdlc-cross-review: embed a bounded working-tree digest so a one-shot review
+    // has real content to review (the content bug). Budget it under the input cap.
+    const fixedBytes = Buffer.byteLength(SDLC_HEADER + extraBlock, "utf8");
+    const digestBudget = Math.max(0, INPUT_CAP_BYTES - fixedBytes);
+    objective = SDLC_HEADER + (await composeRepoDigest(repoPath, digestBudget)) + extraBlock;
   }
 
   // Final defence-in-depth byte clamp.
@@ -582,11 +905,13 @@ export function composeObjective(
 }
 
 /**
- * BRANCH-targeted twin of `composeObjective`: identical to it for every preset
- * EXCEPT `full-viability`, which embeds `specs/*.md` read AT `ref` (via the git
- * client, NOT the working tree) so picking branch X reviews X's specs even while
- * the checkout sits on another branch. The same input-cap budgeting + final byte
- * clamp apply. `ref` is the ALREADY-validated reviewRef.
+ * BRANCH-targeted twin of `composeObjective`: identical for every preset EXCEPT
+ * those that embed repo content read AT `ref` (via the git client, NOT the
+ * working tree): `full-viability` embeds `specs/*.md` at the ref, and
+ * `sdlc-cross-review` embeds the repo digest at the ref — so picking branch X
+ * reviews X's content even while the checkout sits on another branch. The same
+ * input-cap budgeting + final byte clamp apply. `ref` is the ALREADY-validated
+ * reviewRef.
  */
 export async function composeObjectiveAtRef(
   preset: ConsiliumReviewPreset,
@@ -605,7 +930,10 @@ export async function composeObjectiveAtRef(
   } else if (preset === "diff-pr-review") {
     objective = DIFF_HEADER + extraBlock;
   } else {
-    objective = SDLC_HEADER + extraBlock;
+    // sdlc-cross-review: embed the repo digest read AT the ref (git, not fs).
+    const fixedBytes = Buffer.byteLength(SDLC_HEADER + extraBlock, "utf8");
+    const digestBudget = Math.max(0, INPUT_CAP_BYTES - fixedBytes);
+    objective = SDLC_HEADER + (await composeRepoDigestAtRef(git, ref, digestBudget)) + extraBlock;
   }
 
   return clampUtf8(objective, INPUT_CAP_BYTES).text;
@@ -619,10 +947,10 @@ export interface CreateConsiliumReviewDeps {
   controller: ConsiliumLoopController;
   config: () => AppConfig;
   /**
-   * Factory for the git client used to read specs AT a target ref (full-viability
-   * + a `ref`). Defaults to `simpleGit(repoPath)`; tests inject a fake to assert
-   * `git show <ref>:specs/...` is used (NOT a filesystem read). The repoPath is
-   * the already-allowlisted+workspace-gated canonical path.
+   * Factory for the git client used to read specs/digest AT a target ref.
+   * Defaults to `simpleGit(repoPath)`; tests inject a fake to assert
+   * `git show <ref>:...` is used (NOT a filesystem read). The repoPath is the
+   * already-allowlisted+workspace-gated canonical path.
    */
   gitClientFactory?: (repoPath: string) => SpecGitClient;
 }
@@ -744,13 +1072,12 @@ export async function createConsiliumReview(
   // boundary — an invalid ref THROWS here (→ 400 at the endpoint) and is NEVER
   // persisted. null/undefined ⇒ working-tree HEAD (full back-compat). The ref
   // reaches git ONLY as an arg-array element (diff-context HEAD resolution +
-  // embedSpecSetAtRef), always pinned behind `--end-of-options`.
+  // embedSpecSetAtRef / composeRepoDigestAtRef), always pinned behind `--end-of-options`.
   const reviewRef =
     params.ref === undefined || params.ref === null ? null : validateReviewRef(params.ref);
 
-  // S2: for full-viability WITH a ref, read specs AT THE REF via git (no working
-  // tree); otherwise the existing filesystem read. Other presets ignore the ref
-  // when composing (the diff side resolves it in diff-context).
+  // S2: WITH a ref, read repo content AT THE REF via git (no working tree);
+  // otherwise the filesystem read. The diff side resolves the ref in diff-context.
   const objective = reviewRef
     ? await composeObjectiveAtRef(
         params.preset,
@@ -759,7 +1086,7 @@ export async function createConsiliumReview(
         reviewRef,
         (deps.gitClientFactory ?? ((p: string) => simpleGit(p) as SpecGitClient))(resolvedRepo),
       )
-    : composeObjective(params.preset, resolvedRepo, params.objectiveExtra);
+    : await composeObjective(params.preset, resolvedRepo, params.objectiveExtra);
   const tasks = buildCrossReviewTasks(panel);
 
   // 1) Cross-review task-group (the proven 5-task DAG for the 2-model panel).
