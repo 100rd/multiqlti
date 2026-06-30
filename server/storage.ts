@@ -566,6 +566,22 @@ export interface IStorage {
     updates: Partial<Omit<ConsiliumLoopRow, "id" | "createdAt">>,
   ): Promise<ConsiliumLoopRow>;
   /**
+   * Carry-in (b) — SOURCE-CONDITIONAL archetype write (Stage 2a makes the archetype
+   * LOAD-BEARING). A PLAIN partial update of the archetype columns that lands ONLY
+   * when the row's `archetype_source IS DISTINCT FROM 'override'` (NULL/'proposed'
+   * match; a human 'override' does NOT), so a model PROPOSAL can never clobber a
+   * human override even under a sub-millisecond TOCTOU race. Returns the updated row,
+   * or `undefined` when an override blocked the write (0 rows). NOT a state
+   * transition (never touches `state`).
+   */
+  updateLoopArchetypeIfNotOverridden(
+    id: string,
+    updates: Pick<
+      ConsiliumLoopRow,
+      "archetype" | "archetypeSource" | "archetypeRationale" | "archetypeParams" | "archetypeDecidedAt"
+    >,
+  ): Promise<ConsiliumLoopRow | undefined>;
+  /**
    * H-3 — atomic compare-and-swap on `state`. Sets the loop to `next` (+ any
    * extra fields) ONLY when its current state equals `expected`. Returns the
    * updated row when the CAS won (1 row), or `undefined` when it lost (0 rows —
@@ -1977,6 +1993,23 @@ export class MemStorage implements IStorage {
   ): Promise<ConsiliumLoopRow> {
     const existing = this.consiliumLoopsMap.get(id);
     if (!existing) throw new Error(`ConsiliumLoop ${id} not found`);
+    const updated = { ...existing, ...updates, updatedAt: new Date() };
+    this.consiliumLoopsMap.set(id, updated);
+    return updated;
+  }
+
+  async updateLoopArchetypeIfNotOverridden(
+    id: string,
+    updates: Pick<
+      ConsiliumLoopRow,
+      "archetype" | "archetypeSource" | "archetypeRationale" | "archetypeParams" | "archetypeDecidedAt"
+    >,
+  ): Promise<ConsiliumLoopRow | undefined> {
+    const existing = this.consiliumLoopsMap.get(id);
+    if (!existing) return undefined;
+    // IS DISTINCT FROM 'override': a human override is sacrosanct (NULL/'proposed'
+    // both write). An override blocks the write → 0 rows → undefined.
+    if (existing.archetypeSource === "override") return undefined;
     const updated = { ...existing, ...updates, updatedAt: new Date() };
     this.consiliumLoopsMap.set(id, updated);
     return updated;

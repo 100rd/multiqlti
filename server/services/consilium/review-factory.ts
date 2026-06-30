@@ -234,7 +234,7 @@ export function buildCrossReviewTasks(panel: ConsiliumPanel): CreateTaskParam[] 
  * multi-line field. The result only ever lands in the objective body (markdown
  * fed to the model) — never a shell string, branch name, or PR title.
  */
-function stripControlMultiline(value: string): string {
+export function stripControlMultiline(value: string): string {
   // eslint-disable-next-line no-control-regex
   return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+/g, " ");
 }

@@ -196,6 +196,10 @@ const fakeConfig = () =>
         maxDiffBytes: 200000,
         allowedRepoPaths: [process.cwd()],
         devPipelineId: "dev-pipe",
+        // Stage 2a: the implement kill-switch (default off ⇒ today's unskilled coder
+        // path). These FSM tests inject runSdlc and assert the develop wiring, not the
+        // skilled path, so this stays disabled.
+        implement: { enabled: false },
       },
     },
   }) as never;

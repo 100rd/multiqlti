@@ -352,6 +352,23 @@ export const ConfigSchema = z.object({
          */
         model: z.string().min(1).default(DEFAULT_TASK_MODEL),
       }).default({}),
+      /**
+       * Stage 2a (design §3.C/§4): the SKILLED, archetype-branched implement
+       * (develop) phase. When `enabled` is FALSE the loop runs TODAY'S single
+       * unskilled coder per action point (byte-for-byte unchanged). When TRUE the
+       * SDLC executor selects an ordered SKILLED step set from the loop's Stage-1
+       * archetype (e.g. repo-assessment → test-author → coder) and scopes each
+       * coder invocation by the step's capability. This is a strict SUPERSET of
+       * the develop phase: Stage 2a executes NOTHING new (no test run, no FSM
+       * change) — the per-criterion sandboxed verification/fix-loop is Stage 2b and
+       * is deliberately NOT configured here (so verification can never execute).
+       */
+      implement: z.object({
+        /** Kill-switch: false → today's unskilled coder path; true → the skilled
+         *  path. Defaults FALSE (opt-in). Also gated by the parent
+         *  `consiliumLoop.enabled` (the loop only runs at all when that is true). */
+        enabled: z.boolean().default(false),
+      }).default({}),
     }).default({}),
   }).default({}),
 });
