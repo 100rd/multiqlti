@@ -14,7 +14,10 @@
 import type { Express, Request, Response } from "express";
 import { z } from "zod";
 import type { IStorage } from "../storage.js";
-import type { ConsiliumLoopController } from "../services/consilium/consilium-loop-controller.js";
+import type {
+  ConsiliumLoopController,
+  DevelopErrorCode,
+} from "../services/consilium/consilium-loop-controller.js";
 import type { AppConfig } from "../config/schema.js";
 import { requireRole } from "../auth/middleware.js";
 import { validateBody } from "../middleware/validate.js";
@@ -114,8 +117,11 @@ export function registerConsiliumLoopRoutes(
     const auth = await authorizeConsiliumLoop(req, res, storage, String(req.params.id));
     if (!auth) return;
     const rounds = await storage.getLoopRounds(auth.loop.id);
+    // Display-only per-AP progress of the loop's DEVELOPING phase (process-local,
+    // ephemeral — degrades to undefined cross-instance; DB state stays authoritative).
+    const devProgress = controller.getDevProgress(auth.loop.id);
     const isAdmin = req.user?.role === "admin";
-    res.json({ ...maskLoop({ ...auth.loop }, !!isAdmin), rounds });
+    res.json({ ...maskLoop({ ...auth.loop }, !!isAdmin), rounds, devProgress });
   });
 
   // ── Start (PENDING → BUILDING_CONTEXT) ──────────────────────────────────────
@@ -148,6 +154,25 @@ export function registerConsiliumLoopRoutes(
     },
   );
 
+  // ── Develop (HUMAN re-open of a verdict-terminal loop → DEVELOPING) ──────────
+  // Auth = owner-or-admin (`authorizeConsiliumLoop`, 404-on-mismatch) — NOT the
+  // stricter maintainer/admin merge gate. This re-opens a terminal verdict-loop to
+  // implement its action points (parity with the removed "execute verdict" button);
+  // the autonomy→production boundary stays the merge-approved gate above. The whole
+  // controller is INERT outside the kill-switch (routes.ts only registers it then).
+  app.post("/api/consilium-loops/:id/develop", async (req: Request, res: Response) => {
+    const auth = await authorizeConsiliumLoop(req, res, storage, String(req.params.id));
+    if (!auth) return;
+    const result = await controller.develop(auth.loop.id);
+    if (result.ok) {
+      const isAdmin = req.user?.role === "admin";
+      // 200 + the masked loop row (state is now "developing"); the client polls
+      // GET /api/consilium-loops/:id (which now carries devProgress) to observe it.
+      return res.json(maskLoop({ ...result.loop }, !!isAdmin));
+    }
+    return mapDevelopError(res, result.code);
+  });
+
   // ── Cancel (any non-terminal → CANCELLED) ───────────────────────────────────
   app.post("/api/consilium-loops/:id/cancel", async (req: Request, res: Response) => {
     const auth = await authorizeConsiliumLoop(req, res, storage, String(req.params.id));
@@ -156,4 +181,44 @@ export function registerConsiliumLoopRoutes(
     if (!loop) return res.status(409).json({ error: "loop is already terminal" });
     res.json(loop);
   });
+}
+
+/**
+ * Map a typed {@link DevelopErrorCode} to an actionable HTTP status. Conflicts
+ * (wrong state / active loop / lost CAS) → 409; validation (no action points /
+ * repo gate) → 400; the R1 global concurrency cap → 429 (transient, Retry-After);
+ * a vanished loop → 404. Mirrors the merge-approved/create wording.
+ */
+function mapDevelopError(res: Response, code: DevelopErrorCode): Response {
+  switch (code) {
+    case "WRONG_STATE":
+      return res.status(409).json({
+        error: "loop is not in a developable terminal state (converged / stopped_cap / escalated)",
+      });
+    case "ACTIVE_LOOP_EXISTS":
+      return res.status(409).json({ error: "an active loop already exists for this group" });
+    case "CAS_LOST":
+      return res.status(409).json({ error: "develop could not be applied (concurrent update)" });
+    case "BUSY":
+      res.setHeader("Retry-After", "30");
+      return res.status(429).json({
+        error: "SDLC executor busy — too many concurrent dev runs, retry shortly.",
+      });
+    case "NO_ACTION_POINTS":
+      return res
+        .status(400)
+        .json({ error: "no action points to develop: this loop's verdict has no action points." });
+    case "REPO_NOT_WORKSPACE":
+      return res
+        .status(400)
+        .json({ error: "the loop's repoPath is not a registered workspace of this project." });
+    case "REPO_NOT_ALLOWED":
+      return res
+        .status(400)
+        .json({ error: "the loop's repoPath is not in the configured allowlist." });
+    case "NOT_FOUND":
+      return res.status(404).json({ error: "Consilium loop not found" });
+    default:
+      return res.status(400).json({ error: "develop rejected" });
+  }
 }

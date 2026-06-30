@@ -49,6 +49,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useTaskGroupEvents } from "@/hooks/use-task-events";
 import { useActiveModels, apiRequest } from "@/hooks/use-pipeline";
 import { useProjects } from "@/hooks/use-projects";
+import { useConsiliumLoops } from "@/hooks/use-consilium-loops";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -509,6 +510,14 @@ export default function TaskGroupPage() {
   const retryMutation = useRetryTask();
   const { toast } = useToast();
   const { projects, currentProject, selectProject } = useProjects();
+  // Resolve the consilium loop that owns this group (owner-scoped list) so the
+  // verdict panel can hand its action points to the loop's visible `developing`
+  // round. No matching loop ⇒ undefined → the panel disables the hand-off.
+  const { data: consiliumLoops } = useConsiliumLoops();
+  const loopId = useMemo(
+    () => consiliumLoops?.find((l) => l.groupId === id)?.id,
+    [consiliumLoops, id],
+  );
   const activityEndRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState(false);
   // The iteration the user is browsing in the Iterations panel (null → none yet).
@@ -862,6 +871,7 @@ export default function TaskGroupPage() {
           groupId={id}
           iterationNumber={shownIteration}
           groupName={group.name}
+          loopId={loopId}
         />
       )}
       </div>

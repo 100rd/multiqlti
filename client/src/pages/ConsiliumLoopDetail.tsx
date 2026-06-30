@@ -29,15 +29,19 @@ import {
   Play,
   Ban,
   GitMerge,
+  Hammer,
 } from "lucide-react";
 import {
   useConsiliumLoop,
   useStartLoop,
   useCancelLoop,
   useApproveMerge,
+  useDevelopLoop,
   isTerminalLoopState,
+  isVerdictTerminalLoopState,
   type ConsiliumLoopRoundRow,
   type ConsiliumLoopDetail as ConsiliumLoopDetailRow,
+  type DevProgress,
 } from "@/hooks/use-consilium-loops";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
@@ -48,6 +52,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import {
   Table,
   TableBody,
@@ -525,6 +530,108 @@ function ResultPanel({
   );
 }
 
+// ─── Develop progress — the live `developing` round surface ─────────────────────
+//
+// While the loop is in `developing`, the loop GET carries an OPTIONAL
+// `devProgress` snapshot of the SDLC handoff (design §9). It is process-local
+// and ephemeral, so EVERY subfield is read defensively — an early beat, a
+// cross-instance read, or a post-restart read may carry none, and the panel
+// degrades to a generic "developing…" line with the action-point total still
+// shown (the count is known from the round, not the progress beat).
+//
+// SECURITY: `actionPointTitle` is model-authored verdict text rendered as INERT
+// React text; the PR link uses rel="noopener noreferrer".
+
+/**
+ * Humanize the current SDLC phase into one Russian status line. Falls back to a
+ * generic "developing…" whenever `devProgress` (or the specific phase) is absent.
+ */
+function humanizeDevPhase(progress: DevProgress | undefined, total: number): string {
+  switch (progress?.phase) {
+    case "committing":
+      return "Коммичу…";
+    case "pushing":
+      return "Пушу ветку…";
+    case "opening_pr":
+      return "Открываю Draft PR…";
+    case "done":
+      return "Готово — Draft PR открыт.";
+    case "coding": {
+      const idx = progress?.actionPointIndex;
+      const pos =
+        typeof idx === "number" ? `${idx + 1}${total > 0 ? `/${total}` : ""}` : "";
+      const title = progress?.actionPointTitle;
+      const titlePart = title ? `: «${title}»` : "";
+      return pos
+        ? `Кодирую action point ${pos}${titlePart}`
+        : `Кодирую action point${titlePart}`;
+    }
+    default:
+      return "developing…";
+  }
+}
+
+function DevelopProgressPanel({
+  loop,
+  fallbackTotal,
+}: {
+  loop: ConsiliumLoopDetailRow;
+  /** Verdict's action-point count — the stepper total when the beat omits it.
+   *  NOTE: this is the FULL action-point count, NOT the round's P0-only number. */
+  fallbackTotal: number;
+}) {
+  const progress = loop.devProgress;
+  const total = progress?.actionPointTotal ?? fallbackTotal;
+  const completedRaw =
+    typeof progress?.completedCount === "number"
+      ? Math.max(0, progress.completedCount)
+      : undefined;
+  const completed =
+    completedRaw !== undefined && total > 0
+      ? Math.min(completedRaw, total)
+      : completedRaw;
+  const pct =
+    total > 0 && completed !== undefined ? Math.round((completed / total) * 100) : 0;
+
+  return (
+    <div className="space-y-2 rounded-md border border-primary/30 bg-primary/5 p-3">
+      <div className="flex items-center gap-2 text-sm font-medium">
+        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+        {/* INERT model-authored action-point title inside the phase line */}
+        <span>{humanizeDevPhase(progress, total)}</span>
+      </div>
+
+      {total > 0 && (
+        <div className="space-y-1">
+          <Progress value={pct} className="h-2" />
+          <div className="text-xs tabular-nums text-muted-foreground">
+            {completed ?? 0}/{total} готово
+          </div>
+        </div>
+      )}
+
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        SDLC-агент кодит каждый action point в изолированном git-worktree, коммитит
+        по одному на пункт, затем пушит ветку и открывает Draft PR. Агенты не
+        мержат — ревью и merge за тобой.
+      </p>
+
+      {/* Draft PR link appears once the executor has opened it (near completion). */}
+      {loop.prRef && (
+        <a
+          href={loop.prRef}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-sm font-medium text-primary underline underline-offset-2"
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+          Открыть Draft PR
+        </a>
+      )}
+    </div>
+  );
+}
+
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 export default function ConsiliumLoopDetail() {
@@ -537,6 +644,7 @@ export default function ConsiliumLoopDetail() {
   const startLoop = useStartLoop();
   const cancelLoop = useCancelLoop();
   const approveMerge = useApproveMerge();
+  const developLoop = useDevelopLoop();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   if (isLoading) {
@@ -566,6 +674,21 @@ export default function ConsiliumLoopDetail() {
   const canStart = loop.state === "pending";
   const canCancel = !terminal;
   const canApprove = loop.state === "awaiting_merge";
+
+  // Develop hand-off (design §9): a verdict-terminal loop whose latest verdict
+  // still carries action points may be promoted into a VISIBLE `developing`
+  // round. The server is the final arbiter (NO_ACTION_POINTS → 400); this gate
+  // is the UX nicety. The full AP count (not the P0-only `openP0`) also seeds the
+  // dev-progress stepper total when the live beat omits it.
+  const sortedRounds = [...(Array.isArray(loop.rounds) ? loop.rounds : [])].sort(
+    (a, b) => b.round - a.round,
+  );
+  const latestRound = sortedRounds[0];
+  const latestActionPointCount = Array.isArray(latestRound?.openActionPoints)
+    ? latestRound!.openActionPoints.length
+    : 0;
+  const canDevelop =
+    isVerdictTerminalLoopState(loop.state) && latestActionPointCount > 0;
 
   async function handleStart() {
     try {
@@ -618,6 +741,25 @@ export default function ConsiliumLoopDetail() {
     }
   }
 
+  async function handleDevelop() {
+    try {
+      await developLoop.mutateAsync(id);
+      toast({
+        title: "Передано в SDLC",
+        description: "Раунд developing запущен — следи за прогрессом ниже.",
+      });
+    } catch (err) {
+      // 400 (NO_ACTION_POINTS / REPO_NOT_*) | 409 (WRONG_STATE /
+      // ACTIVE_LOOP_EXISTS / CAS_LOST) — and the pre-backend 404 — surface the
+      // server `error` text verbatim.
+      toast({
+        variant: "destructive",
+        title: "Could not start develop round",
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   const rounds = Array.isArray(loop.rounds) ? loop.rounds : [];
 
   return (
@@ -665,6 +807,20 @@ export default function ConsiliumLoopDetail() {
                 Approve merge &amp; continue
               </Button>
             )}
+            {canDevelop && (
+              <Button
+                size="sm"
+                onClick={handleDevelop}
+                disabled={developLoop.isPending}
+              >
+                {developLoop.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Hammer className="mr-2 h-4 w-4" />
+                )}
+                Передать в SDLC
+              </Button>
+            )}
             {canCancel && (
               <Button
                 size="sm"
@@ -695,6 +851,12 @@ export default function ConsiliumLoopDetail() {
           </CardHeader>
           <CardContent className="space-y-3">
             <FsmStepper loop={loop} />
+            {loop.state === "developing" && (
+              <DevelopProgressPanel
+                loop={loop}
+                fallbackTotal={latestActionPointCount}
+              />
+            )}
           </CardContent>
         </Card>
 
