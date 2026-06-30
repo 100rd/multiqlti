@@ -614,6 +614,12 @@ export interface IStorage {
   /** Append one round (UNIQUE(loop, round) — idempotent re-append throws). */
   appendLoopRound(data: InsertConsiliumLoopRound): Promise<ConsiliumLoopRoundRow>;
   getLoopRounds(loopId: string): Promise<ConsiliumLoopRoundRow[]>;
+  /**
+   * Stage 2b: set the per-round `test_summary` (the convergence wire) AFTER the SDLC
+   * run settles. Additive over the audit row recorded on entering `developing`;
+   * no-op when the (loop, round) row is absent. Idempotent / best-effort.
+   */
+  updateLoopRoundTestSummary(loopId: string, round: number, testSummary: string): Promise<void>;
 
 
   // Tracker Connections (Issue Tracker Integration)
@@ -2084,6 +2090,15 @@ export class MemStorage implements IStorage {
     return Array.from(this.consiliumLoopRoundsMap.values())
       .filter((r) => r.loopId === loopId)
       .sort((a, b) => a.round - b.round);
+  }
+
+  async updateLoopRoundTestSummary(loopId: string, round: number, testSummary: string): Promise<void> {
+    for (const r of this.consiliumLoopRoundsMap.values()) {
+      if (r.loopId === loopId && r.round === round) {
+        this.consiliumLoopRoundsMap.set(r.id, { ...r, testSummary });
+        return;
+      }
+    }
   }
 
   // ─── /consensus run mode ──────────────────────────────────────────────────

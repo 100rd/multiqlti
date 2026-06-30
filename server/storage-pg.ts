@@ -1397,6 +1397,15 @@ export class PgStorage implements IStorage {
       .orderBy(asc(consiliumLoopRounds.round));
   }
 
+  async updateLoopRoundTestSummary(loopId: string, round: number, testSummary: string): Promise<void> {
+    // Scope by (loop, round). consilium_loop_rounds has no project_id of its own; the
+    // loopId is already project-scoped at write time, and round is unique per loop.
+    await db
+      .update(consiliumLoopRounds)
+      .set({ testSummary })
+      .where(and(eq(consiliumLoopRounds.loopId, loopId), eq(consiliumLoopRounds.round, round)));
+  }
+
   // ─── /consensus run mode ──────────────────────────────────────────────────
 
   async createConsensusRun(data: InsertConsensusRun): Promise<ConsensusRunRow> {

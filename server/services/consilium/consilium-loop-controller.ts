@@ -56,6 +56,7 @@ import type { ActionPoint, ConvergenceVerdict } from "@shared/types";
 import { P0_PRIORITY } from "@shared/types";
 import type { TaskOrchestrator } from "../task-orchestrator.js";
 import type { AppConfig } from "../../config/schema.js";
+import { effectiveVerificationEnabled } from "../../config/schema.js";
 import { readConvergence, extractActionPoints } from "../orchestrator/convergence.js";
 import { buildDiffContext } from "./diff-context.js";
 import type { DevCloseoutResult } from "./dev-closeout.js";
@@ -517,6 +518,8 @@ export class ConsiliumLoopController {
    * settled result here and the developing->awaiting_merge CAS consumes it.
    */
   private readonly sdlcRuns = new Map<string, SdlcRun>();
+  /** MED-2: emit the "verification ignored" gate warning at most once per instance. */
+  private warnedVerificationGate = false;
 
   /**
    * R1 ATOMICITY (Security HIGH): synchronously-reserved companion to the derived
@@ -1149,6 +1152,20 @@ export class ConsiliumLoopController {
     // the executor selects the archetype's skilled step set and binds it against the
     // existing skills table (storage.getSkills). NOTHING new executes either way.
     const skilled = cfg.implement.enabled;
+    // Stage 2b: per-criterion sandboxed verification + fix loop. Gated by its OWN
+    // kill-switch ON TOP of the skilled path (the test-runner only makes sense for the
+    // TDD skill set). MED-2 fail-closed: `verification.enabled` is HONORED only when a
+    // container sandbox is on OR the operator acked trusted-repo host exec — otherwise
+    // it degrades to Stage-2a (NO test runs) with a one-line warning. Single source of
+    // truth: `effectiveVerificationEnabled`.
+    const verifyOn = skilled && effectiveVerificationEnabled(this.deps.config());
+    if (skilled && cfg.implement.verification.enabled && !verifyOn && !this.warnedVerificationGate) {
+      this.warnedVerificationGate = true;
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[consilium-loop] verification.enabled ignored: requires features.sandbox or implement.trustedRepoAck",
+      );
+    }
     // REAL path: the SDLC executor cuts an ISOLATED worktree (NEVER the user's
     // checkout), runs the agentic coder to make REAL multi-file edits, then
     // commits + opens a Draft PR. baseRef defaults to the repo's default-branch
@@ -1167,6 +1184,15 @@ export class ConsiliumLoopController {
       // Stage 2a archetype-branched skilled coder (null when the kill-switch is off).
       archetype: skilled ? loop.archetype ?? null : null,
       archetypeParams: skilled ? loop.archetypeParams ?? null : null,
+      // Stage 2b: verification config (null when EITHER kill-switch is off ⇒ INERT).
+      verification: verifyOn
+        ? {
+            enabled: true,
+            maxFixIterations: cfg.implement.maxFixIterations,
+            testCommand: cfg.implement.testCommand,
+            testRunTimeoutMs: cfg.implement.testRunTimeoutMs,
+          }
+        : null,
     }, skilled ? { getSkills: () => this.storage.getSkills() } : undefined, onProgress);
   }
 
@@ -1187,6 +1213,13 @@ export class ConsiliumLoopController {
     // baselineCommit null) is unchanged: objective-only, no history.
     const priorFindings =
       loop.round >= 1 ? await this.buildPriorFindings(loop, cfg.maxDiffBytes) : undefined;
+    // Stage 2b: ground the judge's convergence verdict in REAL test results — feed the
+    // most-recent round's persisted testSummary into the review input. Gated by the
+    // verification kill-switch so the default path is byte-for-byte unchanged (the
+    // column is null for non-verified loops anyway; the gate keeps it provably INERT).
+    const testSummary = effectiveVerificationEnabled(this.deps.config())
+      ? await this.latestRoundTestSummary(loop)
+      : undefined;
     const ctx = await buildDiffContext({
       repoPath: loop.repoPath,
       baselineCommit: loop.lastReviewedCommit,
@@ -1197,6 +1230,7 @@ export class ConsiliumLoopController {
       allowedRepoPaths: cfg.allowedRepoPaths,
       maxDiffBytes: cfg.maxDiffBytes,
       priorFindings,
+      testSummary,
     });
     if (!ctx.ok) {
       // Surface the (scrubbed) git failure as a loop error; the next tick from
@@ -1267,6 +1301,18 @@ export class ConsiliumLoopController {
       .then((result) => {
         this.settleSdlcRun(loop.id, run, result);
         this.log(loop.id, `SDLC settled -> prRef=${run.result?.prRef ?? "null"}${run.result?.error ? ` (${run.result.error})` : ""}`);
+        // Stage 2b: persist the round's aggregated test summary (the convergence wire)
+        // so the NEXT review round grounds its verdict in real test results. Best-
+        // effort + additive over the audit row written on entering `developing`;
+        // present ONLY when verification ran (kill-switch on) ⇒ INERT otherwise.
+        const testSummary = result.testSummary;
+        if (testSummary && testSummary.trim().length > 0) {
+          void this.storage
+            .updateLoopRoundTestSummary(loop.id, run.round, testSummary)
+            .catch((err: unknown) =>
+              this.log(loop.id, `testSummary persist failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`),
+            );
+        }
       })
       .catch((err: unknown) => {
         this.settleSdlcRun(loop.id, run, {
@@ -1326,6 +1372,26 @@ export class ConsiliumLoopController {
       return undefined;
     }
     return formatPriorFindings(rounds, budgetBytes) ?? undefined;
+  }
+
+  /**
+   * Stage 2b convergence wire: the most-recent round's persisted `testSummary`, or
+   * undefined (none yet, or storage error). Best-effort — never throws; a missing
+   * summary just means the review proceeds without a test-results section (as today).
+   */
+  private async latestRoundTestSummary(loop: ConsiliumLoopRow): Promise<string | undefined> {
+    let rounds: ConsiliumLoopRoundRow[];
+    try {
+      rounds = await this.storage.getLoopRounds(loop.id);
+    } catch (err) {
+      this.log(loop.id, `latestRoundTestSummary: getLoopRounds failed (no test results injected): ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+    for (let i = rounds.length - 1; i >= 0; i--) {
+      const ts = rounds[i].testSummary;
+      if (ts && ts.trim().length > 0) return ts;
+    }
+    return undefined;
   }
 
   /** Persist this round's audit row (NEVER the raw diff/input — H-4). */

@@ -198,8 +198,15 @@ const fakeConfig = () =>
         devPipelineId: "dev-pipe",
         // Stage 2a: the implement kill-switch (default off ⇒ today's unskilled coder
         // path). These FSM tests inject runSdlc and assert the develop wiring, not the
-        // skilled path, so this stays disabled.
-        implement: { enabled: false },
+        // skilled path, so this stays disabled. Stage 2b: verification is likewise OFF
+        // (mirrors the schema defaults the real loader always provides).
+        implement: {
+          enabled: false,
+          verification: { enabled: false },
+          maxFixIterations: 3,
+          testCommand: null,
+          testRunTimeoutMs: 300000,
+        },
       },
     },
   }) as never;
