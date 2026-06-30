@@ -1019,7 +1019,7 @@ function buildGroupName(preset: ConsiliumReviewPreset, repoPath: string): string
  * workspace (incl. zero workspaces) rejects every repo. Runs BEFORE any
  * createTaskGroup/createLoop, so nothing is persisted on rejection.
  */
-async function assertRepoIsProjectWorkspace(
+export async function assertRepoIsProjectWorkspace(
   resolvedRepo: string,
   storage: IStorage,
 ): Promise<void> {

@@ -139,3 +139,26 @@ export function readConvergence(judgeOutput: unknown): ConvergenceVerdict {
   // "no parseable verdict" → conservatively NOT converged (see file header).
   return NOT_CONVERGED;
 }
+
+/**
+ * Extract the FULL `action_points` list from a judge output (ALL priorities, not
+ * just open P0s), bounded with the SAME caps as {@link readConvergence}
+ * (`MAX_ACTION_POINTS` count + per-field clamps). Used by the human-triggered
+ * execute-sdlc path: a maintainer who clicks "execute this verdict" wants EVERY
+ * action point the judge flagged implemented, whereas the loop's developing phase
+ * (`readConvergence().openActionPoints`) intentionally narrows to the still-open
+ * P0s. Returns `[]` for a missing/unparseable verdict (the route maps that to a
+ * 400 "no action points to execute"). Never throws.
+ *
+ * SECURITY: this is the SERVER-READ verdict — the request body's action_points (if
+ * any) are NEVER consulted. The returned text is UNTRUSTED model output; the SDLC
+ * executor sanitizes/clamps it again before it reaches a commit/PR body (never a
+ * shell string), and the Draft-PR human gate is the real containment.
+ */
+export function extractActionPoints(judgeOutput: unknown): ActionPoint[] {
+  const body = pickJudgeBody(judgeOutput);
+  if (!body) return [];
+  const parsed = z.array(actionPointSchema).safeParse(body.action_points);
+  if (!parsed.success) return [];
+  return boundActionPoints(parsed.data);
+}

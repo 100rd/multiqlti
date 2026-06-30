@@ -7,23 +7,32 @@
  * finds that execution in the latest iteration and renders it as a real UI block
  * (verdict callout + pros/cons + an Action Points TABLE) instead of raw JSON.
  *
- * It also closes the loop: the action points can be HANDED OFF to a pipeline
- * (e.g. Full SDLC Pipeline) — one pipeline_run task per action point — which is
- * the "planning → execution" transition. Handing off is optional (the user
- * decides whether to send them on).
+ * It also closes the loop: the action points can be HANDED OFF directly to SDLC
+ * execution. One click runs the verdict's action points — each coded in an
+ * isolated worktree — and opens a single Draft PR. There is no pipeline and no
+ * re-review; this is the "planning → execution" transition. Handing off is
+ * optional (the user decides whether to send them on).
  *
  * SECURITY: all model-authored text is rendered as INERT React text.
  */
-import { useMemo, useState } from "react";
-import { useLocation } from "wouter";
+import { useEffect, useMemo, useState } from "react";
 import { useIterationDetail } from "@/hooks/use-task-iterations";
-import { usePipelines, apiRequest } from "@/hooks/use-pipeline";
+import { apiRequest } from "@/hooks/use-pipeline";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { copyText } from "@/lib/clipboard";
-import { Gavel, Send, ThumbsUp, ThumbsDown, Loader2, Copy, Check } from "lucide-react";
+import {
+  Gavel,
+  GitPullRequest,
+  ThumbsUp,
+  ThumbsDown,
+  Loader2,
+  Copy,
+  Check,
+  ExternalLink,
+} from "lucide-react";
 import type { IterationExecution } from "@/lib/task-iterations";
 import type { ActionPoint } from "@shared/types";
 
@@ -122,6 +131,20 @@ function buildFullText(data: VerdictOutput, groupName: string, source: string): 
   return lines.join("\n");
 }
 
+/** SDLC hand-off lifecycle. Drives the primary action button + the PR callout. */
+type ExecState =
+  | { status: "idle" }
+  | { status: "starting" }
+  | { status: "running" }
+  | { status: "done"; prRef?: string }
+  | { status: "failed"; error?: string };
+
+interface SdlcStatusResponse {
+  status: "running" | "done" | "failed";
+  prRef?: string;
+  error?: string;
+}
+
 export function VerdictPanel({
   groupId,
   iterationNumber,
@@ -132,11 +155,8 @@ export function VerdictPanel({
   groupName: string;
 }) {
   const detail = useIterationDetail(groupId, iterationNumber);
-  const pipelinesQuery = usePipelines();
   const { toast } = useToast();
-  const [, navigate] = useLocation();
-  const [pipelineId, setPipelineId] = useState<string>("");
-  const [sending, setSending] = useState(false);
+  const [exec, setExec] = useState<ExecState>({ status: "idle" });
   const [copied, setCopied] = useState(false);
 
   const result = useMemo(
@@ -144,17 +164,60 @@ export function VerdictPanel({
     [detail.data],
   );
 
-  const pipelines = (pipelinesQuery.data ?? []) as Array<{ id: string; name: string }>;
-  const effectivePipelineId =
-    pipelineId ||
-    pipelines.find((p) => /full sdlc/i.test(p.name))?.id ||
-    pipelines[0]?.id ||
-    "";
+  // Poll the SDLC status while a hand-off is running. Re-runs whenever the
+  // lifecycle phase changes; only the "running" phase arms the 4s interval, so
+  // it self-stops on done/failed and tears down on unmount.
+  useEffect(() => {
+    if (exec.status !== "running") return;
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const s = (await apiRequest(
+          "GET",
+          `/api/task-groups/${groupId}/execute-sdlc/status`,
+        )) as SdlcStatusResponse;
+        if (cancelled) return;
+        if (s.status === "done") {
+          setExec({ status: "done", prRef: s.prRef });
+          toast({
+            title: "SDLC завершён",
+            description: s.prRef ? `Draft PR готов: ${s.prRef}` : "Draft PR готов.",
+          });
+        } else if (s.status === "failed") {
+          setExec({ status: "failed", error: s.error });
+          toast({
+            variant: "destructive",
+            title: "SDLC не удался",
+            description: s.error || "Исполнение завершилось ошибкой.",
+          });
+        }
+        // else: still running — keep polling.
+      } catch (err) {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setExec({ status: "failed", error: message });
+        toast({
+          variant: "destructive",
+          title: "SDLC не удался",
+          description: message,
+        });
+      }
+    };
+
+    void poll(); // immediate first check, then every ~4s
+    const id = window.setInterval(poll, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [exec.status, groupId, toast]);
 
   if (!result) return null;
   const { data, source } = result;
   const actionPoints = data.action_points;
   const fullText = buildFullText(data, groupName, source);
+  const busy = exec.status === "starting" || exec.status === "running";
 
   async function copyFullText() {
     if (await copyText(fullText)) {
@@ -173,65 +236,29 @@ export function VerdictPanel({
     }
   }
 
-  async function sendToPipeline() {
-    if (!effectivePipelineId || actionPoints.length === 0) return;
-    setSending(true);
+  async function executeSdlc() {
+    if (actionPoints.length === 0 || busy) return;
+    setExec({ status: "starting" });
     try {
-      const pipeline = pipelines.find((p) => p.id === effectivePipelineId);
-      const payload = {
-        name: `Handoff: ${groupName} → ${pipeline?.name ?? "Pipeline"}`.slice(0, 200),
-        description:
-          `Action points из вердикта планирования переданы на исполнение в ${pipeline?.name ?? "pipeline"}.`.slice(
-            0,
-            5000,
-          ),
-        input: `Передача action points планирования (${groupName}) на исполнение.`.slice(0, 50000),
-        tasks: actionPoints.map((ap, i) => ({
-          name: `[${ap.priority ?? "-"}] ${ap.title}`.slice(0, 200),
-          description:
-            [ap.rationale, ap.tradeoff ? `Трейд-офф: ${ap.tradeoff}` : ""]
-              .filter(Boolean)
-              .join(" ")
-              .slice(0, 5000) || ap.title.slice(0, 5000),
-          executionMode: "pipeline_run" as const,
-          pipelineId: effectivePipelineId,
-          sortOrder: i,
-          input: {
-            feature: ap.title,
-            rationale: ap.rationale ?? "",
-            tradeoff: ap.tradeoff ?? "",
-            priority: ap.priority ?? "",
-            effort: ap.effort ?? "",
-            source: groupName,
-          },
-        })),
-      };
-      const created = (await apiRequest("POST", "/api/task-groups", payload)) as { id: string };
-      // #2b: AUTO-START the handoff so it runs immediately instead of sitting
-      // pending until the user opens the group and clicks Run. The group already
-      // exists; a failed start is non-fatal (it can be retried from the group
-      // page), so we surface a softer toast rather than failing the whole handoff.
-      let started = true;
-      try {
-        await apiRequest("POST", `/api/task-groups/${created.id}/start`, {});
-      } catch {
-        started = false;
-      }
+      // Empty body: the server reads the verdict's action_points and resolves
+      // the repo path itself (project-scoped via x-project-id). 202 = accepted,
+      // executor runs in the background → one Draft PR.
+      await apiRequest("POST", `/api/task-groups/${groupId}/execute-sdlc`, {});
+      setExec({ status: "running" });
       toast({
-        title: started ? "Передано и запущено" : "Передано на исполнение",
-        description: started
-          ? `${actionPoints.length} action points → ${pipeline?.name}. Исполнение запущено.`
-          : `${actionPoints.length} action points → ${pipeline?.name}. Откройте группу и нажмите Run.`,
+        title: "Передано в SDLC",
+        description: `${actionPoints.length} action points исполняются → Draft PR.`,
       });
-      navigate(`/task-groups/${created.id}`);
     } catch (err) {
+      // Covers the 400 contract (no action points / repo not allowlisted / not a
+      // workspace) AND the pre-backend 404 — server `error` text is surfaced verbatim.
+      const message = err instanceof Error ? err.message : String(err);
+      setExec({ status: "failed", error: message });
       toast({
         variant: "destructive",
-        title: "Не удалось передать",
-        description: err instanceof Error ? err.message : String(err),
+        title: "Не удалось передать в SDLC",
+        description: message,
       });
-    } finally {
-      setSending(false);
     }
   }
 
@@ -351,30 +378,54 @@ export function VerdictPanel({
         )}
 
         {actionPoints.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 border-t pt-4">
-            <span className="text-sm text-muted-foreground">
-              Фаза планирования завершена. Передать action points на исполнение:
-            </span>
-            <select
-              className="rounded-md border bg-background px-2 py-1.5 text-sm"
-              value={effectivePipelineId}
-              onChange={(e) => setPipelineId(e.target.value)}
-              aria-label="Pipeline"
-            >
-              {pipelines.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            <Button size="sm" onClick={sendToPipeline} disabled={sending || !effectivePipelineId}>
-              {sending ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Send className="mr-2 h-4 w-4" />
-              )}
-              Передать в пайплайн
-            </Button>
+          <div className="space-y-3 border-t pt-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm text-muted-foreground">
+                Фаза планирования завершена. Исполнить action points напрямую:
+              </span>
+              <Button
+                size="sm"
+                onClick={executeSdlc}
+                disabled={actionPoints.length === 0 || busy}
+              >
+                {busy ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <GitPullRequest className="mr-2 h-4 w-4" />
+                )}
+                {busy ? "SDLC идёт…" : "Передать в SDLC → Draft PR"}
+              </Button>
+            </div>
+
+            {exec.status === "done" && (
+              <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-green-600/40 bg-green-600/5 p-3 text-sm">
+                <Check className="h-4 w-4 text-green-600" />
+                <span className="font-medium text-green-700 dark:text-green-400">Draft PR создан:</span>
+                {exec.prRef ? (
+                  /^https?:\/\//.test(exec.prRef) ? (
+                    <a
+                      href={exec.prRef}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 font-medium text-primary underline underline-offset-2"
+                    >
+                      {exec.prRef}
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
+                  ) : (
+                    <span className="font-mono text-foreground">{exec.prRef}</span>
+                  )
+                ) : (
+                  <span className="text-muted-foreground">ссылка недоступна</span>
+                )}
+              </div>
+            )}
+
+            {exec.status === "failed" && exec.error && (
+              <div className="rounded-md border border-red-600/40 bg-red-600/5 p-3 text-sm text-red-700 dark:text-red-400">
+                {exec.error}
+              </div>
+            )}
           </div>
         )}
       </CardContent>
