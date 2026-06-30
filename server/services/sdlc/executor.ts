@@ -54,7 +54,9 @@
  *   - Agents NEVER apply/merge: this opens a DRAFT PR only. No push to main.
  */
 import { basename } from "path";
-import type { ActionPoint } from "@shared/types";
+import type { ActionPoint, Archetype } from "@shared/types";
+import type { Skill } from "@shared/schema";
+import { selectSkillSet, bindSkillStep, type BoundSkillStep } from "../consilium/skills/catalog.js";
 import { buildBranchName, isValidLoopBranch, pushBranch, openDraftPr } from "../consilium/pr-wrapper.js";
 import {
   createSdlcWorktree,
@@ -93,6 +95,13 @@ export interface ApOutcome {
   committed: boolean;
   /** Short server-generated note (e.g. "coder timed out", "no file changes"). */
   note?: string;
+  /**
+   * Stage 2a (audit / observability): the ordered SKILLED step names that ran for
+   * this action point (e.g. ["test-author", "coder"]). Absent for the unskilled
+   * path (no skill set selected). Display-only — does NOT alter the dev_completed
+   * event contract (`{ prRef, headCommit, error? }`).
+   */
+  skills?: string[];
 }
 
 /**
@@ -145,6 +154,15 @@ export interface SdlcHandoffRequest {
   ownerId?: string;
   /** Hard timeout PER action-point coder run (ms). Defaults to the coder default. */
   coderTimeoutMs?: number;
+  /**
+   * Stage 2a: the loop's Stage-1 archetype. Drives the SKILLED step selection
+   * (`selectSkillSet`). null/absent ⇒ NO steps ⇒ today's single unskilled coder
+   * per action point (byte-for-byte unchanged — NO regression).
+   */
+  archetype?: Archetype | null;
+  /** Stage 2a: the loop's `archetype_params` (carried to `selectSkillSet`; Stage 2a
+   *  does not branch on it). */
+  archetypeParams?: Record<string, string> | null;
 }
 
 export interface SdlcHandoffResult {
@@ -166,9 +184,46 @@ export interface SdlcExecutorDeps {
   push?: typeof pushBranch;
   openPr?: typeof openDraftPr;
   gitRaw?: GitRunner;
+  /**
+   * Stage 2a: resolver for the existing skills table, used to LAYER a same-named
+   * skill row (systemPromptOverride + tools∩capability) over a baked-in SkilledStep.
+   * Injected by the controller (`() => storage.getSkills()`) ONLY when the implement
+   * kill-switch is on. Absent ⇒ baked-in step defaults only (no layering). A throw
+   * is swallowed (steps fall back to defaults).
+   */
+  getSkills?: () => Promise<Skill[]>;
 }
 
 const sharedCoder = new SdlcCoder();
+
+/**
+ * Stage 2a: resolve the ORDERED, BOUND skilled steps for a round from its
+ * archetype. `selectSkillSet` is PURE (no I/O); an empty result (research / infra /
+ * null / unknown archetype) short-circuits to `[]` so the executor falls back to
+ * TODAY'S single unskilled coder per action point (byte-for-byte unchanged). When
+ * steps exist and a `getSkills` resolver is provided, each step is LAYERED against
+ * a same-named skills-table row (systemPromptOverride + tools∩capability). A
+ * getSkills failure is swallowed → baked-in defaults only (never fails the round).
+ */
+async function resolveSkilledSteps(
+  archetype: Archetype | null,
+  params: Record<string, string> | null,
+  getSkills?: () => Promise<Skill[]>,
+): Promise<BoundSkillStep[]> {
+  const steps = selectSkillSet(archetype, params);
+  if (steps.length === 0) return [];
+  let rows: Skill[] = [];
+  if (getSkills) {
+    try {
+      rows = await getSkills();
+    } catch {
+      rows = []; // fall back to baked-in defaults; never fail the round on this.
+    }
+  }
+  const byName = new Map<string, Skill>();
+  for (const r of rows) if (!byName.has(r.name)) byName.set(r.name, r);
+  return steps.map((s) => bindSkillStep(s, byName.get(s.skillName)));
+}
 
 /** Scrub fs layout from an error string before returning it. */
 function scrub(raw: string): string {
@@ -276,7 +331,12 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
   // Per-AP outcome table (existing shape).
   const outcomeLines = outcomes.map((o) => {
     const tail = o.note ? ` — ${sanitizeLine(o.note, 120)}` : "";
-    return `- [${o.status}] (${o.priority}) ${sanitizeLine(o.title, PR_BODY_TITLE_MAX)}${tail}`;
+    // Stage 2a: the skilled steps that ran (code-trust names; sanitized as DiD).
+    const skillTag =
+      o.skills && o.skills.length > 0
+        ? ` [skills: ${o.skills.map((s) => sanitizeLine(s, 40)).join(" -> ")}]`
+        : "";
+    return `- [${o.status}] (${o.priority}) ${sanitizeLine(o.title, PR_BODY_TITLE_MAX)}${skillTag}${tail}`;
   });
 
   return [
@@ -352,6 +412,15 @@ export async function runSdlcHandoff(
       gitRaw,
     });
     try {
+      // Stage 2a: resolve the archetype's ordered skilled steps ONCE for the round.
+      // Empty (research / infra / null / unknown, or the kill-switch off ⇒ archetype
+      // is null) ⇒ runActionPoint takes the UNCHANGED single unskilled coder path.
+      const skilledSteps = await resolveSkilledSteps(
+        req.archetype ?? null,
+        req.archetypeParams ?? null,
+        deps.getSkills,
+      );
+
       // SEQUENTIAL per-action-point runs in the ONE shared worktree (avoid edit
       // conflicts). Each `runActionPoint` NEVER throws — a coder timeout/error is
       // caught, its work committed `[partial]`, and the loop continues.
@@ -360,7 +429,7 @@ export async function runSdlcHandoff(
       let committedCount = 0;
       for (let i = 0; i < total; i++) {
         const outcome = await runActionPoint(
-          { gitRaw, runCoder, emit, completedBefore: committedCount },
+          { gitRaw, runCoder, emit, completedBefore: committedCount, skilledSteps },
           wt,
           req,
           req.actionPoints[i],
@@ -409,6 +478,9 @@ async function runActionPoint(
     emit: SdlcProgressFn;
     /** Commits produced by EARLIER action points (this AP not yet counted). */
     completedBefore: number;
+    /** Stage 2a: the round's ORDERED bound skilled steps. Empty ⇒ the UNCHANGED
+     *  single unskilled coder path. */
+    skilledSteps: readonly BoundSkillStep[];
   },
   wt: CreateWorktreeResult,
   req: SdlcHandoffRequest,
@@ -420,8 +492,6 @@ async function runActionPoint(
   const title = sanitizeLine(ap.title ?? "", PR_BODY_TITLE_MAX);
   // Display-only progress title — clamped + control-stripped (UNTRUSTED text).
   const progressTitle = sanitizeLine(ap.title ?? "", PROGRESS_TITLE_MAX);
-  const base: Omit<ApOutcome, "status" | "committed" | "note"> = { index, priority, title };
-
   // 0. Beat: about to run the coder for THIS action point.
   io.emit({
     phase: "coding",
@@ -431,17 +501,54 @@ async function runActionPoint(
     completedCount: io.completedBefore,
   });
 
-  // 1. Run the coder for THIS action point only. A throw (timeout / binary
-  //    missing) is caught — its partial edits are still committed below.
+  // 1. Run the coder for THIS action point. A throw (timeout / binary missing) is
+  //    caught — its partial edits are still committed below.
+  //
+  //    Stage 2a: when the archetype selected SKILLED steps, run them IN ORDER, each
+  //    a capability-scoped coder invocation (NARROWED tools + the step's role
+  //    prompt) in the SHARED worktree. A step that throws OR reports !ok stops the
+  //    chain (partial-preserve: whatever landed is still committed). An EMPTY step
+  //    set takes the single unskilled coder path — BYTE-FOR-BYTE today's behavior.
   let threw = false;
   let coder: CoderResult | null = null;
   let runNote: string | undefined;
-  try {
-    coder = await io.runCoder(wt.worktreeDir, [ap], { timeoutMs: req.coderTimeoutMs });
-  } catch (err) {
-    threw = true;
-    runNote = scrub(err instanceof Error ? err.message : String(err));
+  const ranSkills: string[] = [];
+  if (io.skilledSteps.length > 0) {
+    for (const bound of io.skilledSteps) {
+      ranSkills.push(bound.step.skillName);
+      try {
+        coder = await io.runCoder(wt.worktreeDir, [ap], {
+          timeoutMs: req.coderTimeoutMs,
+          allowedTools: bound.allowedTools, // capability-scoped (NARROWS only).
+          systemPrompt: bound.systemPrompt, // baked-in default (+ skill override).
+        });
+      } catch (err) {
+        threw = true;
+        runNote = scrub(err instanceof Error ? err.message : String(err));
+        break; // a crashed step stops the chain; partial edits still committed
+      }
+      if (!coder.ok) {
+        runNote = coder.error;
+        break; // a step that ran but errored stops the chain (partial-preserve)
+      }
+    }
+  } else {
+    try {
+      coder = await io.runCoder(wt.worktreeDir, [ap], { timeoutMs: req.coderTimeoutMs });
+    } catch (err) {
+      threw = true;
+      runNote = scrub(err instanceof Error ? err.message : String(err));
+    }
   }
+
+  // Outcome base (incl. the Stage-2a skills audit — undefined on the unskilled path
+  // so the field is simply absent, preserving the legacy outcome shape).
+  const base: Omit<ApOutcome, "status" | "committed" | "note"> = {
+    index,
+    priority,
+    title,
+    skills: ranSkills.length > 0 ? ranSkills : undefined,
+  };
 
   // 2. Stage whatever the run produced (partial or complete) and check for change.
   let dirty = false;

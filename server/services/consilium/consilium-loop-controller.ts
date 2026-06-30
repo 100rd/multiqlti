@@ -61,7 +61,7 @@ import { buildDiffContext } from "./diff-context.js";
 import type { DevCloseoutResult } from "./dev-closeout.js";
 import { runSdlcHandoff, type SdlcProgress } from "../sdlc/executor.js";
 import { assertAllowedRepoPath } from "./repo-allowlist.js";
-import { assertRepoIsProjectWorkspace, backtickFence } from "./review-factory.js";
+import { assertRepoIsProjectWorkspace, backtickFence, stripControlMultiline } from "./review-factory.js";
 
 // ─── FSM events (design §3 "Event / guard" column) ──────────────────────────
 
@@ -236,7 +236,11 @@ export function buildPlannerPrompt(
 ): { system: string; user: string } {
   const apBlock = formatActionPointsForPlanner(actionPoints);
   const apFence = backtickFence(apBlock);
-  const instr = (engineerInstruction ?? "").trim();
+  // Carry-in (a) — parity with the judge path (untrustedExtraBlock): strip control
+  // chars from the UNTRUSTED engineer instruction BEFORE fencing. backtickFence
+  // already blocks structural fence-breakout and the reply is enum-clamped, so this
+  // is defence-in-depth, but it keeps the planner and judge sanitisation identical.
+  const instr = stripControlMultiline(engineerInstruction ?? "").trim();
 
   const system =
     "You triage a software work item into EXACTLY ONE archetype for downstream " +
@@ -791,15 +795,28 @@ export class ConsiliumLoopController {
       return { ok: true, loop: fresh, archetype: fresh.archetype ?? null };
     }
 
-    // PLAIN partial update (NOT casLoopState) — writing a column on a terminal loop
-    // must NOT transition it. `archetypeSource: 'proposed'` marks the provenance.
-    const updated = await this.storage.updateLoop(loopId, {
+    // Carry-in (b) — SOURCE-CONDITIONAL write (now archetype is LOAD-BEARING in
+    // Stage 2a). A PLAIN partial update (NOT casLoopState — writing a column on a
+    // terminal loop must NOT transition it), but guarded so a model proposal can
+    // NEVER clobber a human override even under a sub-millisecond TOCTOU race the
+    // pre-check + re-read above cannot fully close: the UPDATE matches only when
+    // `archetype_source IS DISTINCT FROM 'override'`. 0 rows ⇒ an override landed →
+    // we keep it (re-read) and report it, never overwrite. `archetypeSource:
+    // 'proposed'` marks the provenance on a successful write.
+    const updated = await this.storage.updateLoopArchetypeIfNotOverridden(loopId, {
       archetype: parsed.archetype,
       archetypeSource: "proposed",
       archetypeRationale: parsed.rationale,
       archetypeParams: parsed.params ?? null,
       archetypeDecidedAt: new Date(),
     });
+    if (!updated) {
+      // An override won the race between the re-read and the conditional write —
+      // never clobber it. Surface the current (override) row, fail-soft.
+      this.log(loopId, "plan: conditional write skipped — human override present (not clobbered)");
+      const latest = await this.storage.getLoop(loopId);
+      return { ok: true, loop: latest ?? fresh, archetype: latest?.archetype ?? fresh.archetype ?? null };
+    }
     this.log(loopId, `plan: archetype proposed = ${parsed.archetype}`);
     return { ok: true, loop: updated, archetype: parsed.archetype };
   }
@@ -1125,6 +1142,13 @@ export class ConsiliumLoopController {
     if (this.deps.runCloseout) return this.deps.runCloseout(loop, verdict);
     const cfg = this.loopConfig();
     const run = this.deps.runSdlc ?? runSdlcHandoff;
+    // Stage 2a: thread the loop's Stage-1 archetype into the executor ONLY when the
+    // `implement` kill-switch is on. When OFF (default) we pass archetype=null and
+    // no skills resolver ⇒ selectSkillSet returns [] ⇒ the executor runs TODAY'S
+    // single unskilled coder per action point (byte-for-byte unchanged). When ON,
+    // the executor selects the archetype's skilled step set and binds it against the
+    // existing skills table (storage.getSkills). NOTHING new executes either way.
+    const skilled = cfg.implement.enabled;
     // REAL path: the SDLC executor cuts an ISOLATED worktree (NEVER the user's
     // checkout), runs the agentic coder to make REAL multi-file edits, then
     // commits + opens a Draft PR. baseRef defaults to the repo's default-branch
@@ -1140,7 +1164,10 @@ export class ConsiliumLoopController {
       // Per-action-point coder timeout (configurable). The executor runs the
       // coder once per action point sequentially; this bounds a SINGLE run.
       coderTimeoutMs: cfg.sdlcTimeoutMs,
-    }, undefined, onProgress);
+      // Stage 2a archetype-branched skilled coder (null when the kill-switch is off).
+      archetype: skilled ? loop.archetype ?? null : null,
+      archetypeParams: skilled ? loop.archetypeParams ?? null : null,
+    }, skilled ? { getSkills: () => this.storage.getSkills() } : undefined, onProgress);
   }
 
   /**

@@ -1294,6 +1294,29 @@ export class PgStorage implements IStorage {
     return row;
   }
 
+  async updateLoopArchetypeIfNotOverridden(
+    id: string,
+    updates: Pick<
+      ConsiliumLoopRow,
+      "archetype" | "archetypeSource" | "archetypeRationale" | "archetypeParams" | "archetypeDecidedAt"
+    >,
+  ): Promise<ConsiliumLoopRow | undefined> {
+    // Carry-in (b): the WHERE pins id AND archetype_source IS DISTINCT FROM
+    // 'override' — NULL (never decided) and 'proposed' both MATCH; only a human
+    // 'override' is excluded → 0 rows → undefined (proposal dropped, override kept).
+    // IS DISTINCT FROM (not <>) is required so a NULL source still matches. Never
+    // touches `state` — writing a column on a terminal loop cannot transition it.
+    const [row] = await db
+      .update(consiliumLoops)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(withProject(consiliumLoops, and(
+        eq(consiliumLoops.id, id),
+        drizzleSql`${consiliumLoops.archetypeSource} IS DISTINCT FROM 'override'`,
+      )))
+      .returning();
+    return row;
+  }
+
   async casLoopState(
     id: string,
     expected: ConsiliumLoopState,

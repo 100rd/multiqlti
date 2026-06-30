@@ -73,6 +73,30 @@ describe("buildPlannerPrompt — untrusted text is fenced as data", () => {
     expect(user).toContain("ignore previous instructions"); // present, but inside a fence
     expect(user).toContain("```");
   });
+
+  it("carry-in (a): control chars in the engineer instruction are STRIPPED before fencing (judge-path parity)", () => {
+    // Build a payload of true control bytes (NUL, BEL, vertical-tab, ESC) that the
+    // judge path (untrustedExtraBlock -> stripControlMultiline) scrubs. Newlines/tabs
+    // are PRESERVED (multi-line readability); only true control chars are collapsed.
+    const ESC = String.fromCharCode(0x1b);
+    const dirty =
+      "line1" +
+      String.fromCharCode(0) +
+      ESC +
+      "[31m" +
+      String.fromCharCode(7) +
+      " bad" +
+      String.fromCharCode(0x0b) +
+      " chars\nline2\tkept";
+    const { user } = buildPlannerPrompt([{ title: "x", priority: "P0" }], dirty);
+    // The raw control bytes are gone (replaced by spaces), so they can never reach
+    // the model as escape sequences; the visible text survives.
+    // eslint-disable-next-line no-control-regex
+    expect(user).not.toMatch(/[\u0000\u0007\u000b\u001b]/);
+    expect(user).toContain("line1");
+    expect(user).toContain("bad");
+    expect(user).toContain("line2"); // newline preserved
+  });
 });
 
 describe("parsePlannerOutput — enum-clamped, fail-soft", () => {
@@ -135,15 +159,24 @@ function makePlannerStorage(loop: ConsiliumLoopRow, executions: { output: unknow
     current = { ...current, ...(extra ?? {}) };
     return current;
   });
+  // Carry-in (b): SOURCE-CONDITIONAL write — mirrors the storage contract (writes
+  // unless archetype_source is 'override'; 0 rows ⇒ undefined). The planner PROPOSE
+  // path calls THIS (not updateLoop); the override setArchetype still calls updateLoop.
+  const updateLoopArchetypeIfNotOverridden = vi.fn(async (_id: string, extra?: Record<string, unknown>) => {
+    if (current.archetypeSource === "override") return undefined;
+    current = { ...current, ...(extra ?? {}) };
+    return current;
+  });
   const casLoopState = vi.fn(async () => undefined); // assert NEVER called by the planner
   const storage = {
     getLoop: vi.fn(async () => current),
     getIteration: vi.fn(async () => ({ id: "it1", iterationNumber: current.currentIterationNumber ?? 1, status: "completed" })),
     getExecutionsByIteration: vi.fn(async () => executions),
     updateLoop,
+    updateLoopArchetypeIfNotOverridden,
     casLoopState,
   };
-  return { storage, updateLoop, casLoopState, get: () => current };
+  return { storage, updateLoop, updateLoopArchetypeIfNotOverridden, casLoopState, get: () => current };
 }
 
 interface PlannerConfigOpts {
@@ -187,7 +220,7 @@ const PROPOSAL = JSON.stringify({ archetype: "infra", rationale: "needs terrafor
 describe("controller.plan — intent→archetype planner", () => {
   it("proposes an archetype, persists it as 'proposed', and never transitions the loop", async () => {
     const loop = makeLoop({});
-    const { storage, updateLoop, casLoopState, get } = makePlannerStorage(loop);
+    const { storage, updateLoop, updateLoopArchetypeIfNotOverridden, casLoopState, get } = makePlannerStorage(loop);
     const { gateway, spy } = fakeGateway(PROPOSAL);
     const controller = makeController(storage, gateway);
 
@@ -200,9 +233,10 @@ describe("controller.plan — intent→archetype planner", () => {
     expect(spy).toHaveBeenCalledTimes(1);
     expect((spy.mock.calls[0][0] as { modelSlug: string }).modelSlug).toBe("claude-sonnet");
 
-    // Persisted via a PLAIN partial update with the right provenance.
-    expect(updateLoop).toHaveBeenCalledTimes(1);
-    const wrote = updateLoop.mock.calls[0][1] as Record<string, unknown>;
+    // Carry-in (b): persisted via the SOURCE-CONDITIONAL write (NOT plain updateLoop).
+    expect(updateLoop).not.toHaveBeenCalled();
+    expect(updateLoopArchetypeIfNotOverridden).toHaveBeenCalledTimes(1);
+    const wrote = updateLoopArchetypeIfNotOverridden.mock.calls[0][1] as Record<string, unknown>;
     expect(wrote.archetype).toBe("infra");
     expect(wrote.archetypeSource).toBe("proposed");
     expect(wrote.archetypeRationale).toBe("needs terraform + k8s");
@@ -230,14 +264,14 @@ describe("controller.plan — intent→archetype planner", () => {
 
   it("replan=1 re-proposes over a prior 'proposed' archetype", async () => {
     const loop = makeLoop({ archetype: "research", archetypeSource: "proposed" });
-    const { storage, updateLoop } = makePlannerStorage(loop);
+    const { storage, updateLoopArchetypeIfNotOverridden } = makePlannerStorage(loop);
     const { gateway, spy } = fakeGateway(PROPOSAL);
     const controller = makeController(storage, gateway);
 
     const res = await controller.plan(loop.id, { replan: true });
     expect(res.ok && res.archetype).toBe("infra");
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(updateLoop).toHaveBeenCalledTimes(1);
+    expect(updateLoopArchetypeIfNotOverridden).toHaveBeenCalledTimes(1);
   });
 
   it("FAIL-SOFT: an unparseable model reply leaves the archetype null and the loop untouched", async () => {
@@ -345,6 +379,51 @@ describe("controller.setArchetype + override is sacrosanct", () => {
     expect(res.archetype).toBe("research"); // override preserved
     expect(spy).not.toHaveBeenCalled();
     expect(updateLoop).not.toHaveBeenCalled();
+  });
+
+  it("carry-in (b): a conditional write that loses to a LATE override (TOCTOU) is NOT clobbered", async () => {
+    // pre-check + re-read both see 'proposed' (race not yet landed), the model runs,
+    // but the SOURCE-CONDITIONAL write returns undefined (an override landed in the
+    // sub-millisecond window) and the post-write re-read sees the override → plan
+    // returns the OVERRIDE, never the proposal.
+    const proposed = makeLoop({ archetype: "research", archetypeSource: "proposed" });
+    const overrideRow = makeLoop({ archetype: "research", archetypeSource: "override" });
+    let getLoopCalls = 0;
+    const updateLoopArchetypeIfNotOverridden = vi.fn(async () => undefined); // 0 rows (blocked)
+    const storage = {
+      // entry read + TOCTOU re-read see 'proposed'; the 3rd read (after the blocked
+      // write) sees the override that won the race.
+      getLoop: vi.fn(async () => (++getLoopCalls >= 3 ? overrideRow : proposed)),
+      getIteration: vi.fn(async () => ({ id: "it1", iterationNumber: 2, status: "completed" })),
+      getExecutionsByIteration: vi.fn(async () => [{ output: JUDGE_WITH_APS }]),
+      updateLoop: vi.fn(),
+      updateLoopArchetypeIfNotOverridden,
+      casLoopState: vi.fn(async () => undefined),
+    };
+    const { gateway, spy } = fakeGateway(PROPOSAL); // would propose 'infra'
+    const controller = makeController(storage, gateway);
+
+    const res = await controller.plan(proposed.id, { replan: true });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(spy).toHaveBeenCalledTimes(1); // the model DID run
+    expect(updateLoopArchetypeIfNotOverridden).toHaveBeenCalledTimes(1); // write attempted
+    expect(res.archetype).toBe("research"); // OVERRIDE preserved, NOT the proposed 'infra'
+    expect(res.loop.archetypeSource).toBe("override");
+  });
+
+  it("carry-in (b): the conditional write DOES land when the source is null/'proposed'", async () => {
+    const loop = makeLoop({}); // archetypeSource: null
+    const { storage, updateLoop, updateLoopArchetypeIfNotOverridden, get } = makePlannerStorage(loop);
+    const { gateway } = fakeGateway(PROPOSAL);
+    const controller = makeController(storage, gateway);
+
+    const res = await controller.plan(loop.id);
+    expect(res.ok && res.archetype).toBe("infra");
+    expect(updateLoop).not.toHaveBeenCalled(); // PROPOSE never uses the plain write
+    expect(updateLoopArchetypeIfNotOverridden).toHaveBeenCalledTimes(1);
+    expect(get().archetype).toBe("infra");
+    expect(get().archetypeSource).toBe("proposed");
   });
 
   it("setArchetype on a vanished loop → NOT_FOUND", async () => {
