@@ -1,0 +1,202 @@
+# Design: One Cycle (Loop) — assess → plan → implement → converge
+
+> Status: **proposal / evolving**. This is a living design we will refine as we test.
+> It consolidates today's overlapping entities into a single user-facing unit of work
+> and defines how agents inside it do a real software-development life cycle (SDLC).
+
+## 1. Problem — entity proliferation
+
+Today the platform exposes several overlapping concepts as co-equal, top-level things:
+
+| Entity | What it really is | Layer |
+|---|---|---|
+| **Pipeline** | a recipe of steps (CLI/LLM stages) for *one* task | low — "how a step runs" |
+| **Task group** | a DAG of tasks + iterations; a consilium dispute *is* a task group | mid — "a run" |
+| **Consilium loop** | an FSM over a task group: review → decide → develop → re-review | high — "a lifecycle" |
+| **execute-sdlc** *(recently added)* | "code the verdict's action points → Draft PR" | a 4th object I should not have added |
+
+A user should not have to reason about *pipeline vs task-group vs loop vs SDLC*. There are
+really only **two genuine ideas** — a *run* (task group, whose template is a pipeline) and a
+*lifecycle* (loop) — and `execute-sdlc` bolted a third object onto the side. Worse, that
+side-object is **invisible**: a live run coded 13 commits, then its push/PR failed silently
+with no page to observe state, error, or recovery. That failure is the clearest argument for
+this consolidation.
+
+## 2. Principle
+
+- **One top-level entity: the Loop** (the full cycle). The user opens *a cycle*, not a
+  pipeline/task-group/SDLC.
+- **SDLC is a methodology, not an object** — a *generated, criteria-grounded plan of skilled
+  steps* that lives **inside** the loop's implementation phase.
+- **Pipeline and task group are internal/advanced machinery** — the step engine and the
+  planning substrate respectively. They stay, but leave the primary navigation.
+- **Branch dynamically *inside* the one entity**, not by adding new entities.
+
+## 3. The model — phases of one Loop
+
+```
+        ┌──────────────────────── one LOOP ────────────────────────┐
+        │                                                            │
+  ┌─────▼─────┐   ┌──────────────┐   ┌──────────────────┐   ┌───────▼────────┐
+  │  ASSESS   │──▶│     PLAN     │──▶│    IMPLEMENT     │──▶│    CONVERGE    │
+  │ discover  │   │ specify +    │   │ skilled agents + │   │ all acceptance │
+  │ problems  │   │ choose skills│   │ controllers,     │   │ criteria       │
+  │ (dispute) │   │ (intent)     │   │ iterate to green │   │ verified       │
+  └───────────┘   └──────────────┘   └──────────────────┘   └────────────────┘
+        ▲                                                            │
+        └──────────────── (re-assess if not converged) ◀────────────┘
+```
+
+### A. ASSESS (discover)
+The heavy-model cross-review (today's task-group dispute) reads the target — repo, an idea,
+a question — grounded by the **engineer's instruction field** (already present: it sets the
+tone + constraints + requirements for the discussion). Output: a prioritized list of
+**problems** (P0/P1/P2/…).
+
+### B. PLAN (specify + choose skills)
+Two sub-steps, both new relative to today:
+1. **Specify** — for *each* problem, produce an **acceptance criterion / Definition of Done**:
+   a verifiable condition that only a correct result satisfies. This is what tests/checks are
+   written against later. Without it the implement phase has no ground truth.
+2. **Choose skills (intent → plan)** — a planner model reads the problems + criteria + the
+   engineer's instructions and selects the **skills** (see §4) and their ordering — i.e. the
+   *dynamic SDLC* for this task. This is a bounded selection from a skill library, not
+   free-form generation (§6).
+
+### C. IMPLEMENT (run the chosen skills to green)
+Skilled agents (and controllers for fan-out, §4) execute the planned steps, **iterating until
+the acceptance criteria are met** (objective ground truth, §5). The artifact depends on the
+archetype: code + Draft PR, a researched report, or infrastructure + a live deploy-verify.
+
+### D. CONVERGE
+When **every acceptance criterion is verified by its method** (§5) → done / human gate.
+Convergence is objective (criteria met), not a subjective "the judge said converged".
+
+## 4. Skills — the unit of agent capability
+
+A loop's steps are executed by **agents**, each dynamically pulling a **skill**. multiqlti
+already has a skills system (skills, specialization-profiles, model-skill bindings) and the
+repo has agent definitions (QA, infra, security, terraform, …) — we *wire the loop's steps to
+the existing skills*, we do not invent a new concept.
+
+A **skill** is a capability bundle:
+- **(a) behavior / prompt** — what the agent does;
+- **(b) its own definition of "green"** — the skill's intrinsic success test. E.g. an
+  infra-agent deploying an operator: *operator in `Running` state + no error logs + healthy
+  k8s events*; a coder: *unit/integration tests pass*; a QA-engineer: *tests written and
+  meaningful*;
+- **(c) required permissions / secrets / tools** — scoped, and **optional** per skill (QA may
+  need none; deploy-verify needs ephemeral-env creds).
+
+**Controllers are skills too.** When a step fans out into several parallel agents — research
+(controller + N researchers), or development (controller + N coders for N features: several
+P0, two P1, …) — a **controller skill** splits the work, assigns skills + permissions to
+workers, aggregates, and decides the **step's green = all workers' green + its aggregation
+criterion**. This is exactly the existing *agent-team* pattern (lead + workers).
+
+The loop is therefore **fractal and observable**: `loop → phase → controller-agent → N
+skill-agents`, each with a skill, a green/red, and the permissions it used (§8).
+
+## 5. Acceptance criteria + verification methods
+
+Two distinct levels of "green" — keep them separate:
+- **Skill-green** — the skill's generic capability success ("the operator came up").
+- **Acceptance-criterion** — the task-specific Definition of Done from PLAN ("the operator
+  reconciles CRD X within 30s"). The criterion **parameterizes** the skill's green.
+
+**Each acceptance criterion carries a verification method** — the ground-truth check:
+
+| Method | For | Ground truth |
+|---|---|---|
+| `test-run` | code requirements | unit/integration tests pass |
+| `live-deploy-smoke` | infra/operator | deploy to an ephemeral env + the skill's green (running, no errors, events) |
+| `web-evidence` | research/decision | claim supported by cited sources |
+| `judge` | non-mechanical criteria | a verifier model confirms the result meets the criterion |
+
+**Convergence = every criterion confirmed by its method.** Sometimes a green test, sometimes a
+live smoke-test, sometimes a judge against the criterion.
+
+## 6. Archetypes — intent → a set of skills
+
+A small **skill library** composed into typical orderings; real tasks *mix* them. The three
+cases we have today are the common shapes:
+
+| Archetype | Trigger (intent) | Skill ordering | Artifact / verification |
+|---|---|---|---|
+| **Repo assessment** | "review/assess repo X", spec change | `assess → (spec → test → code)*` | code + Draft PR; tests green + re-review |
+| **Research / decision** | "compare X vs Y", "should we…", "find…" | `research → synthesize` | researched report/recommendation (**not** code); web-evidence + judge |
+| **Infra / build** | "deploy a cluster in Brazil", "write a k8s operator" | `(research) → spec → code → deploy-verify` | IaC/code + **live deploy-smoke** in an ephemeral env |
+
+**Intent classification** (a light model, not raw keywords — they are brittle) picks the
+archetype + extracts parameters and proposes the skill set. The engineer can override. This
+classification *is* the lightweight gate (§7), replacing a heavy "judge the plan" step.
+
+> "Fix logger.go" is meaningless until ASSESS defines *what* the problem is; then PLAN gives a
+> criterion; then a skill is chosen. Even abstract tasks (choose a CI provider) become
+> criteria-driven: set requirements for the provider → research → recommend → verify against
+> the requirements.
+
+## 7. Security model
+
+The real safety boundary is **capability-scoping per skill**, *independent* of whether we trust
+the planner:
+- **assess / research** — read-only (repo reads, web reads), Draft-PR-only.
+- **code** — isolated git worktree, Draft-PR-only; agents never merge.
+- **deploy-verify (infra)** — the one step that touches a live environment. It gets
+  **ephemeral-env creds from a secret manager**, scoped to that env; **prod-apply never without
+  explicit human approval** (the existing apply-gates / `never_apply` rules hold).
+
+**Trust the planner under observation.** Default: trust the planner model to choose the
+archetype/skills with *no* hard human gate; run an **observation/telemetry process** (what
+archetype was chosen, which skills + permissions were handed out, which step went green/red).
+From the observed track record we decide whether agent-planning is trustworthy or a human gate
+is needed. Crucially, because capabilities are bounded by skill-declared permissions + the
+apply-gates, "trust by default" is **not** "no rails".
+
+## 8. Observability
+
+The Loop page renders the **phase / controller / agent tree**:
+- each phase, each controller, each worker agent;
+- the **skill** each carries, its **green/red**, the **permissions it used**;
+- per acceptance criterion: its verification method + pass/fail;
+- failures are first-class and recoverable here — the opposite of the invisible `execute-sdlc`
+  that failed silently.
+
+## 9. What changes — staged cleanup / redesign
+
+Each stage is independently shippable and testable (evolutionary; refine while testing).
+
+- **Stage 0 — stop the bleeding (cleanup).**
+  Collapse `execute-sdlc` back into the loop's implement phase (remove the standalone object +
+  its endpoints/registry). "Hand off action points" becomes "the loop runs an implement round"
+  — visible on the loop page. Demote *Pipelines* and *Task Groups* from primary navigation to
+  Advanced/internal.
+
+- **Stage 1 — planning depth.**
+  Add **Specify** (acceptance criterion / DoD per problem) to the verdict format, and the
+  **intent → skill-set** planner step (with engineer confirm/override).
+
+- **Stage 2 — skilled implement.**
+  Implement phase runs **skill-agents + controllers** (wire to existing skills/agent-defs);
+  add **verification-method-per-criterion**; convergence on criteria (not subjective verdict).
+
+- **Stage 3 — archetypes.**
+  Research archetype (web-evidence, report artifact) and Infra archetype with the
+  **`deploy-verify`** skill (ephemeral env + scoped creds + apply-gates).
+
+- **Stage 4 — observability tree.**
+  The loop page's phase/controller/agent/skill/green tree.
+
+## 10. Open questions (to settle while testing)
+
+- Naming: "Loop" implies cycling; a one-shot review is not a loop. Candidate top-level name:
+  *Cycle* / *Run* / *Review*? ("loop" becomes the iterate-until-converged behavior.)
+- How much can the planner be trusted before a human gate is reintroduced (empirical, §7)?
+- Where exactly task groups / pipelines surface for power users once demoted.
+- Ephemeral-env provisioning for `deploy-verify` (what backs it — kind/k3d, a cloud sandbox?).
+- How acceptance criteria are authored: model-proposed then engineer-edited?
+
+---
+
+*This document evolves. Treat each section as a hypothesis to validate in testing, not a frozen
+spec.*
