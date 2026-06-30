@@ -13,7 +13,7 @@
  * titles/rationale) is model- or loop-authored and is rendered as INERT React
  * text. The PR link uses rel="noopener noreferrer".
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "wouter";
 import { formatDistanceToNow } from "date-fns";
 import {
@@ -30,6 +30,9 @@ import {
   Ban,
   GitMerge,
   Hammer,
+  Tag,
+  RefreshCw,
+  Sparkles,
 } from "lucide-react";
 import {
   useConsiliumLoop,
@@ -37,6 +40,8 @@ import {
   useCancelLoop,
   useApproveMerge,
   useDevelopLoop,
+  usePlanLoop,
+  useSetArchetype,
   isTerminalLoopState,
   isVerdictTerminalLoopState,
   type ConsiliumLoopRoundRow,
@@ -71,8 +76,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { ConsiliumLoopState } from "@/hooks/use-consilium-loops";
-import type { ActionPoint } from "@shared/types";
+import type { ActionPoint, Archetype } from "@shared/types";
+import { ARCHETYPES } from "@shared/types";
 
 // Mirror verdict-panel's priority palette so the taxonomy never drifts.
 const PRIORITY_COLOR: Record<string, string> = {
@@ -403,8 +416,19 @@ function RoundRow({
                         {ap.priority}
                       </Badge>
                     )}
-                    {/* INERT model-authored text */}
-                    <span>{ap.title}</span>
+                    <div className="min-w-0 space-y-0.5">
+                      {/* INERT model-authored text */}
+                      <span>{ap.title}</span>
+                      {/* DoD criterion under the AP — INERT; hidden when absent. */}
+                      {ap.acceptanceCriterion && (
+                        <p className="text-xs text-muted-foreground">
+                          <span className="font-medium uppercase tracking-wide text-muted-foreground/70">
+                            Критерий приёмки (DoD):
+                          </span>{" "}
+                          {ap.acceptanceCriterion}
+                        </p>
+                      )}
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -632,6 +656,205 @@ function DevelopProgressPanel({
   );
 }
 
+// ─── Planned archetype (Stage 1, Piece B) ─────────────────────────────────────
+//
+// A small OBSERVE-AND-SET card surfacing the loop's planning archetype (design
+// §3.B). Once the verdict is readable (the latest round carries action points)
+// and no archetype is set yet, the page LAZILY classifies it ONCE via
+// `POST /:id/plan` — a useRef keyed by loop id guards against re-firing on every
+// 5s poll. The card shows the proposed archetype + the planner's INERT rationale,
+// a Select to confirm/override (PATCH /:id/archetype), and a manual "Re-classify"
+// (`?replan=1`). Nothing downstream consumes the archetype in Stage 1.
+//
+// BENIGN until the backend lands: the plan endpoint 404s pre-backend — the auto
+// classify is silent/non-blocking (no toast, no crash), and a manual re-classify
+// or override surfaces the server `error` text verbatim.
+
+const ARCHETYPE_LABELS: Record<Archetype, string> = {
+  "repo-assessment": "Repo assessment",
+  research: "Research",
+  infra: "Infra",
+};
+
+function ArchetypeSourceBadge({
+  source,
+}: {
+  source: ConsiliumLoopDetailRow["archetypeSource"];
+}) {
+  if (!source) return null;
+  const label = source === "override" ? "human override" : "proposed";
+  return (
+    <Badge variant="outline" className="text-[10px] font-normal">
+      {label}
+    </Badge>
+  );
+}
+
+function PlannedArchetypeCard({
+  loop,
+  verdictReadable,
+}: {
+  loop: ConsiliumLoopDetailRow;
+  /** The latest round carries action points → the verdict is classifiable. */
+  verdictReadable: boolean;
+}) {
+  const { toast } = useToast();
+  const planLoop = usePlanLoop();
+  const setArchetype = useSetArchetype();
+
+  // The Select choice, seeded from the loop's current archetype and re-seeded
+  // whenever the server value changes (a successful plan / override lands).
+  const [choice, setChoice] = useState<Archetype | "">(loop.archetype ?? "");
+  useEffect(() => {
+    setChoice(loop.archetype ?? "");
+  }, [loop.archetype]);
+
+  // Lazy classify: fire `POST /:id/plan` exactly ONCE per loop id, only when the
+  // verdict is readable AND no archetype is set. The ref is set the moment we
+  // fire (success OR benign 404), so a poll never re-triggers it; a manual
+  // re-classify is the only retry. A loop arriving already-classified, or whose
+  // verdict isn't readable yet, simply never auto-fires.
+  const autoPlanned = useRef<string | null>(null);
+  useEffect(() => {
+    if (autoPlanned.current === loop.id) return;
+    if (verdictReadable && loop.archetype == null) {
+      autoPlanned.current = loop.id;
+      // Silent + non-blocking: swallow the pre-backend 404 / any failure.
+      planLoop.mutate({ id: loop.id });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loop.id, loop.archetype, verdictReadable]);
+
+  const planning = planLoop.isPending;
+
+  async function handleReclassify() {
+    try {
+      await planLoop.mutateAsync({ id: loop.id, replan: true });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Не удалось классифицировать",
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  async function handleConfirm() {
+    if (!choice || choice === loop.archetype) return;
+    try {
+      await setArchetype.mutateAsync({ id: loop.id, archetype: choice });
+      toast({
+        title: "Archetype updated",
+        description: `Set to “${ARCHETYPE_LABELS[choice]}”.`,
+      });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Не удалось задать archetype",
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const dirty = !!choice && choice !== loop.archetype;
+  const confirmLabel = loop.archetype ? "Change" : "Confirm";
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Tag className="h-4 w-4 text-primary" />
+            Planned archetype
+            {loop.archetype && (
+              <Badge className="bg-primary/10 text-primary">
+                {ARCHETYPE_LABELS[loop.archetype]}
+              </Badge>
+            )}
+            <ArchetypeSourceBadge source={loop.archetypeSource} />
+          </CardTitle>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleReclassify}
+            disabled={planning}
+            title="Re-run the classifier (?replan=1)"
+          >
+            {planning ? (
+              <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-2 h-3.5 w-3.5" />
+            )}
+            Re-classify
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {planning && loop.archetype == null ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Sparkles className="h-4 w-4 animate-pulse text-primary" />
+            Классифицирую вердикт…
+          </div>
+        ) : loop.archetype == null ? (
+          <p className="text-sm text-muted-foreground">
+            Архетип ещё не определён. Запусти классификацию или выбери вручную.
+          </p>
+        ) : (
+          loop.archetypeRationale && (
+            // INERT planner-authored rationale.
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              {loop.archetypeRationale}
+            </p>
+          )
+        )}
+
+        {/* INERT planner-extracted params, when present. */}
+        {loop.archetypeParams && Object.keys(loop.archetypeParams).length > 0 && (
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
+            {Object.entries(loop.archetypeParams).map(([k, v]) => (
+              <div key={k} className="space-y-0.5">
+                <dt className="uppercase tracking-wide text-muted-foreground/70">{k}</dt>
+                <dd className="break-words">{v}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Select
+            value={choice}
+            onValueChange={(v) => setChoice(v as Archetype)}
+          >
+            <SelectTrigger className="w-56" data-testid="archetype-select">
+              <SelectValue placeholder="Выбери archetype" />
+            </SelectTrigger>
+            <SelectContent>
+              {ARCHETYPES.map((a: Archetype) => (
+                <SelectItem key={a} value={a}>
+                  {ARCHETYPE_LABELS[a]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            size="sm"
+            onClick={handleConfirm}
+            disabled={!dirty || setArchetype.isPending}
+            data-testid="archetype-confirm"
+          >
+            {setArchetype.isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Check className="mr-2 h-4 w-4" />
+            )}
+            {confirmLabel}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 export default function ConsiliumLoopDetail() {
@@ -843,6 +1066,15 @@ export default function ConsiliumLoopDetail() {
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
         {/* Result — the outcome the human gate decides on (near the top). */}
         <ResultPanel loop={loop} terminal={terminal} />
+
+        {/* Planned archetype (Stage 1, observe-and-set) — shown once the verdict
+            is readable; lazily classifies once + allows a human override. */}
+        {latestActionPointCount > 0 && (
+          <PlannedArchetypeCard
+            loop={loop}
+            verdictReadable={latestActionPointCount > 0}
+          />
+        )}
 
         {/* FSM progress */}
         <Card>

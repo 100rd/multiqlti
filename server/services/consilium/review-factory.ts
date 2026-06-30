@@ -164,7 +164,9 @@ function judgeDescription(): string {
     `rebuttals above and synthesise ONE verdict. Emit \`verdict\`, \`pros\`, ` +
     `\`cons\`, and an \`action_points\` JSON block — each item with \`title\`, ` +
     `\`priority\` (P0 blocks > P1 > P2 > P3), \`effort\`, \`rationale\`, ` +
-    `\`tradeoff\`. You are the ONLY task that emits \`action_points\`.\n\n` +
+    `\`tradeoff\`, and an OPTIONAL \`acceptanceCriterion\` (a concrete verifiable ` +
+    `"When … Then …" definition-of-done). You are the ONLY task that emits ` +
+    `\`action_points\`.\n\n` +
     JUDGE_CONVERGENCE_INSTRUCTIONS
   );
 }
@@ -266,7 +268,7 @@ function clampUtf8(value: string, maxBytes: number): { text: string; truncated: 
  * NOT make the content trusted: the verdict remains attacker-influenceable; the
  * real containment is the Draft-PR human gate (unchanged) + no-shell discipline.
  */
-function backtickFence(content: string): string {
+export function backtickFence(content: string): string {
   let longest = 0;
   let cur = 0;
   for (let i = 0; i < content.length; i++) {
@@ -970,6 +972,15 @@ export interface CreateConsiliumReviewParams {
   /** UNTRUSTED extra context (e.g. a changed-file path or a diff). Clamped (S2). */
   objectiveExtra?: string;
   /**
+   * Stage 1 (§5): OPTIONAL human "engineer instruction" free-text. UNTRUSTED — it
+   * is fed into the dispute objective via the SAME sanitized `objectiveExtra` seam
+   * (untrustedExtraBlock + backtickFence, S2) AND persisted on the loop's
+   * `engineer_instruction` column so the intent planner can read it. When both this
+   * and `objectiveExtra` are set, this takes precedence for the objective (the human
+   * route sets this; the file-change trigger sets `objectiveExtra`).
+   */
+  engineerInstruction?: string;
+  /**
    * BRANCH-targeted review: an optional git ref (branch name / revision) the
    * review targets. STRICT-validated here (ref-validator.ts) before it reaches
    * git; persisted as the loop's `reviewRef`. Absent/null ⇒ working-tree HEAD
@@ -1076,17 +1087,23 @@ export async function createConsiliumReview(
   const reviewRef =
     params.ref === undefined || params.ref === null ? null : validateReviewRef(params.ref);
 
+  // Stage 1 (§5): the human "engineer instruction" feeds the dispute via the SAME
+  // sanitized `objectiveExtra` seam. Precedence: an explicit engineerInstruction
+  // (human route) wins over objectiveExtra (file-change trigger); only one is set in
+  // practice. Both untrusted ⇒ control-stripped + byte-clamped + fenced (S2).
+  const objectiveExtra = params.engineerInstruction ?? params.objectiveExtra;
+
   // S2: WITH a ref, read repo content AT THE REF via git (no working tree);
   // otherwise the filesystem read. The diff side resolves the ref in diff-context.
   const objective = reviewRef
     ? await composeObjectiveAtRef(
         params.preset,
         resolvedRepo,
-        params.objectiveExtra,
+        objectiveExtra,
         reviewRef,
         (deps.gitClientFactory ?? ((p: string) => simpleGit(p) as SpecGitClient))(resolvedRepo),
       )
-    : await composeObjective(params.preset, resolvedRepo, params.objectiveExtra);
+    : await composeObjective(params.preset, resolvedRepo, objectiveExtra);
   const tasks = buildCrossReviewTasks(panel);
 
   // 1) Cross-review task-group (the proven 5-task DAG for the 2-model panel).
@@ -1108,6 +1125,8 @@ export async function createConsiliumReview(
     lastReviewedCommit: baseline,
     // BRANCH-targeted review: the chosen ref (null ⇒ working-tree HEAD).
     reviewRef,
+    // Stage 1 (§5): persist the human engineer instruction INERT for the planner.
+    engineerInstruction: params.engineerInstruction ?? null,
     createdBy: params.createdBy,
   } as InsertConsiliumLoop);
 

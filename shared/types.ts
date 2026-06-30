@@ -1853,6 +1853,18 @@ export interface ActionPoint {
   effort?: string;
   rationale?: string;
   tradeoff?: string;
+  /**
+   * OPTIONAL verifiable definition-of-done for THIS action point — a concrete
+   * "When … Then …" condition the change can be checked against. Emitted per-AP by
+   * the judge (Stage 1, design §3.B); absent on pre-existing verdicts and on judges
+   * that don't follow the prompt, so it is fully back-compat. UNTRUSTED model text
+   * (bounded by `boundActionPoint`'s `MAX_CRITERION_LEN` clamp); treated as data,
+   * never a shell/branch/PR sink.
+   *
+   * NOTE: distinct from `SpecRequirement.acceptanceCriteria` (Dark-Factory graph) —
+   * same "When…Then…" FORMAT convention, different feature/type; not coupled.
+   */
+  acceptanceCriterion?: string;
 }
 
 /**
@@ -1873,6 +1885,19 @@ export interface ConvergenceVerdict {
   openP0: number;
   openActionPoints: ActionPoint[];
 }
+
+// ─── Loop ARCHETYPE (Stage 1 — intent→archetype planner, design §5/§6) ──────
+// The intent class a lightweight planner proposes (and a human may override) for a
+// verdict-terminal loop. Stage 1 STORES it; it does NOT yet branch implement on it
+// (that is Stage 2). Mirrors CONSILIUM_LOOP_STATES: one `as const` tuple is the
+// single source of truth shared by TS, the zod enum (route + planner parser), the
+// DB column ($type<Archetype>), and the FE. Lives here (the client-safe types
+// module) so the FE can import it without pulling in drizzle/schema.
+export const ARCHETYPES = ["repo-assessment", "research", "infra"] as const;
+export type Archetype = typeof ARCHETYPES[number];
+
+/** How a loop's archetype was decided. `override` outranks a planner `proposed`. */
+export type ArchetypeSource = "proposed" | "override";
 
 // ─── Platform Version Types ────────────────────────────────────────────────────
 

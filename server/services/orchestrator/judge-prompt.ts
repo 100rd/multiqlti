@@ -21,7 +21,14 @@ export const JUDGE_CONVERGENCE_INSTRUCTIONS = `
   "converged": false,
   "open_p0": 3,
   "open_action_points": [
-    { "title": "...", "priority": "P0", "effort": "...", "rationale": "...", "tradeoff": "..." }
+    {
+      "title": "...",
+      "priority": "P0",
+      "effort": "...",
+      "rationale": "...",
+      "tradeoff": "...",
+      "acceptanceCriterion": "Когда <условие>, тогда <проверяемый результат>"
+    }
   ]
 }
 \`\`\`
@@ -33,4 +40,9 @@ export const JUDGE_CONVERGENCE_INSTRUCTIONS = `
 - \`open_action_points\` — полный список ВСЕХ ещё открытых (нерешённых) action
   points; перечисли каждый, не сокращая.
 - Приоритеты: P0 (блокирует сходимость) > P1 > P2 > P3.
+- НЕОБЯЗАТЕЛЬНО для каждого action point добавь поле \`acceptanceCriterion\`
+  (именно такой camelCase-ключ) — ОДНУ конкретную, проверяемую формулировку
+  «Когда … тогда …» (definition of done): по какому наблюдаемому условию можно
+  однозначно убедиться, что пункт закрыт. Если сформулировать проверяемый
+  критерий нельзя — просто опусти поле (verdict остаётся валидным без него).
 `.trim();

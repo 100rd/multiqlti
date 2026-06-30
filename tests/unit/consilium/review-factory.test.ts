@@ -294,6 +294,35 @@ describe("createConsiliumReview — allowlist gate, baseline threading, rounds",
     expect(loopArg.lastReviewedCommit).toBeNull(); // no baseline for sdlc
   });
 
+  it("Stage 1 (§5): engineerInstruction threads into the objective (fenced) AND persists on the loop", async () => {
+    const { deps, createTaskGroup, createLoop } = makeDeps([allowed]);
+    const instruction = "Focus the review on the auth refactor and the token-bucket limiter.";
+    await createConsiliumReview(deps, {
+      projectId: "p1",
+      repoPath: allowed,
+      preset: "sdlc-cross-review",
+      createdBy: "u1",
+      engineerInstruction: instruction,
+    });
+    // (1) persisted INERT on the loop for the planner.
+    expect(createLoop.mock.calls[0][0].engineerInstruction).toBe(instruction);
+    // (2) fed into the dispute objective via the sanitized UNTRUSTED-extra seam.
+    const objective = createTaskGroup.mock.calls[0][0].input as string;
+    expect(objective).toContain(instruction);
+    expect(objective).toContain("UNTRUSTED");
+  });
+
+  it("Stage 1 (§5): no engineerInstruction ⇒ null on the loop (back-compat)", async () => {
+    const { deps, createLoop } = makeDeps([allowed]);
+    await createConsiliumReview(deps, {
+      projectId: "p1",
+      repoPath: allowed,
+      preset: "sdlc-cross-review",
+      createdBy: "u1",
+    });
+    expect(createLoop.mock.calls[0][0].engineerInstruction).toBeNull();
+  });
+
   it("diff-pr-review threads a HEX baselineCommit into the loop's lastReviewedCommit (S3)", async () => {
     const { deps, createLoop } = makeDeps([allowed]);
     await createConsiliumReview(deps, {

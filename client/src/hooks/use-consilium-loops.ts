@@ -8,8 +8,9 @@
  * channel for loops yet), gated off once the loop reaches a terminal state.
  *
  * SECURITY: this module only fetches + types data. All loop/round text fields
- * (error, testSummary, action-point titles) are model/loop-authored and MUST be
- * rendered as INERT React text by the consuming components.
+ * (error, testSummary, action-point titles, archetype rationale, engineer
+ * instruction) are model- or human-authored and MUST be rendered as INERT React
+ * text by the consuming components.
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/hooks/use-pipeline";
@@ -18,6 +19,7 @@ import type {
   ConsiliumLoopRow,
   ConsiliumLoopRoundRow,
 } from "@shared/schema";
+import type { Archetype } from "@shared/types";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Re-export the schema row types under client-facing names. The list endpoint
@@ -43,12 +45,36 @@ export interface DevProgress {
 }
 
 /**
+ * How the loop's archetype was decided (design §3.B / Stage 1, Piece B):
+ *   • `proposed` — the planner model classified the verdict.
+ *   • `override` — a human picked it via PATCH /:id/archetype.
+ * Null/absent until the loop has been planned. Surfaced on the loop GET.
+ */
+export type ConsiliumArchetypeSource = "proposed" | "override";
+
+/**
  * The detail endpoint returns the loop fields spread WITH a `rounds` array and,
  * while the loop is `developing`, an optional `devProgress` snapshot.
+ *
+ * Stage 1 (Piece B) ALSO surfaces the planned-archetype + engineer-instruction
+ * layer. These are STRICTLY ADDITIVE and OBSERVE-ONLY in Stage 1 — nothing
+ * downstream branches on the archetype yet (that is Stage 2). Every field is
+ * optional/nullable: an un-planned loop (or a backend that hasn't shipped the
+ * planner) simply omits them, and every consumer renders them defensively.
  */
 export type ConsiliumLoopDetail = ConsiliumLoopListItem & {
   rounds: ConsiliumLoopRoundRow[];
   devProgress?: DevProgress;
+  /** The classified/overridden archetype, or null when not yet planned. */
+  archetype?: Archetype | null;
+  /** Whether the archetype was model-`proposed` or human-`override`. */
+  archetypeSource?: ConsiliumArchetypeSource | null;
+  /** The planner's INERT, model-authored rationale for the classification. */
+  archetypeRationale?: string | null;
+  /** Free-form archetype params the planner extracted (INERT key/value text). */
+  archetypeParams?: Record<string, string> | null;
+  /** The optional human instruction captured at review creation (INERT text). */
+  engineerInstruction?: string | null;
 };
 
 export type { ConsiliumLoopState, ConsiliumLoopRow, ConsiliumLoopRoundRow };
@@ -183,6 +209,59 @@ export function useDevelopLoop() {
   return useMutation<ConsiliumLoopRow, Error, string>({
     mutationFn: (id) => apiRequest("POST", `${LIST_KEY}/${id}/develop`),
     onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: [LIST_KEY, id] });
+      qc.invalidateQueries({ queryKey: [LIST_KEY] });
+    },
+  });
+}
+
+// ─── Planning (Stage 1, Piece B) ──────────────────────────────────────────────
+
+/**
+ * Classify a loop's verdict into a planning archetype (design §3.B). The planner
+ * is a lightweight model call owned by the controller; it is IDEMPOTENT — a loop
+ * already carrying an archetype is returned unchanged unless `replan` re-runs it
+ * (`?replan=1`). It reads the SAME verdict source `/develop` uses, so it is only
+ * meaningful once the latest round has a readable verdict.
+ *
+ * Stage 1 is OBSERVE-AND-SET only: the returned archetype is displayed but
+ * nothing downstream branches on it (that is Stage 2). The mutation argument is
+ * the loop id; pass `{ id, replan: true }` to force a re-classification.
+ *
+ * BENIGN until the backend lands: the endpoint 404s pre-backend. Callers that
+ * auto-fire this (the lazy-classify effect) MUST treat any failure as silent and
+ * non-blocking — a missing planner never breaks the page.
+ */
+export function usePlanLoop() {
+  const qc = useQueryClient();
+  return useMutation<ConsiliumLoopDetail, Error, { id: string; replan?: boolean }>({
+    mutationFn: ({ id, replan }) =>
+      apiRequest(
+        "POST",
+        `${LIST_KEY}/${id}/plan${replan ? "?replan=1" : ""}`,
+      ),
+    onSuccess: (_data, { id }) => {
+      qc.invalidateQueries({ queryKey: [LIST_KEY, id] });
+      qc.invalidateQueries({ queryKey: [LIST_KEY] });
+    },
+  });
+}
+
+/**
+ * Human override of the loop's archetype (design §3.B). Owner-or-admin, no model
+ * call — the server validates the body against the `ARCHETYPES` enum and records
+ * `archetypeSource = 'override'`. The argument carries the loop id plus the
+ * chosen archetype.
+ *
+ * BENIGN until the backend lands: a pre-backend PATCH 404s; the caller surfaces
+ * the server `error` text verbatim as a toast (it does not crash the page).
+ */
+export function useSetArchetype() {
+  const qc = useQueryClient();
+  return useMutation<ConsiliumLoopDetail, Error, { id: string; archetype: Archetype }>({
+    mutationFn: ({ id, archetype }) =>
+      apiRequest("PATCH", `${LIST_KEY}/${id}/archetype`, { archetype }),
+    onSuccess: (_data, { id }) => {
       qc.invalidateQueries({ queryKey: [LIST_KEY, id] });
       qc.invalidateQueries({ queryKey: [LIST_KEY] });
     },

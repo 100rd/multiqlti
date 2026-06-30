@@ -36,6 +36,12 @@ const CreateReviewSchema = z.object({
   // two can never drift — rejects leading `-`, `..`, `@{`, shell metachars, empty,
   // and >255 chars. Absent ⇒ working-tree HEAD (full back-compat).
   ref: z.string().regex(REVIEW_REF_RE, INVALID_REF_MESSAGE).optional(),
+  // Stage 1 (§5): OPTIONAL human "engineer instruction" free-text. UNTRUSTED — the
+  // factory control-strips + byte-clamps it (untrustedExtraBlock) before it enters
+  // the objective AND persists it inert on the loop. Length cap mirrors the
+  // factory's OBJECTIVE_EXTRA_MAX_BYTES (8000) so a too-long body is a clean 400
+  // here rather than a silent truncation downstream.
+  engineerInstruction: z.string().max(8000).optional(),
 });
 
 export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliumReviewDeps): void {
@@ -56,6 +62,8 @@ export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliu
           maxRounds: body.maxRounds,
           baselineCommit: body.baselineCommit,
           ref: body.ref,
+          // Stage 1 (§5): threads to the factory objectiveExtra (sanitized) + persists.
+          engineerInstruction: body.engineerInstruction,
         });
         return res.status(201).json(loop);
       } catch (err) {
