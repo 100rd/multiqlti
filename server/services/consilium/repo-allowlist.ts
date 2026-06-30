@@ -13,6 +13,10 @@
  * Fail-closed: an empty allowlist throws — no implicit "allow everything".
  * `buildDiffContext` calls this itself on the persisted `repoPath` every round,
  * so a poisoned row can never widen access (never trust the caller).
+ *
+ * `realResolve` and `isWithinRoot` are exported so the per-project workspace
+ * confinement check (MED-3, in review-factory.ts) reuses the EXACT same
+ * realpath/fallback + containment semantics — the two boundaries must agree.
  */
 import { realpathSync } from "fs";
 import { resolve } from "path";
@@ -34,7 +38,7 @@ const DENIED_PATHS = [
 ];
 
 /** Resolve symlinks; fall back to lexical resolve() when the path is absent. */
-function realResolve(rawPath: string): string {
+export function realResolve(rawPath: string): string {
   try {
     return realpathSync(rawPath);
   } catch {
@@ -54,7 +58,7 @@ function assertNotDenied(resolved: string): void {
 }
 
 /** True when `resolved` is the root itself or strictly nested under it. */
-function isWithinRoot(resolved: string, root: string): boolean {
+export function isWithinRoot(resolved: string, root: string): boolean {
   const normalized = root.endsWith("/") ? root : root + "/";
   return resolved === root || resolved.startsWith(normalized);
 }

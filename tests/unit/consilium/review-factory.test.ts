@@ -223,19 +223,27 @@ describe("createConsiliumReview — allowlist gate, baseline threading, rounds",
     return p;
   }
 
-  function makeDeps(allowedRepoPaths: string[]) {
+  // workspacePaths defaults to the allowlist roots so a repo that is globally
+  // allowlisted is ALSO a project workspace unless a test deliberately diverges
+  // them (MED-3 intersects the two boundaries).
+  function makeDeps(allowedRepoPaths: string[], workspacePaths: string[] = allowedRepoPaths) {
     const createTaskGroup = vi.fn().mockResolvedValue({ group: { id: "g1" }, tasks: [] });
     const createLoop = vi
       .fn()
       .mockImplementation(async (row: Record<string, unknown>) => ({ id: "loop1", status: "PENDING", ...row }));
     const start = vi.fn().mockResolvedValue(null); // returns the PENDING row from createLoop
+    // getWorkspaces is project-scoped by the caller's ALS in production; here we
+    // mock it to the project's workspace set (MED-3 per-tenant confinement).
+    const getWorkspaces = vi
+      .fn()
+      .mockResolvedValue(workspacePaths.map((p, i) => ({ id: `ws${i}`, name: `ws${i}`, path: p })));
     const deps = {
-      storage: { createLoop },
+      storage: { createLoop, getWorkspaces },
       orchestrator: { createTaskGroup },
       controller: { start },
       config: () => ({ pipeline: { consiliumLoop: { allowedRepoPaths, devPipelineId: undefined } } }),
     } as unknown as CreateConsiliumReviewDeps;
-    return { deps, createTaskGroup, createLoop, start };
+    return { deps, createTaskGroup, createLoop, start, getWorkspaces };
   }
 
   it("REJECTS a repoPath outside the allowlist (S1, fail-closed, never trusts the caller)", async () => {
@@ -319,6 +327,81 @@ describe("createConsiliumReview — allowlist gate, baseline threading, rounds",
       maxRounds: 99,
     });
     expect(createLoop.mock.calls[0][0].maxRounds).toBe(6);
+  });
+
+  // ─── MED-3: per-project workspace confinement (intersection with the allowlist) ─
+
+  it("REJECTS a repo that IS globally allowlisted but is NOT a workspace of this project (MED-3) — nothing persisted", async () => {
+    // `allowed` passes the global allowlist, but the project's only workspace is
+    // `outside` → the inner per-tenant boundary rejects it.
+    const { deps, createTaskGroup, createLoop } = makeDeps([allowed], [outside]);
+    await expect(
+      createConsiliumReview(deps, {
+        projectId: "p1",
+        repoPath: allowed,
+        preset: "sdlc-cross-review",
+        createdBy: "u1",
+      }),
+    ).rejects.toThrow(/is not a workspace of this project/i);
+    // Both checks run BEFORE any persistence.
+    expect(createTaskGroup).not.toHaveBeenCalled();
+    expect(createLoop).not.toHaveBeenCalled();
+  });
+
+  it("ALLOWS a repo that is BOTH globally allowlisted AND a project workspace (intersection passes)", async () => {
+    const { deps, createTaskGroup, createLoop } = makeDeps([allowed], [allowed]);
+    const loop = await createConsiliumReview(deps, {
+      projectId: "p1",
+      repoPath: allowed,
+      preset: "sdlc-cross-review",
+      createdBy: "u1",
+    });
+    expect(loop.id).toBe("loop1");
+    expect(createTaskGroup).toHaveBeenCalledTimes(1);
+    expect(createLoop).toHaveBeenCalledTimes(1);
+    expect(createLoop.mock.calls[0][0].repoPath).toBe(allowed);
+  });
+
+  it("a subdir of a project workspace is ALLOWED (same containment rule as the allowlist)", async () => {
+    // The workspace is the parent; a repo nested under it is within the boundary.
+    const { deps, createLoop } = makeDeps([allowed], [path.dirname(allowed)]);
+    await createConsiliumReview(deps, {
+      projectId: "p1",
+      repoPath: allowed,
+      preset: "sdlc-cross-review",
+      createdBy: "u1",
+    });
+    expect(createLoop).toHaveBeenCalledTimes(1);
+  });
+
+  it("a project with NO workspaces reviews NOTHING (fail-closed) — nothing persisted", async () => {
+    const { deps, createTaskGroup, createLoop } = makeDeps([allowed], []);
+    await expect(
+      createConsiliumReview(deps, {
+        projectId: "p1",
+        repoPath: allowed,
+        preset: "sdlc-cross-review",
+        createdBy: "u1",
+      }),
+    ).rejects.toThrow(/is not a workspace of this project/i);
+    expect(createTaskGroup).not.toHaveBeenCalled();
+    expect(createLoop).not.toHaveBeenCalled();
+  });
+
+  it("the GLOBAL allowlist is checked FIRST: a repo outside it is rejected as an allowlist failure even if listed as a workspace", async () => {
+    // `outside` is a workspace but NOT allowlisted → the outer boundary (S1)
+    // rejects it before the workspace check, with the allowlist error.
+    const { deps, createTaskGroup, createLoop } = makeDeps([allowed], [outside]);
+    await expect(
+      createConsiliumReview(deps, {
+        projectId: "p1",
+        repoPath: outside,
+        preset: "sdlc-cross-review",
+        createdBy: "u1",
+      }),
+    ).rejects.toThrow(/outside every allowed|allowlist/i);
+    expect(createTaskGroup).not.toHaveBeenCalled();
+    expect(createLoop).not.toHaveBeenCalled();
   });
 
   it("is NOT deduped at the factory: two reviews of the same repo BOTH create loops (the human UI endpoint path)", async () => {

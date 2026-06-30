@@ -39,6 +39,16 @@
  *       inside the request's project ALS (route: `requireProject`; trigger:
  *       `runAsProject(trigger.projectId)`), so `storage.createTaskGroup` /
  *       `createLoop` scope the new rows to the correct project (withProjectInsert).
+ *   S5. PER-PROJECT WORKSPACE CONFINEMENT (MED-3). After the GLOBAL allowlist
+ *       gate (S1, the OUTER boundary shared by every project), the resolved
+ *       repoPath MUST ALSO be within one of THIS project's registered
+ *       workspaces (the INNER per-tenant boundary). The two checks INTERSECT —
+ *       a repo must pass BOTH — so a member of project A can no longer launch a
+ *       review on project B's allowlisted-but-unowned repo. `getWorkspaces()`
+ *       is project-scoped by the caller's ALS (S4), the same scoping the trigger
+ *       dedup's `getLoops()` relies on. Fail-closed: a project with NO matching
+ *       workspace ⇒ NO repo is reviewable for it. Both checks run BEFORE
+ *       createTaskGroup/createLoop, so nothing is persisted on rejection.
  */
 import { readdirSync, readFileSync, statSync } from "fs";
 import { basename, join } from "path";
@@ -48,7 +58,7 @@ import type { ConsiliumReviewPreset } from "@shared/types";
 import type { TaskOrchestrator, CreateTaskParam } from "../task-orchestrator.js";
 import type { ConsiliumLoopController } from "./consilium-loop-controller.js";
 import type { AppConfig } from "../../config/schema.js";
-import { assertAllowedRepoPath } from "./repo-allowlist.js";
+import { assertAllowedRepoPath, isWithinRoot, realResolve } from "./repo-allowlist.js";
 import { JUDGE_CONVERGENCE_INSTRUCTIONS } from "../orchestrator/judge-prompt.js";
 
 // ─── Bounds (Security S2) ───────────────────────────────────────────────────
@@ -475,11 +485,45 @@ function buildGroupName(preset: ConsiliumReviewPreset, repoPath: string): string
 }
 
 /**
+ * S5 — PER-PROJECT WORKSPACE CONFINEMENT (MED-3). The INNER per-tenant boundary,
+ * applied AFTER the global allowlist (S1). Require `resolvedRepo` (already
+ * realpath'd + allowlisted) to be within ONE of the CURRENT project's registered
+ * workspaces. `storage.getWorkspaces()` returns ONLY this project's workspaces
+ * because the caller runs inside the project ALS (S4) and the scoped storage
+ * filters by it — the same scoping the trigger dedup's `getLoops()` relies on.
+ *
+ * Containment mirrors the allowlist EXACTLY: each workspace `path` is run through
+ * `realResolve` (realpathSync, falling back to a lexical resolve() for a
+ * not-yet-cloned workspace dir — so a missing path still compares sanely instead
+ * of throwing) and tested with the SAME `resolved === root || startsWith(root +
+ * "/")` rule via `isWithinRoot`. Fail-closed: a project with NO matching
+ * workspace (incl. zero workspaces) rejects every repo. Runs BEFORE any
+ * createTaskGroup/createLoop, so nothing is persisted on rejection.
+ */
+async function assertRepoIsProjectWorkspace(
+  resolvedRepo: string,
+  storage: IStorage,
+): Promise<void> {
+  const workspaces = await storage.getWorkspaces();
+  for (const ws of workspaces) {
+    const wsPath = ws?.path;
+    if (!wsPath) continue;
+    if (isWithinRoot(resolvedRepo, realResolve(wsPath))) return;
+  }
+  // Distinct error so the route can tell this APART from the global-allowlist
+  // rejection and surface a different, actionable message.
+  throw new Error(
+    `[project-workspace] repoPath "${resolvedRepo}" is not a workspace of this project`,
+  );
+}
+
+/**
  * Build the cross-review task-group, create + start the consilium loop, and
  * return the loop row. The CALLER supplies the project ALS context (S4).
  *
  * Throws (caller maps to 4xx / logs) when: the repoPath is outside the allowlist
- * (S1), the preset is unknown, or a non-hex baselineCommit is supplied (S3).
+ * (S1), the repoPath is not a workspace of the current project (S5), the preset
+ * is unknown, or a non-hex baselineCommit is supplied (S3).
  */
 export async function createConsiliumReview(
   deps: CreateConsiliumReviewDeps,
@@ -492,6 +536,13 @@ export async function createConsiliumReview(
   // caller — a route body OR a poisoned trigger config). Canonical realpath is
   // what we persist, so a symlink can't widen access on a later round.
   const resolvedRepo = assertAllowedRepoPath(params.repoPath, cfg.allowedRepoPaths);
+
+  // S5: INTERSECT the global allowlist with THIS project's workspaces (MED-3).
+  // The global allowlist (S1) is the outer boundary shared by every project; this
+  // confines the review to the calling project's OWN repos (inner per-tenant
+  // boundary). A repo must pass BOTH. Fail-closed: no matching workspace ⇒ reject.
+  // Runs before createTaskGroup/createLoop ⇒ nothing persisted on rejection.
+  await assertRepoIsProjectWorkspace(resolvedRepo, storage);
 
   const panel = PRESET_PANELS[params.preset];
   if (!panel) throw new Error(`unknown consilium review preset: ${String(params.preset)}`);

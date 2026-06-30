@@ -59,6 +59,16 @@ export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliu
         if (/baselineCommit/i.test(message)) {
           return res.status(400).json({ error: "baselineCommit must be a 7–64 char hex commit SHA" });
         }
+        // MED-3: the factory applies TWO boundaries — the GLOBAL allowlist (S1)
+        // and a per-project WORKSPACE confinement (S5). Distinguish them so the
+        // 400 tells the user WHICH boundary they hit. Order: workspace first (its
+        // distinct `is not a workspace of this project` substring does not overlap
+        // the allowlist regex below).
+        if (/is not a workspace of this project/i.test(message)) {
+          return res.status(400).json({
+            error: `repoPath "${body.repoPath}" is not registered as a workspace of the selected project — pick one of its workspaces or add it as a workspace.`,
+          });
+        }
         if (/allowlist|outside every allowed|denied system|traversal|fail-closed/i.test(message)) {
           return res.status(400).json({
             error: `repoPath "${body.repoPath}" is not in the allowed repo paths. Add it to consiliumLoop.allowedRepoPaths in config.yaml (then restart), or pick an already-allowed workspace.`,
