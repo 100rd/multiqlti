@@ -21,6 +21,7 @@ import {
   createConsiliumReview,
   type CreateConsiliumReviewDeps,
 } from "../services/consilium/review-factory.js";
+import { REVIEW_REF_RE, INVALID_REF_MESSAGE } from "../services/consilium/ref-validator.js";
 
 const SHA_RE = /^[0-9a-f]{7,64}$/;
 
@@ -30,6 +31,11 @@ const CreateReviewSchema = z.object({
   maxRounds: z.coerce.number().int().min(1).max(6).optional(),
   // diff-pr-review baseline — strict hex sha (never a ref); ignored by other presets.
   baselineCommit: z.string().regex(SHA_RE).optional(),
+  // BRANCH-targeted review: optional git ref (branch name / revision) to target.
+  // SAME strict pattern as the factory's validateReviewRef (REVIEW_REF_RE) so the
+  // two can never drift — rejects leading `-`, `..`, `@{`, shell metachars, empty,
+  // and >255 chars. Absent ⇒ working-tree HEAD (full back-compat).
+  ref: z.string().regex(REVIEW_REF_RE, INVALID_REF_MESSAGE).optional(),
 });
 
 export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliumReviewDeps): void {
@@ -49,6 +55,7 @@ export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliu
           createdBy: req.user.id,
           maxRounds: body.maxRounds,
           baselineCommit: body.baselineCommit,
+          ref: body.ref,
         });
         return res.status(201).json(loop);
       } catch (err) {
@@ -58,6 +65,12 @@ export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliu
         // an opaque "invalid" (the path is the user's own input, not an fs leak).
         if (/baselineCommit/i.test(message)) {
           return res.status(400).json({ error: "baselineCommit must be a 7–64 char hex commit SHA" });
+        }
+        // The factory STRICT-validates the optional branch/ref (ref-validator.ts)
+        // and throws INVALID_REF_MESSAGE on a bad one — surface a clear 400 (the
+        // zod gate above already rejects most, this covers defense-in-depth).
+        if (message.includes(INVALID_REF_MESSAGE)) {
+          return res.status(400).json({ error: `${INVALID_REF_MESSAGE} (allowed: letters, digits, _ - / . ; no leading -, no "..", max 255).` });
         }
         // MED-3: the factory applies TWO boundaries — the GLOBAL allowlist (S1)
         // and a per-project WORKSPACE confinement (S5). Distinguish them so the

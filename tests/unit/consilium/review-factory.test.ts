@@ -21,10 +21,12 @@ import os from "os";
 import {
   buildCrossReviewTasks,
   composeObjective,
+  composeObjectiveAtRef,
   createConsiliumReview,
   PRESET_PANELS,
   DEFAULT_REVIEW_MAX_ROUNDS,
   type CreateConsiliumReviewDeps,
+  type SpecGitClient,
 } from "../../../server/services/consilium/review-factory.js";
 
 // ─── 1. The 5-task DAG ────────────────────────────────────────────────────────
@@ -415,5 +417,191 @@ describe("createConsiliumReview — allowlist gate, baseline threading, rounds",
     expect(createLoop).toHaveBeenCalledTimes(2);
     // The factory deps don't even expose getLoops — proof the factory does no dedup read.
     expect((deps.storage as unknown as Record<string, unknown>).getLoops).toBeUndefined();
+  });
+});
+
+
+// ─── BRANCH-targeted reviews: ref validation, persistence, read-AT-the-ref ────
+
+describe("composeObjectiveAtRef — reads specs AT the git ref, NOT the working tree", () => {
+  let repo: string;
+
+  beforeEach(async () => {
+    repo = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "consilium-atref-")));
+    await fs.mkdir(path.join(repo, "specs"), { recursive: true });
+    // WORKING-TREE (on-disk) content that MUST NOT appear when targeting a ref —
+    // proof the ref path reads git, not the filesystem.
+    await fs.writeFile(path.join(repo, "specs", "00-overview.md"), "# Overview\nFS-WORKING-TREE content");
+  });
+  afterEach(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  function gitMock(): { client: SpecGitClient; raw: ReturnType<typeof vi.fn> } {
+    const raw = vi.fn(async (args: string[]) => {
+      if (args[0] === "ls-tree")
+        return "100644 blob aaaaaaa     218\tspecs/00-overview.md\n100644 blob bbbbbbb     256\tspecs/01-data.md\n";
+      if (args[0] === "show") {
+        const obj = args[args.length - 1];
+        if (obj === "feature/x:specs/00-overview.md") return "# Overview\nAT-REF branch content";
+        if (obj === "feature/x:specs/01-data.md") return "# Data\nAT-REF data model";
+        throw new Error("unknown object " + obj);
+      }
+      throw new Error("unexpected git call: " + args.join(" "));
+    });
+    return { client: { raw }, raw };
+  }
+
+  it("embeds the REF's spec bodies (never the working-tree copy) via ls-tree + show <ref>:path", async () => {
+    const { client, raw } = gitMock();
+    const obj = await composeObjectiveAtRef("full-viability", repo, undefined, "feature/x", client);
+
+    expect(obj).toContain("AT-REF branch content");
+    expect(obj).toContain("AT-REF data model");
+    // Critically: the working-tree copy is NOT read.
+    expect(obj).not.toContain("FS-WORKING-TREE content");
+
+    // SECURITY: ls-tree -l (long: carries blob SIZE) at the ref with --end-of-options pinned BEFORE the ref.
+    expect(raw).toHaveBeenCalledWith(["ls-tree", "-r", "-l", "--end-of-options", "feature/x", "--", "specs"]);
+    // SECURITY: git show <ref>:<path> with --end-of-options pinned.
+    expect(raw).toHaveBeenCalledWith(["show", "--end-of-options", "feature/x:specs/00-overview.md"]);
+    expect(raw).toHaveBeenCalledWith(["show", "--end-of-options", "feature/x:specs/01-data.md"]);
+    expect(Buffer.byteLength(obj, "utf8")).toBeLessThanOrEqual(50_000);
+  });
+
+  it("non-full-viability presets do NOT touch git for spec embedding (diff header only)", async () => {
+    const { client, raw } = gitMock();
+    const obj = await composeObjectiveAtRef("diff-pr-review", repo, undefined, "feature/x", client);
+    expect(obj).toMatch(/Consilium diff \/ PR review/);
+    expect(raw).not.toHaveBeenCalled();
+  });
+
+  it("a ref with no specs tree degrades gracefully (best-effort note, no throw)", async () => {
+    const raw = vi.fn(async () => {
+      throw new Error("fatal: not a tree object");
+    });
+    const obj = await composeObjectiveAtRef("full-viability", repo, undefined, "feature/x", { raw });
+    expect(obj).toMatch(/at the target ref|Spec set/);
+  });
+
+  it("MED-1: a blob LARGER than the remaining budget is OMITTED without ever being READ (no git show)", async () => {
+    const HUGE = 9_000_000_000; // ~9 GB committed spec blob — reading it would OOM
+    const raw = vi.fn(async (args: string[]) => {
+      if (args[0] === "ls-tree") {
+        // 00 is pathologically large; 01 is a normal-sized spec.
+        return `100644 blob aaaaaaa ${HUGE}\tspecs/00-overview.md\n100644 blob bbbbbbb 200\tspecs/01-data.md\n`;
+      }
+      if (args[0] === "show") {
+        const obj = args[args.length - 1];
+        if (obj === "feature/x:specs/01-data.md") return "# Data\nsmall spec body";
+        // Reading the oversized blob is the bug we are preventing.
+        throw new Error("MUST NOT read oversized blob: " + obj);
+      }
+      throw new Error("unexpected git call: " + args.join(" "));
+    });
+
+    const obj = await composeObjectiveAtRef("full-viability", repo, undefined, "feature/x", { raw });
+
+    // The oversized blob was size-checked from `ls-tree -l` and NEVER read.
+    expect(raw).not.toHaveBeenCalledWith(["show", "--end-of-options", "feature/x:specs/00-overview.md"]);
+    // It is noted as omitted; the normal-sized blob is still embedded.
+    expect(obj).toContain("omitted");
+    expect(obj).toContain("small spec body");
+    // ls-tree used the -l (size) long format so the size was known BEFORE any show.
+    expect(raw).toHaveBeenCalledWith(["ls-tree", "-r", "-l", "--end-of-options", "feature/x", "--", "specs"]);
+    expect(Buffer.byteLength(obj, "utf8")).toBeLessThanOrEqual(50_000);
+  });
+
+  it("CONTRAST: composeObjective (no ref) reads the WORKING-TREE specs from fs", () => {
+    const obj = composeObjective("full-viability", repo, undefined);
+    expect(obj).toContain("FS-WORKING-TREE content");
+    expect(obj).not.toContain("AT-REF");
+  });
+});
+
+describe("createConsiliumReview — persists reviewRef + validates it at the boundary", () => {
+  let repo: string;
+
+  beforeEach(async () => {
+    repo = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "consilium-refloop-")));
+  });
+  afterEach(async () => {
+    await fs.rm(repo, { recursive: true, force: true });
+  });
+
+  function makeRefDeps(gitClientFactory?: (p: string) => SpecGitClient) {
+    const createTaskGroup = vi.fn().mockResolvedValue({ group: { id: "g1" }, tasks: [] });
+    const createLoop = vi
+      .fn()
+      .mockImplementation(async (row: Record<string, unknown>) => ({ id: "loop1", ...row }));
+    const start = vi.fn().mockResolvedValue(null);
+    const getWorkspaces = vi.fn().mockResolvedValue([{ id: "ws0", name: "ws0", path: repo }]);
+    const deps = {
+      storage: { createLoop, getWorkspaces },
+      orchestrator: { createTaskGroup },
+      controller: { start },
+      config: () => ({ pipeline: { consiliumLoop: { allowedRepoPaths: [repo], devPipelineId: undefined } } }),
+      ...(gitClientFactory ? { gitClientFactory } : {}),
+    } as unknown as CreateConsiliumReviewDeps;
+    return { deps, createTaskGroup, createLoop };
+  }
+
+  it("persists a VALID ref as the loop's reviewRef (sdlc preset → no git read)", async () => {
+    const { deps, createLoop } = makeRefDeps();
+    await createConsiliumReview(deps, {
+      projectId: "p1",
+      repoPath: repo,
+      preset: "sdlc-cross-review",
+      createdBy: "u1",
+      ref: "feature/x",
+    });
+    expect(createLoop.mock.calls[0][0].reviewRef).toBe("feature/x");
+  });
+
+  it("persists reviewRef = null when NO ref is supplied (full back-compat)", async () => {
+    const { deps, createLoop } = makeRefDeps();
+    await createConsiliumReview(deps, {
+      projectId: "p1",
+      repoPath: repo,
+      preset: "sdlc-cross-review",
+      createdBy: "u1",
+    });
+    expect(createLoop.mock.calls[0][0].reviewRef).toBeNull();
+  });
+
+  it("REJECTS an invalid ref at the factory boundary — nothing persisted", async () => {
+    const { deps, createTaskGroup, createLoop } = makeRefDeps();
+    await expect(
+      createConsiliumReview(deps, {
+        projectId: "p1",
+        repoPath: repo,
+        preset: "sdlc-cross-review",
+        createdBy: "u1",
+        ref: "-x",
+      }),
+    ).rejects.toThrow(/not a valid branch\/revision/i);
+    expect(createTaskGroup).not.toHaveBeenCalled();
+    expect(createLoop).not.toHaveBeenCalled();
+  });
+
+  it("full-viability + ref uses the injected git client to read specs AT the ref (NOT fs)", async () => {
+    // No specs/ on disk → an fs read would yield "no specs"; the git mock returns
+    // a tree + bodies, proving the git-AT-ref path is wired through the factory.
+    const raw = vi.fn(async (args: string[]) => {
+      if (args[0] === "ls-tree") return "100644 blob aaaaaaa     201\tspecs/00-overview.md\n";
+      if (args[0] === "show") return "# Overview\nAT-REF via factory";
+      throw new Error("unexpected git call");
+    });
+    const { deps, createTaskGroup } = makeRefDeps(() => ({ raw }));
+    await createConsiliumReview(deps, {
+      projectId: "p1",
+      repoPath: repo,
+      preset: "full-viability",
+      createdBy: "u1",
+      ref: "feature/x",
+    });
+    const objective = createTaskGroup.mock.calls[0][0].input as string;
+    expect(objective).toContain("AT-REF via factory");
+    expect(raw).toHaveBeenCalledWith(["show", "--end-of-options", "feature/x:specs/00-overview.md"]);
   });
 });
