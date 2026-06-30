@@ -1925,6 +1925,7 @@ export class MemStorage implements IStorage {
       maxRounds: data.maxRounds ?? 6,
       repoPath: data.repoPath,
       lastReviewedCommit: data.lastReviewedCommit ?? null,
+      reviewRef: data.reviewRef ?? null,
       currentIterationNumber: data.currentIterationNumber ?? null,
       devPipelineId: data.devPipelineId ?? null,
       devGroupId: data.devGroupId ?? null,

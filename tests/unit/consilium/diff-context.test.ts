@@ -204,3 +204,110 @@ describe("buildDiffContext — input bounds (testSummary + objective)", () => {
     expect(res.input).toContain("## Changes since last review");
   });
 });
+
+
+describe("buildDiffContext — BRANCH-targeted ref resolves as the HEAD side", () => {
+  const REF_SHA = "c".repeat(40);
+
+  function refGit(): GitDiffClient {
+    return {
+      revparse: vi.fn(async (args: string[]) => {
+        const ref = args[args.length - 1];
+        if (ref === "feature/x^{commit}") return REF_SHA + "\n";
+        if (ref === "HEAD^{commit}") return HEAD_SHA + "\n";
+        if (ref.startsWith("b".repeat(7))) return BASE_SHA + "\n";
+        return ref.replace(/\^\{commit\}$/, "") + "\n";
+      }),
+      diff: vi.fn(async (args: string[]) =>
+        args.includes("--stat") ? "stat" : "diff --git a/f b/f\n+x",
+      ),
+    };
+  }
+
+  it("resolves loop.reviewRef as HEAD: records its sha and diffs baseline..<ref>", async () => {
+    const git = refGit();
+    const res = await buildDiffContext({
+      repoPath: REPO,
+      baselineCommit: BASE_SHA,
+      ref: "feature/x",
+      objective: "O",
+      allowedRepoPaths: ALLOW,
+      maxDiffBytes: 10_000,
+      gitClient: git,
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // The recorded head sha is the REF's tip, not the working-tree HEAD.
+    expect(res.headCommit).toBe(REF_SHA);
+    expect(res.headCommit).not.toBe(HEAD_SHA);
+    // The diff range pins the ref's resolved tip as the head side.
+    for (const [args] of (git.diff as ReturnType<typeof vi.fn>).mock.calls) {
+      expect(args).toContain(`${BASE_SHA}..${REF_SHA}`);
+    }
+    // SECURITY: the ref is verified via revparse, pinned behind --end-of-options.
+    expect(git.revparse).toHaveBeenCalledWith(["--verify", "--end-of-options", "feature/x^{commit}"]);
+  });
+
+  it("ref absent ⇒ resolves the working-tree HEAD (full back-compat)", async () => {
+    const res = await buildDiffContext({
+      repoPath: REPO,
+      baselineCommit: null,
+      objective: "O",
+      allowedRepoPaths: ALLOW,
+      maxDiffBytes: 1000,
+      gitClient: refGit(),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.headCommit).toBe(HEAD_SHA);
+  });
+});
+
+describe("buildDiffContext — MED-1 oversized diff is never buffered", () => {
+  it("refuses to read the body when --stat reports a pathologically large change", async () => {
+    const git = fakeGit({
+      diff: vi.fn(async (args: string[]) => {
+        if (args.includes("--stat"))
+          return " f | 9999999 +++\n 1 file changed, 9000000 insertions(+), 1000000 deletions(-)";
+        throw new Error("MUST NOT buffer the full diff body for an oversized change");
+      }),
+    });
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 1000, gitClient: git });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.truncated).toBe(true);
+    // Only the bounded --stat call happened; the full-body read was skipped.
+    const bodyReads = (git.diff as ReturnType<typeof vi.fn>).mock.calls.filter(([a]: [string[]]) => !a.includes("--stat"));
+    expect(bodyReads).toHaveLength(0);
+    expect(res.input).not.toContain("```diff");
+    expect(res.input).toContain("diff omitted");
+    expect(res.input).toContain("9000000 insertions");
+  });
+
+  it("a normal-sized diff is read and embedded unchanged (gate is transparent)", async () => {
+    const git = fakeGit();
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, gitClient: git });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.input).toContain("```diff");
+    expect(res.input).toContain("added line");
+    expect(res.truncated).toBe(false);
+  });
+});
+
+describe("buildDiffContext — LOW-1 re-validates the stored reviewRef", () => {
+  it("an INVALID stored ref fails the round cleanly and NEVER reaches git", async () => {
+    const git = fakeGit();
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "O", allowedRepoPaths: ALLOW, maxDiffBytes: 1000, ref: "-x", gitClient: git });
+    expect(res.ok).toBe(false);
+    expect(git.revparse).not.toHaveBeenCalled();
+    expect(git.diff).not.toHaveBeenCalled();
+  });
+
+  it("a VALID stored ref passes re-validation and reaches git", async () => {
+    const git = fakeGit({ revparse: vi.fn(async () => HEAD_SHA + "\n") });
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "O", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, ref: "feature/x", gitClient: git });
+    expect(res.ok).toBe(true);
+    expect(git.revparse).toHaveBeenCalled();
+  });
+});

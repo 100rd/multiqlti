@@ -89,3 +89,36 @@ describe("POST /api/consilium-reviews — distinct 400s for the two confinement 
     expect(res.body.id).toBe("loop-1");
   });
 });
+
+
+describe("POST /api/consilium-reviews — BRANCH-targeted ref wiring", () => {
+  beforeEach(() => mockedCreate.mockReset());
+
+  it("passes a VALID ref through to the factory and returns 201", async () => {
+    mockedCreate.mockResolvedValueOnce({ id: "loop-ref", status: "PENDING" } as never);
+    const res = await request(makeApp())
+      .post("/api/consilium-reviews")
+      .send({ ...VALID_BODY, ref: "feature/x" });
+    expect(res.status).toBe(201);
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
+    expect(mockedCreate.mock.calls[0][1]).toMatchObject({ ref: "feature/x" });
+  });
+
+  it("REJECTS a bad ref with 400 BEFORE the factory is ever called (zod gate)", async () => {
+    for (const bad of ["-x", "a..b", "x@{1}", "main; rm -rf /", "a".repeat(256), ""]) {
+      mockedCreate.mockClear();
+      const res = await request(makeApp())
+        .post("/api/consilium-reviews")
+        .send({ ...VALID_BODY, ref: bad });
+      expect(res.status).toBe(400);
+      expect(mockedCreate).not.toHaveBeenCalled();
+    }
+  });
+
+  it("absent ref is back-compat (factory called with ref === undefined)", async () => {
+    mockedCreate.mockResolvedValueOnce({ id: "loop-1", status: "PENDING" } as never);
+    const res = await request(makeApp()).post("/api/consilium-reviews").send(VALID_BODY);
+    expect(res.status).toBe(201);
+    expect((mockedCreate.mock.calls[0][1] as { ref?: string }).ref).toBeUndefined();
+  });
+});

@@ -52,6 +52,7 @@
  */
 import { readdirSync, readFileSync, statSync } from "fs";
 import { basename, join } from "path";
+import simpleGit from "simple-git";
 import type { IStorage } from "../../storage.js";
 import type { InsertConsiliumLoop, ConsiliumLoopRow } from "@shared/schema";
 import type { ConsiliumReviewPreset } from "@shared/types";
@@ -60,6 +61,7 @@ import type { ConsiliumLoopController } from "./consilium-loop-controller.js";
 import type { AppConfig } from "../../config/schema.js";
 import { assertAllowedRepoPath, isWithinRoot, realResolve } from "./repo-allowlist.js";
 import { JUDGE_CONVERGENCE_INSTRUCTIONS } from "../orchestrator/judge-prompt.js";
+import { validateReviewRef } from "./ref-validator.js";
 
 // ─── Bounds (Security S2) ───────────────────────────────────────────────────
 
@@ -382,6 +384,151 @@ function embedSpecSet(repoPath: string, budgetBytes: number): string {
   return header + body + note;
 }
 
+// ─── Spec-set embedding AT A GIT REF (BRANCH-targeted full-viability) ────────
+
+/**
+ * Minimal git surface the ref-targeted spec reader needs — lets unit tests inject
+ * a fake and assert that `git show <ref>:specs/...` / `git ls-tree <ref>` are
+ * used (NOT a filesystem read). `raw` runs git with an ARG ARRAY (no shell).
+ */
+export interface SpecGitClient {
+  raw(args: string[]): Promise<string>;
+}
+
+/** One `specs/*.md` blob at a ref: its repo-relative path + on-disk byte size. */
+interface SpecBlobAtRef {
+  path: string;
+  size: number;
+}
+
+/**
+ * List `specs/*.md` AT a git ref via `git ls-tree -r -l <ref> -- specs`, returning
+ * each blob's PATH **and on-disk byte SIZE**. The `-l` (long) format is what lets
+ * the caller budget-check a blob BEFORE reading it (FIX MED-1) so a multi-GB
+ * committed spec can never be buffered into memory. Row format:
+ *   `<mode> <type> <object> <size>\t<path>`  (size is `-` for non-blob entries).
+ * SECURITY: `--end-of-options` precedes the (already strict-validated) ref so it
+ * can never be parsed as a git option; `specs` is a fixed server-constant pathspec
+ * after `--`. Best-effort: any git error (no such ref, no specs tree) ⇒ empty list.
+ */
+async function listSpecFilesAtRef(git: SpecGitClient, ref: string): Promise<SpecBlobAtRef[]> {
+  let out: string;
+  try {
+    out = await git.raw(["ls-tree", "-r", "-l", "--end-of-options", ref, "--", "specs"]);
+  } catch {
+    return [];
+  }
+  const blobs: SpecBlobAtRef[] = [];
+  for (const line of out.split("\n")) {
+    const tab = line.indexOf("\t");
+    if (tab < 0) continue;
+    const meta = line.slice(0, tab).trim().split(/\s+/);
+    const path = line.slice(tab + 1).trim();
+    // Need "<mode> <type> <object> <size>"; only real blobs carry a numeric size
+    // (trees/gitlinks show `-` and are skipped).
+    if (meta.length < 4 || meta[1] !== "blob") continue;
+    if (path.length === 0 || !path.toLowerCase().endsWith(".md")) continue;
+    const size = Number.parseInt(meta[3], 10);
+    blobs.push({ path, size: Number.isFinite(size) ? size : Number.POSITIVE_INFINITY });
+  }
+  return blobs;
+}
+
+/**
+ * Read ONE spec blob AT a git ref via `git show <ref>:<path>` (NO checkout, no
+ * working-tree read). SECURITY: `--end-of-options` precedes the `<ref>:<path>`
+ * object spec; both `ref` (strict-validated) and `path` (server-listed from
+ * ls-tree, never caller text) are arg-array elements. Returns null on any error
+ * so one unreadable blob is skipped rather than failing the whole review.
+ */
+async function readSpecAtRef(git: SpecGitClient, ref: string, path: string): Promise<string | null> {
+  try {
+    return await git.raw(["show", "--end-of-options", `${ref}:${path}`]);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ref-targeted twin of `embedSpecSet`: read `specs/*.md` AT `ref` (via the git
+ * client, NOT the working tree) and concatenate up to `budgetBytes`, KEEPING the
+ * same byte-clamp + randomized/long backtick-fence wrapping (FIX MED-1) so an
+ * untrusted spec body cannot break out of its fence. index/readme/numbered specs
+ * sort first (mtime is unavailable at a ref, so we fall back to name order within
+ * a class — ls-tree order is already deterministic). Best-effort: a ref with no
+ * specs tree yields a short note and the review still runs on the objective.
+ */
+async function embedSpecSetAtRef(
+  git: SpecGitClient,
+  ref: string,
+  budgetBytes: number,
+): Promise<string> {
+  const blobs = await listSpecFilesAtRef(git, ref);
+  if (blobs.length === 0) {
+    return "\n\n## Spec set\n\n_No `*.md` specs found under `specs/` at the target ref; reviewing without an embedded spec set._";
+  }
+
+  const sorted = blobs
+    .map((b) => ({ path: b.path, name: basename(b.path), size: b.size, key: specSortKey(basename(b.path)) }))
+    .sort((a, b) => a.key - b.key || a.name.localeCompare(b.name));
+
+  const header = "\n\n## Spec set (embedded at the target ref, index-first)\n";
+  let body = "";
+  let used = Buffer.byteLength(header, "utf8");
+  let included = 0;
+  let truncated = false;
+
+  for (const { path, name, size } of sorted) {
+    // FIX MED-1 (memory DoS): we already have each blob's on-disk SIZE from
+    // `ls-tree -l`. If it cannot fit in the remaining budget, NEVER read it — a
+    // multi-GB committed `specs/*.md` blob would buffer entirely under `git show`
+    // and OOM the process before any clamp. Note the omission inline and keep
+    // scanning (a smaller later spec may still fit). Normal specs are far under
+    // the cap, so this gate is transparent for them.
+    const remaining = budgetBytes - used;
+    if (!Number.isFinite(size) || size > remaining) {
+      const omit = `\n### specs/${sanitizeLine(name, 200)}\n\n_[omitted: ${
+        Number.isFinite(size) ? size : "unknown"
+      } bytes over the remaining ${Math.max(0, remaining)}-byte budget]_\n`;
+      const omitBytes = Buffer.byteLength(omit, "utf8");
+      truncated = true;
+      if (used + omitBytes > budgetBytes) break; // no room even for the note
+      body += omit;
+      used += omitBytes;
+      continue;
+    }
+    const content = await readSpecAtRef(git, ref, path);
+    if (content === null) continue; // skip an unreadable blob
+    // FIX MED-1: fence the spec BODY in a strictly-longer backtick run so the
+    // untrusted spec markdown is treated as DATA and cannot inject instructions.
+    const fileFence = backtickFence(content);
+    const fileBlock = `\n### specs/${sanitizeLine(name, 200)}\n\n${fileFence}\n${content}\n${fileFence}\n`;
+    const blockBytes = Buffer.byteLength(fileBlock, "utf8");
+    if (used + blockBytes > budgetBytes) {
+      const remaining = budgetBytes - used - 64; // leave room for the note
+      if (remaining > 256) {
+        const headPart = `\n### specs/${sanitizeLine(name, 200)} (truncated)\n\n`;
+        const truncFence = backtickFence(content);
+        const fenceOverhead = Buffer.byteLength(`${truncFence}\n\n${truncFence}\n`, "utf8");
+        const room = remaining - Buffer.byteLength(headPart, "utf8") - fenceOverhead;
+        const clipped = clampUtf8(content, Math.max(0, room)).text;
+        body += headPart + truncFence + "\n" + clipped + "\n" + truncFence + "\n";
+        included += 1;
+      }
+      truncated = true;
+      break;
+    }
+    body += fileBlock;
+    used += blockBytes;
+    included += 1;
+  }
+
+  const note = truncated
+    ? `\n\n_(${included} of ${sorted.length} spec file(s) embedded at the target ref; remainder omitted to fit the ${budgetBytes}-byte input cap)_`
+    : `\n\n_(${included} of ${sorted.length} spec file(s) embedded at the target ref)_`;
+  return header + body + note;
+}
+
 // ─── Objective composition (per preset) ─────────────────────────────────────
 
 const SDLC_HEADER =
@@ -434,6 +581,36 @@ export function composeObjective(
   return clampUtf8(objective, INPUT_CAP_BYTES).text;
 }
 
+/**
+ * BRANCH-targeted twin of `composeObjective`: identical to it for every preset
+ * EXCEPT `full-viability`, which embeds `specs/*.md` read AT `ref` (via the git
+ * client, NOT the working tree) so picking branch X reviews X's specs even while
+ * the checkout sits on another branch. The same input-cap budgeting + final byte
+ * clamp apply. `ref` is the ALREADY-validated reviewRef.
+ */
+export async function composeObjectiveAtRef(
+  preset: ConsiliumReviewPreset,
+  repoPath: string,
+  objectiveExtra: string | undefined,
+  ref: string,
+  git: SpecGitClient,
+): Promise<string> {
+  const extraBlock = untrustedExtraBlock(objectiveExtra);
+
+  let objective: string;
+  if (preset === "full-viability") {
+    const fixedBytes = Buffer.byteLength(FULL_VIABILITY_HEADER + extraBlock, "utf8");
+    const specBudget = Math.max(0, INPUT_CAP_BYTES - fixedBytes);
+    objective = FULL_VIABILITY_HEADER + (await embedSpecSetAtRef(git, ref, specBudget)) + extraBlock;
+  } else if (preset === "diff-pr-review") {
+    objective = DIFF_HEADER + extraBlock;
+  } else {
+    objective = SDLC_HEADER + extraBlock;
+  }
+
+  return clampUtf8(objective, INPUT_CAP_BYTES).text;
+}
+
 // ─── Factory ─────────────────────────────────────────────────────────────────
 
 export interface CreateConsiliumReviewDeps {
@@ -441,6 +618,13 @@ export interface CreateConsiliumReviewDeps {
   orchestrator: TaskOrchestrator;
   controller: ConsiliumLoopController;
   config: () => AppConfig;
+  /**
+   * Factory for the git client used to read specs AT a target ref (full-viability
+   * + a `ref`). Defaults to `simpleGit(repoPath)`; tests inject a fake to assert
+   * `git show <ref>:specs/...` is used (NOT a filesystem read). The repoPath is
+   * the already-allowlisted+workspace-gated canonical path.
+   */
+  gitClientFactory?: (repoPath: string) => SpecGitClient;
 }
 
 export interface CreateConsiliumReviewParams {
@@ -457,6 +641,13 @@ export interface CreateConsiliumReviewParams {
   baselineCommit?: string;
   /** UNTRUSTED extra context (e.g. a changed-file path or a diff). Clamped (S2). */
   objectiveExtra?: string;
+  /**
+   * BRANCH-targeted review: an optional git ref (branch name / revision) the
+   * review targets. STRICT-validated here (ref-validator.ts) before it reaches
+   * git; persisted as the loop's `reviewRef`. Absent/null ⇒ working-tree HEAD
+   * (full back-compat). SECURITY: only ever passed to git as an arg-array element.
+   */
+  ref?: string | null;
 }
 
 /** Clamp a caller-supplied round count into the schema's 1..6 window. */
@@ -548,7 +739,27 @@ export async function createConsiliumReview(
   if (!panel) throw new Error(`unknown consilium review preset: ${String(params.preset)}`);
 
   const baseline = resolveBaseline(params.preset, params.baselineCommit); // S3
-  const objective = composeObjective(params.preset, resolvedRepo, params.objectiveExtra); // S2
+
+  // BRANCH-targeted review (S6): STRICT-validate the optional ref at the factory
+  // boundary — an invalid ref THROWS here (→ 400 at the endpoint) and is NEVER
+  // persisted. null/undefined ⇒ working-tree HEAD (full back-compat). The ref
+  // reaches git ONLY as an arg-array element (diff-context HEAD resolution +
+  // embedSpecSetAtRef), always pinned behind `--end-of-options`.
+  const reviewRef =
+    params.ref === undefined || params.ref === null ? null : validateReviewRef(params.ref);
+
+  // S2: for full-viability WITH a ref, read specs AT THE REF via git (no working
+  // tree); otherwise the existing filesystem read. Other presets ignore the ref
+  // when composing (the diff side resolves it in diff-context).
+  const objective = reviewRef
+    ? await composeObjectiveAtRef(
+        params.preset,
+        resolvedRepo,
+        params.objectiveExtra,
+        reviewRef,
+        (deps.gitClientFactory ?? ((p: string) => simpleGit(p) as SpecGitClient))(resolvedRepo),
+      )
+    : composeObjective(params.preset, resolvedRepo, params.objectiveExtra);
   const tasks = buildCrossReviewTasks(panel);
 
   // 1) Cross-review task-group (the proven 5-task DAG for the 2-model panel).
@@ -568,6 +779,8 @@ export async function createConsiliumReview(
     maxRounds: clampRounds(params.maxRounds),
     devPipelineId: cfg.devPipelineId ?? null,
     lastReviewedCommit: baseline,
+    // BRANCH-targeted review: the chosen ref (null ⇒ working-tree HEAD).
+    reviewRef,
     createdBy: params.createdBy,
   } as InsertConsiliumLoop);
 

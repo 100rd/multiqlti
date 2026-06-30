@@ -649,6 +649,9 @@ export class ConsiliumLoopController {
     const ctx = await buildDiffContext({
       repoPath: loop.repoPath,
       baselineCommit: loop.lastReviewedCommit,
+      // BRANCH-targeted review: resolve the loop's chosen ref as the HEAD side
+      // (diff baseline..<ref>); null ⇒ working-tree HEAD (back-compat).
+      ref: loop.reviewRef,
       objective,
       allowedRepoPaths: cfg.allowedRepoPaths,
       maxDiffBytes: cfg.maxDiffBytes,
@@ -813,6 +816,8 @@ export class ConsiliumLoopController {
     const ctx = await buildDiffContext({
       repoPath: loop.repoPath,
       baselineCommit: null,
+      // Record the chosen ref's tip as the head sha (null ⇒ working-tree HEAD).
+      ref: loop.reviewRef,
       objective: "",
       allowedRepoPaths: cfg.allowedRepoPaths,
       maxDiffBytes: cfg.maxDiffBytes,

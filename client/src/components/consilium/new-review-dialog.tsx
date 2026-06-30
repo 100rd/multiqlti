@@ -3,7 +3,7 @@
  * for ConsiliumLoopList. Mirrors ProjectSelector's create-dialog pattern (the
  * shared Dialog primitive + a controlled form + a toast on settle).
  *
- * It POSTs `{ repoPath, preset, maxRounds?, baselineCommit? }` to
+ * It POSTs `{ repoPath, preset, maxRounds?, baselineCommit?, ref? }` to
  * `/api/consilium-reviews` via the shared apiRequest transport (carries auth +
  * `x-project-id`, same as every project-scoped call).
  *
@@ -20,18 +20,30 @@
  * back as a 400 whose `error` text we surface VERBATIM in the failure toast (so
  * "...is not in the allowed repo paths" is actionable, not a mystery).
  *
+ * BRANCH SELECTION: once a workspace is picked, we fetch its branches LIVE from
+ * `GET /api/workspaces/:id/branches` (response `{ current, branches[] }`) via a
+ * react-query keyed by the workspace id (`enabled` only when a workspace with an
+ * id is selected). A branch Select sits below the workspace Select, defaulting to
+ * the workspace's registered `branch` (then the endpoint's `current`, then
+ * "main"). While the list loads we show a disabled "Loading branches…" control;
+ * on error / empty list / custom-path (no workspace id) we fall back to a
+ * free-text branch Input so the user is never stuck. The chosen branch rides
+ * along as `ref`, but is OMITTED when it equals the workspace default or is empty
+ * — the server treats an absent `ref` as the working-tree HEAD (back-compat).
+ *
  * On success we invalidate the loops list and, if the response carries an id
  * (id / loopId / loop.id — defensive, the exact envelope is the backend's), we
  * navigate to the new loop's detail.
  *
- * SECURITY: the only free-text the user supplies (custom repoPath / baselineCommit)
- * is sent as a JSON body to an allowlist-validated server route; nothing is
- * interpolated into a URL path or shell. The server re-validates repoPath against
- * its allowlist.
+ * SECURITY: the only free-text the user supplies (custom repoPath / baselineCommit
+ * / a hand-typed branch) is sent as a JSON body to an allowlist-validated server
+ * route; nothing is interpolated into a URL path or shell. The workspace id used
+ * in the branches URL is a server-issued id, not user free-text. The server
+ * re-validates repoPath against its allowlist.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Plus } from "lucide-react";
 import {
   Dialog,
@@ -62,8 +74,52 @@ const PRESETS = [
 ] as const;
 type Preset = (typeof PRESETS)[number]["value"];
 
-/** The slice of a workspace this dialog needs — a human `name` and a repo `path`. */
-export type ReviewWorkspaceOption = { id?: string; name: string; path: string };
+/**
+ * The slice of a workspace this dialog needs — a human `name`, a repo `path`, the
+ * server-issued `id` (keys the branches fetch) and the registered default
+ * `branch`. WorkspaceRow is structurally assignable to this.
+ */
+export type ReviewWorkspaceOption = {
+  id?: string;
+  name: string;
+  path: string;
+  branch?: string;
+};
+
+/** The `/api/workspaces/:id/branches` envelope (manager.listBranches). */
+type BranchesResponse = { current?: string; branches?: string[] };
+
+/**
+ * Normalize whatever the branches endpoint returns into a clean, de-duplicated,
+ * sorted list of short branch names. Handles both the documented
+ * `{ branches: string[], current }` shape AND a defensive bare-array fallback,
+ * strips `remotes/<remote>/` prefixes (git branch -a) down to the branch name,
+ * and drops HEAD pointers.
+ */
+function branchNames(data: BranchesResponse | string[] | undefined): string[] {
+  const raw = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.branches)
+      ? data.branches
+      : [];
+  const names = new Set<string>();
+  for (const entry of raw) {
+    if (typeof entry !== "string") continue;
+    let name = entry.trim();
+    if (!name) continue;
+    const remote = name.match(/^remotes\/[^/]+\/(.+)$/);
+    if (remote) name = remote[1];
+    if (name === "HEAD" || name.endsWith("/HEAD")) continue;
+    names.add(name);
+  }
+  return [...names].sort();
+}
+
+/** The live `current` branch from the endpoint, if the object shape was used. */
+function currentBranch(data: BranchesResponse | string[] | undefined): string | undefined {
+  if (!data || Array.isArray(data)) return undefined;
+  return typeof data.current === "string" && data.current ? data.current : undefined;
+}
 
 /** Best-effort id extraction — the exact create envelope is the backend's call. */
 function createdLoopId(res: unknown): string | undefined {
@@ -92,6 +148,7 @@ export function NewConsiliumReviewDialog({
   // "Advanced: enter a custom path" — reveals the free-text input even when
   // workspaces exist (for an allowlisted repo not registered as a workspace).
   const [customMode, setCustomMode] = useState(false);
+  const [branch, setBranch] = useState("");
   const [maxRounds, setMaxRounds] = useState("1");
   const [baselineCommit, setBaselineCommit] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -99,8 +156,8 @@ export function NewConsiliumReviewDialog({
   const qc = useQueryClient();
   const { toast } = useToast();
 
-  // Whether to show the free-text input: no workspaces to pick from, or the user
-  // explicitly opted into a custom path.
+  // Whether to show the free-text REPO input: no workspaces to pick from, or the
+  // user explicitly opted into a custom path.
   const freeText = !hasWorkspaces || customMode;
 
   // Seed the repo path once the workspaces query resolves (it may arrive after
@@ -112,6 +169,67 @@ export function NewConsiliumReviewDialog({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasWorkspaces, customMode, wsList[0]?.path]);
+
+  // The workspace currently selected in the dropdown (undefined in free-text
+  // repo mode). Its server-issued `id` keys the branches fetch.
+  const selectedWorkspace = freeText
+    ? undefined
+    : wsList.find((w) => w.path === repoPath);
+  const selectedWorkspaceId = selectedWorkspace?.id;
+
+  // Live branches for the selected workspace. Keyed by the workspace id and
+  // enabled ONLY when a workspace with an id is selected (free-text repo mode has
+  // no id → no list). Re-fetches automatically when the id in the key changes.
+  const branchesQuery = useQuery<BranchesResponse>({
+    queryKey: ["/api/workspaces", selectedWorkspaceId, "branches"],
+    queryFn: () =>
+      apiRequest("GET", `/api/workspaces/${selectedWorkspaceId}/branches`),
+    enabled: !freeText && !!selectedWorkspaceId,
+  });
+
+  const liveBranches = branchNames(branchesQuery.data);
+  const liveCurrent = currentBranch(branchesQuery.data);
+  // The default branch for the selected workspace: its registered `branch`, then
+  // the endpoint's live `current`, then "main". In free-text repo mode there is
+  // no workspace default → "" (empty = HEAD on the server).
+  const workspaceDefaultBranch = selectedWorkspace
+    ? selectedWorkspace.branch || liveCurrent || "main"
+    : "";
+
+  // Re-seed the branch when the SELECTED WORKSPACE changes (id flips), resetting
+  // it to that workspace's default. A ref guards against re-seeding on every
+  // branches refetch for the SAME workspace (which would clobber a user choice),
+  // while still letting the live `current` fill in once it arrives if the
+  // workspace had no registered branch.
+  const seededFor = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (seededFor.current !== selectedWorkspaceId) {
+      seededFor.current = selectedWorkspaceId;
+      setBranch(workspaceDefaultBranch);
+    } else if (selectedWorkspace && !branch && workspaceDefaultBranch) {
+      // Same workspace, branch still empty (registered branch was falsy) and the
+      // live `current` just landed → adopt it without clobbering a real choice.
+      setBranch(workspaceDefaultBranch);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedWorkspaceId, workspaceDefaultBranch]);
+
+  // Loading / failure / dropdown states for the branch control. A disabled query
+  // (free-text repo mode) is never "loading". On error OR an empty list we fall
+  // back to a free-text branch Input so the user is never stuck.
+  const branchesEnabled = !freeText && !!selectedWorkspaceId;
+  const branchesLoading = branchesEnabled && branchesQuery.isLoading;
+  const branchesFailed =
+    branchesEnabled &&
+    (branchesQuery.isError ||
+      (branchesQuery.isSuccess && liveBranches.length === 0));
+  const branchDropdown = branchesEnabled && !branchesLoading && !branchesFailed;
+  // Keep the current value selectable even if it isn't in the live list (e.g. a
+  // registered default branch the remote no longer advertises).
+  const branchOptions =
+    branch && !liveBranches.includes(branch)
+      ? [branch, ...liveBranches]
+      : liveBranches;
 
   const enterCustomPath = () => {
     // Carry the current selection into the input as a starting point.
@@ -134,6 +252,7 @@ export function NewConsiliumReviewDialog({
       preset: Preset;
       maxRounds?: number;
       baselineCommit?: string;
+      ref?: string;
     } = { repoPath: path, preset };
 
     const rounds = Number(maxRounds);
@@ -141,6 +260,16 @@ export function NewConsiliumReviewDialog({
     // baseline commit is only meaningful for a diff/PR review.
     if (preset === "diff-pr-review" && baselineCommit.trim()) {
       body.baselineCommit = baselineCommit.trim();
+    }
+    // Branch → `ref`. Omit when empty, or (in workspace mode) when it equals the
+    // workspace default — the server treats an absent ref as the working-tree
+    // HEAD, so this preserves the prior behavior for the unchanged-default case.
+    const chosenBranch = branch.trim();
+    if (
+      chosenBranch &&
+      !(selectedWorkspace && chosenBranch === workspaceDefaultBranch)
+    ) {
+      body.ref = chosenBranch;
     }
 
     try {
@@ -240,6 +369,55 @@ export function NewConsiliumReviewDialog({
                   ))}
                 </SelectContent>
               </Select>
+            )}
+          </div>
+
+          {/* Branch — a Select over the workspace's live branches, with graceful
+              loading / failure / free-text fallbacks so it's never a dead end. */}
+          <div className="space-y-2">
+            <Label>Branch</Label>
+            {branchesLoading ? (
+              <Select disabled value="">
+                <SelectTrigger data-testid="new-review-branch-loading">
+                  <span className="inline-flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Loading branches…
+                  </span>
+                </SelectTrigger>
+                <SelectContent />
+              </Select>
+            ) : branchDropdown ? (
+              <Select value={branch} onValueChange={setBranch}>
+                <SelectTrigger data-testid="new-review-branch-select">
+                  <SelectValue placeholder="Select a branch" />
+                </SelectTrigger>
+                <SelectContent>
+                  {branchOptions.map((b) => (
+                    <SelectItem key={b} value={b}>
+                      {b}
+                      {b === workspaceDefaultBranch ? " (default)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <>
+                <Input
+                  value={branch}
+                  onChange={(e) => setBranch(e.target.value)}
+                  placeholder={
+                    selectedWorkspace
+                      ? workspaceDefaultBranch || "branch name"
+                      : "leave empty for the repo's current branch"
+                  }
+                  data-testid="new-review-branch-input"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {branchesFailed
+                    ? "Couldn't list this workspace's branches — type a branch name, or leave it to use the current branch."
+                    : "Optional — leave empty to review the repo's current branch (HEAD)."}
+                </p>
+              </>
             )}
           </div>
 

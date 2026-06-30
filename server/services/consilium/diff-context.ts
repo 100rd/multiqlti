@@ -33,6 +33,7 @@ import simpleGit from "simple-git";
 import type { GitErrorKind, GitFail } from "../../config-sync/git-wrapper.js";
 import { assertAllowedRepoPath } from "./repo-allowlist.js";
 import { redactSecrets } from "./diff-redactor.js";
+import { validateReviewRef } from "./ref-validator.js";
 
 /** Minimal git surface the builder needs — lets unit tests inject a fake. */
 export interface GitDiffClient {
@@ -45,6 +46,16 @@ export interface DiffContextRequest {
   repoPath: string;
   /** <last-reviewed> commit; null ⇒ first round (objective only, no diff). */
   baselineCommit: string | null;
+  /**
+   * BRANCH-targeted review: the ref (branch name / revision) to resolve as the
+   * HEAD side of the review. Defaults to "HEAD" (working-tree HEAD) for full
+   * back-compat when null/undefined. SECURITY: fed to `revparse` ONLY as an
+   * arg-array element and pinned behind `--end-of-options`, so an option-looking
+   * or leading-dash ref can never be parsed as a git flag; for `diff-pr-review`
+   * the resolved tip becomes the HEAD side of `baseline..<ref>`. The caller
+   * (review-factory) has already strict-validated it (see ref-validator.ts).
+   */
+  ref?: string | null;
   /** Standing design-idea / group.input header. */
   objective: string;
   /** Allowlist roots from config.consiliumLoop.allowedRepoPaths. */
@@ -119,10 +130,16 @@ async function resolveCommit(git: GitDiffClient, ref: string): Promise<string | 
   }
 }
 
-/** B-1: resolve HEAD to a concrete sha (server-derived, still pinned/validated). */
-async function resolveHead(git: GitDiffClient): Promise<string | GitFail> {
+/**
+ * B-1: resolve the review HEAD to a concrete sha (server-derived, still
+ * pinned/validated). `ref` defaults to "HEAD" (working-tree HEAD); a
+ * BRANCH-targeted review passes the loop's `reviewRef` so the resolved tip is the
+ * chosen branch's, WITHOUT any checkout. `--end-of-options` precedes the ref so a
+ * leading-dash/option-looking ref can never be parsed as a git flag.
+ */
+async function resolveHead(git: GitDiffClient, ref: string): Promise<string | GitFail> {
   try {
-    const head = (await git.revparse(["--verify", "--end-of-options", "HEAD^{commit}"])).trim();
+    const head = (await git.revparse(["--verify", "--end-of-options", `${ref}^{commit}`])).trim();
     if (!SHA_RE.test(head)) return fail("unknown", "resolved HEAD is not a valid sha");
     return head;
   } catch (err) {
@@ -143,6 +160,22 @@ interface DiffParts {
  * (the security guarantee). The body is redacted of secrets and clipped to
  * maxDiffBytes. Never logs the body.
  */
+/**
+ * MED-1: parse the `git diff --stat` SUMMARY line ("... N insertion(s)(+), M
+ * deletion(s)(-)") into a changed-line count WITHOUT buffering the diff body.
+ * `--stat` output is bounded (one row per file + a summary), so reading it is
+ * always safe. Used as a cheap pre-gate so a pathologically large diff is never
+ * buffered into a string before the byte clamp. Unparseable input ⇒ 0 (do not
+ * block — the post-read byte clamp still applies).
+ */
+function statChangedLines(stat: string): number {
+  const ins = /(\d+)\s+insertion/.exec(stat);
+  const del = /(\d+)\s+deletion/.exec(stat);
+  const i = ins ? Number.parseInt(ins[1], 10) : 0;
+  const d = del ? Number.parseInt(del[1], 10) : 0;
+  return (Number.isFinite(i) ? i : 0) + (Number.isFinite(d) ? d : 0);
+}
+
 async function collectDiff(
   git: GitDiffClient,
   baseline: string,
@@ -151,7 +184,26 @@ async function collectDiff(
 ): Promise<DiffParts | GitFail> {
   const range = `${baseline}..${head}`;
   try {
+    // `--stat` first: its output is bounded regardless of diff size, so it is
+    // safe to buffer and doubles as a magnitude pre-check (MED-1).
     const stat = await git.diff(["--stat", "--end-of-options", range]);
+    // MED-1 (memory DoS): if the change spans a pathologically large number of
+    // lines, DO NOT buffer the full body — emit stat-only with a truncation note
+    // so a hostile commit can't OOM the process before the clamp below. The
+    // budget is deliberately generous (≥ maxDiffBytes lines, floor 50k) so it
+    // NEVER trips for a normal diff; behaviour is identical for those.
+    //
+    // Residual (documented): a single file whose change is one enormous line
+    // counts as ~1 changed line here, so the byte clamp after the read is its
+    // only bound. That residual is the SAME trust boundary as the spec-blob DoS
+    // (MED-1, review-factory): the diff range is two SERVER-resolved commits
+    // (strict-hex baseline + validated reviewRef) inside an allowlisted repo, so
+    // the only way to reach it is a hostile committed blob — git ≥2.24 streams
+    // `--stat`/`diff` and simple-git exposes no per-call byte cap on `diff`.
+    const lineBudget = Math.max(50_000, maxDiffBytes);
+    if (statChangedLines(stat) > lineBudget) {
+      return { stat: redactSecrets(stat).trim(), body: "", truncated: true };
+    }
     const rawBody = await git.diff(["--end-of-options", range]);
     const redacted = redactSecrets(rawBody);
     const truncated = Buffer.byteLength(redacted, "utf8") > maxDiffBytes;
@@ -181,7 +233,15 @@ function assembleInput(
   let truncated = parts?.truncated ?? false;
   if (parts) {
     const note = parts.truncated ? "\n\n_(diff truncated to the configured byte limit)_" : "";
-    const changes = parts.body.length > 0 ? `${parts.stat}\n\n\`\`\`diff\n${parts.body}\n\`\`\`${note}` : "_No changes since last review._";
+    // MED-1: collectDiff returns an empty body WITH truncated=true when it refused
+    // to buffer a pathologically large diff. Surface the (bounded) --stat summary
+    // plus an explicit omission note rather than the misleading "No changes".
+    const changes =
+      parts.body.length > 0
+        ? `${parts.stat}\n\n\`\`\`diff\n${parts.body}\n\`\`\`${note}`
+        : parts.truncated
+          ? `${parts.stat}\n\n_(diff omitted — too large to embed; see the stat above)_`
+          : "_No changes since last review._";
     sections.push(`## Changes since last review\n\n${changes}`);
   }
   if (testSummary && testSummary.trim().length > 0) {
@@ -235,7 +295,23 @@ export async function buildDiffContext(
 
   const git: GitDiffClient = req.gitClient ?? simpleGit(resolvedRepo);
 
-  const head = await resolveHead(git);
+  // LOW-1 (defense-in-depth): reviewRef is write-once and strict-validated at the
+  // factory boundary, but on later rounds the controller reads it back from the DB
+  // and threads it here. Re-validate it ourselves before it touches git — an
+  // invalid stored ref fails the round CLEANLY (in-band GitFail → the loop's
+  // existing error path) instead of being passed to git. The ref is scrubbed from
+  // the message so attacker-influenced input is never echoed into logs.
+  if (req.ref != null) {
+    try {
+      validateReviewRef(req.ref);
+    } catch {
+      return fail("unknown", "stored review ref failed re-validation");
+    }
+  }
+
+  // BRANCH-targeted review: resolve the chosen ref's tip (loop.reviewRef) as the
+  // HEAD side; null/undefined ⇒ working-tree "HEAD" (full back-compat).
+  const head = await resolveHead(git, req.ref ?? "HEAD");
   if (typeof head !== "string") return head;
 
   if (req.baselineCommit === null) {

@@ -2736,6 +2736,10 @@ export const consiliumLoops = pgTable(
     repoPath: text("repo_path").notNull(),
     // Diff baseline; null on round 1 (objective-only, no diff).
     lastReviewedCommit: text("last_reviewed_commit"),
+    // BRANCH-targeted review: an optional git ref (branch name / revision) whose
+    // tip + tree this review targets (content read AT THAT REF, no checkout).
+    // null ⇒ working-tree HEAD (existing behavior; full back-compat).
+    reviewRef: text("review_ref"),
     currentIterationNumber: integer("current_iteration_number"),
     devPipelineId: varchar("dev_pipeline_id"),
     devGroupId: varchar("dev_group_id"),
