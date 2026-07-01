@@ -1899,6 +1899,54 @@ export type Archetype = typeof ARCHETYPES[number];
 /** How a loop's archetype was decided. `override` outranks a planner `proposed`. */
 export type ArchetypeSource = "proposed" | "override";
 
+// ─── Research archetype REPORT (Stage 3, design §6 — the `research` artifact) ─
+// The structured artifact the research-runner produces INSTEAD of code + a Draft
+// PR. It rides the SAME out-of-band wire as `testSummary` into a new nullable
+// `consilium_loop_rounds.report` jsonb column, and reaches the client via the
+// existing loop GET `rounds`. Every string here is UNTRUSTED model/web text — it
+// is DATA, never a shell/branch/PR sink, and the whole object is size-clamped
+// (`clampReport`) before it is persisted. Lives in the client-safe types module so
+// a future ReportPanel can import it without pulling in drizzle/schema.
+
+/** One web citation backing a research claim (title + URL + a short snippet). */
+export interface ResearchCitation {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+/** A single research claim + the sources that back it + whether web-evidence
+ *  verification confirmed a cited source supports it (3b). */
+export interface ResearchClaim {
+  claim: string;
+  citations: ResearchCitation[];
+  /** Set by the web-evidence verifier: true ⇒ a cited source supports the claim. */
+  verified: boolean;
+}
+
+/** A source consulted during research (de-duplicated title + URL). */
+export interface ResearchSource {
+  title: string;
+  url: string;
+}
+
+/**
+ * The structured research report. `verdict` is `green` when every P0-criterion
+ * claim is backed by a cited source (web-evidence, 3b), else `flagged`.
+ */
+export interface ResearchReport {
+  /** The research question (derived from the loop objective + action points). */
+  question: string;
+  /** The synthesized recommendation / answer. */
+  recommendation: string;
+  claims: ResearchClaim[];
+  sources: ResearchSource[];
+  /** web-evidence outcome: all P0-criterion claims cited ⇒ `green`, else `flagged`. */
+  verdict: "green" | "flagged";
+  /** ISO-8601 timestamp the report was generated. */
+  generatedAt: string;
+}
+
 // ─── Platform Version Types ────────────────────────────────────────────────────
 
 export interface VersionsResponse {

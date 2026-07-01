@@ -34,7 +34,7 @@
  */
 import { simpleGit } from "simple-git";
 import type { WorkspaceRow } from "@shared/schema";
-import type { ActionPoint } from "@shared/types";
+import type { ActionPoint, ResearchReport } from "@shared/types";
 import { resolveLoopWorkspace } from "./workspace-bind.js";
 import { pushBranch, openDraftPr } from "./pr-wrapper.js";
 
@@ -55,6 +55,14 @@ export interface DevCloseoutResult {
    * (Stage-2a / kill-switch off) — nothing to persist.
    */
   testSummary?: string;
+  /**
+   * Stage 3 (research archetype): the structured research report produced by
+   * `runResearchHandoff` INSTEAD of code + a Draft PR. Present ONLY on a research
+   * close-out; undefined for the SDLC/coder path (so that result shape is unchanged).
+   * The controller persists it out-of-band to `consilium_loop_rounds.report` on the
+   * same settle wire as `testSummary`.
+   */
+  report?: ResearchReport;
 }
 
 // ─── Injectable seams (unit tests inject fakes — no real repo / gh) ──────────

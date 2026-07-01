@@ -17,7 +17,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider, DebateDetails, ArbitratorVerdict, OrchestratorStepType, OrchestratorStepArgs, ResearchFinding, OrchestratorRunStatus, OrchestratorStepStatus, StopReason, Confidence, ConsensusVerdict, ConsensusRunStatus, ConsensusRoundPhase, ActionPoint, Archetype, ArchetypeSource } from "./types.js";
+import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider, DebateDetails, ArbitratorVerdict, OrchestratorStepType, OrchestratorStepArgs, ResearchFinding, OrchestratorRunStatus, OrchestratorStepStatus, StopReason, Confidence, ConsensusVerdict, ConsensusRunStatus, ConsensusRoundPhase, ActionPoint, Archetype, ArchetypeSource, ResearchReport } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -2807,6 +2807,11 @@ export const consiliumLoopRounds = pgTable(
     baselineCommit: text("baseline_commit"),
     headCommit: text("head_commit"),
     testSummary: text("test_summary"),
+    // Stage 3 (research archetype): the structured, web-evidence-verified report the
+    // research-runner produces INSTEAD of code + a Draft PR. Nullable; written
+    // out-of-band by `updateLoopRoundReport` after the research run settles (mirror of
+    // testSummary). NULL for every non-research round. Size-clamped before write.
+    report: jsonb("report").$type<ResearchReport>(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({

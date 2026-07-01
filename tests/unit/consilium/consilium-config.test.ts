@@ -96,6 +96,35 @@ describe("pipeline.consiliumLoop schema", () => {
     expect(res.data.pipeline.consiliumLoop.implement.trustedRepoAck).toBe(false);
   });
 
+  it("Stage 3: implement.research defaults to INERT (off) with bounded knobs", () => {
+    const res = ConfigSchema.safeParse({});
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    const r = res.data.pipeline.consiliumLoop.implement.research;
+    expect(r.enabled).toBe(false); // kill-switch default OFF ⇒ ships inert
+    expect(r.maxResearchIterations).toBe(3);
+    expect(r.model).toBe("claude-sonnet"); // DEFAULT_TASK_MODEL, never "mock"
+  });
+
+  it("Stage 3: accepts valid research overrides", () => {
+    const res = parseLoop({
+      implement: { enabled: true, research: { enabled: true, maxResearchIterations: 7, model: "claude-opus" } },
+    });
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    const r = res.data.pipeline.consiliumLoop.implement.research;
+    expect(r.enabled).toBe(true);
+    expect(r.maxResearchIterations).toBe(7);
+    expect(r.model).toBe("claude-opus");
+  });
+
+  it("Stage 3: enforces maxResearchIterations bounds (int 1..10)", () => {
+    expect(parseLoop({ implement: { research: { maxResearchIterations: 0 } } }).success).toBe(false);
+    expect(parseLoop({ implement: { research: { maxResearchIterations: 11 } } }).success).toBe(false);
+    expect(parseLoop({ implement: { research: { maxResearchIterations: 2.5 } } }).success).toBe(false);
+    expect(parseLoop({ implement: { research: { model: "" } } }).success).toBe(false);
+  });
+
   it("MED-2: effectiveVerificationEnabled is fail-closed (needs sandbox OR trustedRepoAck)", () => {
     const cfg = (over: { ven: boolean; sandbox?: boolean; ack?: boolean }) =>
       ConfigSchema.parse({

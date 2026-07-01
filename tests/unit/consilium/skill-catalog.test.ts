@@ -68,8 +68,22 @@ describe("selectSkillSet — archetype → ordered skilled steps", () => {
     }
   });
 
-  it("research / infra / null → [] (executor falls back to today's single coder — NO regression)", () => {
-    expect(selectSkillSet("research", null)).toEqual([]);
+  it("Stage 3: research → an ordered [research, synthesize] web-read pair (verify=web-evidence/judge)", () => {
+    const steps = selectSkillSet("research", null);
+    expect(steps).toHaveLength(2);
+    expect(steps.map((s) => s.skillName)).toEqual(["research", "synthesize"]);
+    // BOTH steps are web-read (web_search ONLY) — NEVER worktree-write.
+    for (const s of steps) {
+      expect(s.capability).toBe("web-read");
+      expect(s.systemPrompt.length).toBeGreaterThan(0);
+      expect(s.id).toMatch(/^research\//);
+    }
+    // research verifies via web-evidence; synthesize is a judge step.
+    expect(steps[0].verification).toBe("web-evidence");
+    expect(steps[1].verification).toBe("judge");
+  });
+
+  it("infra / null → [] (executor falls back to today's single coder — NO regression)", () => {
     expect(selectSkillSet("infra", null)).toEqual([]);
     expect(selectSkillSet(null, null)).toEqual([]);
   });
@@ -87,9 +101,16 @@ describe("capabilityTools — the tool ceiling per capability", () => {
   it("worktree-write ⇒ the EXISTING coder baseline (Edit/Write/Read)", () => {
     expect(capabilityTools("worktree-write")).toEqual([...ALLOWED_TOOLS]);
   });
-  it("never includes Bash (both capabilities are subsets of the baseline)", () => {
+  it("web-read ⇒ exactly [web_search] — read-only network, NO url_reader/fs/worktree", () => {
+    expect(capabilityTools("web-read")).toEqual(["web_search"]);
+    expect(capabilityTools("web-read")).not.toContain("url_reader");
+    expect(capabilityTools("web-read")).not.toContain("Read");
+    expect(capabilityTools("web-read")).not.toContain("Edit");
+  });
+  it("never includes Bash (all capabilities are subsets of the baseline)", () => {
     expect(capabilityTools("read-only")).not.toContain("Bash");
     expect(capabilityTools("worktree-write")).not.toContain("Bash");
+    expect(capabilityTools("web-read")).not.toContain("Bash");
   });
 });
 

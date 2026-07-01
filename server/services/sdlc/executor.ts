@@ -309,7 +309,15 @@ async function resolveSkilledSteps(
   params: Record<string, string> | null,
   getSkills?: () => Promise<Skill[]>,
 ): Promise<BoundSkillStep[]> {
-  const steps = selectSkillSet(archetype, params);
+  // Stage 3 ANTI-FOOTGUN (defense-in-depth, second layer under the controller's
+  // hard-branch): the coder can ONLY run worktree-write / read-only steps. `web-read`
+  // steps (the research archetype) are consumed by the research-runner, NEVER the
+  // coder — drop them here so that even a direct runSdlcHandoff call with
+  // archetype='research' can never spawn a coder holding web_search. If dropping
+  // leaves nothing, we fall through to today's single unskilled coder (unchanged).
+  const steps = selectSkillSet(archetype, params).filter(
+    (s) => s.capability === "worktree-write" || s.capability === "read-only",
+  );
   if (steps.length === 0) return [];
   let rows: Skill[] = [];
   if (getSkills) {
