@@ -54,11 +54,20 @@ import {
   isTerminalLoopState,
   isVerdictTerminalLoopState,
   type ConsiliumLoopRoundRow,
+  type ConsiliumLoopRoundDetail,
   type ConsiliumLoopDetail as ConsiliumLoopDetailRow,
   type DevProgress,
   type ResearchReport,
   type ResearchCitation,
   type ResearchSource,
+  type ExecutionTrace,
+  type ExecutionController,
+  type ExecutionWorker,
+  type ExecutionSkill,
+  type ExecutionCriterion,
+  type ExecutionWorkerStatus,
+  type ExecutionSkillCapability,
+  type ExecutionCriterionMethod,
 } from "@/hooks/use-consilium-loops";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
@@ -357,6 +366,101 @@ function Fact({
   );
 }
 
+// ─── Execution tree (Stage 4 observability) ──────────────────────────────────
+
+/** True when a round carries a renderable execution trace. */
+function traceHasContent(trace: ExecutionTrace | null | undefined): trace is ExecutionTrace {
+  return !!trace && !!trace.controller && Array.isArray(trace.controller.workers);
+}
+
+/** A small green/red dot for a skill/worker/criterion outcome. */
+function GreenDot({ green }: { green: boolean }) {
+  return (
+    <span
+      className={`inline-block h-2 w-2 rounded-full ${green ? "bg-green-500" : "bg-red-500"}`}
+      aria-label={green ? "green" : "red"}
+    />
+  );
+}
+
+function CriterionLeaf({ c }: { c: ExecutionCriterion }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+      <GreenDot green={c.passed} />
+      <Badge variant="outline" className="text-[10px] py-0">{c.method}</Badge>
+      <span className={c.passed ? "text-muted-foreground" : "text-red-600"}>
+        {c.ran ? (c.passed ? "passed" : "unmet") : "not run"}
+      </span>
+      {typeof c.fixIterations === "number" && c.fixIterations > 0 && (
+        <span className="text-muted-foreground">· {c.fixIterations} fix</span>
+      )}
+      <span className="text-foreground/80">{c.criterion || "—"}</span>
+      {c.summary && !c.passed && (
+        <span className="w-full text-muted-foreground font-mono text-[10px] break-words">{c.summary}</span>
+      )}
+    </div>
+  );
+}
+
+function SkillLeaf({ s }: { s: ExecutionSkill }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+      <GreenDot green={s.green} />
+      <span className="font-medium">{s.skillName || "—"}</span>
+      <Badge variant="secondary" className="text-[10px] py-0">{s.capability}</Badge>
+      {s.permissionsUsed.map((p, i) => (
+        <span key={i} className="rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">{p}</span>
+      ))}
+    </div>
+  );
+}
+
+function WorkerNode({ w }: { w: ExecutionWorker }) {
+  const failed = w.status === "failed";
+  return (
+    <li className={`space-y-1 border-l-2 pl-3 ${failed ? "border-red-400" : "border-border/70"}`}>
+      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+        {w.priority && <Badge variant="outline" className="text-[10px] py-0">{w.priority}</Badge>}
+        <span className="font-medium">{w.title || `#${w.index}`}</span>
+        <Badge variant={failed ? "destructive" : "secondary"} className="text-[10px] py-0">{w.status}</Badge>
+      </div>
+      {w.note && <p className="text-[11px] text-muted-foreground font-mono break-words">{w.note}</p>}
+      {w.skills.length > 0 && (
+        <div className="space-y-0.5 pl-1">
+          {w.skills.map((s, i) => <SkillLeaf key={i} s={s} />)}
+        </div>
+      )}
+      {w.criteria.length > 0 && (
+        <div className="space-y-0.5 pl-1">
+          {w.criteria.map((c, i) => <CriterionLeaf key={i} c={c} />)}
+        </div>
+      )}
+    </li>
+  );
+}
+
+/** Renders a settled execution trace: controller → workers → skills → criteria. */
+function SettledExecutionTree({ trace }: { trace: ExecutionTrace }) {
+  const c: ExecutionController = trace.controller;
+  return (
+    <div className="space-y-2 rounded-md border border-border/60 p-2">
+      <div className="flex flex-wrap items-center gap-1.5 text-xs">
+        <GreenDot green={c.green} />
+        <span className="font-semibold">{c.label || c.kind}</span>
+        {trace.archetype && <Badge variant="outline" className="text-[10px] py-0">{trace.archetype}</Badge>}
+      </div>
+      {c.note && <p className="text-[11px] text-muted-foreground font-mono break-words">{c.note}</p>}
+      {c.workers.length > 0 ? (
+        <ul className="space-y-2">
+          {c.workers.map((w, i) => <WorkerNode key={i} w={w} />)}
+        </ul>
+      ) : (
+        <p className="text-[11px] text-muted-foreground">No workers recorded.</p>
+      )}
+    </div>
+  );
+}
+
 // ─── Rounds table ─────────────────────────────────────────────────────────────
 
 function RoundRow({
@@ -364,7 +468,7 @@ function RoundRow({
   groupId,
   terminal,
 }: {
-  round: ConsiliumLoopRoundRow;
+  round: ConsiliumLoopRoundDetail;
   groupId: string;
   terminal: boolean;
 }) {
@@ -372,16 +476,21 @@ function RoundRow({
   const aps: ActionPoint[] = Array.isArray(round.openActionPoints)
     ? round.openActionPoints
     : [];
+  // Stage 4: this round's persisted execution trace (history). When present, the
+  // row expands to a mini-tree of how the round ran, ABOVE the still-open AP list.
+  const trace = round.executionTrace;
+  const hasTrace = traceHasContent(trace);
+  const expandable = aps.length > 0 || hasTrace;
 
   return (
     <>
       <TableRow
-        className={aps.length > 0 ? "cursor-pointer" : ""}
-        onClick={aps.length > 0 ? () => setOpen((v) => !v) : undefined}
+        className={expandable ? "cursor-pointer" : ""}
+        onClick={expandable ? () => setOpen((v) => !v) : undefined}
       >
         <TableCell className="tabular-nums">
           <span className="inline-flex items-center gap-1">
-            {aps.length > 0 &&
+            {expandable &&
               (open ? (
                 <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
               ) : (
@@ -413,10 +522,21 @@ function RoundRow({
           </Link>
         </TableCell>
       </TableRow>
-      {open && aps.length > 0 && (
+      {open && expandable && (
         <TableRow>
           <TableCell colSpan={5} className="bg-muted/30">
-            <div className="space-y-2 py-1">
+            <div className="space-y-3 py-1">
+              {/* Per-round mini-tree — how THIS round ran (Stage 4 history). */}
+              {traceHasContent(trace) && (
+                <div className="space-y-1.5">
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                    Execution
+                  </p>
+                  <SettledExecutionTree trace={trace} />
+                </div>
+              )}
+              {aps.length > 0 && (
+                <div className="space-y-2">
               <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
                 Still-open action points
               </p>
@@ -445,6 +565,8 @@ function RoundRow({
                 ))}
               </ul>
               <p className="text-[11px] text-muted-foreground/70">{PRIORITY_LEGEND}</p>
+                </div>
+              )}
             </div>
           </TableCell>
         </TableRow>

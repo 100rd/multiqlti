@@ -78,17 +78,58 @@ export type ConsiliumArchetypeSource = "proposed" | "override";
 // target="_blank" rel="noopener noreferrer".
 export type { ResearchReport, ResearchClaim, ResearchCitation, ResearchSource };
 
+// ─── Execution trace (Stage 4, design §8 — the OBSERVABILITY TREE) ─────
+//
+// The `phase → controller → worker → skill → criterion` shape the FE renders as a
+// collapsible ExecutionTree on the Loop detail page. Like the Stage-3 `report`, it
+// rides the SAME out-of-band wire (a new nullable `consilium_loop_rounds.
+// execution_trace` jsonb col, migration 0034) and reaches the client on the loop
+// GET's LATEST round — no new endpoint, owner/admin-gated by the existing loop GET.
+//
+// SOURCE-OF-TRUTH NOTE: the canonical `ExecutionTrace` lives in the client-safe
+// `@shared/types` module (mirroring `ResearchReport`), authored by the parallel
+// Backend agent. Because that shared change lands on a SEPARATE branch that the
+// Lead merges, the contract is mirrored here CLIENT-SIDE so this branch is
+// `tsc --noEmit`-clean in isolation and renders nothing until the backend column
+// exists. On merge, collapse this block into `import type { … } from "@shared/
+// types"` + a re-export (the `report` treatment above) — it is structurally
+// identical, so no call site changes.
+//
+// SECURITY: every string here is model/skill-derived DATA — controller/worker
+// labels, notes, criterion text/summaries, skill names, and tool permission
+// NAMES (never secret VALUES/creds/env). It is rendered as INERT React text; the
+// tree contains NO links (permissions are names, not URLs → zero XSS surface).
+
+// The Stage-4 backend has landed, so use the canonical shared types directly
+// (imported for local use here + re-exported so the page keeps importing from here).
+// Structurally identical to the prior client mirror.
+import type {
+  ExecutionTrace,
+  ExecutionController,
+  ExecutionWorker,
+  ExecutionSkill,
+  ExecutionCriterion,
+} from "@shared/types";
+export type { ExecutionTrace, ExecutionController, ExecutionWorker, ExecutionSkill, ExecutionCriterion };
+// Convenience union aliases derived from the shared shapes (no divergence).
+export type ExecutionControllerKind = ExecutionController["kind"];
+export type ExecutionWorkerStatus = ExecutionWorker["status"];
+export type ExecutionSkillCapability = ExecutionSkill["capability"];
+export type ExecutionCriterionMethod = ExecutionCriterion["method"];
+
 /**
  * A loop round as seen by the client. It is the schema row (which already carries
- * the optional Stage-3 `report`); the `report?` here is a belt-and-braces
- * restatement so the type reads self-documenting at the call site and stays
- * resilient if the underlying row type ever narrows. A `ConsiliumLoopRoundDetail`
- * is structurally a `ConsiliumLoopRoundRow`, so every existing round consumer
- * keeps working unchanged.
+ * the optional Stage-3 `report`); the `report?` / `executionTrace?` here are a
+ * belt-and-braces restatement so the type reads self-documenting at the call site
+ * and stays resilient if the underlying row type ever narrows. A
+ * `ConsiliumLoopRoundDetail` is structurally a `ConsiliumLoopRoundRow`, so every
+ * existing round consumer keeps working unchanged.
  */
 export type ConsiliumLoopRoundDetail = ConsiliumLoopRoundRow & {
   /** The research artifact, on the latest round of a `research` loop only. */
   report?: ResearchReport | null;
+  /** The Stage-4 observability tree — present once the backend persists it. */
+  executionTrace?: ExecutionTrace | null;
 };
 
 /**

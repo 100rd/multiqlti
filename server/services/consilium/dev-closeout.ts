@@ -34,7 +34,7 @@
  */
 import { simpleGit } from "simple-git";
 import type { WorkspaceRow } from "@shared/schema";
-import type { ActionPoint, ResearchReport } from "@shared/types";
+import type { ActionPoint, ResearchReport, ExecutionTrace } from "@shared/types";
 import { resolveLoopWorkspace } from "./workspace-bind.js";
 import { pushBranch, openDraftPr } from "./pr-wrapper.js";
 
@@ -63,6 +63,13 @@ export interface DevCloseoutResult {
    * same settle wire as `testSummary`.
    */
   report?: ResearchReport;
+  /**
+   * Stage 4 (observability): the per-round execution trace (phase → controller →
+   * worker → skill → criterion), built by the executor / research-runner from data
+   * they already compute. Persisted out-of-band to `consilium_loop_rounds.execution
+   * _trace` on the same settle wire as `testSummary`/`report`. Display-only.
+   */
+  executionTrace?: ExecutionTrace;
 }
 
 // ─── Injectable seams (unit tests inject fakes — no real repo / gh) ──────────

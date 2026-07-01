@@ -54,9 +54,10 @@
  *   - Agents NEVER apply/merge: this opens a DRAFT PR only. No push to main.
  */
 import { basename } from "path";
-import type { ActionPoint, Archetype } from "@shared/types";
+import type { ActionPoint, Archetype, ExecutionTrace } from "@shared/types";
 import type { Skill } from "@shared/schema";
 import { selectSkillSet, bindSkillStep, type BoundSkillStep } from "../consilium/skills/catalog.js";
+import { buildSdlcTrace } from "../consilium/execution-trace.js";
 import { buildBranchName, isValidLoopBranch, pushBranch, openDraftPr } from "../consilium/pr-wrapper.js";
 import {
   createSdlcWorktree,
@@ -243,6 +244,14 @@ export interface SdlcHandoffResult {
    * its convergence verdict in REAL test results.
    */
   testSummary?: string;
+  /**
+   * Stage 4 (observability): the per-round execution trace (phase → controller →
+   * worker → skill → criterion). Built from the per-AP `outcomes` this executor
+   * already computes; the controller persists it to `consilium_loop_rounds.execution
+   * _trace` out-of-band (like `testSummary`), so the FSM/`dev_completed` contract is
+   * unchanged. Display-only; permission NAMES only.
+   */
+  executionTrace?: ExecutionTrace;
 }
 
 /** Injectable seams (unit tests inject fakes — no real repo / claude / gh). */
@@ -619,6 +628,10 @@ export async function runSdlcHandoff(
         const summary = aggregateTestSummary(outcomes);
         if (summary) result.testSummary = summary;
       }
+      // Stage 4: build the observability trace from the per-AP outcomes (always — it
+      // rescues data we already computed). Rides the result out-of-band, exactly like
+      // testSummary; the dev_completed event / FSM are untouched.
+      result.executionTrace = buildSdlcTrace(req.archetype ?? null, outcomes, result);
       // Terminal beat — the executor finished its work for this round (the SERVICE
       // separately classifies done/failed from the result; this is phase-only).
       emit({

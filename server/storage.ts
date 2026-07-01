@@ -101,7 +101,7 @@ import {
   type NewsFeedback,
   type NewsReadState,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace } from "@shared/types";
 import type { LessonRecallFilter } from "./memory/lessons/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
@@ -627,6 +627,8 @@ export interface IStorage {
    * (mirror of updateLoopRoundTestSummary).
    */
   updateLoopRoundReport(loopId: string, round: number, report: ResearchReport): Promise<void>;
+  /** Stage 4: persist the per-round execution trace out-of-band (mirror of report). */
+  updateLoopRoundExecutionTrace(loopId: string, round: number, trace: ExecutionTrace): Promise<void>;
 
 
   // Tracker Connections (Issue Tracker Integration)
@@ -2088,6 +2090,7 @@ export class MemStorage implements IStorage {
       headCommit: data.headCommit ?? null,
       testSummary: data.testSummary ?? null,
       report: data.report ?? null,
+      executionTrace: data.executionTrace ?? null,
       createdAt: new Date(),
     };
     this.consiliumLoopRoundsMap.set(row.id, row);
@@ -2113,6 +2116,15 @@ export class MemStorage implements IStorage {
     for (const r of this.consiliumLoopRoundsMap.values()) {
       if (r.loopId === loopId && r.round === round) {
         this.consiliumLoopRoundsMap.set(r.id, { ...r, report });
+        return;
+      }
+    }
+  }
+
+  async updateLoopRoundExecutionTrace(loopId: string, round: number, trace: ExecutionTrace): Promise<void> {
+    for (const r of this.consiliumLoopRoundsMap.values()) {
+      if (r.loopId === loopId && r.round === round) {
+        this.consiliumLoopRoundsMap.set(r.id, { ...r, executionTrace: trace });
         return;
       }
     }

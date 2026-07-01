@@ -1385,6 +1385,17 @@ export class ConsiliumLoopController {
               this.log(loop.id, `report persist failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`),
             );
         }
+        // Stage 4 (observability tree): persist the per-round execution trace on the
+        // SAME out-of-band settle wire. Present whenever a skilled run produced one;
+        // best-effort; reaches the client via the existing loop GET rounds.
+        const executionTrace = result.executionTrace;
+        if (executionTrace) {
+          void this.storage
+            .updateLoopRoundExecutionTrace(loop.id, run.round, executionTrace)
+            .catch((err: unknown) =>
+              this.log(loop.id, `executionTrace persist failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`),
+            );
+        }
       })
       .catch((err: unknown) => {
         this.settleSdlcRun(loop.id, run, {

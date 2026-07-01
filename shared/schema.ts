@@ -17,7 +17,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider, DebateDetails, ArbitratorVerdict, OrchestratorStepType, OrchestratorStepArgs, ResearchFinding, OrchestratorRunStatus, OrchestratorStepStatus, StopReason, Confidence, ConsensusVerdict, ConsensusRunStatus, ConsensusRoundPhase, ActionPoint, Archetype, ArchetypeSource, ResearchReport } from "./types.js";
+import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider, DebateDetails, ArbitratorVerdict, OrchestratorStepType, OrchestratorStepArgs, ResearchFinding, OrchestratorRunStatus, OrchestratorStepStatus, StopReason, Confidence, ConsensusVerdict, ConsensusRunStatus, ConsensusRoundPhase, ActionPoint, Archetype, ArchetypeSource, ResearchReport, ExecutionTrace } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -2812,6 +2812,11 @@ export const consiliumLoopRounds = pgTable(
     // out-of-band by `updateLoopRoundReport` after the research run settles (mirror of
     // testSummary). NULL for every non-research round. Size-clamped before write.
     report: jsonb("report").$type<ResearchReport>(),
+    // Stage 4 (observability tree): the per-round execution trace (phase → controller
+    // → worker → skill → criterion) both archetypes emit. Nullable; written out-of-band
+    // by `updateLoopRoundExecutionTrace` after settle (mirror of report/testSummary).
+    // NULL for pre-Stage-4 rounds / rounds with no skilled run. Clamped before write.
+    executionTrace: jsonb("execution_trace").$type<ExecutionTrace>(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({
