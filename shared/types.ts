@@ -1947,6 +1947,76 @@ export interface ResearchReport {
   generatedAt: string;
 }
 
+// ─── Execution trace (Stage 4 — the observability tree, design §8) ──────────────
+//
+// A phase → controller → worker → skill → criterion tree BOTH archetypes emit (the
+// coder path builds it from the executor's ApOutcome[]; the research path from its
+// steps + P0 CriterionEvidence[]) so the FE has ONE renderer. It rides the loop GET
+// `rounds[]` out-of-band (like `report`/`testSummary`) — never on the dev_completed
+// event, so the FSM is unchanged. Display-only, inert, URL-free; `permissionsUsed`
+// are tool NAMES only (never secrets/values/env).
+
+/** One skilled step an agent carried (its skill, capability scope, and green). */
+export interface ExecutionSkill {
+  /** e.g. "test-author" | "coder" | "research" | "synthesize" | "verify". */
+  skillName: string;
+  capability: "read-only" | "worktree-write" | "web-read";
+  /** Tool NAMES the step was allowed (Edit/Write/Read | web_search). Never values. */
+  permissionsUsed: string[];
+  /** Skill-green: the step ran clean. */
+  green: boolean;
+}
+
+/** A per-acceptance-criterion verification leaf. */
+export interface ExecutionCriterion {
+  /** The Definition-of-Done text (clamped, inert). */
+  criterion: string;
+  method: "test-run" | "web-evidence" | "judge" | "none";
+  /** Whether the verification method actually ran. */
+  ran: boolean;
+  /** Acceptance-criterion green. */
+  passed: boolean;
+  /** test-run fix re-invocations | re-research iterations. */
+  fixIterations?: number;
+  /** Scrubbed, clamped verification summary. */
+  summary?: string;
+}
+
+/** A worker agent: one action point (coder) or one research step. */
+export interface ExecutionWorker {
+  /** 1-based position in the round. */
+  index: number;
+  /** e.g. "P0" (coder); "" for research steps. */
+  priority: string;
+  /** The AP title, or the step role. */
+  title: string;
+  status: "completed" | "partial" | "failed";
+  /** Ordered skilled steps (test-author→coder | research→synthesize→verify). */
+  skills: ExecutionSkill[];
+  /** Acceptance-criterion leaves. */
+  criteria: ExecutionCriterion[];
+  /** Scrubbed worker-level note. */
+  note?: string;
+}
+
+/** The implement-phase orchestrator (the coder executor or the research runner). */
+export interface ExecutionController {
+  kind: "sdlc-executor" | "research-runner";
+  label: string;
+  /** All workers green + the aggregation criterion (§4). */
+  green: boolean;
+  /** Scrubbed controller-level error/degradation. */
+  note?: string;
+  workers: ExecutionWorker[];
+}
+
+/** The full per-round execution trace persisted on `consilium_loop_rounds`. */
+export interface ExecutionTrace {
+  schemaVersion: 1;
+  archetype: Archetype | null;
+  controller: ExecutionController;
+}
+
 // ─── Platform Version Types ────────────────────────────────────────────────────
 
 export interface VersionsResponse {

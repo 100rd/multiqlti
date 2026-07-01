@@ -34,6 +34,7 @@
 import type { ProviderMessage, ToolDefinition, ActionPoint, ResearchReport, ResearchClaim, ResearchCitation, ResearchSource } from "@shared/types";
 import type { DevCloseoutResult } from "../consilium/dev-closeout.js";
 import { backtickFence, stripControlMultiline } from "../consilium/review-factory.js";
+import { buildResearchTrace } from "../consilium/execution-trace.js";
 import { toolRegistry } from "../../tools/index.js";
 
 // ─── The gateway slice this runner needs (R2) ───────────────────────────────
@@ -330,7 +331,10 @@ class ResearchRun {
     report.verdict = uncited.length === 0 ? "green" : "flagged";
     const finalReport = clampReport(report);
     const digest = this.buildDigest(citedP0, totalP0, uncited);
-    return { prRef: null, headCommit: "", report: finalReport, testSummary: digest };
+    // Stage 4: the observability trace (research → synthesize → verify, with a
+    // web-evidence criterion leaf per P0). Rides the result out-of-band like report.
+    const executionTrace = buildResearchTrace("research", evidence, finalReport);
+    return { prRef: null, headCommit: "", report: finalReport, testSummary: digest, executionTrace };
   }
 
   /** research step → draft, then synthesize step → a structured report. */
