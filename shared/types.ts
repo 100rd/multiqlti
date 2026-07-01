@@ -1980,6 +1980,13 @@ export interface ExecutionCriterion {
   fixIterations?: number;
   /** Scrubbed, clamped verification summary. */
   summary?: string;
+  /**
+   * Stage A (final-state re-verification): whether this criterion still held when the
+   * WHOLE test suite was re-run against the FINAL worktree (after every action point).
+   * OPTIONAL/ADDITIVE — absent unless final verification ran; set only for `test-run`
+   * criteria. A `false` here alongside `passed:true` reveals a late-AP REGRESSION.
+   */
+  passedAtFinal?: boolean;
 }
 
 /** A worker agent: one action point (coder) or one research step. */

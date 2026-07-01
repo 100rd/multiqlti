@@ -96,6 +96,34 @@ describe("pipeline.consiliumLoop schema", () => {
     expect(res.data.pipeline.consiliumLoop.implement.trustedRepoAck).toBe(false);
   });
 
+  it("Stage A: implement.finalVerification defaults to INERT (off) with bounded knobs", () => {
+    const res = ConfigSchema.safeParse({});
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    const fv = res.data.pipeline.consiliumLoop.implement.finalVerification;
+    expect(fv.enabled).toBe(false); // kill-switch default OFF ⇒ ships inert
+    expect(fv.maxFinalFixIterations).toBe(1); // small convergence backstop
+  });
+
+  it("Stage A: accepts valid finalVerification overrides", () => {
+    const res = parseLoop({
+      implement: { enabled: true, finalVerification: { enabled: true, maxFinalFixIterations: 3 } },
+    });
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    const fv = res.data.pipeline.consiliumLoop.implement.finalVerification;
+    expect(fv.enabled).toBe(true);
+    expect(fv.maxFinalFixIterations).toBe(3);
+  });
+
+  it("Stage A: allows maxFinalFixIterations=0 (verify-only) and enforces bounds (int 0..3)", () => {
+    expect(parseLoop({ implement: { finalVerification: { maxFinalFixIterations: 0 } } }).success).toBe(true);
+    expect(parseLoop({ implement: { finalVerification: { maxFinalFixIterations: 4 } } }).success).toBe(false);
+    expect(parseLoop({ implement: { finalVerification: { maxFinalFixIterations: -1 } } }).success).toBe(false);
+    expect(parseLoop({ implement: { finalVerification: { maxFinalFixIterations: 1.5 } } }).success).toBe(false);
+    expect(parseLoop({ implement: { finalVerification: { maxFinalFixIterations: "abc" } } }).success).toBe(false);
+  });
+
   it("Stage 3: implement.research defaults to INERT (off) with bounded knobs", () => {
     const res = ConfigSchema.safeParse({});
     expect(res.success).toBe(true);

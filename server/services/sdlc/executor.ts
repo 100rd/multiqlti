@@ -146,6 +146,27 @@ export interface ApVerification {
 }
 
 /**
+ * Stage A: the FINAL-STATE re-verification outcome — ONE whole-suite test run against
+ * the final combined worktree (after every action point), plus a bounded fix loop.
+ * Distinct from {@link ApVerification} (which is per-action-point): this is the round's
+ * single "does the combined tree still pass?" convergence check. All text is
+ * sanitized/clamped — it lands only in the round `testSummary` + Draft-PR body, never a
+ * shell/branch/PR-title sink.
+ */
+export interface FinalVerification {
+  /** How the final state was checked (Stage A wires only `test-run`). */
+  method: "test-run";
+  /** Whether a test command actually ran (false ⇒ no command resolved → not green). */
+  ran: boolean;
+  /** Whether the full suite passed against the FINAL worktree. false ⇒ regression. */
+  passed: boolean;
+  /** Bounded, fs-scrubbed final test summary (status + output tail). */
+  summary: string;
+  /** How many FINAL fix re-invocations of the coder ran after the initial re-verify. */
+  fixIterations: number;
+}
+
+/**
  * A cheap, SYNCHRONOUS progress beat emitted at each meaningful SDLC step so a UI
  * can show WHAT the executor is doing right now (not just running/done). This is
  * DISPLAY-ONLY JSON.
@@ -211,6 +232,14 @@ export interface SdlcHandoffRequest {
    * `consiliumLoop.implement.verification.enabled` is true.
    */
   verification?: VerificationConfig | null;
+  /**
+   * Stage A: FINAL-STATE re-verification config. ABSENT or `{ enabled: false }` ⇒ NO
+   * final re-verify runs (byte-for-byte the pre-Stage-A path). Threaded by the
+   * controller ONLY when `consiliumLoop.implement.finalVerification.enabled` is true
+   * AND the SAME sandbox gate as per-AP verification is satisfied — so the executor
+   * runs it only when a `verification` context (test runner + fixer step) exists.
+   */
+  finalVerification?: FinalVerificationConfig | null;
 }
 
 /**
@@ -227,6 +256,18 @@ export interface VerificationConfig {
   testCommand: string | null;
   /** Hard per-run test timeout (ms, config-clamped). */
   testRunTimeoutMs: number;
+}
+
+/**
+ * Stage A final-verification knobs (from `consiliumLoop.implement.finalVerification`).
+ * When `enabled` is false the executor never runs the final re-verify — the kill-switch
+ * is the single gate that keeps Stage A INERT.
+ */
+export interface FinalVerificationConfig {
+  /** Master Stage-A kill-switch (default false at the config layer). */
+  enabled: boolean;
+  /** Bounded FINAL code→test→fix budget (config-clamped 0..3). 0 ⇒ verify-only. */
+  maxFinalFixIterations: number;
 }
 
 export interface SdlcHandoffResult {
@@ -252,6 +293,14 @@ export interface SdlcHandoffResult {
    * unchanged. Display-only; permission NAMES only.
    */
   executionTrace?: ExecutionTrace;
+  /**
+   * Stage A: the FINAL-STATE re-verification outcome, present ONLY when it ran (the
+   * kill-switch on + the sandbox gate satisfied); undefined otherwise (so the pre-
+   * Stage-A result shape is identical). Its regression signal is ALSO folded into
+   * `testSummary`, `executionTrace` (`passedAtFinal`), and the Draft-PR body — this
+   * field surfaces it structurally for observability/tests. NEVER blocks PR creation.
+   */
+  finalVerification?: FinalVerification;
 }
 
 /** Injectable seams (unit tests inject fakes — no real repo / claude / gh). */
@@ -409,6 +458,12 @@ export interface PrStatusBodyInput {
   actionPoints: readonly ActionPoint[];
   /** Per-AP execution outcomes the executor built. */
   outcomes: readonly ApOutcome[];
+  /**
+   * Stage A: the round's FINAL-STATE re-verification outcome, or undefined when it did
+   * not run (kill-switch off / gate closed) ⇒ the block is omitted (byte-for-byte the
+   * pre-Stage-A body).
+   */
+  finalVerification?: FinalVerification;
 }
 
 /**
@@ -420,7 +475,7 @@ export interface PrStatusBodyInput {
  * pr-wrapper, so none of this untrusted text ever reaches argv.
  */
 export function buildPrStatusBody(input: PrStatusBodyInput): string {
-  const { loopId, round, repoName, actionPoints, outcomes } = input;
+  const { loopId, round, repoName, actionPoints, outcomes, finalVerification } = input;
   const committed = outcomes.filter((o) => o.committed).length;
 
   // Header — provenance (loopId/round/repoName are server-controlled, but still
@@ -495,6 +550,28 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
     }
   }
 
+  // Stage A: FINAL-STATE re-verification block. The action points are implemented
+  // SEQUENTIALLY in one worktree, so a later AP can regress an earlier AP's verified
+  // criterion; this re-runs the WHOLE suite against the FINAL tree. Absent ⇒ omitted
+  // (byte-for-byte the pre-Stage-A body). The PR is a Draft regardless — a regression is
+  // FLAGGED for the human reviewer, never a merge block.
+  const finalBlock: string[] = [];
+  if (finalVerification) {
+    const fv = finalVerification;
+    const status = !fv.ran ? "NOT-RUN" : fv.passed ? "GREEN" : "RED";
+    const fixTag = fv.fixIterations > 0 ? ` (after ${fv.fixIterations} final fix attempt(s))` : "";
+    finalBlock.push(
+      "",
+      `### Final-state re-verification: ${status}${fixTag}`,
+      "",
+      fv.passed
+        ? "The full test suite passes against the FINAL combined worktree (all action points applied) — no cross-AP regression detected."
+        : !fv.ran
+          ? "The full test suite could NOT be re-run against the final worktree (no test command resolved). The final combined state is UNVERIFIED — review before merging."
+          : "REGRESSION — the full test suite does NOT pass against the FINAL combined worktree. A later action point may have regressed an earlier one. This Draft PR still opens for human review; review before merging.",
+    );
+  }
+
   return [
     ...header,
     "",
@@ -506,6 +583,7 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
     "",
     ...outcomeLines,
     ...gateBlock,
+    ...finalBlock,
     "",
     "---",
     "Draft — review the changes; the loop is paused at the human gate (a human must review and merge).",
@@ -614,24 +692,45 @@ export async function runSdlcHandoff(
         outcomes.push(outcome);
         if (outcome.committed) committedCount += 1;
       }
+
+      // Stage A: FINAL-STATE re-verification. After every action point has been applied
+      // SEQUENTIALLY in the shared worktree, re-run the test suite ONCE against the FINAL
+      // combined tree to catch a LATER AP regressing what an EARLIER AP's per-criterion
+      // tests verified (nothing else re-checks the combined state before the PR). Gated by
+      // BOTH finalVerification.enabled AND `verifyCtx` — the SAME sandbox gate as per-AP
+      // verification (verifyCtx is non-null only when verification is on AND skilled steps
+      // exist, so a test runner + a fixer step are both available). INERT by default ⇒
+      // when off this whole block is skipped and behavior is byte-for-byte unchanged. A
+      // final fix may edit the worktree, so it is staged + committed BEFORE the push;
+      // NEVER throws / blocks PR creation (same contract as the per-AP path).
+      let finalVerification: FinalVerification | undefined;
+      if (verifyCtx && (req.finalVerification?.enabled ?? false)) {
+        finalVerification = await runFinalVerification(runCoder, verifyCtx, req.finalVerification!, req, wt);
+        if (await commitFinalFixes(gitRaw, wt, req)) committedCount += 1;
+      }
+
       const result = await pushAndOpenPr(req, branch, base, wt, outcomes, committedCount, {
         gitRaw,
         push,
         openPr,
         emit,
-      });
+      }, finalVerification);
       // Stage 2b: aggregate the per-criterion verification into ONE bounded round
       // testSummary, surfaced on the result so the controller can persist it to
       // `consilium_loop_rounds.testSummary` (the convergence wire). Undefined when
-      // verification did not run ⇒ the Stage-2a result shape is unchanged.
+      // verification did not run ⇒ the Stage-2a result shape is unchanged. Stage A folds
+      // its whole-suite result into the SAME summary (so the next review sees regressions).
       if (verifyCtx) {
-        const summary = aggregateTestSummary(outcomes);
+        const summary = aggregateTestSummary(outcomes, finalVerification);
         if (summary) result.testSummary = summary;
       }
+      // Stage A: surface the structured final-verification outcome (observability/tests).
+      if (finalVerification) result.finalVerification = finalVerification;
       // Stage 4: build the observability trace from the per-AP outcomes (always — it
       // rescues data we already computed). Rides the result out-of-band, exactly like
-      // testSummary; the dev_completed event / FSM are untouched.
-      result.executionTrace = buildSdlcTrace(req.archetype ?? null, outcomes, result);
+      // testSummary; the dev_completed event / FSM are untouched. Stage A stamps the
+      // final whole-suite pass/fail onto each test-run criterion (`passedAtFinal`).
+      result.executionTrace = buildSdlcTrace(req.archetype ?? null, outcomes, result, finalVerification?.passed);
       // Terminal beat — the executor finished its work for this round (the SERVICE
       // separately classifies done/failed from the result; this is phase-only).
       emit({
@@ -801,6 +900,112 @@ async function runActionPoint(
 }
 
 /**
+ * Run the resolved test command ONCE against the worktree via the round's runner.
+ * NEVER throws: the runner is itself never-throw, but a defensive catch degrades any
+ * unexpected throw to a not-green, not-ran result (scrubbed). Shared by the per-AP
+ * verify loop (Stage 2b) and the final re-verification (Stage A) so both resolve the
+ * command + timeout from the SAME config and degrade identically.
+ */
+async function runTestOnce(vc: VerifyContext, wt: CreateWorktreeResult): Promise<TestRunResult> {
+  try {
+    return await vc.runTests({
+      worktreeDir: wt.worktreeDir,
+      testCommand: vc.config.testCommand,
+      timeoutMs: vc.config.testRunTimeoutMs,
+    });
+  } catch (err) {
+    return {
+      passed: false,
+      ran: false,
+      summary: scrub(err instanceof Error ? err.message : String(err)),
+      exitCode: null,
+      timedOut: false,
+    };
+  }
+}
+
+/**
+ * Stage A: run the FINAL-STATE re-verification for a round. After all action points are
+ * implemented in the shared worktree, run the WHOLE test suite ONCE; if it fails, run a
+ * bounded fix loop (up to `maxFinalFixIterations` coder re-invocations, reusing the SAME
+ * capability-scoped implementer step + fenced-failure-summary machinery as the per-AP
+ * loop), re-running the suite after each fix. Stops on green, on the FINAL fix budget, on
+ * a coder throw, or on the whole-run wall-clock deadline (defense-in-depth, shared with
+ * the per-AP loop's `vc.deadline`). NEVER throws — a failure is RECORDED, never blocks PR
+ * creation.
+ *
+ * Unlike the per-AP loop this is NOT scoped to a single acceptance criterion — a
+ * regression can live anywhere in the combined tree — so the fix coder is handed the
+ * round's FULL action-point set as context (via the SAME stdin-only, fenced-data path).
+ * The test command is resolved (inside the runner) from config/package.json ONLY, never
+ * from that untrusted text.
+ */
+async function runFinalVerification(
+  runCoder: NonNullable<SdlcExecutorDeps["runCoder"]>,
+  vc: VerifyContext,
+  config: FinalVerificationConfig,
+  req: SdlcHandoffRequest,
+  wt: CreateWorktreeResult,
+): Promise<FinalVerification> {
+  let result = await runTestOnce(vc, wt);
+  let fixIterations = 0;
+  while (!result.passed && fixIterations < config.maxFinalFixIterations) {
+    // Whole-run wall-clock backstop (shared budget): stop fixing once the run overran.
+    if (vc.now() >= vc.deadline) break;
+    fixIterations += 1;
+    try {
+      const fixed = await runCoder(wt.worktreeDir, req.actionPoints, {
+        timeoutMs: req.coderTimeoutMs,
+        allowedTools: vc.fixerStep.allowedTools, // capability ceiling (no widening).
+        systemPrompt: buildFixPrompt(vc.fixerStep.systemPrompt, result.summary),
+      });
+      if (!fixed.ok) break; // a fix coder that errored stops the loop; work preserved.
+    } catch {
+      break; // a crashed fix coder stops the loop; whatever landed is still committed.
+    }
+    result = await runTestOnce(vc, wt);
+  }
+
+  return {
+    method: "test-run",
+    ran: result.ran,
+    passed: result.passed,
+    summary: clampStr(result.summary, FIX_SUMMARY_MAX),
+    fixIterations,
+  };
+}
+
+/**
+ * Stage A: stage + commit any edits the FINAL fix loop produced so they land in the
+ * Draft PR (the per-AP loop already committed each AP; a final fix runs AFTER the last
+ * AP commit, so its edits would otherwise be uncommitted at push time). NEVER throws —
+ * a git failure just leaves the last AP as HEAD (the final fix is lost, but the PR still
+ * opens). Returns whether a commit was actually made (so the caller can count it toward
+ * the push gate). The commit message is server-fixed (no untrusted text).
+ */
+async function commitFinalFixes(
+  gitRaw: GitRunner,
+  wt: CreateWorktreeResult,
+  req: SdlcHandoffRequest,
+): Promise<boolean> {
+  try {
+    await gitRaw(wt.worktreeDir, ["add", "-A"]);
+    const dirty = (await gitRaw(wt.worktreeDir, ["status", "--porcelain"])).trim().length > 0;
+    if (!dirty) return false; // verify-only (0 fixes) or a fix that changed nothing.
+    await gitRaw(wt.worktreeDir, [
+      "commit",
+      "-m",
+      `Consilium round ${req.round}: final-state re-verification fixes`,
+      "-m",
+      "Fixes applied by the final-state re-verification loop after all action points were implemented (Stage A).",
+    ]);
+    return true;
+  } catch {
+    return false; // never throw — the push still opens the PR from the last AP HEAD.
+  }
+}
+
+/**
  * Stage 2b: run the per-criterion verification + bounded code→test→fix loop for ONE
  * action point. NEVER throws (degrades to `passed:false`). Flow:
  *   verify #0 → if green, done (0 fixes); else, up to `maxFixIterations` times:
@@ -823,24 +1028,7 @@ async function runVerifyFixLoop(
   ap: ActionPoint,
 ): Promise<ApVerification> {
   const criterion = sanitizeLine(ap.acceptanceCriterion ?? "", CRITERION_MAX);
-  const runOnce = async (): Promise<TestRunResult> => {
-    try {
-      return await vc.runTests({
-        worktreeDir: wt.worktreeDir,
-        testCommand: vc.config.testCommand,
-        timeoutMs: vc.config.testRunTimeoutMs,
-      });
-    } catch (err) {
-      // The runner is never-throw, but be defensive — degrade to a not-green result.
-      return {
-        passed: false,
-        ran: false,
-        summary: scrub(err instanceof Error ? err.message : String(err)),
-        exitCode: null,
-        timedOut: false,
-      };
-    }
-  };
+  const runOnce = (): Promise<TestRunResult> => runTestOnce(vc, wt);
 
   let result = await runOnce();
   let fixIterations = 0;
@@ -907,19 +1095,45 @@ function buildFixPrompt(baseSystemPrompt: string, failureSummary: string): strin
  * next review's convergence verdict). Only action points that actually carried a
  * verification contribute. Returns null when none did (nothing to persist).
  */
-function aggregateTestSummary(outcomes: readonly ApOutcome[]): string | null {
+function aggregateTestSummary(
+  outcomes: readonly ApOutcome[],
+  finalVerification?: FinalVerification,
+): string | null {
+  const sections: string[] = [];
+
   const verified = outcomes.filter((o) => o.verification);
-  if (verified.length === 0) return null;
-  const passed = verified.filter((o) => o.verification?.passed).length;
-  const header = `Per-criterion verification: ${passed}/${verified.length} green.`;
-  const lines = verified.map((o) => {
-    const v = o.verification as ApVerification;
-    const status = !v.ran ? "NOT-RUN" : v.passed ? "PASS" : "FAIL";
-    const fixes = v.fixIterations > 0 ? ` after ${v.fixIterations} fix attempt(s)` : "";
-    const crit = v.criterion ? ` — criterion: ${v.criterion}` : "";
-    return `- [${status}] (${o.priority}) ${o.title}${fixes}${crit}\n    ${sanitizeLine(v.summary, 280)}`;
-  });
-  return clampStr([header, "", ...lines].join("\n"), TEST_SUMMARY_MAX);
+  if (verified.length > 0) {
+    const passed = verified.filter((o) => o.verification?.passed).length;
+    const header = `Per-criterion verification: ${passed}/${verified.length} green.`;
+    const lines = verified.map((o) => {
+      const v = o.verification as ApVerification;
+      const status = !v.ran ? "NOT-RUN" : v.passed ? "PASS" : "FAIL";
+      const fixes = v.fixIterations > 0 ? ` after ${v.fixIterations} fix attempt(s)` : "";
+      const crit = v.criterion ? ` — criterion: ${v.criterion}` : "";
+      return `- [${status}] (${o.priority}) ${o.title}${fixes}${crit}\n    ${sanitizeLine(v.summary, 280)}`;
+    });
+    sections.push([header, "", ...lines].join("\n"));
+  }
+
+  // Stage A: fold the final whole-suite re-verification into the SAME summary so the
+  // next review round's judge grounds convergence on the FINAL state, not just the
+  // per-AP snapshots taken as each AP landed.
+  if (finalVerification) sections.push(buildFinalVerificationSummary(finalVerification));
+
+  if (sections.length === 0) return null;
+  return clampStr(sections.join("\n\n"), TEST_SUMMARY_MAX);
+}
+
+/** Stage A: the round `testSummary` block for the final whole-suite re-verification. */
+function buildFinalVerificationSummary(fv: FinalVerification): string {
+  const status = !fv.ran ? "NOT-RUN" : fv.passed ? "PASS" : "FAIL";
+  const fixes = fv.fixIterations > 0 ? ` after ${fv.fixIterations} final fix attempt(s)` : "";
+  const verdict = fv.passed
+    ? "The full test suite passes against the final combined worktree (no cross-AP regression)."
+    : !fv.ran
+      ? "The full test suite could not be re-run against the final worktree (no test command)."
+      : "REGRESSION: the full test suite does NOT pass against the final combined worktree.";
+  return [`Final-state re-verification: [${status}]${fixes}.`, verdict, `    ${sanitizeLine(fv.summary, 280)}`].join("\n");
 }
 
 /**
@@ -935,6 +1149,7 @@ async function pushAndOpenPr(
   outcomes: readonly ApOutcome[],
   committedCount: number,
   io: { gitRaw: GitRunner; push: typeof pushBranch; openPr: typeof openDraftPr; emit: SdlcProgressFn },
+  finalVerification?: FinalVerification,
 ): Promise<SdlcHandoffResult> {
   const total = req.actionPoints.length;
   if (committedCount === 0) {
@@ -980,6 +1195,7 @@ async function pushAndOpenPr(
       repoName: basename(req.repoPath),
       actionPoints: req.actionPoints,
       outcomes,
+      finalVerification,
     }),
   });
   if (!pr.ok) {

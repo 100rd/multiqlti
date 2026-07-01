@@ -443,6 +443,33 @@ export const ConfigSchema = z.object({
            */
           model: z.string().min(1).default(DEFAULT_TASK_MODEL),
         }).default({}),
+        /**
+         * Stage A (design §3D CONVERGE): FINAL-STATE re-verification. Action points are
+         * implemented SEQUENTIALLY in ONE shared worktree and Stage-2b per-criterion
+         * verification runs at the TIME each AP is implemented — so a LATER AP can regress
+         * what an EARLIER AP's tests verified, and NOTHING re-checks the FINAL combined
+         * worktree before the Draft PR opens. When `enabled` (default FALSE) AND the
+         * Stage-2b sandbox gate is ALREADY satisfied (`effectiveVerificationEnabled` —
+         * final verification obeys the SAME host-exec gate as per-AP test runs), the
+         * executor runs the test suite ONCE against the final state after the last AP and
+         * before the PR, then a bounded fix loop. A failure is RECORDED (round testSummary
+         * + execution trace + PR body) but NEVER blocks PR creation (same never-throw
+         * contract as the per-AP path). Ships INERT: with it false the develop phase is
+         * byte-for-byte unchanged. Gated by the parent `consiliumLoop.enabled`,
+         * `implement.enabled`, AND the verification sandbox gate.
+         */
+        finalVerification: z.object({
+          /** Kill-switch: false (default) → no final re-verification runs (INERT). */
+          enabled: z.boolean().default(false),
+          /**
+           * Bounded FINAL code→test→fix budget: how many times the coder may be re-invoked
+           * with the final-state test-failure summary before the loop stops (on green or
+           * budget). 0..3; default 1. 0 ⇒ verify-only (record the regression, attempt no
+           * fix). Kept small — this is a convergence BACKSTOP, not the main per-AP fix
+           * budget (`maxFixIterations`). NaN/out-of-range fails load (Security M-5).
+           */
+          maxFinalFixIterations: z.coerce.number().int().min(0).max(3).default(1),
+        }).default({}),
       }).default({}),
     }).default({}),
   }).default({}),

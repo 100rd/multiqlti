@@ -84,6 +84,7 @@ interface CfgOver {
   verificationEnabled?: boolean;
   trustedRepoAck?: boolean;
   sandbox?: boolean;
+  finalVerificationEnabled?: boolean;
 }
 
 const makeConfig =
@@ -106,6 +107,7 @@ const makeConfig =
             maxFixIterations: 3,
             testCommand: null,
             testRunTimeoutMs: 300000,
+            finalVerification: { enabled: over.finalVerificationEnabled ?? false, maxFinalFixIterations: 1 },
           },
         },
       },
@@ -245,5 +247,63 @@ describe("MED-2 — fail-closed enable-gate (sandbox OR trustedRepoAck required)
     await controller.tick(loop.id);
     await flush();
     expect(runSdlc.mock.calls[0][0].verification).toEqual(expect.objectContaining({ enabled: true }));
+  });
+});
+
+describe("Stage A — controller threads finalVerification under the SAME sandbox gate", () => {
+  function controllerWith(config: () => unknown, runSdlc: ReturnType<typeof vi.fn>, storage: unknown) {
+    return new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: config as never,
+      readIterationVerdict: async () => verdict(2),
+      runSdlc: runSdlc as never,
+    });
+  }
+
+  it("finalVerification.enabled + verification gate satisfied ⇒ runSdlc gets finalVerification ENABLED", async () => {
+    const loop = makeLoop({ state: "deciding", round: 2, repoPath: process.cwd() });
+    const { storage } = fakeStorage(loop);
+    const runSdlc = vi.fn(async () => ({ prRef: null, headCommit: "" }));
+    const controller = controllerWith(
+      makeConfig({ verificationEnabled: true, trustedRepoAck: true, finalVerificationEnabled: true }),
+      runSdlc,
+      storage,
+    );
+    await controller.tick(loop.id);
+    await flush();
+    expect(runSdlc.mock.calls[0][0].finalVerification).toEqual(
+      expect.objectContaining({ enabled: true, maxFinalFixIterations: 1 }),
+    );
+  });
+
+  it("finalVerification.enabled but the verification sandbox gate is CLOSED ⇒ finalVerification NULL", async () => {
+    const loop = makeLoop({ state: "deciding", round: 2, repoPath: process.cwd() });
+    const { storage } = fakeStorage(loop);
+    const runSdlc = vi.fn(async () => ({ prRef: null, headCommit: "" }));
+    // verification on but NEITHER sandbox NOR ack ⇒ effectiveVerificationEnabled=false ⇒
+    // final verification must ALSO be gated off (it runs the host test command too).
+    const controller = controllerWith(
+      makeConfig({ verificationEnabled: true, trustedRepoAck: false, sandbox: false, finalVerificationEnabled: true }),
+      runSdlc,
+      storage,
+    );
+    await controller.tick(loop.id);
+    await flush();
+    expect(runSdlc.mock.calls[0][0].finalVerification).toBeNull();
+  });
+
+  it("finalVerification OFF (default) ⇒ runSdlc gets finalVerification NULL (INERT)", async () => {
+    const loop = makeLoop({ state: "deciding", round: 2, repoPath: process.cwd() });
+    const { storage } = fakeStorage(loop);
+    const runSdlc = vi.fn(async () => ({ prRef: null, headCommit: "" }));
+    const controller = controllerWith(
+      makeConfig({ verificationEnabled: true, trustedRepoAck: true, finalVerificationEnabled: false }),
+      runSdlc,
+      storage,
+    );
+    await controller.tick(loop.id);
+    await flush();
+    expect(runSdlc.mock.calls[0][0].finalVerification).toBeNull();
   });
 });

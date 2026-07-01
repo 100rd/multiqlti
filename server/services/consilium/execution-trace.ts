@@ -95,6 +95,8 @@ function clampCriterion(c: ExecutionCriterion): ExecutionCriterion {
     out.fixIterations = Math.max(0, Math.trunc(c.fixIterations));
   }
   if (c.summary !== undefined) out.summary = scrub(c.summary, SUMMARY_MAX);
+  // Stage A: additive final-state flag — carried through the clamp verbatim (boolean).
+  if (typeof c.passedAtFinal === "boolean") out.passedAtFinal = c.passedAtFinal;
   return out;
 }
 
@@ -182,11 +184,17 @@ function skillFromName(skillName: string, green: boolean): ExecutionSkill {
  * Controller green = a PR was opened AND no P0 acceptance-criterion is unmet. Each
  * outcome → one worker; `skills` → skill nodes (green iff the worker did not fail);
  * `verification` → one criterion leaf. Clamped before it is returned.
+ *
+ * `finalPassed` (Stage A): when the FINAL-STATE re-verification ran, its whole-suite
+ * pass/fail is stamped onto every `test-run` criterion as `passedAtFinal` (a single
+ * suite run covers all criteria). undefined ⇒ final verification did not run ⇒ the
+ * field is omitted (byte-for-byte the pre-Stage-A trace).
  */
 export function buildSdlcTrace(
   archetype: Archetype | null,
   outcomes: readonly SdlcOutcomeLike[],
   result: { prRef: string | null; error?: string },
+  finalPassed?: boolean,
 ): ExecutionTrace {
   const unmetP0 = outcomes.some(
     (o) => o.priority.toUpperCase().startsWith("P0") && o.verification !== undefined && !o.verification.passed,
@@ -203,6 +211,8 @@ export function buildSdlcTrace(
             passed: o.verification.passed,
             fixIterations: o.verification.fixIterations,
             summary: o.verification.summary,
+            // Stage A: stamp the final whole-suite result on the (test-run) criterion.
+            ...(finalPassed !== undefined ? { passedAtFinal: finalPassed } : {}),
           },
         ]
       : [];
