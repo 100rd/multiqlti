@@ -7,7 +7,7 @@
  * silently defaulting.
  */
 import { describe, it, expect } from "vitest";
-import { ConfigSchema } from "../../../server/config/schema.js";
+import { ConfigSchema, effectiveVerificationEnabled } from "../../../server/config/schema.js";
 
 function parseLoop(input: Record<string, unknown>) {
   return ConfigSchema.safeParse({ pipeline: { consiliumLoop: input } });
@@ -45,6 +45,79 @@ describe("pipeline.consiliumLoop schema", () => {
     expect(parseLoop({ maxDiffBytes: 2_000_001 }).success).toBe(false);
     expect(parseLoop({ pollIntervalMs: 999 }).success).toBe(false);
     expect(parseLoop({ pollIntervalMs: 60_001 }).success).toBe(false);
+  });
+
+  it("Stage 2b: implement.verification defaults to INERT (off) with bounded knobs", () => {
+    const res = ConfigSchema.safeParse({});
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    const impl = res.data.pipeline.consiliumLoop.implement;
+    // Both kill-switches default OFF: nothing executes a test until an operator opts in.
+    expect(impl.enabled).toBe(false);
+    expect(impl.verification.enabled).toBe(false);
+    // Bounded defaults.
+    expect(impl.maxFixIterations).toBe(3);
+    expect(impl.testCommand).toBeNull();
+    expect(impl.testRunTimeoutMs).toBe(300_000);
+  });
+
+  it("Stage 2b: accepts valid verification overrides", () => {
+    const res = parseLoop({
+      implement: {
+        enabled: true,
+        verification: { enabled: true },
+        maxFixIterations: 5,
+        testCommand: "npm test",
+        testRunTimeoutMs: 60_000,
+      },
+    });
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    const impl = res.data.pipeline.consiliumLoop.implement;
+    expect(impl.verification.enabled).toBe(true);
+    expect(impl.maxFixIterations).toBe(5);
+    expect(impl.testCommand).toBe("npm test");
+    expect(impl.testRunTimeoutMs).toBe(60_000);
+  });
+
+  it("Stage 2b: enforces maxFixIterations + testRunTimeoutMs bounds", () => {
+    expect(parseLoop({ implement: { maxFixIterations: 0 } }).success).toBe(false);
+    expect(parseLoop({ implement: { maxFixIterations: 11 } }).success).toBe(false);
+    expect(parseLoop({ implement: { maxFixIterations: 2.5 } }).success).toBe(false);
+    expect(parseLoop({ implement: { testRunTimeoutMs: 9_999 } }).success).toBe(false);
+    expect(parseLoop({ implement: { testRunTimeoutMs: 1_800_001 } }).success).toBe(false);
+    expect(parseLoop({ implement: { testRunTimeoutMs: "abc" } }).success).toBe(false);
+  });
+
+  it("Stage 2b: trustedRepoAck defaults to false (fail-closed enable-gate)", () => {
+    const res = ConfigSchema.safeParse({});
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    expect(res.data.pipeline.consiliumLoop.implement.trustedRepoAck).toBe(false);
+  });
+
+  it("MED-2: effectiveVerificationEnabled is fail-closed (needs sandbox OR trustedRepoAck)", () => {
+    const cfg = (over: { ven: boolean; sandbox?: boolean; ack?: boolean }) =>
+      ConfigSchema.parse({
+        features: { sandbox: { enabled: over.sandbox ?? false } },
+        pipeline: {
+          consiliumLoop: {
+            implement: {
+              enabled: true,
+              verification: { enabled: over.ven },
+              trustedRepoAck: over.ack ?? false,
+            },
+          },
+        },
+      });
+    // verification off ⇒ effective off (short-circuit, never reads features).
+    expect(effectiveVerificationEnabled(cfg({ ven: false }))).toBe(false);
+    // verification on but NO sandbox + NO ack ⇒ FORCE-DISABLED (fail-closed).
+    expect(effectiveVerificationEnabled(cfg({ ven: true }))).toBe(false);
+    // verification on + operator ack ⇒ honored.
+    expect(effectiveVerificationEnabled(cfg({ ven: true, ack: true }))).toBe(true);
+    // verification on + container sandbox ⇒ honored.
+    expect(effectiveVerificationEnabled(cfg({ ven: true, sandbox: true }))).toBe(true);
   });
 
   it("M-5: rejects NaN coerced from a non-numeric value rather than defaulting", () => {

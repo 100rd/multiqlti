@@ -47,6 +47,14 @@ export interface DevCloseoutResult {
   headCommit: string;
   /** Scrubbed error/fallback note — present on any non-happy path. */
   error?: string;
+  /**
+   * Stage 2b: the aggregated per-criterion test summary for the round, surfaced by
+   * the SDLC executor when verification ran (kill-switch on). The controller persists
+   * it to `consilium_loop_rounds.testSummary` so the NEXT review round grounds its
+   * convergence verdict in REAL test results. Undefined ⇒ verification did not run
+   * (Stage-2a / kill-switch off) — nothing to persist.
+   */
+  testSummary?: string;
 }
 
 // ─── Injectable seams (unit tests inject fakes — no real repo / gh) ──────────

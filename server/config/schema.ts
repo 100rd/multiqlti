@@ -368,9 +368,76 @@ export const ConfigSchema = z.object({
          *  path. Defaults FALSE (opt-in). Also gated by the parent
          *  `consiliumLoop.enabled` (the loop only runs at all when that is true). */
         enabled: z.boolean().default(false),
+        /**
+         * Stage 2b (design §3.C/§5/§10-2b): the per-criterion SANDBOXED VERIFICATION
+         * + bounded code→test→fix loop — the ONLY surface that EXECUTES repo code (the
+         * test command) in the isolated worktree. It has its OWN kill-switch, default
+         * FALSE, so Stage 2b ships INERT: with it false the develop phase is EXACTLY
+         * Stage 2a (skilled coder, NO test run, nothing executed). An operator flips it
+         * on ONLY after the security review decides the env-allowlist + timeout +
+         * no-shell + worktree confinement is sufficient (vs. requiring a container/
+         * namespace sandbox — features.sandbox). Also gated by the parent
+         * `consiliumLoop.enabled` AND `implement.enabled`.
+         */
+        verification: z.object({
+          /** Kill-switch: false (default) → no test ever runs (Stage-2a behavior). */
+          enabled: z.boolean().default(false),
+        }).default({}),
+        /**
+         * MED-2 (fail-closed enable-gate): operator acknowledgement that the
+         * configured repos are TRUSTED to run their own test command on the host with
+         * ambient filesystem + outbound network (NO container/namespace boundary).
+         * `verification.enabled` is HONORED only when EITHER the platform container
+         * sandbox (`features.sandbox.enabled`) is on OR this ack is true — otherwise
+         * verification is force-disabled (degrades to Stage-2a) with a load-time
+         * warning. Default false ⇒ enabling verification on an untrusted repo without a
+         * sandbox is a no-op, not a host-exec foot-gun. See `effectiveVerificationEnabled`.
+         */
+        trustedRepoAck: z.boolean().default(false),
+        /**
+         * Bounded code→test→fix budget: how many times the coder may be re-invoked
+         * with the test-failure summary (after the initial implement) before the loop
+         * stops on green or budget. 1..10; default 3. Hard cap bounds develop time.
+         */
+        maxFixIterations: z.coerce.number().int().min(1).max(10).default(3),
+        /**
+         * Repo test command (operator override). null (default) ⇒ auto-detect from
+         * the worktree's package.json `scripts.test`. SECURITY: the ONLY places a
+         * test command may come from are this config value and the repo's own
+         * package.json — NEVER untrusted action-point / criterion text. Run via
+         * no-shell argv (whitespace-tokenized), so no shell metacharacter applies.
+         */
+        testCommand: z.string().nullable().default(null),
+        /**
+         * Hard wall-clock timeout for a SINGLE test run (ms) → SIGKILL on expiry.
+         * 10s..30min; default 5min. Bounded/clamped so a wedged test process (the
+         * #422 lesson) is always reaped.
+         */
+        testRunTimeoutMs: z.coerce.number().int().min(10_000).max(1_800_000).default(300_000),
       }).default({}),
     }).default({}),
   }).default({}),
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;
+
+/**
+ * MED-2 — the SINGLE source of truth for whether Stage-2b per-criterion verification
+ * may ACTUALLY execute repo code. `verification.enabled` is the operator's intent, but
+ * it is HONORED only when the test process is sandboxed OR the operator has explicitly
+ * acked trusted-repo host execution:
+ *
+ *   effective = verification.enabled
+ *               && (features.sandbox.enabled === true   // contained: safe by isolation
+ *                   || implement.trustedRepoAck === true) // operator owns the repo trust
+ *
+ * Fail-closed: when `verification.enabled` is true but NEITHER gate is set, this
+ * returns FALSE (the develop phase degrades to the Stage-2a skilled coder, NO test
+ * runs). Callers SHOULD log a one-line warning in that case (see the controller). We
+ * never hard-throw — a hopeful `verification.enabled` must not break config load.
+ */
+export function effectiveVerificationEnabled(config: AppConfig): boolean {
+  const impl = config.pipeline.consiliumLoop.implement;
+  if (!impl.verification.enabled) return false; // short-circuit: never reads features.
+  return config.features?.sandbox?.enabled === true || impl.trustedRepoAck === true;
+}
