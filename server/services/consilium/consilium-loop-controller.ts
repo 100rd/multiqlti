@@ -61,6 +61,7 @@ import { readConvergence, extractActionPoints } from "../orchestrator/convergenc
 import { buildDiffContext } from "./diff-context.js";
 import type { DevCloseoutResult } from "./dev-closeout.js";
 import { runSdlcHandoff, type SdlcProgress } from "../sdlc/executor.js";
+import { runResearchHandoff, type ResearchGateway } from "../research/research-runner.js";
 import { assertAllowedRepoPath } from "./repo-allowlist.js";
 import { assertRepoIsProjectWorkspace, backtickFence, stripControlMultiline } from "./review-factory.js";
 
@@ -490,12 +491,22 @@ export interface ConsiliumLoopControllerDeps {
    */
   runSdlc?: typeof runSdlcHandoff;
   /**
-   * Model gateway for the OUT-OF-BAND intent→archetype PLANNER (Stage 1, §6). The
-   * real `Gateway` is passed in `routes.ts`; a unit test injects a fake. Absent ⇒
-   * the planner treats itself as disabled (PLANNER_DISABLED). NOT used by any FSM
-   * tick — the planner is a column-write side-step, never a transition.
+   * Model gateway for the OUT-OF-BAND intent→archetype PLANNER (Stage 1, §6) AND the
+   * Stage 3 RESEARCH runner. The real `Gateway` (routes.ts) satisfies BOTH slices
+   * structurally: `PlannerGateway` (completeStreaming) for the planner and
+   * `ResearchGateway` (completeWithTools + web_search) for research (R2 — widen the
+   * slice, don't import the heavy Gateway class). A unit test injects a fake that
+   * implements whichever slice the test exercises. Absent ⇒ the planner treats itself
+   * as disabled AND research degrades to a no-PR result.
    */
-  gateway?: PlannerGateway;
+  gateway?: PlannerGateway & ResearchGateway;
+  /**
+   * Stage 3: the RESEARCH archetype close-out (web research → synthesize →
+   * web-evidence report). Defaults to the real `runResearchHandoff`. Injectable so
+   * tests assert the anti-footgun branch + the report/digest wire without a real
+   * gateway. NEVER reached for non-research loops.
+   */
+  runResearch?: typeof runResearchHandoff;
 }
 
 export class ConsiliumLoopController {
@@ -541,6 +552,18 @@ export class ConsiliumLoopController {
 
   private loopConfig() {
     return this.deps.config().pipeline.consiliumLoop;
+  }
+
+  /**
+   * Stage 3 research kill-switch: TRUE only when the parent loop, the skilled
+   * implement path, AND research are all enabled. The single gate for both the
+   * closeout research branch and the convergence-wire digest injection in
+   * startReviewRound (research is decoupled from the code-exec sandbox gate —
+   * web-read has no host-exec risk, so `effectiveVerificationEnabled` is irrelevant).
+   */
+  private researchImplementEnabled(): boolean {
+    const cfg = this.loopConfig();
+    return cfg.enabled && cfg.implement.enabled && cfg.implement.research.enabled;
   }
 
   /** Structured controller log — one line per decision (loopId-scoped). */
@@ -1144,6 +1167,39 @@ export class ConsiliumLoopController {
   ): Promise<DevCloseoutResult> {
     if (this.deps.runCloseout) return this.deps.runCloseout(loop, verdict);
     const cfg = this.loopConfig();
+    // Stage 3 (R1 ANTI-FOOTGUN — TOP PRIORITY): a `research` loop MUST hard-branch to
+    // the research runner. It must NEVER fall through to the coder/worktree path below:
+    // selectSkillSet('research') is [] today, so falling through would run the
+    // UNSKILLED coder on a research task. Gated by its OWN kill-switch (default off) ON
+    // TOP of the parent consiliumLoop.enabled + implement.enabled; when disabled we
+    // return an INERT no-PR result and STILL never touch the coder. repo-assessment /
+    // null archetypes fall through to runSdlcHandoff UNCHANGED.
+    if (loop.archetype === "research") {
+      if (!this.researchImplementEnabled()) {
+        return { prRef: null, headCommit: "", error: "research archetype disabled" };
+      }
+      if (!this.deps.gateway) {
+        return { prRef: null, headCommit: "", error: "research gateway unavailable" };
+      }
+      const runResearch = this.deps.runResearch ?? runResearchHandoff;
+      const group = await this.storage.getTaskGroup(loop.groupId);
+      return runResearch(
+        {
+          loopId: loop.id,
+          round: loop.round,
+          // Objective + open action points are UNTRUSTED — the runner fences them as data.
+          objective: group?.input ?? "",
+          actionPoints: verdict.openActionPoints,
+        },
+        {
+          gateway: this.deps.gateway,
+          config: {
+            model: cfg.implement.research.model,
+            maxResearchIterations: cfg.implement.research.maxResearchIterations,
+          },
+        },
+      );
+    }
     const run = this.deps.runSdlc ?? runSdlcHandoff;
     // Stage 2a: thread the loop's Stage-1 archetype into the executor ONLY when the
     // `implement` kill-switch is on. When OFF (default) we pass archetype=null and
@@ -1217,9 +1273,14 @@ export class ConsiliumLoopController {
     // most-recent round's persisted testSummary into the review input. Gated by the
     // verification kill-switch so the default path is byte-for-byte unchanged (the
     // column is null for non-verified loops anyway; the gate keeps it provably INERT).
-    const testSummary = effectiveVerificationEnabled(this.deps.config())
-      ? await this.latestRoundTestSummary(loop)
-      : undefined;
+    // Stage 2b gated this on the code-exec sandbox gate (effectiveVerificationEnabled).
+    // Stage 3 ALSO injects under the research kill-switch: the web-evidence DIGEST is
+    // written to the SAME round.testSummary, so the judge's convergence verdict is
+    // grounded whether the round verified via test-run OR web-evidence.
+    const testSummary =
+      effectiveVerificationEnabled(this.deps.config()) || this.researchImplementEnabled()
+        ? await this.latestRoundTestSummary(loop)
+        : undefined;
     const ctx = await buildDiffContext({
       repoPath: loop.repoPath,
       baselineCommit: loop.lastReviewedCommit,
@@ -1311,6 +1372,17 @@ export class ConsiliumLoopController {
             .updateLoopRoundTestSummary(loop.id, run.round, testSummary)
             .catch((err: unknown) =>
               this.log(loop.id, `testSummary persist failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`),
+            );
+        }
+        // Stage 3 (research archetype): persist the structured report on the SAME
+        // out-of-band settle wire. Present ONLY on a research close-out ⇒ INERT for the
+        // coder path. Best-effort; reaches the client via the existing loop GET rounds.
+        const report = result.report;
+        if (report) {
+          void this.storage
+            .updateLoopRoundReport(loop.id, run.round, report)
+            .catch((err: unknown) =>
+              this.log(loop.id, `report persist failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`),
             );
         }
       })

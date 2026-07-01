@@ -9,9 +9,14 @@
  * advances autonomously-produced code toward main AND triggers the next round,
  * it is placed behind a confirm dialog that surfaces the PR link and the warning.
  *
+ * A `research`-archetype loop instead produces a RESEARCHED REPORT (Stage 3, no
+ * code / no Draft PR): it reaches `awaiting_merge` with prRef:null and the report
+ * rides the latest round → surfaced by ReportPanel (below), inert.
+ *
  * SECURITY: every loop/round/AP text field (error, testSummary, action-point
- * titles/rationale) is model- or loop-authored and is rendered as INERT React
- * text. The PR link uses rel="noopener noreferrer".
+ * titles/rationale, and the research report's question/recommendation/claims/
+ * citations) is model- or loop-authored and is rendered as INERT React text.
+ * Every external link (PR + citations + sources) uses rel="noopener noreferrer".
  */
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "wouter";
@@ -33,6 +38,10 @@ import {
   Tag,
   RefreshCw,
   Sparkles,
+  FileText,
+  ShieldCheck,
+  ShieldAlert,
+  BookOpen,
 } from "lucide-react";
 import {
   useConsiliumLoop,
@@ -47,6 +56,9 @@ import {
   type ConsiliumLoopRoundRow,
   type ConsiliumLoopDetail as ConsiliumLoopDetailRow,
   type DevProgress,
+  type ResearchReport,
+  type ResearchCitation,
+  type ResearchSource,
 } from "@/hooks/use-consilium-loops";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
@@ -554,6 +566,290 @@ function ResultPanel({
   );
 }
 
+// ─── Report panel — the RESEARCH-archetype outcome surface (Stage 3) ────────────
+//
+// A `research` loop produces a RESEARCHED REPORT (not code, not a Draft PR;
+// design §3.C/§5/§6). It reaches `awaiting_merge` with prRef:null (ResultPanel
+// already handles that gate: "no PR — nothing to merge") and the structured
+// report is persisted on the LATEST round → rendered here when present. A
+// repo-assessment loop carries no `report` → this panel renders NOTHING, and the
+// page never crashes pre-backend (until the backend lands `report` is absent).
+//
+// SECURITY: `question`, `recommendation`, `verdict`, every `claim`, and all
+// citation/source `title`/`snippet` strings are MODEL-authored, web-derived
+// output — rendered as INERT React text. Every external link uses
+// target="_blank" rel="noopener noreferrer" and is marked with an ExternalLink
+// glyph. Every optional field is guarded (?? "—" / hidden when empty); a link is
+// only emitted for a non-empty `url`.
+
+/** Format the optional ISO `generatedAt` into a relative label, or null. */
+function formatReportTimestamp(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return `Generated ${formatDistanceToNow(d, { addSuffix: true })}`;
+}
+
+/**
+ * The web-evidence mark on a claim. `true` → verified (green), `false` →
+ * unverified (amber). Absent (`undefined`) means "not yet verified" → render
+ * nothing, so an un-checked claim reads neutrally.
+ */
+function VerifiedMark({ verified }: { verified: boolean | undefined }) {
+  if (verified === true) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-[10px] font-medium text-green-600 dark:text-green-400"
+        title="Проверено — заявление подтверждено цитируемым источником"
+      >
+        <ShieldCheck className="h-3.5 w-3.5" />
+        verified
+      </span>
+    );
+  }
+  if (verified === false) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+        title="Не подтверждено цитируемым источником"
+      >
+        <ShieldAlert className="h-3.5 w-3.5" />
+        unverified
+      </span>
+    );
+  }
+  return null;
+}
+
+/**
+ * Scheme allowlist for UNTRUSTED, model/web-derived citation + source URLs.
+ * Returns the URL only when it parses (via `new URL`, post-trim) as `http:` or
+ * `https:` (case-insensitive); otherwise null. A `javascript:` / `data:` /
+ * `vbscript:` / other-scheme URI — which `rel="noopener noreferrer"` does NOT
+ * neutralise — is rejected so a prompt-injected report can never turn a citation
+ * into a clickable/navigable link that executes in the authenticated app origin.
+ * `new URL` throwing on a malformed string is caught → null.
+ */
+function safeHttpUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const trimmed = url.trim();
+  if (trimmed === "") return null;
+  try {
+    const scheme = new URL(trimmed).protocol.toLowerCase();
+    return scheme === "http:" || scheme === "https:" ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * One citation. The URL is model/web-derived and UNTRUSTED: it is emitted as a
+ * clickable <a> ONLY when `safeHttpUrl` accepts it as http(s). Any other scheme
+ * (or an absent/malformed url) degrades to an INERT <span> — same label + glyph,
+ * but not linkified — so it can never navigate or execute on click.
+ */
+function CitationLink({ citation }: { citation: ResearchCitation }) {
+  const label = citation.title?.trim() || citation.url;
+  const tooltip = citation.snippet?.trim() || citation.url;
+  const href = safeHttpUrl(citation.url);
+  if (!href) {
+    return (
+      <span
+        className="inline-flex max-w-full items-start gap-1 text-xs text-muted-foreground"
+        title={tooltip}
+      >
+        <ExternalLink className="mt-0.5 h-3 w-3 shrink-0" />
+        {/* INERT citation title — non-http(s) url, NOT linkified (XSS guard) */}
+        <span className="min-w-0 break-words">{label}</span>
+      </span>
+    );
+  }
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex max-w-full items-start gap-1 text-xs text-primary hover:underline"
+      title={tooltip}
+    >
+      <ExternalLink className="mt-0.5 h-3 w-3 shrink-0" />
+      {/* INERT model/web-authored citation title */}
+      <span className="min-w-0 break-words">{label}</span>
+    </a>
+  );
+}
+
+/**
+ * One bibliography source — same UNTRUSTED-url treatment as CitationLink: a
+ * clickable <a> only for an http(s) url, else an inert <span>.
+ */
+function SourceLink({ source }: { source: ResearchSource }) {
+  const label = source.title?.trim() || source.url;
+  const href = safeHttpUrl(source.url);
+  if (!href) {
+    return (
+      <span className="inline-flex max-w-full items-start gap-1 text-xs text-muted-foreground">
+        <ExternalLink className="mt-0.5 h-3 w-3 shrink-0" />
+        {/* INERT source title — non-http(s) url, NOT linkified (XSS guard) */}
+        <span className="min-w-0 break-words">{label}</span>
+      </span>
+    );
+  }
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex max-w-full items-start gap-1 text-xs text-primary hover:underline"
+    >
+      <ExternalLink className="mt-0.5 h-3 w-3 shrink-0" />
+      {/* INERT model/web-authored source title */}
+      <span className="min-w-0 break-words">{label}</span>
+    </a>
+  );
+}
+
+/**
+ * A report is worth rendering only if it carries at least one meaningful field —
+ * this both drives the "render only when present" gate AND hides an empty `{}`
+ * that a defensive backend read might produce. Doubles as a type guard.
+ */
+function reportHasContent(
+  r: ResearchReport | null | undefined,
+): r is ResearchReport {
+  if (!r || typeof r !== "object") return false;
+  return Boolean(
+    (typeof r.recommendation === "string" && r.recommendation.trim()) ||
+      (typeof r.question === "string" && r.question.trim()) ||
+      (typeof r.verdict === "string" && r.verdict.trim()) ||
+      (Array.isArray(r.claims) && r.claims.length > 0) ||
+      (Array.isArray(r.sources) && r.sources.length > 0),
+  );
+}
+
+function ReportPanel({ report }: { report: ResearchReport }) {
+  const claims = Array.isArray(report.claims) ? report.claims : [];
+  const rawSources = Array.isArray(report.sources) ? report.sources : [];
+
+  // Dedupe the bibliography by url (first title wins), dropping url-less rows.
+  const dedupedSources = Array.from(
+    rawSources
+      .filter((s) => typeof s?.url === "string" && s.url.trim() !== "")
+      .reduce((m, s) => {
+        if (!m.has(s.url)) m.set(s.url, s);
+        return m;
+      }, new Map<string, { title: string; url: string }>())
+      .values(),
+  );
+
+  const generatedAt = formatReportTimestamp(report.generatedAt);
+  const hasRecommendation =
+    typeof report.recommendation === "string" && report.recommendation.trim() !== "";
+
+  return (
+    <Card className="border-primary/30">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <FileText className="h-4 w-4 text-primary" />
+            Research report
+          </CardTitle>
+          <div className="flex items-center gap-2">
+            {report.verdict && report.verdict.trim() !== "" && (
+              <Badge className="bg-primary/10 text-primary">{report.verdict}</Badge>
+            )}
+            {generatedAt && (
+              <span className="text-[11px] text-muted-foreground">{generatedAt}</span>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* The researched question (INERT) — hidden when absent. */}
+        {report.question && report.question.trim() !== "" && (
+          <div className="space-y-0.5">
+            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Question
+            </p>
+            {/* INERT model-authored question text */}
+            <p className="text-sm text-muted-foreground">{report.question}</p>
+          </div>
+        )}
+
+        {/* Recommendation — the prominent takeaway (INERT). */}
+        <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            Recommendation
+          </p>
+          {/* INERT model-authored recommendation text */}
+          <p className="mt-1 text-sm font-medium leading-relaxed">
+            {hasRecommendation ? report.recommendation : "—"}
+          </p>
+        </div>
+
+        {/* Claims + their web citations — hidden when there are none. */}
+        {claims.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Claims &amp; evidence
+            </p>
+            <ul className="space-y-3">
+              {claims.map((claim, i) => {
+                const citations = Array.isArray(claim.citations)
+                  ? claim.citations.filter(
+                      (c) => typeof c?.url === "string" && c.url.trim() !== "",
+                    )
+                  : [];
+                return (
+                  <li key={i} className="space-y-1.5 rounded-md border border-border p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      {/* INERT model-authored claim text */}
+                      <span className="text-sm">{claim.claim ?? "—"}</span>
+                      <span className="shrink-0">
+                        <VerifiedMark verified={claim.verified} />
+                      </span>
+                    </div>
+                    {citations.length > 0 ? (
+                      <ul className="space-y-1 pl-1">
+                        {citations.map((c, ci) => (
+                          <li key={ci}>
+                            <CitationLink citation={c} />
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">
+                        Источники не приведены.
+                      </p>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+
+        {/* Deduped bibliography — hidden when there are no linkable sources. */}
+        {dedupedSources.length > 0 && (
+          <div className="space-y-2">
+            <p className="inline-flex items-center gap-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+              <BookOpen className="h-3.5 w-3.5" />
+              Sources
+            </p>
+            <ul className="space-y-1">
+              {dedupedSources.map((s, i) => (
+                <li key={i}>
+                  <SourceLink source={s} />
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Develop progress — the live `developing` round surface ─────────────────────
 //
 // While the loop is in `developing`, the loop GET carries an OPTIONAL
@@ -913,6 +1209,12 @@ export default function ConsiliumLoopDetail() {
   const canDevelop =
     isVerdictTerminalLoopState(loop.state) && latestActionPointCount > 0;
 
+  // Stage 3 (research archetype): the structured report rides the LATEST round.
+  // Present only for a `research` loop that has synthesized one (and only once
+  // the parallel backend has shipped the `report` col) — otherwise absent, so
+  // the panel simply does not render (no crash for repo-assessment loops).
+  const latestReport = latestRound?.report;
+
   async function handleStart() {
     try {
       await startLoop.mutateAsync(id);
@@ -1066,6 +1368,11 @@ export default function ConsiliumLoopDetail() {
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
         {/* Result — the outcome the human gate decides on (near the top). */}
         <ResultPanel loop={loop} terminal={terminal} />
+
+        {/* Research report (Stage 3) — the researched outcome of a `research`
+            loop, on the latest round. Rendered only when a report is present
+            (repo-assessment loops render nothing here). */}
+        {reportHasContent(latestReport) && <ReportPanel report={latestReport} />}
 
         {/* Planned archetype (Stage 1, observe-and-set) — shown once the verdict
             is readable; lazily classifies once + allows a human override. */}

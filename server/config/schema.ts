@@ -414,6 +414,35 @@ export const ConfigSchema = z.object({
          * #422 lesson) is always reaped.
          */
         testRunTimeoutMs: z.coerce.number().int().min(10_000).max(1_800_000).default(300_000),
+        /**
+         * Stage 3 (design §3.C/§6): the RESEARCH archetype implement path — deep web
+         * research → synthesize → a structured, web-evidence-verified REPORT (NOT code,
+         * NOT a Draft PR). When `enabled` is FALSE (default) a `research` loop's close-out
+         * returns an INERT no-PR result and NEVER falls through to the coder (the
+         * anti-footgun branch). Sibling to `verification` — a THIRD, finer kill-switch on
+         * top of the parent `consiliumLoop.enabled` AND `implement.enabled`. UNLIKE
+         * verification it needs no sandbox gate (web_search is read-only + a fixed
+         * Tavily/DDG endpoint — no host exec, no SSRF). Ships inert; enable after
+         * observation (§7) to control Tavily/token cost.
+         */
+        research: z.object({
+          /** Kill-switch: false (default) → research close-out is inert (no-PR + never
+           *  the coder). true → runResearchHandoff runs the web-read research pipeline. */
+          enabled: z.boolean().default(false),
+          /**
+           * Bounded re-research budget: how many times the runner may re-run research
+           * when P0-criterion claims are still uncited by the web-evidence verifier,
+           * before it stops (flagged) or budget. 1..10; default 3. Hard cap + a
+           * whole-run wall-clock deadline bound research time/cost.
+           */
+          maxResearchIterations: z.coerce.number().int().min(1).max(10).default(3),
+          /**
+           * The model slug the research/synthesize/verify steps call via the gateway's
+           * completeWithTools (web_search) loop. Defaults to the task system's default
+           * model — NEVER "mock".
+           */
+          model: z.string().min(1).default(DEFAULT_TASK_MODEL),
+        }).default({}),
       }).default({}),
     }).default({}),
   }).default({}),

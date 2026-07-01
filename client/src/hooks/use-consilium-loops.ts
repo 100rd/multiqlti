@@ -9,8 +9,8 @@
  *
  * SECURITY: this module only fetches + types data. All loop/round text fields
  * (error, testSummary, action-point titles, archetype rationale, engineer
- * instruction) are model- or human-authored and MUST be rendered as INERT React
- * text by the consuming components.
+ * instruction, and the research `report`) are model- or human-authored and MUST
+ * be rendered as INERT React text by the consuming components.
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/hooks/use-pipeline";
@@ -19,7 +19,13 @@ import type {
   ConsiliumLoopRow,
   ConsiliumLoopRoundRow,
 } from "@shared/schema";
-import type { Archetype } from "@shared/types";
+import type {
+  Archetype,
+  ResearchReport,
+  ResearchClaim,
+  ResearchCitation,
+  ResearchSource,
+} from "@shared/types";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Re-export the schema row types under client-facing names. The list endpoint
@@ -52,6 +58,39 @@ export interface DevProgress {
  */
 export type ConsiliumArchetypeSource = "proposed" | "override";
 
+// ─── Research report (Stage 3, RESEARCH archetype) ────────────────────────────
+//
+// A `research`-archetype loop produces a RESEARCHED REPORT rather than code / a
+// Draft PR (design §3.C/§5/§6). The report is persisted on the loop's LATEST
+// round (`consilium_loop_rounds.report` jsonb col) and rides the SAME loop GET
+// `rounds[]` wire as `testSummary` — no new hook, no new endpoint. The loop still
+// reaches `awaiting_merge`, but with `prRef: null` ("no PR — nothing to merge"),
+// which the existing ResultPanel already handles.
+//
+// The canonical shape lives in the client-safe `@shared/types` module (so the UI
+// can import it without pulling in drizzle/schema). It is re-exported here for
+// the page's convenience. `report` is `null`/absent for every non-research loop
+// (and pre-backend), so the UI treats its presence as the ONLY signal to render.
+//
+// SECURITY: `question`, `recommendation`, `verdict`, every `claim`, and all
+// citation/source `title`/`snippet` strings are MODEL-authored (web-derived)
+// output — rendered as INERT React text; every external `url` is opened with
+// target="_blank" rel="noopener noreferrer".
+export type { ResearchReport, ResearchClaim, ResearchCitation, ResearchSource };
+
+/**
+ * A loop round as seen by the client. It is the schema row (which already carries
+ * the optional Stage-3 `report`); the `report?` here is a belt-and-braces
+ * restatement so the type reads self-documenting at the call site and stays
+ * resilient if the underlying row type ever narrows. A `ConsiliumLoopRoundDetail`
+ * is structurally a `ConsiliumLoopRoundRow`, so every existing round consumer
+ * keeps working unchanged.
+ */
+export type ConsiliumLoopRoundDetail = ConsiliumLoopRoundRow & {
+  /** The research artifact, on the latest round of a `research` loop only. */
+  report?: ResearchReport | null;
+};
+
 /**
  * The detail endpoint returns the loop fields spread WITH a `rounds` array and,
  * while the loop is `developing`, an optional `devProgress` snapshot.
@@ -63,7 +102,7 @@ export type ConsiliumArchetypeSource = "proposed" | "override";
  * planner) simply omits them, and every consumer renders them defensively.
  */
 export type ConsiliumLoopDetail = ConsiliumLoopListItem & {
-  rounds: ConsiliumLoopRoundRow[];
+  rounds: ConsiliumLoopRoundDetail[];
   devProgress?: DevProgress;
   /** The classified/overridden archetype, or null when not yet planned. */
   archetype?: Archetype | null;

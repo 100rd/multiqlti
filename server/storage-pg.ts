@@ -139,7 +139,7 @@ import {
   type DecisionLogRow,
 } from "@shared/schema";
 import type { LessonRecallFilter } from "./memory/lessons/types";
-import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome } from "@shared/types";
+import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport } from "@shared/types";
 
 import { encrypt } from "./crypto";
 // [ADR-001 Wave-2] credentialProvider routes all decrypt() calls through the broker.
@@ -1403,6 +1403,14 @@ export class PgStorage implements IStorage {
     await db
       .update(consiliumLoopRounds)
       .set({ testSummary })
+      .where(and(eq(consiliumLoopRounds.loopId, loopId), eq(consiliumLoopRounds.round, round)));
+  }
+
+  async updateLoopRoundReport(loopId: string, round: number, report: ResearchReport): Promise<void> {
+    // Stage 3: same (loop, round) scoping + out-of-band settle wire as testSummary.
+    await db
+      .update(consiliumLoopRounds)
+      .set({ report })
       .where(and(eq(consiliumLoopRounds.loopId, loopId), eq(consiliumLoopRounds.round, round)));
   }
 

@@ -101,7 +101,7 @@ import {
   type NewsFeedback,
   type NewsReadState,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport } from "@shared/types";
 import type { LessonRecallFilter } from "./memory/lessons/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
@@ -620,6 +620,13 @@ export interface IStorage {
    * no-op when the (loop, round) row is absent. Idempotent / best-effort.
    */
   updateLoopRoundTestSummary(loopId: string, round: number, testSummary: string): Promise<void>;
+  /**
+   * Stage 3 (research archetype): set the per-round structured `report` AFTER the
+   * research run settles. Additive over the audit row recorded on entering
+   * `developing`; no-op when the (loop, round) row is absent. Idempotent / best-effort
+   * (mirror of updateLoopRoundTestSummary).
+   */
+  updateLoopRoundReport(loopId: string, round: number, report: ResearchReport): Promise<void>;
 
 
   // Tracker Connections (Issue Tracker Integration)
@@ -2080,6 +2087,7 @@ export class MemStorage implements IStorage {
       baselineCommit: data.baselineCommit ?? null,
       headCommit: data.headCommit ?? null,
       testSummary: data.testSummary ?? null,
+      report: data.report ?? null,
       createdAt: new Date(),
     };
     this.consiliumLoopRoundsMap.set(row.id, row);
@@ -2096,6 +2104,15 @@ export class MemStorage implements IStorage {
     for (const r of this.consiliumLoopRoundsMap.values()) {
       if (r.loopId === loopId && r.round === round) {
         this.consiliumLoopRoundsMap.set(r.id, { ...r, testSummary });
+        return;
+      }
+    }
+  }
+
+  async updateLoopRoundReport(loopId: string, round: number, report: ResearchReport): Promise<void> {
+    for (const r of this.consiliumLoopRoundsMap.values()) {
+      if (r.loopId === loopId && r.round === round) {
+        this.consiliumLoopRoundsMap.set(r.id, { ...r, report });
         return;
       }
     }
