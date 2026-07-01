@@ -70,7 +70,15 @@ archetype: code + Draft PR, a researched report, or infrastructure + a live depl
 
 ### D. CONVERGE
 When **every acceptance criterion is verified by its method** (§5) → done / human gate.
-Convergence is objective (criteria met), not a subjective "the judge said converged".
+Convergence is grounded (criteria met by their methods), not a subjective "the judge said
+converged" — *grounded where possible, judged where not* (§5 keeps a `judge` method for
+non-mechanical criteria, so the claim is honesty-bounded, not absolute).
+
+**Verification is against the FINAL state, not the moment of implementation.** Action points
+are implemented sequentially in one shared worktree, so a later step can regress what an
+earlier step's check verified. A criterion counts as met only if it holds in the final
+worktree state of the round (a final re-verification pass before the PR opens); per-step
+green at implementation time is necessary but not sufficient.
 
 ## 4. Skills — the unit of agent capability
 
@@ -112,9 +120,23 @@ Two distinct levels of "green" — keep them separate:
 | `live-deploy-smoke` | infra/operator | deploy to an ephemeral env + the skill's green (running, no errors, events) |
 | `web-evidence` | research/decision | claim supported by cited sources |
 | `judge` | non-mechanical criteria | a verifier model confirms the result meets the criterion |
+| `manual-ops` | operational actions outside the repo (rotate a secret, revoke a key, file a ticket) | a human confirms the action was performed; the loop can only surface it, never close it |
 
 **Convergence = every criterion confirmed by its method.** Sometimes a green test, sometimes a
 live smoke-test, sometimes a judge against the criterion.
+
+**The verification method is a per-criterion property, not an archetype property.** The
+archetype (§6) supplies the *default* skill ordering, but a single verdict routinely mixes
+criteria of different natures — e.g. a repo assessment whose P0 is "rotate the leaked
+secrets" (a `manual-ops` action no unit test can verify) next to "gate coverage in CI"
+(`test-run`). The planner assigns each criterion its method; a criterion the chosen pipeline
+cannot verify is a first-class outcome ("not implementable by this pipeline — needs a human /
+another archetype"), not something to silently force through the nearest test harness.
+
+Honesty note: `judge` re-admits model subjectivity through the back door — that is a deliberate,
+bounded concession for non-mechanical criteria, not a loophole. The share of mechanically
+verified criteria (`test-run` / `live-deploy-smoke` / `web-evidence`) vs `judge`/none is a
+first-class telemetry metric (§7): it measures how *grounded* the system actually is.
 
 ## 6. Archetypes — intent → a set of skills
 
@@ -142,9 +164,21 @@ The real safety boundary is **capability-scoping per skill**, *independent* of w
 the planner:
 - **assess / research** — read-only (repo reads, web reads), Draft-PR-only.
 - **code** — isolated git worktree, Draft-PR-only; agents never merge.
+- **test-run** — **executing the repo's tests is executing arbitrary repo code.** The target
+  repo is *untrusted input* end-to-end: its content can prompt-inject the agents that read it,
+  and its test suite can run anything on the host. Test execution therefore requires the
+  container sandbox (`features.sandbox`) or an explicit per-repo operator acknowledgement
+  (`implement.trustedRepoAck`) — enforced as `effectiveVerificationEnabled`; without either,
+  verification stays off. Env-allowlist + worktree + timeout bound credentials and commands,
+  but NOT host fs/network — that is what the sandbox is for.
 - **deploy-verify (infra)** — the one step that touches a live environment. It gets
   **ephemeral-env creds from a secret manager**, scoped to that env; **prod-apply never without
   explicit human approval** (the existing apply-gates / `never_apply` rules hold).
+
+Prompt-injection posture: read-only skills cannot mutate anything directly, but what they
+*read* shapes what the writers *do* — the repo is where injection enters. The backstops are
+capability ceilings (a skill's tools can only be narrowed, never widened), Draft-PR-only
+output, and the human merge gate.
 
 **Trust the planner under observation.** Default: trust the planner model to choose the
 archetype/skills with *no* hard human gate; run an **observation/telemetry process** (what
@@ -186,6 +220,34 @@ Each stage is independently shippable and testable (evolutionary; refine while t
 
 - **Stage 4 — observability tree.**
   The loop page's phase/controller/agent/skill/green tree.
+
+### Partial success (implemented, previously undocumented)
+
+The implement phase does **not** fail as a unit. Each action point ends `completed` /
+`partial` (timed out or errored but committed work) / `failed` (no commit); a failed AP does
+not halt the round. If *any* AP committed, one PR aggregates all commits and its body lists
+per-AP status. If zero committed, the round reports "no commits produced". There is no
+partial-develop FSM state on purpose: **the next reviewing round adjudicates partial work** —
+the judge re-reads the branch diff against the prior findings and either confirms closure or
+re-raises what is still open.
+
+### Hardening stages (next arc — same rules: additive, kill-switched, inert by default)
+
+- **Stage 5 — final-state re-verification.** One test-run pass over ALL `test-run` criteria
+  against the final worktree state after the last AP, before the PR opens (+ a bounded fix
+  loop on regression). Closes the sequential-AP regression hole (§3D). Trace gains
+  `passedAtFinal` per criterion.
+- **Stage 6 — verification method per criterion.** The judge proposes and the planner assigns
+  a method per criterion (incl. `manual-ops`); "not implementable by this pipeline" becomes a
+  legal outcome (§5). Engineer override, as with the archetype.
+- **Stage 7 — criteria QA.** Lint each acceptance criterion at generation time (observable,
+  falsifiable, "When X then Y" with a concrete condition); a criterion-less AP is forced to
+  `judge`, never silently "tests green". Re-assess must state per closed item *how* it was
+  verified and whether the DoD itself was adequate — an inadequate DoD becomes a new AP.
+- **Stage 8 — trust telemetry.** Aggregate what the traces already record: grounding ratio
+  (mechanically verified vs judged criteria), planner track record (proposed vs overridden,
+  green-rate per skill). This is the §7 "observation process" made concrete — the data on
+  which "trust the planner" is periodically re-decided.
 
 ## 10. Open questions (to settle while testing)
 
