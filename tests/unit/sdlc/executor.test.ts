@@ -376,3 +376,79 @@ describe("runSdlcHandoff — progress reporting (onProgress)", () => {
     expect(events[events.length - 1].completedCount).toBe(0);
   });
 });
+
+describe("runSdlcHandoff — LIVE per-AP task list (progress.aps)", () => {
+  function collect() {
+    const events: SdlcProgress[] = [];
+    // Deep-copy each beat (the tracker deep-copies `aps` per beat, but be defensive).
+    return {
+      events,
+      onProgress: (p: SdlcProgress) => events.push(JSON.parse(JSON.stringify(p)) as SdlcProgress),
+    };
+  }
+
+  it("carries the FULL action-point list on every beat and transitions statuses live", async () => {
+    const deps = makeDeps(); // both APs dirty → both commit → both `completed`
+    const { events, onProgress } = collect();
+    await runSdlcHandoff(baseReq(), deps as never, onProgress);
+
+    // Every beat carries the whole list, in order, with stable 1-based indices.
+    for (const e of events) {
+      expect(e.aps).toBeDefined();
+      expect(e.aps!.map((a) => a.i)).toEqual([1, 2]);
+    }
+
+    // AP1 is `active` while it is coded; AP2 is still `pending`.
+    const coding1 = events.find((e) => e.phase === "coding" && e.actionPointIndex === 1)!;
+    expect(coding1.aps!.map((a) => a.status)).toEqual(["active", "pending"]);
+    expect(coding1.step).toBe("coder"); // unskilled path ⇒ single coder step
+    expect(coding1.fixIteration).toBe(0);
+    expect(coding1.fixBudget).toBeUndefined(); // verification off
+
+    // By the time AP2 is coded, AP1 has settled to `completed`.
+    const coding2 = events.find((e) => e.phase === "coding" && e.actionPointIndex === 2)!;
+    expect(coding2.aps!.map((a) => a.status)).toEqual(["completed", "active"]);
+
+    // The terminal beat shows BOTH settled.
+    expect(events[events.length - 1].aps!.map((a) => a.status)).toEqual(["completed", "completed"]);
+  });
+
+  it("SANITIZES + clamps the UNTRUSTED titles carried in the aps list", async () => {
+    const deps = makeDeps();
+    const { events, onProgress } = collect();
+    await runSdlcHandoff(baseReq(), deps as never, onProgress);
+    // APS[0].title has shell metachars + a newline — control-stripped, no newline.
+    const list = events[0].aps!;
+    expect(list[0].title).toBe("Fix `;rm -rf /` in parser with newline");
+    expect(list[0].title).not.toMatch(/[\n\r]/);
+    expect(list[1].title).toBe("Add the redactor");
+  });
+
+  it("marks partial-preserve and failed APs with the right live status", async () => {
+    // Both APs throw. Dirty worktree → committed [partial]; nothing dirty → failed.
+    const throwing = vi.fn(async () => {
+      throw new Error("CLI timed out at /home/u/.claude");
+    });
+    const partialDeps = makeDeps({ runCoder: throwing });
+    const p = collect();
+    await runSdlcHandoff(baseReq(), partialDeps as never, p.onProgress);
+    expect(p.events[p.events.length - 1].aps!.map((a) => a.status)).toEqual(["partial", "partial"]);
+
+    const failedDeps = makeDeps({ runCoder: throwing, gitRaw: makeGitRaw(false) });
+    const f = collect();
+    await runSdlcHandoff(baseReq(), failedDeps as never, f.onProgress);
+    expect(f.events[f.events.length - 1].aps!.map((a) => a.status)).toEqual(["failed", "failed"]);
+  });
+
+  it("caps the aps list defensively at 100 entries", async () => {
+    const many: ActionPoint[] = Array.from({ length: 101 }, (_, i) => ({
+      title: `AP ${i}`,
+      priority: "P2",
+    }));
+    const deps = makeDeps();
+    const { events, onProgress } = collect();
+    await runSdlcHandoff(baseReq({ actionPoints: many }), deps as never, onProgress);
+    expect(events[0].aps).toHaveLength(100);
+    expect(events[0].aps![99].i).toBe(100);
+  });
+});

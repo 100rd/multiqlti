@@ -19,6 +19,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   runSdlcHandoff,
   type SdlcHandoffRequest,
+  type SdlcProgress,
   type VerificationConfig,
 } from "../../../server/services/sdlc/executor.js";
 import type { TestRunResult } from "../../../server/services/sdlc/test-runner.js";
@@ -239,5 +240,49 @@ describe("Stage 2b — convergence wire + criterion gating", () => {
     const deps = makeDeps({ runTests, runCoder });
     await runSdlcHandoff(baseReq({ verification: VCFG() }), deps as never);
     expect(runTests).not.toHaveBeenCalled();
+  });
+});
+
+describe("Stage 2b — LIVE progress steps across the skilled + verify + fix loop", () => {
+  function collect() {
+    const events: SdlcProgress[] = [];
+    return {
+      events,
+      onProgress: (p: SdlcProgress) => events.push(JSON.parse(JSON.stringify(p)) as SdlcProgress),
+    };
+  }
+
+  it("emits test-author → coder → test-runner → fix-coder → test-runner, with fix iterations + budget", async () => {
+    // Initial verify RED, then GREEN after one fix pass.
+    const runTests = sequencedRunTests([fail, pass]);
+    const deps = makeDeps({ runTests });
+    const { events, onProgress } = collect();
+    await runSdlcHandoff(baseReq({ verification: VCFG({ maxFixIterations: 3 }) }), deps as never, onProgress);
+
+    // The ordered `step` sequence of the coding-phase beats for the single AP.
+    const steps = events.filter((e) => e.phase === "coding").map((e) => e.step);
+    expect(steps).toEqual(["test-author", "coder", "test-runner", "fix-coder", "test-runner"]);
+
+    // The verify beats carry the fix iteration (0 initial, 1 for the fix pass) + budget.
+    const byStep = (s: SdlcProgress["step"]) => events.filter((e) => e.step === s);
+    expect(byStep("test-runner").map((e) => e.fixIteration)).toEqual([0, 1]);
+    expect(byStep("fix-coder").map((e) => e.fixIteration)).toEqual([1]);
+    for (const e of events.filter((e) => e.phase === "coding")) {
+      expect(e.fixBudget).toBe(3);
+    }
+
+    // The single AP is `active` throughout the develop steps, then `completed`.
+    const codingBeats = events.filter((e) => e.phase === "coding");
+    expect(codingBeats.every((e) => e.aps?.[0]?.status === "active")).toBe(true);
+    expect(events[events.length - 1].aps?.[0]?.status).toBe("completed");
+  });
+
+  it("stops fixing at maxFixIterations — the fix-coder step count is bounded by the budget", async () => {
+    const runTests = sequencedRunTests([fail]); // never turns green
+    const deps = makeDeps({ runTests });
+    const { events, onProgress } = collect();
+    await runSdlcHandoff(baseReq({ verification: VCFG({ maxFixIterations: 2 }) }), deps as never, onProgress);
+    const fixSteps = events.filter((e) => e.step === "fix-coder").map((e) => e.fixIteration);
+    expect(fixSteps).toEqual([1, 2]); // exactly the budget, no more
   });
 });

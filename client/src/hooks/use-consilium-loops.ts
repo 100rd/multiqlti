@@ -48,6 +48,23 @@ export interface DevProgress {
   actionPointTotal?: number;
   actionPointTitle?: string;
   completedCount?: number;
+  /** Which agent/skill step is running RIGHT NOW for the active action point:
+   *  `test-author`/`coder` implement it, `test-runner` verifies, `fix-coder` is a
+   *  fix-loop re-invocation. Absent for the commit/push/opening_pr/done phases. */
+  step?: "test-author" | "coder" | "test-runner" | "fix-coder";
+  /** The active AP's current fix-loop iteration (0 = initial implement, 1..N = fix
+   *  passes) and the configured budget. Present only mid-verification. */
+  fixIteration?: number;
+  fixBudget?: number;
+  /** The FULL action-point list with LIVE per-AP status, so the UI renders the whole
+   *  round as a task list. `i` is 1-based; `title` is INERT model-authored text
+   *  (server-sanitized). Absent on old/degraded snapshots ⇒ fall back to the
+   *  single-line phase rendering. */
+  aps?: Array<{
+    i: number;
+    title: string;
+    status: "pending" | "active" | "completed" | "partial" | "failed";
+  }>;
 }
 
 /**

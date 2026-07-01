@@ -1020,6 +1020,76 @@ function humanizeDevPhase(progress: DevProgress | undefined, total: number): str
   }
 }
 
+/** One action point's live status → its leading icon (reusing the page's idioms:
+ *  a spinner for in-flight, Check/X for settled, muted Clock for not-yet-started). */
+function ApStatusIcon({ status }: { status: NonNullable<DevProgress["aps"]>[number]["status"] }) {
+  switch (status) {
+    case "active":
+      return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" aria-label="в работе" />;
+    case "completed":
+      return <Check className="h-3.5 w-3.5 shrink-0 text-green-600" aria-label="готово" />;
+    case "partial":
+      return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="частично" />;
+    case "failed":
+      return <X className="h-3.5 w-3.5 shrink-0 text-red-500" aria-label="ошибка" />;
+    case "pending":
+    default:
+      return <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="в очереди" />;
+  }
+}
+
+/** Humanize the running agent/skill step for the active-row badge. */
+const DEV_STEP_LABELS: Record<NonNullable<DevProgress["step"]>, string> = {
+  "test-author": "автор тестов",
+  coder: "кодер",
+  "test-runner": "прогон тестов",
+  "fix-coder": "фикс",
+};
+
+/**
+ * The LIVE task list for the developing round: one row per action point (status
+ * icon + INERT title), with a badge on the ACTIVE row naming the agent running now
+ * (`step`) and, mid-fix-loop, the `fix k/N` iteration. Rendered only when the beat
+ * carries `aps`; the panel degrades to the single-line phase view otherwise.
+ *
+ * SECURITY: every `title` is model-authored verdict text, server-sanitized and
+ * rendered as INERT React text (never HTML, never a link/attribute).
+ */
+function DevTaskList({ progress }: { progress: DevProgress }) {
+  const aps = progress.aps ?? [];
+  if (aps.length === 0) return null;
+  return (
+    <ul className="space-y-1">
+      {aps.map((ap) => {
+        const isActive = ap.status === "active";
+        return (
+          <li key={ap.i} className="flex items-start gap-2 text-xs leading-relaxed">
+            <span className="mt-0.5">
+              <ApStatusIcon status={ap.status} />
+            </span>
+            <span className="min-w-0 flex-1 break-words">
+              <span className={isActive ? "font-medium" : "text-muted-foreground"}>
+                {ap.title || `action point #${ap.i}`}
+              </span>
+              {isActive && progress.step && (
+                <Badge variant="secondary" className="ml-1.5 text-[10px] py-0 align-middle">
+                  {DEV_STEP_LABELS[progress.step]}
+                  {typeof progress.fixIteration === "number" && progress.fixIteration > 0 && (
+                    <span className="ml-1 tabular-nums">
+                      fix {progress.fixIteration}
+                      {typeof progress.fixBudget === "number" ? `/${progress.fixBudget}` : ""}
+                    </span>
+                  )}
+                </Badge>
+              )}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function DevelopProgressPanel({
   loop,
   fallbackTotal,
@@ -1049,6 +1119,11 @@ function DevelopProgressPanel({
         {/* INERT model-authored action-point title inside the phase line */}
         <span>{humanizeDevPhase(progress, total)}</span>
       </div>
+
+      {/* LIVE task list — one row per action point with agent + status + fix pass.
+          Absent `aps` (old/degraded snapshot) ⇒ this renders nothing and the panel
+          degrades to the phase line + progress bar above/below (today's view). */}
+      {progress?.aps && progress.aps.length > 0 && <DevTaskList progress={progress} />}
 
       {total > 0 && (
         <div className="space-y-1">

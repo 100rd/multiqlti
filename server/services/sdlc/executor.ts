@@ -80,6 +80,7 @@ const PR_BODY_TITLE_MAX = 120;
 const PR_BODY_RATIONALE_MAX = 200; // 1-line rationale in the "addressed" list
 const PR_BODY_MAX = 16_000;
 const PROGRESS_TITLE_MAX = 120; // display-only progress title clamp (matches PR_BODY_TITLE_MAX)
+const PROGRESS_APS_MAX = 100; // defensive cap on the live per-AP task list carried in a beat
 const CRITERION_MAX = 300; // acceptance-criterion clamp for the PR body / round audit
 const FIX_SUMMARY_MAX = 3_000; // test-failure summary fed (fenced, stdin) into a fix coder
 const TEST_SUMMARY_MAX = 6_000; // aggregated round testSummary clamp (-> consilium_loop_rounds)
@@ -94,6 +95,14 @@ const WHOLE_RUN_BUDGET_MS = 7_200_000;
 
 /** Per-action-point outcome status surfaced in the Draft PR body. */
 export type ApStatus = "completed" | "partial" | "failed";
+
+/**
+ * Live status of ONE action point in the developing task list. A SUPERSET of the
+ * settled {@link ApStatus} with the two in-flight states (`pending` = not started,
+ * `active` = currently being worked). Display-only — it never alters the settled
+ * per-AP {@link ApOutcome} the Draft-PR body / dev_completed event are built from.
+ */
+export type ApProgressStatus = "pending" | "active" | ApStatus;
 
 export interface ApOutcome {
   /** 1-based position in the round. */
@@ -192,6 +201,36 @@ export interface SdlcProgress {
   actionPointTitle: string;
   /** How many action points have produced a commit so far. */
   completedCount: number;
+  /**
+   * Which agent/skill step is running RIGHT NOW for the ACTIVE action point:
+   * `test-author`/`coder` are the skilled implement steps (or `coder` on the
+   * unskilled path); `test-runner` is a verification run; `fix-coder` is a fix-loop
+   * re-invocation of the implementer. Absent for the commit/push/opening_pr/done
+   * phases (no single agent step). ADDITIVE + OPTIONAL: old snapshots simply omit
+   * it. Display only.
+   */
+  step?: "test-author" | "coder" | "test-runner" | "fix-coder";
+  /**
+   * The active action point's current fix-loop iteration (0 = initial implement,
+   * 1..N = fix passes) and the configured fix budget. Both present only while a
+   * verification-enabled round is working an AP; absent otherwise. Display only.
+   */
+  fixIteration?: number;
+  fixBudget?: number;
+  /**
+   * The FULL action-point list with LIVE per-AP status, so a UI can render the whole
+   * round as a task list (not just the current AP). `i` is the 1-based position.
+   *
+   * SECURITY: each `title` is UNTRUSTED verdict text, control-stripped + clamped via
+   * `sanitizeLine` EXACTLY like {@link actionPointTitle} (same scrub, same clamp),
+   * and only ever serialized into this display JSON — never a shell / branch / PR
+   * title. The array is capped at {@link PROGRESS_APS_MAX} entries (defensive).
+   *
+   * ADDITIVE + OPTIONAL: a pre-this-field snapshot omits it, so an old consumer keeps
+   * working and a new consumer degrades to the single-line rendering when it is
+   * absent. Display only.
+   */
+  aps?: Array<{ i: number; title: string; status: ApProgressStatus }>;
 }
 
 /** Optional progress sink threaded through the per-AP loop + push/PR phases. */
@@ -590,20 +629,69 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
   ].join("\n").slice(0, PR_BODY_MAX);
 }
 
+/** One beat's per-call fields — the {@link ProgressTracker} injects the shared
+ *  live `aps` snapshot, so callers never assemble it themselves. */
+type ProgressBeat = Omit<SdlcProgress, "aps">;
+
+/** A single-beat emitter (a tracker's `beat`, threaded where the old `emit` was). */
+type ProgressBeatFn = (b: ProgressBeat) => void;
+
 /**
- * Wrap the optional progress sink so a THROWING callback can NEVER break the
- * executor's NEVER-THROWS guarantee (the sink is best-effort + display-only).
- * Returns a no-op when no callback was supplied (the consilium LOOP path).
+ * Progress emitter that OWNS the round's live per-action-point status list and
+ * injects a fresh (deep-copied) `aps` snapshot into EVERY beat, so each beat carries
+ * the WHOLE task list — not just the current AP. `setStatus` flips one AP's live
+ * status as the run progresses (pending → active → completed/partial/failed).
+ *
+ * It wraps the optional sink so a THROWING callback can NEVER break the executor's
+ * NEVER-THROWS guarantee (best-effort + display-only), and is a COMPLETE no-op when
+ * no callback was supplied (the consilium LOOP path ⇒ zero overhead, no snapshot
+ * ever built — behavior identical to before this field existed).
  */
-function makeEmit(onProgress?: SdlcProgressFn): SdlcProgressFn {
-  if (!onProgress) return () => {};
-  return (p: SdlcProgress) => {
-    try {
-      onProgress(p);
-    } catch {
-      // Progress is best-effort; a bad sink must not affect the SDLC run.
-    }
+interface ProgressTracker {
+  /** Emit one beat, augmented with the current live `aps` snapshot. */
+  beat: ProgressBeatFn;
+  /** Flip one action point's live status (1-based index; out-of-range = no-op). */
+  setStatus(index: number, status: ApProgressStatus): void;
+}
+
+function makeProgressTracker(
+  onProgress: SdlcProgressFn | undefined,
+  actionPoints: readonly ActionPoint[],
+): ProgressTracker {
+  // No callback ⇒ everything is a no-op; we never even build the snapshot.
+  if (!onProgress) return { beat: () => {}, setStatus: () => {} };
+  // Build the live task list ONCE. Titles are UNTRUSTED → sanitized + clamped EXACTLY
+  // like actionPointTitle (same scrub + PROGRESS_TITLE_MAX). Capped defensively.
+  const aps: Array<{ i: number; title: string; status: ApProgressStatus }> = actionPoints
+    .slice(0, PROGRESS_APS_MAX)
+    .map((ap, i) => ({
+      i: i + 1,
+      title: sanitizeLine(ap.title ?? "", PROGRESS_TITLE_MAX),
+      status: "pending" as ApProgressStatus,
+    }));
+  return {
+    beat(b) {
+      try {
+        // Deep-copy the snapshot so a stored beat is never mutated by a later flip.
+        onProgress({ ...b, aps: aps.map((a) => ({ ...a })) });
+      } catch {
+        // Progress is best-effort; a bad sink must not affect the SDLC run.
+      }
+    },
+    setStatus(index, status) {
+      const a = aps[index - 1];
+      if (a) a.status = status;
+    },
   };
+}
+
+/**
+ * Map a skilled-step name to the display-only progress `step`. The develop path only
+ * ever selects the `test-author` → `coder` pair (see `selectSkillSet`); any other
+ * name collapses to `coder` so the badge always shows a valid implement agent.
+ */
+function stepForSkill(skillName: string): NonNullable<SdlcProgress["step"]> {
+  return skillName === "test-author" ? "test-author" : "coder";
 }
 
 /**
@@ -626,7 +714,7 @@ export async function runSdlcHandoff(
   const runCoder = deps.runCoder ?? ((dir, aps, opts) => sharedCoder.run(dir, aps, opts));
   const push = deps.push ?? pushBranch;
   const openPr = deps.openPr ?? openDraftPr;
-  const emit = makeEmit(onProgress);
+  const progress = makeProgressTracker(onProgress, req.actionPoints);
 
   // B-3: server-derived branch; defensively re-gate before anything runs.
   const branch = buildBranchName(req.loopId, req.round);
@@ -682,7 +770,7 @@ export async function runSdlcHandoff(
       let committedCount = 0;
       for (let i = 0; i < total; i++) {
         const outcome = await runActionPoint(
-          { gitRaw, runCoder, emit, completedBefore: committedCount, skilledSteps, verify: verifyCtx },
+          { gitRaw, runCoder, progress, completedBefore: committedCount, skilledSteps, verify: verifyCtx },
           wt,
           req,
           req.actionPoints[i],
@@ -691,6 +779,10 @@ export async function runSdlcHandoff(
         );
         outcomes.push(outcome);
         if (outcome.committed) committedCount += 1;
+        // AP end: fold the settled status into the shared live snapshot. It surfaces
+        // on the very next beat (the next AP's start, or the push/done beat below) —
+        // the poll-based UI reads the latest snapshot, so no separate end beat.
+        progress.setStatus(i + 1, outcome.status);
       }
 
       // Stage A: FINAL-STATE re-verification. After every action point has been applied
@@ -713,7 +805,7 @@ export async function runSdlcHandoff(
         gitRaw,
         push,
         openPr,
-        emit,
+        emit: progress.beat,
       }, finalVerification);
       // Stage 2b: aggregate the per-criterion verification into ONE bounded round
       // testSummary, surfaced on the result so the controller can persist it to
@@ -733,7 +825,7 @@ export async function runSdlcHandoff(
       result.executionTrace = buildSdlcTrace(req.archetype ?? null, outcomes, result, finalVerification?.passed);
       // Terminal beat — the executor finished its work for this round (the SERVICE
       // separately classifies done/failed from the result; this is phase-only).
-      emit({
+      progress.beat({
         phase: "done",
         actionPointIndex: total,
         actionPointTotal: total,
@@ -761,7 +853,8 @@ async function runActionPoint(
   io: {
     gitRaw: GitRunner;
     runCoder: NonNullable<SdlcExecutorDeps["runCoder"]>;
-    emit: SdlcProgressFn;
+    /** Live progress emitter — owns the round's per-AP status snapshot. */
+    progress: ProgressTracker;
     /** Commits produced by EARLIER action points (this AP not yet counted). */
     completedBefore: number;
     /** Stage 2a: the round's ORDERED bound skilled steps. Empty ⇒ the UNCHANGED
@@ -780,14 +873,12 @@ async function runActionPoint(
   const title = sanitizeLine(ap.title ?? "", PR_BODY_TITLE_MAX);
   // Display-only progress title — clamped + control-stripped (UNTRUSTED text).
   const progressTitle = sanitizeLine(ap.title ?? "", PROGRESS_TITLE_MAX);
-  // 0. Beat: about to run the coder for THIS action point.
-  io.emit({
-    phase: "coding",
-    actionPointIndex: index,
-    actionPointTotal: total,
-    actionPointTitle: progressTitle,
-    completedCount: io.completedBefore,
-  });
+  // Fix budget surfaced on every beat once verification is on (undefined otherwise).
+  const fixBudget = io.verify ? io.verify.config.maxFixIterations : undefined;
+  // 0. This AP is now the ACTIVE row in the live task list. The per-step `coding`
+  //    beats below (one per skilled step, or one for the unskilled coder) carry the
+  //    updated snapshot; each names the agent (`step`) running RIGHT NOW.
+  io.progress.setStatus(index, "active");
 
   // 1. Run the coder for THIS action point. A throw (timeout / binary missing) is
   //    caught — its partial edits are still committed below.
@@ -804,6 +895,17 @@ async function runActionPoint(
   if (io.skilledSteps.length > 0) {
     for (const bound of io.skilledSteps) {
       ranSkills.push(bound.step.skillName);
+      // Beat: this skilled agent is running RIGHT NOW (test-author → coder, in order).
+      io.progress.beat({
+        phase: "coding",
+        actionPointIndex: index,
+        actionPointTotal: total,
+        actionPointTitle: progressTitle,
+        completedCount: io.completedBefore,
+        step: stepForSkill(bound.step.skillName),
+        fixIteration: 0,
+        fixBudget,
+      });
       try {
         coder = await io.runCoder(wt.worktreeDir, [ap], {
           timeoutMs: req.coderTimeoutMs,
@@ -821,6 +923,17 @@ async function runActionPoint(
       }
     }
   } else {
+    // Beat: the single unskilled coder is running RIGHT NOW (today's default path).
+    io.progress.beat({
+      phase: "coding",
+      actionPointIndex: index,
+      actionPointTotal: total,
+      actionPointTitle: progressTitle,
+      completedCount: io.completedBefore,
+      step: "coder",
+      fixIteration: 0,
+      fixBudget,
+    });
     try {
       coder = await io.runCoder(wt.worktreeDir, [ap], { timeoutMs: req.coderTimeoutMs });
     } catch (err) {
@@ -840,7 +953,13 @@ async function runActionPoint(
   //     carries an acceptance criterion (the definition-of-green). Never throws.
   let verification: ApVerification | undefined;
   if (io.verify && ranClean && (ap.acceptanceCriterion ?? "").trim().length > 0) {
-    verification = await runVerifyFixLoop(io.runCoder, io.verify, wt, req, ap);
+    verification = await runVerifyFixLoop(io.runCoder, io.verify, wt, req, ap, {
+      progress: io.progress,
+      index,
+      total,
+      title: progressTitle,
+      completedBefore: io.completedBefore,
+    });
   }
 
   // Outcome base (incl. the Stage-2a skills audit — undefined on the unskilled path
@@ -877,8 +996,8 @@ async function runActionPoint(
   const isPartial = threw || (coder !== null && !coder.ok);
   const note = isPartial ? (runNote ?? coder?.error ?? "coder did not finish") : undefined;
   const { subject, body } = buildApCommitMessage(req.round, ap, index, total, isPartial, note);
-  // Beat: about to commit THIS action point's work.
-  io.emit({
+  // Beat: about to commit THIS action point's work (still the active row).
+  io.progress.beat({
     phase: "committing",
     actionPointIndex: index,
     actionPointTotal: total,
@@ -1026,10 +1145,31 @@ async function runVerifyFixLoop(
   wt: CreateWorktreeResult,
   req: SdlcHandoffRequest,
   ap: ActionPoint,
+  beatCtx: {
+    progress: ProgressTracker;
+    index: number;
+    total: number;
+    title: string;
+    completedBefore: number;
+  },
 ): Promise<ApVerification> {
   const criterion = sanitizeLine(ap.acceptanceCriterion ?? "", CRITERION_MAX);
+  // Emit a verification beat (test-runner / fix-coder) for the ACTIVE AP; the tracker
+  // folds in the live snapshot. `fixIteration` = which fix pass (0 = initial test run).
+  const emitVerify = (step: NonNullable<SdlcProgress["step"]>, fixIteration: number): void =>
+    beatCtx.progress.beat({
+      phase: "coding",
+      actionPointIndex: beatCtx.index,
+      actionPointTotal: beatCtx.total,
+      actionPointTitle: beatCtx.title,
+      completedCount: beatCtx.completedBefore,
+      step,
+      fixIteration,
+      fixBudget: vc.config.maxFixIterations,
+    });
   const runOnce = (): Promise<TestRunResult> => runTestOnce(vc, wt);
 
+  emitVerify("test-runner", 0); // initial verification run (before any fix).
   let result = await runOnce();
   let fixIterations = 0;
   while (!result.passed && fixIterations < vc.config.maxFixIterations) {
@@ -1037,6 +1177,7 @@ async function runVerifyFixLoop(
     // per-AP coder/test timeouts + this cap together bound total develop time).
     if (vc.now() >= vc.deadline) break;
     fixIterations += 1;
+    emitVerify("fix-coder", fixIterations); // fix pass k is running.
     try {
       const fixed = await runCoder(wt.worktreeDir, [ap], {
         timeoutMs: req.coderTimeoutMs,
@@ -1047,6 +1188,7 @@ async function runVerifyFixLoop(
     } catch {
       break; // a crashed fix coder stops the loop; whatever landed is still committed.
     }
+    emitVerify("test-runner", fixIterations); // re-run tests after fix pass k.
     result = await runOnce();
   }
 
@@ -1148,7 +1290,7 @@ async function pushAndOpenPr(
   wt: CreateWorktreeResult,
   outcomes: readonly ApOutcome[],
   committedCount: number,
-  io: { gitRaw: GitRunner; push: typeof pushBranch; openPr: typeof openDraftPr; emit: SdlcProgressFn },
+  io: { gitRaw: GitRunner; push: typeof pushBranch; openPr: typeof openDraftPr; emit: ProgressBeatFn },
   finalVerification?: FinalVerification,
 ): Promise<SdlcHandoffResult> {
   const total = req.actionPoints.length;
