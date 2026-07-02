@@ -107,7 +107,7 @@ import {
   type DecisionLogRow,
 } from "@shared/schema";
 import type { LessonRecallFilter } from "./memory/lessons/types";
-import type { TraceSpan, SkillVersionRecord, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace } from "@shared/types";
+import type { TraceSpan, SkillVersionRecord, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace, ActionPoint } from "@shared/types";
 
 import { encrypt } from "./crypto";
 // [ADR-001 Wave-2] credentialProvider routes all decrypt() calls through the broker.
@@ -1213,6 +1213,15 @@ export class PgStorage implements IStorage {
     await db
       .update(consiliumLoopRounds)
       .set({ executionTrace: trace })
+      .where(and(eq(consiliumLoopRounds.loopId, loopId), eq(consiliumLoopRounds.round, round)));
+  }
+
+  async updateLoopRoundActionPoints(loopId: string, round: number, actionPoints: ActionPoint[]): Promise<void> {
+    // Stage B: same (loop, round) scoping — persist the planner's per-criterion method
+    // assignment onto the additive `verificationMethod` field of each openActionPoint.
+    await db
+      .update(consiliumLoopRounds)
+      .set({ openActionPoints: actionPoints })
       .where(and(eq(consiliumLoopRounds.loopId, loopId), eq(consiliumLoopRounds.round, round)));
   }
 

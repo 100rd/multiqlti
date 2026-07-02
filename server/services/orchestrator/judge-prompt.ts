@@ -27,7 +27,8 @@ In addition to the verdict / pros / cons / action_points fields, add a
       "effort": "...",
       "rationale": "...",
       "tradeoff": "...",
-      "acceptanceCriterion": "When <condition>, then <verifiable result>"
+      "acceptanceCriterion": "When <condition>, then <verifiable result>",
+      "verificationMethod": "test-run"
     }
   ]
 }
@@ -46,4 +47,17 @@ Rules:
   which one can unambiguously confirm the item is closed. If no verifiable
   criterion can be stated, simply omit the field (the verdict stays valid
   without it).
+- OPTIONALLY, for each action point add a \`verificationMethod\` field (exactly
+  this camelCase key) naming HOW the item's criterion is verified — the ground
+  truth. Choose EXACTLY ONE of:
+    - \`test-run\` — a code/repo change whose criterion is confirmed by the
+      repo's automated tests (unit/integration). This is the default for code.
+    - \`judge\` — a non-mechanical criterion no test asserts (a design property,
+      a doc/readme quality, a naming/UX judgement); a verifier model confirms the
+      diff meets the criterion.
+    - \`manual-ops\` — an OPERATIONAL action OUTSIDE the repo that no code change
+      can verify (rotate a leaked secret, revoke a key, file a ticket, change a
+      cloud setting). The pipeline can only SURFACE these for a human; it can
+      NEVER close them. Use this whenever the action is not a source change.
+  Omit the field when unsure (the planner assigns a default from the task type).
 `.trim();

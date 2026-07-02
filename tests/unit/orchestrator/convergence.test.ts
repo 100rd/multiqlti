@@ -149,3 +149,63 @@ describe("readConvergence — trust-then-derive convergence verdict", () => {
     expect(tap.rationale).toHaveLength(1000);
   });
 });
+
+// ─── Stage B (design §5): per-criterion verification method ─────────────────
+
+import { extractActionPoints, normalizeActionPointMethods, archetypeDefaultMethod } from "../../../server/services/orchestrator/convergence.js";
+
+describe("Stage B — verificationMethod carry + enum-clamp", () => {
+  it("carries a VALID judge-proposed method through readConvergence + extractActionPoints", () => {
+    const judge = {
+      output: {
+        action_points: [
+          { title: "rotate secret", priority: "P0", verificationMethod: "manual-ops" },
+          { title: "improve readme", priority: "P0", verificationMethod: "judge" },
+          { title: "fix parser", priority: "P0", verificationMethod: "test-run" },
+        ],
+      },
+    };
+    const conv = readConvergence(judge);
+    expect(conv.openActionPoints.map((a) => a.verificationMethod)).toEqual(["manual-ops", "judge", "test-run"]);
+    const all = extractActionPoints(judge);
+    expect(all.map((a) => a.verificationMethod)).toEqual(["manual-ops", "judge", "test-run"]);
+  });
+
+  it("DROPS an invalid/injected method to absent (enum-clamp) WITHOUT dropping the action point", () => {
+    const judge = {
+      output: {
+        action_points: [
+          { title: "sneaky", priority: "P0", verificationMethod: "web-evidence" }, // not judge-proposable
+          { title: "evil", priority: "P0", verificationMethod: "rm -rf /" }, // garbage
+        ],
+      },
+    };
+    const all = extractActionPoints(judge);
+    // Both action points survive; the invalid methods are dropped to absent.
+    expect(all).toHaveLength(2);
+    expect(all[0].verificationMethod).toBeUndefined();
+    expect(all[1].verificationMethod).toBeUndefined();
+  });
+});
+
+describe("Stage B — normalizeActionPointMethods (planner assignment)", () => {
+  it("fills ABSENT methods from the archetype default, never overriding a proposal", () => {
+    const aps = [
+      { title: "a", priority: "P0" }, // absent → default
+      { title: "b", priority: "P0", verificationMethod: "manual-ops" as const }, // kept
+    ];
+    const repo = normalizeActionPointMethods(aps, "repo-assessment");
+    expect(repo.map((a) => a.verificationMethod)).toEqual(["test-run", "manual-ops"]);
+    const research = normalizeActionPointMethods(aps, "research");
+    expect(research.map((a) => a.verificationMethod)).toEqual(["web-evidence", "manual-ops"]);
+    const nul = normalizeActionPointMethods(aps, null);
+    expect(nul.map((a) => a.verificationMethod)).toEqual(["test-run", "manual-ops"]);
+  });
+
+  it("archetypeDefaultMethod: research→web-evidence, else test-run", () => {
+    expect(archetypeDefaultMethod("research")).toBe("web-evidence");
+    expect(archetypeDefaultMethod("repo-assessment")).toBe("test-run");
+    expect(archetypeDefaultMethod("infra")).toBe("test-run");
+    expect(archetypeDefaultMethod(null)).toBe("test-run");
+  });
+});

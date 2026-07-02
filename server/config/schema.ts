@@ -443,6 +443,43 @@ export const ConfigSchema = z.object({
          */
         testRunTimeoutMs: z.coerce.number().int().min(10_000).max(1_800_000).default(300_000),
         /**
+         * Stage B (design §5 + §9 "Stage 6"): PER-CRITERION verification method routing.
+         * The judge proposes and the planner assigns a method PER action point; the
+         * executor then routes each AP by its method instead of forcing every criterion
+         * through the test-run harness:
+         *   - `manual-ops` → NOT sent to the coder; SURFACED for a human (never green).
+         *   - `judge` → coder implements, then a VERIFIER model judges the diff against
+         *     the criterion (no test run).
+         *   - `test-run` → today's per-criterion sandboxed test path (unchanged).
+         * Kill-switch default FALSE ⇒ BYTE-IDENTICAL off: the executor ignores every AP's
+         * method and the planner never normalizes. Gated by the parent `consiliumLoop
+         * .enabled` AND `implement.enabled`; the `judge` route additionally needs the
+         * planner gateway, the `test-run` route the SAME sandbox gate as `verification`.
+         */
+        perCriterionMethod: z.object({
+          /** Kill-switch: false (default) → no method routing (byte-identical develop). */
+          enabled: z.boolean().default(false),
+          /**
+           * The model slug the `judge`-method VERIFIER calls via the SAME gateway path
+           * the planner/direct_llm use (no tools, completion only). Defaults to the task
+           * system's default model — NEVER "mock" (a mock would rubber-stamp a criterion).
+           */
+          judgeModel: z.string().min(1).default(DEFAULT_TASK_MODEL),
+        }).default({}),
+        /**
+         * Stage B (design §5): OPTIONAL lint/format command folded into the coder's green.
+         * When SET (a non-empty command) AND per-criterion verification is enabled, after a
+         * test-run PASSES for an action point the executor runs this command; a lint/format
+         * failure counts as RED and enters the SAME bounded code→test→fix loop (the fix
+         * prompt states lint/format failed + includes the output). Also run once in final
+         * verification. UNSET (null, default) ⇒ ZERO change. SECURITY: config-sourced, the
+         * SAME trust as `testCommand` — run via no-shell argv (whitespace-tokenized), never
+         * from untrusted action-point/criterion text; a shell-metachar in it is NOT
+         * interpreted. Timeout reuses `testRunTimeoutMs`; spawn-failure (ENOENT/EACCES) is
+         * NOT-RUN and a wall-clock kill is NOT-ADJUDICATED (same conventions as testCommand).
+         */
+        lintCommand: z.string().nullable().default(null),
+        /**
          * Stage 3 (design §3.C/§6): the RESEARCH archetype implement path — deep web
          * research → synthesize → a structured, web-evidence-verified REPORT (NOT code,
          * NOT a Draft PR). When `enabled` is FALSE (default) a `research` loop's close-out

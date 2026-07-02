@@ -18,8 +18,8 @@
  * an unreadable verdict must not silently end the loop as if it had converged.
  */
 import { z } from "zod";
-import { P0_PRIORITY } from "@shared/types";
-import type { ActionPoint, ConvergenceVerdict } from "@shared/types";
+import { P0_PRIORITY, JUDGE_PROPOSABLE_METHODS } from "@shared/types";
+import type { ActionPoint, ConvergenceVerdict, Archetype, VerificationMethod } from "@shared/types";
 
 const actionPointSchema = z.object({
   title: z.string(),
@@ -30,6 +30,12 @@ const actionPointSchema = z.object({
   // Stage 1 (design §3.B): an OPTIONAL per-AP verifiable "When … Then …" DoD.
   // Optional ⇒ an unmodified judge still yields a valid verdict (back-compat).
   acceptanceCriterion: z.string().optional(),
+  // Stage B (design §5 "Stage 6"): the OPTIONAL judge-proposed verification method.
+  // ENUM-CLAMPED to the judge-proposable subset; `.catch(undefined)` DROPS an invalid
+  // value to absent (the planner fills the archetype default) rather than failing the
+  // WHOLE action point parse — a prompt-injected method can never smuggle a value past
+  // the enum or drop a legitimate action point. Absent ⇒ back-compat.
+  verificationMethod: z.enum(JUDGE_PROPOSABLE_METHODS).optional().catch(undefined),
 });
 
 /** The trusted `output.convergence` object, when the judge emits one. */
@@ -82,6 +88,10 @@ function boundActionPoint(p: ActionPoint): ActionPoint {
     // copied here is silently stripped on persist/read. Carry the criterion
     // through (clamped) so it survives the verdict round-trip + DEV handoff.
     acceptanceCriterion: clampStr(p.acceptanceCriterion, MAX_CRITERION_LEN),
+    // Stage B: carry the (enum-clamped) verification method through the same rebuild so
+    // it survives the verdict round-trip + DEV handoff. Already bounded to the fixed
+    // union by the schema; a `undefined` is simply absent (planner default fills it).
+    ...(p.verificationMethod !== undefined ? { verificationMethod: p.verificationMethod } : {}),
   };
 }
 
@@ -171,4 +181,34 @@ export function extractActionPoints(judgeOutput: unknown): ActionPoint[] {
   const parsed = z.array(actionPointSchema).safeParse(body.action_points);
   if (!parsed.success) return [];
   return boundActionPoints(parsed.data);
+}
+
+/**
+ * Stage B (design §5 "Stage 6") — the PLANNER's per-criterion method ASSIGNMENT. The
+ * judge PROPOSES a method per action point (carried through {@link extractActionPoints}
+ * / {@link readConvergence}); this fills every ABSENT method from the loop's ARCHETYPE
+ * DEFAULT so each criterion has a ground-truth check the executor can route on:
+ *   - `repo-assessment` (or null/unknown archetype) → `test-run` (the code default).
+ *   - `research` → `web-evidence` (cited sources — assigned here, never judge-proposed).
+ *   - `infra` → `test-run` (the code/deploy default until a `live-deploy-smoke` method
+ *     is wired; §5 lists it as future — kept conservative rather than inventing a route).
+ *
+ * A judge-proposed method is ALREADY enum-clamped by {@link actionPointSchema}, so this
+ * only fills gaps — it never overrides a valid proposal. PURE (no I/O); the planner
+ * persists the result and the SDLC executor routes on it. Returns a NEW array (the inputs
+ * are not mutated). When `perCriterionMethod` is OFF the callers never invoke this, so the
+ * develop path is byte-for-byte unchanged.
+ */
+export function archetypeDefaultMethod(archetype: Archetype | null): VerificationMethod {
+  return archetype === "research" ? "web-evidence" : "test-run";
+}
+
+export function normalizeActionPointMethods(
+  actionPoints: readonly ActionPoint[],
+  archetype: Archetype | null,
+): ActionPoint[] {
+  const fallback = archetypeDefaultMethod(archetype);
+  return actionPoints.map((ap) =>
+    ap.verificationMethod !== undefined ? ap : { ...ap, verificationMethod: fallback },
+  );
 }
