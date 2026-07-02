@@ -42,6 +42,7 @@ import {
   ShieldCheck,
   ShieldAlert,
   BookOpen,
+  Gavel,
 } from "lucide-react";
 import {
   useConsiliumLoop,
@@ -105,10 +106,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { ConsiliumLoopState } from "@/hooks/use-consilium-loops";
+import { IterationDetailView } from "@/components/task-groups/iterations-panel";
 import type { ActionPoint, Archetype } from "@shared/types";
 import { ARCHETYPES } from "@shared/types";
 
-// Mirror verdict-panel's priority palette so the taxonomy never drifts.
+// Priority palette for action-point severity tiers (P0–P3). The loop page is now
+// the canonical home of this taxonomy (the task-group verdict panel is retired).
 const PRIORITY_COLOR: Record<string, string> = {
   P0: "bg-red-600 text-white",
   P1: "bg-orange-500 text-white",
@@ -488,6 +491,7 @@ function RoundRow({
   terminal: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [disputeOpen, setDisputeOpen] = useState(false);
   const aps: ActionPoint[] = Array.isArray(round.openActionPoints)
     ? round.openActionPoints
     : [];
@@ -495,7 +499,12 @@ function RoundRow({
   // row expands to a mini-tree of how the round ran, ABOVE the still-open AP list.
   const trace = round.executionTrace;
   const hasTrace = traceHasContent(trace);
-  const expandable = aps.length > 0 || hasTrace;
+  // Every round maps to a consilium iteration (round N ↔ iteration N of the loop's
+  // group). Its DISPUTE — the debaters' + judge's executions plus the human-note
+  // editor — lives ON the round now (the standalone Task Groups page is retired)
+  // and is fetched LAZILY only when the operator opens this section.
+  const canShowDispute = !!groupId;
+  const expandable = aps.length > 0 || hasTrace || canShowDispute;
 
   return (
     <>
@@ -524,17 +533,12 @@ function RoundRow({
           {shortSha(round.baselineCommit)} → {shortSha(round.headCommit)}
         </TableCell>
         <TableCell>
-          {/* iterationNumber is a per-group iteration INDEX, not a group id — the
-              consilium group (loop.groupId) is the real, navigable target. App.tsx
-              has no plain /task-groups/:id/iterations/:n route (only …/trace). */}
-          <Link
-            href={`/task-groups/${groupId}`}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <span className="text-primary hover:underline text-xs">
-              iter #{round.iterationNumber}
-            </span>
-          </Link>
+          {/* The per-group iteration INDEX. The task-group pages are retired, so
+              this is inert text; the dispute for this iteration is revealed inline
+              by expanding the row (below). */}
+          <span className="text-muted-foreground text-xs">
+            iter #{round.iterationNumber}
+          </span>
         </TableCell>
       </TableRow>
       {open && expandable && (
@@ -580,6 +584,34 @@ function RoundRow({
                 ))}
               </ul>
               <p className="text-[11px] text-muted-foreground/70">{PRIORITY_LEGEND}</p>
+                </div>
+              )}
+              {/* Dispute — the consilium debate behind this round: each
+                  participant's execution + the judge, plus the human-note editor
+                  whose text flows into the NEXT round's dispute context. Mounted
+                  (and fetched) only when opened, so the loop page stays light. */}
+              {canShowDispute && (
+                <div className="space-y-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setDisputeOpen((v) => !v)}
+                    aria-expanded={disputeOpen}
+                    className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                  >
+                    {disputeOpen ? (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    )}
+                    <Gavel className="h-3.5 w-3.5" />
+                    Dispute (iteration #{round.iterationNumber})
+                  </button>
+                  {disputeOpen && (
+                    <IterationDetailView
+                      groupId={groupId}
+                      iterationNumber={round.iterationNumber}
+                    />
+                  )}
                 </div>
               )}
             </div>
@@ -1645,27 +1677,20 @@ export default function ConsiliumLoopDetail() {
                 </span>
               </Fact>
               <Fact label="Consilium group">
-                {loop.currentIterationNumber != null ? (
-                  <Link href={`/task-groups/${loop.groupId}`}>
-                    <span className="text-primary hover:underline font-mono text-xs">
-                      iter #{loop.currentIterationNumber}
-                    </span>
-                  </Link>
-                ) : (
-                  <Link href={`/task-groups/${loop.groupId}`}>
-                    <span className="text-primary hover:underline font-mono text-xs">
-                      {loop.groupId.slice(0, 8)}
-                    </span>
-                  </Link>
-                )}
+                {/* The consilium group is internal machinery now (its standalone
+                    page is retired) — shown as an inert identifier. The per-round
+                    dispute lives in the Rounds table below. */}
+                <span className="font-mono text-xs text-muted-foreground">
+                  {loop.currentIterationNumber != null
+                    ? `iter #${loop.currentIterationNumber}`
+                    : loop.groupId.slice(0, 8)}
+                </span>
               </Fact>
               <Fact label="DEV group">
                 {loop.devGroupId ? (
-                  <Link href={`/task-groups/${loop.devGroupId}`}>
-                    <span className="text-primary hover:underline font-mono text-xs">
-                      {loop.devGroupId.slice(0, 8)}
-                    </span>
-                  </Link>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {loop.devGroupId.slice(0, 8)}
+                  </span>
                 ) : (
                   <span className="text-muted-foreground">—</span>
                 )}

@@ -1,24 +1,31 @@
 /**
- * Task Groups v2 — Iterations panel (FE2). A read-only, newest-first list of a
- * group's runs (number, status badge, started/duration, completed/total counts),
- * keyset-paginated via useTaskGroupIterations. Selecting a row loads the
- * owner-gated detail (useIterationDetail) and renders that iteration's per-task
- * EXECUTION history by reusing buildTimelineFromExecutions (the same timeline as
- * the definition view) plus the per-task summary/error cards. The Trace button
- * targets `…/iterations/:n/trace`.
+ * Iteration detail view + human-note editor — the "Dispute" surface of a consilium
+ * loop round (design §7). Given a consilium group id + an iteration number it
+ * renders that round's dispute: one card per participant EXECUTION (each debater +
+ * the judge) with role/model label, status and an expandable raw-output block,
+ * plus the human-in-the-loop NOTE editor whose text is folded into the NEXT
+ * round's dispute context (composeIterationInput → HUMAN_NOTE_HEADING, server-side,
+ * unchanged). Consumed by ConsiliumLoopDetail; the standalone Task Groups page it
+ * once backed has been retired.
  *
- * SECURITY: the list is metadata-only (server allowlist). The detail's
- * summary/error/output are owner-gated server-side and rendered here as INERT
- * React text — never via dangerouslySetInnerHTML.
+ * SECURITY: the summary/error/output are owner-gated server-side and rendered here
+ * as INERT React text — never via dangerouslySetInnerHTML.
  */
 import { useEffect, useState, type ReactElement } from "react";
-import { Link } from "wouter";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { Activity, Loader2, ChevronRight, MessageSquarePlus } from "lucide-react";
 import {
-  useTaskGroupIterations,
+  Loader2,
+  MessageSquarePlus,
+  Clock,
+  Play,
+  CheckCircle2,
+  AlertCircle,
+  Ban,
+} from "lucide-react";
+import {
   useIterationDetail,
   useSaveIterationNote,
 } from "@/hooks/use-task-iterations";
@@ -29,127 +36,48 @@ import {
   type ExecutionRowInput,
 } from "./timeline";
 
-interface IterationsPanelProps {
-  groupId: string;
-  /** The currently selected iteration number (null → none selected yet). */
-  selected: number | null;
-  onSelect: (iterationNumber: number) => void;
-  /** Reused StatusBadge from the page so the visual system stays consistent. */
-  StatusBadge: (props: { status: string }) => ReactElement;
-  /** The active iteration number (annotated "live" while running). */
-  activeNumber?: number | null;
-}
+// ─── Status badge ──────────────────────────────────────────────────────────────
+//
+// A small status badge for an execution/iteration status, matching the loop
+// page's status idioms. Previously supplied by the (now-retired) TaskGroup page;
+// kept self-contained here so the dispute view needs no badge prop, and still
+// overridable for callers that want their own visual system.
 
-export function IterationsPanel({
-  groupId,
-  selected,
-  onSelect,
-  StatusBadge,
-  activeNumber,
-}: IterationsPanelProps) {
-  const { items, hasMore, isLoading, isFetchingMore, error, loadMore } =
-    useTaskGroupIterations(groupId);
+const EXECUTION_STATUS_STYLE: Record<
+  string,
+  { color: string; icon: ReactElement }
+> = {
+  pending: { color: "bg-muted text-muted-foreground", icon: <Clock className="h-3 w-3" /> },
+  blocked: {
+    color: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
+    icon: <Clock className="h-3 w-3" />,
+  },
+  ready: {
+    color: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+    icon: <Play className="h-3 w-3" />,
+  },
+  running: { color: "bg-blue-500 text-white", icon: <Loader2 className="h-3 w-3 animate-spin" /> },
+  completed: { color: "bg-green-600 text-white", icon: <CheckCircle2 className="h-3 w-3" /> },
+  failed: { color: "bg-red-600 text-white", icon: <AlertCircle className="h-3 w-3" /> },
+  cancelled: { color: "bg-gray-500 text-white", icon: <Ban className="h-3 w-3" /> },
+};
 
+/** Default status badge for an execution/iteration status (inert label + icon). */
+export function ExecutionStatusBadge({ status }: { status: string }): ReactElement {
+  const cfg = EXECUTION_STATUS_STYLE[status] ?? EXECUTION_STATUS_STYLE.pending;
   return (
-    <Card aria-labelledby="iterations-heading">
-      <CardHeader className="py-3">
-        <CardTitle id="iterations-heading" className="text-sm font-semibold">
-          Iterations
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="px-0 pb-2">
-        {isLoading ? (
-          <p className="px-4 py-6 text-center text-xs text-muted-foreground">
-            Loading iterations…
-          </p>
-        ) : error ? (
-          <div
-            role="alert"
-            className="mx-4 my-4 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-          >
-            <p className="font-medium">Failed to load iterations.</p>
-            <p className="mt-1 break-words text-destructive/80">
-              {error instanceof Error ? error.message : String(error)}
-            </p>
-          </div>
-        ) : items.length === 0 ? (
-          <p className="px-4 py-6 text-center text-xs text-muted-foreground">
-            No runs yet. Use Run to start the first iteration.
-          </p>
-        ) : (
-          <ul className="divide-y divide-border" aria-label="Iteration history">
-            {items.map((it) => {
-              const isSelected = selected === it.iterationNumber;
-              const isActive =
-                activeNumber === it.iterationNumber && it.status === "running";
-              return (
-                <li key={it.iterationNumber}>
-                  <button
-                    type="button"
-                    aria-pressed={isSelected}
-                    aria-current={isActive ? "true" : undefined}
-                    onClick={() => onSelect(it.iterationNumber)}
-                    className={`flex w-full items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                      isSelected ? "bg-muted/60" : ""
-                    }`}
-                  >
-                    <span className="shrink-0 text-sm font-semibold tabular-nums">
-                      #{it.iterationNumber}
-                    </span>
-                    <span className="shrink-0">
-                      <StatusBadge status={it.status} />
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                      {it.completedCount}/{it.taskCount} tasks
-                      {it.durationMs !== null && (
-                        <span className="ml-2 tabular-nums">
-                          {formatDuration(it.durationMs)}
-                        </span>
-                      )}
-                      {isActive && (
-                        <span className="ml-2 inline-flex items-center gap-1 text-blue-500">
-                          <span
-                            className="h-1.5 w-1.5 rounded-full bg-blue-500 motion-safe:animate-pulse"
-                            aria-hidden="true"
-                          />
-                          live
-                        </span>
-                      )}
-                    </span>
-                    <ChevronRight
-                      className="h-4 w-4 shrink-0 text-muted-foreground"
-                      aria-hidden="true"
-                    />
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-
-        {hasMore && (
-          <div className="px-4 pt-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="w-full text-xs"
-              onClick={loadMore}
-              disabled={isFetchingMore}
-            >
-              {isFetchingMore ? "Loading…" : "Load more"}
-            </Button>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+    <Badge className={`${cfg.color} gap-1`}>
+      {cfg.icon}
+      {status}
+    </Badge>
   );
 }
 
 interface IterationDetailViewProps {
   groupId: string;
   iterationNumber: number;
-  StatusBadge: (props: { status: string }) => ReactElement;
+  /** Optional badge override; defaults to the self-contained ExecutionStatusBadge. */
+  StatusBadge?: (props: { status: string }) => ReactElement;
 }
 
 /**
@@ -174,13 +102,13 @@ function formatExecutionOutput(output: unknown): string | null {
 }
 
 /**
- * Human-in-the-loop note editor for one iteration. After a round finishes the
- * owner records their thoughts/decisions here; on the NEXT run the note is folded
- * into the iteration input so the debaters/judge argue with it in scope. The
+ * Human-in-the-loop note editor for one round's iteration. After a round finishes
+ * the owner records their thoughts/decisions here; on the NEXT round the note is
+ * folded into the dispute input so the debaters/judge argue with it in scope. The
  * textarea is seeded from the persisted note and re-seeds when the server value
- * changes (e.g. switching iterations) UNLESS the user has unsaved edits.
+ * changes (e.g. switching rounds) UNLESS the user has unsaved edits.
  */
-function IterationNoteEditor({
+export function IterationNoteEditor({
   groupId,
   iterationNumber,
   initialNote,
@@ -203,7 +131,7 @@ function IterationNoteEditor({
     save.mutate(note, {
       onSuccess: () => {
         setDirty(false);
-        toast({ title: "Note saved", description: "It will be taken into account in the next iteration (Run again)." });
+        toast({ title: "Note saved", description: "It will be taken into account in the next round." });
       },
       onError: (e) =>
         toast({
@@ -224,8 +152,8 @@ function IterationNoteEditor({
       </CardHeader>
       <CardContent className="space-y-2 py-2">
         <p className="text-xs text-muted-foreground">
-          Jot down your takeaways from this iteration. When you start the next iteration ("Run again"),
-          they are added to the debate context — the participants and the judge will take them into account.
+          Jot down your takeaways from this round. When the loop advances to the next round,
+          they are added to the dispute context — the participants and the judge will take them into account.
         </p>
         <Textarea
           value={note}
@@ -252,14 +180,15 @@ function IterationNoteEditor({
 }
 
 /**
- * The selected iteration's per-task execution history: a reused timeline built
- * from the iteration's executions, plus per-task summary/error cards. The Trace
- * button targets the per-iteration trace route.
+ * One round's dispute detail: the human-note editor plus per-participant execution
+ * cards (each debater + the judge) built from the iteration's executions, with an
+ * expandable raw-output block per execution. The owner-gated detail is fetched
+ * lazily — mount this only when the round's dispute section is expanded.
  */
 export function IterationDetailView({
   groupId,
   iterationNumber,
-  StatusBadge,
+  StatusBadge = ExecutionStatusBadge,
 }: IterationDetailViewProps) {
   const { data, isLoading, error } = useIterationDetail(groupId, iterationNumber);
 
@@ -268,7 +197,7 @@ export function IterationDetailView({
       <Card>
         <CardContent className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-          Loading iteration #{iterationNumber}…
+          Loading the dispute for round #{iterationNumber}…
         </CardContent>
       </Card>
     );
@@ -278,7 +207,7 @@ export function IterationDetailView({
     return (
       <Card>
         <CardContent className="py-6 text-center text-sm text-muted-foreground">
-          Could not load iteration #{iterationNumber}.
+          Could not load the dispute for round #{iterationNumber}.
         </CardContent>
       </Card>
     );
@@ -289,31 +218,18 @@ export function IterationDetailView({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <h2 className="text-lg font-semibold">Iteration #{iterationNumber}</h2>
-          <StatusBadge status={data.iteration.status} />
-        </div>
-        <Link href={`/task-groups/${groupId}/iterations/${iterationNumber}/trace`}>
-          <Button variant="outline" size="sm">
-            <Activity className="mr-2 h-4 w-4" aria-hidden="true" />
-            Trace
-          </Button>
-        </Link>
-      </div>
-
-      {/* Human-in-the-loop: thoughts/decisions folded into the next run. */}
+      {/* Human-in-the-loop: thoughts/decisions folded into the next round. */}
       <IterationNoteEditor
         groupId={groupId}
         iterationNumber={iterationNumber}
         initialNote={data.iteration.humanNote ?? ""}
       />
 
-      {/* Per-task execution cards (summary/error owner-gated, inert text). */}
+      {/* Per-participant execution cards (summary/error owner-gated, inert text). */}
       {data.executions.length === 0 ? (
         <Card>
           <CardContent className="py-6 text-center text-sm text-muted-foreground">
-            This iteration has no recorded executions.
+            This round has no recorded participant executions.
           </CardContent>
         </Card>
       ) : (
