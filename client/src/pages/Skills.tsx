@@ -8,20 +8,10 @@ import {
   SelectGroup,
   SelectItem,
   SelectLabel,
-  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Sparkles, Upload, Download, Plus, Users, Cpu } from "lucide-react";
+import { Sparkles, Upload, Download, Plus, Cpu } from "lucide-react";
 import { ModelSkillsTab } from "@/components/skills/ModelSkillsTab";
 import { cn } from "@/lib/utils";
 import { SDLC_TEAMS } from "@shared/constants";
@@ -31,14 +21,11 @@ import {
   useExportSkills,
   useImportSkills,
 } from "@/hooks/use-skills";
-import { useSkillTeams, useCreateSkillTeam } from "@/hooks/use-skill-teams";
 import { SkillCard } from "@/components/skills/SkillCard";
 import { SkillEditor } from "@/components/skills/SkillEditor";
 import { SkillLibraryDetailModal } from "@/components/skills/SkillLibraryDetailModal";
 import type { Skill } from "@shared/schema";
 import { useToast } from "@/hooks/use-toast";
-import { useAuth } from "@/hooks/use-auth";
-import { GitSourcesSection } from "@/components/skills/GitSourcesSection";
 
 type SkillFilter = "all" | "builtin" | "custom";
 
@@ -70,108 +57,12 @@ function parseImportFile(file: File): Promise<{ skills: Partial<Skill>[] }> {
   });
 }
 
-// ─── Create Team Dialog ───────────────────────────────────────────────────────
-
-interface CreateTeamDialogProps {
-  open: boolean;
-  onClose: () => void;
-}
-
-function CreateTeamDialog({ open, onClose }: CreateTeamDialogProps) {
-  const { toast } = useToast();
-  const createTeam = useCreateSkillTeam();
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [nameError, setNameError] = useState<string | undefined>();
-
-  function handleClose() {
-    setName("");
-    setDescription("");
-    setNameError(undefined);
-    onClose();
-  }
-
-  async function handleSubmit() {
-    const trimmedName = name.trim();
-    if (!trimmedName) {
-      setNameError("Name is required.");
-      return;
-    }
-    if (trimmedName.length > 100) {
-      setNameError("Name must be 100 characters or less.");
-      return;
-    }
-    try {
-      await createTeam.mutateAsync({ name: trimmedName, description: description.trim() });
-      toast({ title: "Team created" });
-      handleClose();
-    } catch (err) {
-      toast({
-        title: "Failed to create team",
-        description: err instanceof Error ? err.message : "Unknown error",
-        variant: "destructive",
-      });
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
-      <DialogContent className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle className="text-base">New Custom Team</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-3 py-2">
-          <div className="space-y-1">
-            <Label htmlFor="team-name" className="text-xs font-medium">
-              Name <span className="text-destructive">*</span>
-            </Label>
-            <Input
-              id="team-name"
-              className="h-8 text-sm"
-              placeholder="e.g. Infrastructure"
-              value={name}
-              onChange={(e) => {
-                setName(e.target.value);
-                setNameError(undefined);
-              }}
-            />
-            {nameError && <p className="text-xs text-destructive">{nameError}</p>}
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="team-description" className="text-xs font-medium">
-              Description
-            </Label>
-            <Textarea
-              id="team-description"
-              className="text-sm min-h-[60px] resize-y"
-              placeholder="What is this team for?"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
-          </div>
-        </div>
-        <DialogFooter className="gap-2">
-          <Button variant="ghost" size="sm" onClick={handleClose} disabled={createTeam.isPending}>
-            Cancel
-          </Button>
-          <Button size="sm" onClick={handleSubmit} disabled={createTeam.isPending}>
-            {createTeam.isPending ? "Creating..." : "Create Team"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function Skills() {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<"library" | "model-skills">("library");
   const { data: skills = [], isLoading, error } = useSkills();
-  const { data: customTeams = [] } = useSkillTeams();
-  const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
   const deleteSkill = useDeleteSkill();
   const exportSkills = useExportSkills();
   const importSkills = useImportSkills();
@@ -187,18 +78,11 @@ export default function Skills() {
   const [editingSkill, setEditingSkill] = useState<Skill | undefined>(undefined);
 
   const [viewingSkill, setViewingSkill] = useState<Skill | undefined>(undefined);
-  const [createTeamOpen, setCreateTeamOpen] = useState(false);
 
   // Derive unique tags across all skills
   const allTags = Array.from(
     new Set(skills.flatMap((s) => s.tags as string[])),
   ).sort();
-
-  // Build a team name lookup that includes custom teams
-  const customTeamNames: Record<string, string> = {};
-  for (const t of customTeams) {
-    customTeamNames[t.id] = t.name;
-  }
 
   // Filter skills
   const filtered = skills.filter((s) => {
@@ -323,15 +207,6 @@ export default function Skills() {
             className="hidden"
             onChange={handleImportFile}
           />
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => setCreateTeamOpen(true)}
-            className="gap-1.5"
-          >
-            <Users className="h-3.5 w-3.5" />
-            New Team
-          </Button>
           <Button size="sm" onClick={handleCreate} className="gap-1.5">
             <Plus className="h-3.5 w-3.5" />
             Create Skill
@@ -419,19 +294,6 @@ export default function Skills() {
                 </SelectItem>
               ))}
             </SelectGroup>
-            {customTeams.length > 0 && (
-              <>
-                <SelectSeparator />
-                <SelectGroup>
-                  <SelectLabel className="text-[10px]">Custom</SelectLabel>
-                  {customTeams.map((t) => (
-                    <SelectItem key={t.id} value={t.id}>
-                      {t.name}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </>
-            )}
           </SelectContent>
         </Select>
 
@@ -513,11 +375,6 @@ export default function Skills() {
         )}
       </div>
 
-      {/* Git Sources Section */}
-      <div className="px-6 pb-4">
-        <GitSourcesSection isAdmin={isAdmin} />
-      </div>
-
       </>
       )}
 
@@ -547,12 +404,6 @@ export default function Skills() {
             title: editingSkill ? "Skill updated" : "Skill created",
           });
         }}
-      />
-
-      {/* Create Team Dialog */}
-      <CreateTeamDialog
-        open={createTeamOpen}
-        onClose={() => setCreateTeamOpen(false)}
       />
       </>
       )}

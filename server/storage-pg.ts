@@ -26,7 +26,6 @@ import {
   specializationProfiles,
   skills,
   skillVersions,
-  skillTeams,
   modelSkillBindings,
   triggers,
   managerIterations,
@@ -54,7 +53,6 @@ import {
   type SpecializationProfileRow,
   type Skill, type InsertSkill,
   type SkillVersionRow,
-  type SkillTeam, type InsertSkillTeam,
   type InsertManagerIteration, type ManagerIterationRow,
   type TriggerRow,
   type InsertTrace,
@@ -113,7 +111,7 @@ import {
   type DecisionLogRow,
 } from "@shared/schema";
 import type { LessonRecallFilter } from "./memory/lessons/types";
-import type { TraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace } from "@shared/types";
+import type { TraceSpan, SkillVersionRecord, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace } from "@shared/types";
 
 import { encrypt } from "./crypto";
 // [ADR-001 Wave-2] credentialProvider routes all decrypt() calls through the broker.
@@ -971,96 +969,6 @@ export class PgStorage implements IStorage {
     return row;
   }
 
-  // ─── Marketplace (Phase 6.16) ─────────────────────────────────────────────
-
-  async getMarketplaceSkills(
-    filters: MarketplaceFilters,
-  ): Promise<{ skills: MarketplaceSkill[]; total: number }> {
-    const conditions = [
-      or(
-        eq(skills.sharing, "public"),
-        eq(skills.sharing, "team"),
-      ),
-    ];
-
-    if (filters.search) {
-      const searchTerm = `%${filters.search}%`;
-      conditions.push(
-        or(
-          ilike(skills.name, searchTerm),
-          ilike(skills.description, searchTerm),
-        )!,
-      );
-    }
-
-    if (filters.teamId) {
-      conditions.push(eq(skills.teamId, filters.teamId));
-    }
-
-    if (filters.author) {
-      conditions.push(eq(skills.createdBy, filters.author));
-    }
-
-    const whereClause = and(...conditions);
-
-    const countResult = await db
-      .select({ count: drizzleSql<number>`count(*)::int` })
-      .from(skills)
-      .where(withProject(skills, whereClause));
-    const total = countResult[0]?.count ?? 0;
-
-    let orderBy;
-    switch (filters.sort) {
-      case "usageCount":
-        orderBy = desc(skills.usageCount);
-        break;
-      case "name":
-        orderBy = asc(skills.name);
-        break;
-      case "newest":
-      default:
-        orderBy = desc(skills.createdAt);
-        break;
-    }
-
-    const rows = await db
-      .select({
-        skill: skills,
-        authorName: users.name,
-      })
-      .from(skills)
-      .leftJoin(users, eq(skills.createdBy, users.id))
-      .where(withProject(skills, whereClause))
-      .orderBy(orderBy)
-      .limit(filters.limit)
-      .offset(filters.offset);
-
-    const mapped: MarketplaceSkill[] = rows.map(({ skill: s, authorName }) => ({
-      id: s.id,
-      name: s.name,
-      description: s.description,
-      teamId: s.teamId,
-      tags: s.tags as string[],
-      version: s.version,
-      author: authorName ?? s.createdBy,
-      usageCount: s.usageCount,
-      sharing: s.sharing as 'private' | 'team' | 'public',
-      modelPreference: s.modelPreference,
-      createdAt: s.createdAt ?? new Date(),
-      updatedAt: s.updatedAt ?? new Date(),
-    }));
-
-    // Post-filter by tags if needed (JSONB array matching)
-    let filtered = mapped;
-    if (filters.tags && filters.tags.length > 0) {
-      filtered = mapped.filter((s) =>
-        filters.tags!.some((t) => s.tags.includes(t)),
-      );
-    }
-
-    return { skills: filtered, total };
-  }
-
   async incrementSkillUsage(id: string): Promise<number> {
     const [row] = await db
       .update(skills)
@@ -1072,20 +980,6 @@ export class PgStorage implements IStorage {
     return row?.usageCount ?? 0;
   }
 
-  // ─── Skill Teams ─────────────────────────────────────────────────────────────
-
-  async getSkillTeams(): Promise<SkillTeam[]> {
-    return db.select().from(skillTeams).where(withProject(skillTeams)).orderBy(skillTeams.createdAt);
-  }
-
-  async createSkillTeam(data: InsertSkillTeam): Promise<SkillTeam> {
-    const [row] = await db.insert(skillTeams).values(withProjectInsert(skillTeams, data)).returning();
-    return row;
-  }
-
-  async deleteSkillTeam(id: string): Promise<void> {
-    await db.delete(skillTeams).where(withProject(skillTeams, eq(skillTeams.id, id)));
-  }
 
   // ─── Manager Iterations (Phase 6.6) ────────────────────────────────────────
 

@@ -209,6 +209,13 @@ export function capabilityTools(capability: SkillCapability): readonly string[] 
 /**
  * Bind a catalog step to an OPTIONAL same-named skills-table row.
  *
+ * LIVE HOOK — this is the ONE remaining consumer of the `skills` table. A skills-table
+ * row whose `name` is EXACTLY one of `test-author` / `coder` (repo-assessment) or
+ * `research` / `synthesize` (research) narrows the matching catalog step: its
+ * `systemPromptOverride` is appended to the baked-in prompt and its `tools` intersect
+ * the capability ceiling. Any other row name is inert. Edit these rows via the Skills
+ * page (`/skills`). An EMPTY skills table is the tested default — narrowing never fires.
+ *
  *   - System prompt: the baked-in default, plus the row's `systemPromptOverride`
  *     appended when present (the override REFINES the code-trust default).
  *   - Tools: the capability base, INTERSECTED with the row's `tools` when the row

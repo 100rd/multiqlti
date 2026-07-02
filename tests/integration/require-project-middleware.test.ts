@@ -89,10 +89,8 @@ beforeAll(async () => {
     "/api/consilium-loops",
     "/api/task-templates",
     "/api/lmstudio",
-    "/api/skill-teams",
     "/api/tracker-connections",
     "/api/remote-agents",
-    "/api/skill-market",
     "/api/workspaces/:id/knowledge",
     "/api/pipeline-run-stats",
   ];
@@ -153,10 +151,8 @@ describe("Project-scoped routers — return 400 when x-project-id is absent", ()
     "/api/consilium-loops",
     "/api/task-templates",
     "/api/lmstudio",
-    "/api/skill-teams",
     "/api/tracker-connections",
     "/api/remote-agents",
-    "/api/skill-market",
     "/api/pipeline-run-stats",
   ];
 

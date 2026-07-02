@@ -1738,7 +1738,7 @@ export const SwarmConfigSchema = z.object({
   { message: "customClonePrompts length must equal cloneCount when splitter is 'custom'" }
 );
 
-// ─── Skill Marketplace Types (Phase 6.16) ─────────────────────────────────────
+// ─── Skill Version + YAML Types (Phase 6.16) ──────────────────────────────────
 
 export type SharingLevel = "private" | "team" | "public";
 
@@ -1781,33 +1781,6 @@ export interface SkillYaml {
     outputSchema: Record<string, unknown> | null;
     sharing: SharingLevel;
   };
-}
-
-export interface MarketplaceSkill {
-  id: string;
-  name: string;
-  description: string;
-  teamId: string;
-  tags: string[];
-  version: string;
-  author: string;
-  usageCount: number;
-  sharing: SharingLevel;
-  modelPreference: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export type MarketplaceSortField = "usageCount" | "newest" | "name";
-
-export interface MarketplaceFilters {
-  search?: string;
-  tags?: string[];
-  teamId?: string;
-  author?: string;
-  sort: MarketplaceSortField;
-  limit: number;
-  offset: number;
 }
 
 export interface InsertSkillVersion {
@@ -2112,24 +2085,6 @@ export interface ModelWithSkills {
   skills: import("./schema.js").Skill[];
 }
 
-// ─── Git Skill Sources (issue #161) ──────────────────────────────────────────
-
-export interface GitSkillSource {
-  id: string;
-  name: string;
-  repoUrl: string;
-  branch: string;
-  path: string;
-  syncOnStart: boolean;
-  lastSyncedAt: Date | null;
-  lastError: string | null;
-  createdAt: Date;
-}
-
-export interface GitSkillSourceWithStats extends GitSkillSource {
-  skillCount: number;
-}
-
 // ── Phase 8: Remote Agents (ABOX) ─────────────────────────────────────────
 
 export type RemoteAgentEnvironment = "kubernetes" | "linux" | "docker" | "cloud";
@@ -2215,74 +2170,6 @@ export interface RemoteAgentStageConfig {
   agentSelector?: Record<string, string>;
   skill?: string;
   timeoutMs?: number;
-}
-
-// ── Phase 9: Skill Market ─────────────────────────────────────────────────
-
-export interface SkillRegistrySource {
-  id: number;
-  adapterId: string;
-  name: string;
-  enabled: boolean;
-  config?: Record<string, unknown> | null;
-  lastSyncAt?: Date | null;
-  lastHealthCheckAt?: Date | null;
-  healthStatus: string;
-  healthError?: string | null;
-  catalogCount: number;
-  createdAt: Date;
-}
-
-export interface ExternalSkillSummary {
-  externalId: string;
-  name: string;
-  description: string;
-  source: string;
-  tags: string[];
-  author?: string;
-  version?: string;
-  popularity?: number;
-  iconUrl?: string;
-  installable: boolean;
-}
-
-export interface ExternalSkillDetails extends ExternalSkillSummary {
-  tools: Array<{ name: string; description: string; inputSchema?: Record<string, unknown> }>;
-  readme?: string;
-  repositoryUrl?: string;
-  license?: string;
-  lastUpdated?: Date;
-  installInstructions?: string;
-  requiredConfig?: Array<{ key: string; description: string; secret: boolean }>;
-}
-
-export interface InstalledSkillResult {
-  skillId: string;
-  mcpServerId?: number;
-  toolsRegistered: number;
-  source: string;
-  externalId: string;
-}
-
-export interface SkillUpdateInfo {
-  skillId: string;
-  externalId: string;
-  source: string;
-  currentVersion: string;
-  latestVersion: string;
-  changelog?: string;
-}
-
-export interface SkillInstallLogEntry {
-  id: number;
-  skillId?: string | null;
-  externalSource?: string | null;
-  externalId?: string | null;
-  action: string;
-  fromVersion?: string | null;
-  toVersion?: string | null;
-  userId?: string | null;
-  createdAt: Date;
 }
 
 // ── Federation: Share Permissions (issue #232) ───────────────────────────────

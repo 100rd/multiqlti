@@ -636,28 +636,6 @@ export const insertSpecializationProfileSchema = createInsertSchema(specializati
 export type InsertSpecializationProfile = z.infer<typeof insertSpecializationProfileSchema>;
 export type SpecializationProfileRow = typeof specializationProfiles.$inferSelect;
 
-// ─── Git Skill Sources (issue #161) ─────────────────────────────────────────
-
-export const gitSkillSources = pgTable("git_skill_sources", {
-  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  name: text("name").notNull(),
-  repoUrl: text("repo_url").notNull(),
-  branch: text("branch").notNull().default("main"),
-  path: text("path").notNull().default("/"),
-  syncOnStart: boolean("sync_on_start").notNull().default(false),
-  lastSyncedAt: timestamp("last_synced_at"),
-  lastError: text("last_error"),
-  // Encrypted PAT for private repos (AES-256-GCM, same as provider keys)
-  encryptedPat: text("encrypted_pat"),
-  createdBy: varchar("created_by").references(() => users.id),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
-
-export const insertGitSkillSourceSchema = createInsertSchema(gitSkillSources).omit({ id: true, createdAt: true });
-export type InsertGitSkillSource = z.infer<typeof insertGitSkillSourceSchema>;
-export type GitSkillSourceRow = typeof gitSkillSources.$inferSelect;
-
 // ─── Skills (Phase 3.1b) ─────────────────────────────────────────────────────
 
 export const skills = pgTable("skills", {
@@ -679,9 +657,12 @@ export const skills = pgTable("skills", {
   sharing: text("sharing").notNull().default("public").$type<"private" | "team" | "public">(),
   usageCount: integer("usage_count").notNull().default(0),
   forkedFrom: varchar("forked_from"),
-  // Git skill source tracking (issue #161)
+  // Git skill source tracking (issue #161). The git_skill_sources table + its sync
+  // service were removed when the skills ecosystem was pruned (Phase 3b); these two
+  // columns are retained as inert data (no FK) so the skills table shape / rows are
+  // preserved. gitSourceId is a plain varchar — no longer a foreign key.
   sourceType: text("source_type").notNull().default("manual").$type<"manual" | "git">(),
-  gitSourceId: varchar("git_source_id").references(() => gitSkillSources.id, { onDelete: "set null" }),
+  gitSourceId: varchar("git_source_id"),
   // Phase 9: Skill Market columns (issue #208)
   externalSource: text("external_source"),
   externalId: text("external_id"),
@@ -721,21 +702,6 @@ export const insertSkillVersionSchema = createInsertSchema(skillVersions).omit({
 
 export type InsertSkillVersion = z.infer<typeof insertSkillVersionSchema>;
 export type SkillVersionRow = typeof skillVersions.$inferSelect;
-
-// ─── Skill Teams ─────────────────────────────────────────────────────────────
-
-export const skillTeams = pgTable("skill_teams", {
-  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  name: text("name").notNull(),
-  description: text("description").notNull().default(""),
-  createdBy: text("created_by").references(() => users.id),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
-
-export const insertSkillTeamSchema = createInsertSchema(skillTeams).omit({ id: true, createdAt: true });
-export type InsertSkillTeam = z.infer<typeof insertSkillTeamSchema>;
-export type SkillTeam = typeof skillTeams.$inferSelect;
 
 // ─── Pipeline Triggers (Phase 6.3) ───────────────────────────────────────────
 
@@ -1272,39 +1238,6 @@ export const a2aTasks = pgTable("a2a_tasks", {
 
 export const insertRemoteAgentSchema = createInsertSchema(remoteAgents);
 export const insertA2ATaskSchema = createInsertSchema(a2aTasks);
-
-// ── Phase 9: Skill Market ─────────────────────────────────────────────────
-
-export const skillRegistrySources = pgTable("skill_registry_sources", {
-  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-  id: serial("id").primaryKey(),
-  adapterId: text("adapter_id").notNull().unique(),
-  name: text("name").notNull(),
-  enabled: boolean("enabled").notNull().default(true),
-  config: jsonb("config"),
-  lastSyncAt: timestamp("last_sync_at"),
-  lastHealthCheckAt: timestamp("last_health_check_at"),
-  healthStatus: text("health_status").notNull().default("unknown"),
-  healthError: text("health_error"),
-  catalogCount: integer("catalog_count").notNull().default(0),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
-
-export const skillInstallLog = pgTable("skill_install_log", {
-  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-  id: serial("id").primaryKey(),
-  skillId: varchar("skill_id"),
-  externalSource: text("external_source"),
-  externalId: text("external_id"),
-  action: text("action").notNull(),
-  fromVersion: text("from_version"),
-  toVersion: text("to_version"),
-  userId: text("user_id"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
-
-export const insertSkillRegistrySourceSchema = createInsertSchema(skillRegistrySources);
-export const insertSkillInstallLogSchema = createInsertSchema(skillInstallLog);
 
 // ── Federation: Shared Sessions (issue #224) ────────────────────────────────
 

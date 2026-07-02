@@ -93,126 +93,6 @@ describe("SkillCard component (PR #171)", () => {
   });
 });
 
-// ─── SkillDetailModal ─────────────────────────────────────────────────────────
-
-describe("SkillDetailModal component — buildSkillConfigForPreview logic", () => {
-  // Extract and re-implement the pure function for testing
-  // (mirrors the function in client/src/components/skills/SkillDetailModal.tsx)
-
-  interface MarketplaceSkillData {
-    name: string;
-    description: string;
-    teamId: string;
-    version: string;
-    author: string;
-    tags: string[];
-    sharing: "public" | "private" | "team";
-    modelPreference?: string;
-    usageCount: number;
-  }
-
-  function buildSkillConfigForPreview(skill: MarketplaceSkillData): string {
-    const config = {
-      name: skill.name,
-      description: skill.description,
-      teamId: skill.teamId,
-      version: skill.version,
-      author: skill.author,
-      tags: skill.tags,
-      sharing: skill.sharing,
-      modelPreference: skill.modelPreference,
-      usageCount: skill.usageCount,
-    };
-    return JSON.stringify(config, null, 2);
-  }
-
-  const testSkill: MarketplaceSkillData = {
-    name: "Code Review Pro",
-    description: "Performs thorough code reviews",
-    teamId: "code_review",
-    version: "1.2.0",
-    author: "engineering-team",
-    tags: ["review", "quality"],
-    sharing: "public",
-    modelPreference: "claude-sonnet-4-6",
-    usageCount: 150,
-  };
-
-  it("produces valid JSON string", () => {
-    const result = buildSkillConfigForPreview(testSkill);
-    expect(() => JSON.parse(result)).not.toThrow();
-  });
-
-  it("includes name, description, teamId in output", () => {
-    const result = buildSkillConfigForPreview(testSkill);
-    const parsed = JSON.parse(result) as MarketplaceSkillData;
-    expect(parsed.name).toBe("Code Review Pro");
-    expect(parsed.description).toBe("Performs thorough code reviews");
-    expect(parsed.teamId).toBe("code_review");
-  });
-
-  it("includes version and author", () => {
-    const result = buildSkillConfigForPreview(testSkill);
-    const parsed = JSON.parse(result) as MarketplaceSkillData;
-    expect(parsed.version).toBe("1.2.0");
-    expect(parsed.author).toBe("engineering-team");
-  });
-
-  it("includes tags array", () => {
-    const result = buildSkillConfigForPreview(testSkill);
-    const parsed = JSON.parse(result) as MarketplaceSkillData;
-    expect(parsed.tags).toEqual(["review", "quality"]);
-  });
-
-  it("includes sharing level", () => {
-    const result = buildSkillConfigForPreview(testSkill);
-    const parsed = JSON.parse(result) as MarketplaceSkillData;
-    expect(parsed.sharing).toBe("public");
-  });
-
-  it("includes usageCount", () => {
-    const result = buildSkillConfigForPreview(testSkill);
-    const parsed = JSON.parse(result) as MarketplaceSkillData;
-    expect(parsed.usageCount).toBe(150);
-  });
-
-  it("is pretty-printed with 2 spaces indentation", () => {
-    const result = buildSkillConfigForPreview(testSkill);
-    expect(result).toContain("\n  ");
-  });
-
-  it("handles undefined modelPreference gracefully", () => {
-    const skillNoModel = { ...testSkill, modelPreference: undefined };
-    const result = buildSkillConfigForPreview(skillNoModel);
-    // JSON.stringify omits undefined values — the key should not be present
-    expect(() => JSON.parse(result)).not.toThrow();
-  });
-
-  describe("source structure checks", () => {
-    const source = readSource("client/src/components/skills/SkillDetailModal.tsx");
-
-    it("exports SkillDetailModal as named export", () => {
-      expect(source).toMatch(/export function SkillDetailModal/);
-    });
-
-    it("has SHARING_ICONS mapping for all sharing levels", () => {
-      // Keys are unquoted object properties: public:, team:, private:
-      expect(source).toMatch(/public:\s/);
-      expect(source).toMatch(/private:\s/);
-      expect(source).toMatch(/team:\s/);
-    });
-
-    it("has SHARING_BADGE_STYLES mapping", () => {
-      expect(source).toContain("SHARING_BADGE_STYLES");
-    });
-
-    it("has download functionality for both JSON and YAML", () => {
-      expect(source).toContain(".json");
-      expect(source).toContain(".yaml");
-    });
-  });
-});
-
 // ─── SkillLibraryDetailModal ──────────────────────────────────────────────────
 
 describe("SkillLibraryDetailModal component (PR #171)", () => {
@@ -258,11 +138,6 @@ describe("SkillEditor component — team dropdown (PR #171)", () => {
     // Teams are injected from builtinTeamEntries = Object.entries(SDLC_TEAMS)
     expect(source).toContain("SDLC_TEAMS");
     expect(source).toContain("builtinTeamEntries");
-  });
-
-  it("includes custom team support (from API)", () => {
-    expect(source).toContain("customTeams");
-    expect(source).toContain("useSkillTeams");
   });
 
   it("has form validation (required fields)", () => {

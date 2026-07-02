@@ -48,7 +48,6 @@ import {
   pipelines,
   pipelineRuns,
   skills,
-  skillTeams,
   taskGroups,
   consiliumLoops,
   traces,
@@ -76,7 +75,6 @@ describe("Scoped list methods embed the current project_id filter", () => {
     ["getPipelines -> pipelines", pipelines, /"pipelines"\."project_id"/],
     ["getPipelineRuns -> pipeline_runs", pipelineRuns, /"pipeline_runs"\."project_id"/],
     ["getSkills -> skills", skills, /"skills"\."project_id"/],
-    ["getSkillTeams -> skill_teams", skillTeams, /"skill_teams"\."project_id"/],
     ["getTaskGroups -> task_groups", taskGroups, /"task_groups"\."project_id"/],
     ["getLlmStats* -> llm_requests", llmRequests, /"llm_requests"\."project_id"/],
   ];
