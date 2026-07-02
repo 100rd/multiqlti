@@ -379,6 +379,25 @@ export const ConfigSchema = z.object({
          * (a mock model would "decide" an archetype from canned garbage at cost 0).
          */
         model: z.string().min(1).default(DEFAULT_TASK_MODEL),
+        /**
+         * Stage C (design §9 "Stage 7"): acceptance-criterion QA. A MECHANICAL, no-LLM lint
+         * over each AP's `acceptanceCriterion` at generation time (right after the planner
+         * normalizes methods): a criterion that is absent/empty, lacks the "When … Then …"
+         * shape, or — for a `test-run` criterion — is too thin to name a concrete observable
+         * signal is flagged `weakCriterion` and DEMOTED to the `judge` method, so it can
+         * NEVER converge as "tests green" on a vacuous DoD (Goodhart guard, §5). When ON it
+         * ALSO extends the re-assess prior-findings block so the judge must, for each item it
+         * confirms CLOSED, state whether the DoD itself was ADEQUATE and re-open a corrected
+         * criterion if not — riding the EXISTING re-assess judge call (no extra model call).
+         * The routing effect (demotion) bites only when `implement.perCriterionMethod` is also
+         * on (the executor routes on method); standalone it still surfaces `weakCriterion`.
+         * Kill-switch default FALSE ⇒ BYTE-IDENTICAL off: no lint, no flag, no demotion, and
+         * the prior-findings wording is unchanged. Gated by the parent `consiliumLoop.enabled`.
+         */
+        criteriaQa: z.object({
+          /** Kill-switch: false (default) → no criterion lint / demotion / adequacy re-check. */
+          enabled: z.boolean().default(false),
+        }).default({}),
       }).default({}),
       /**
        * Stage 2a (design §3.C/§4): the SKILLED, archetype-branched implement

@@ -209,3 +209,103 @@ describe("Stage B — normalizeActionPointMethods (planner assignment)", () => {
     expect(archetypeDefaultMethod(null)).toBe("test-run");
   });
 });
+
+// ─── Stage C (design §9 "Stage 7"): acceptance-criterion QA ─────────────────
+
+import { isWeakCriterion, applyCriteriaQa } from "../../../server/services/orchestrator/convergence.js";
+import type { ActionPoint } from "@shared/types";
+
+// A criterion that PASSES every rule for a test-run AP: has the shape, is long,
+// and names a concrete observable signal.
+const GOOD_TESTRUN =
+  "When the parser receives a malformed header, then it returns a 400 with error code E_HEADER";
+
+describe("Stage C — isWeakCriterion lint heuristics", () => {
+  it("(a) flags an ABSENT or empty/whitespace criterion as weak", () => {
+    expect(isWeakCriterion(undefined, "test-run")).toBe(true);
+    expect(isWeakCriterion("", "test-run")).toBe(true);
+    expect(isWeakCriterion("   ", "test-run")).toBe(true);
+    expect(isWeakCriterion(undefined, "judge")).toBe(true);
+  });
+
+  it("(b) flags a criterion missing the 'When … Then …' shape", () => {
+    // no when/then at all
+    expect(isWeakCriterion("The endpoint returns the right value for all inputs", "judge")).toBe(true);
+    // "then" before "when" is not the required order
+    expect(isWeakCriterion("Return 400 then log, when malformed", "judge")).toBe(true);
+    // only one of the two markers
+    expect(isWeakCriterion("When the input is malformed the parser rejects it", "judge")).toBe(true);
+  });
+
+  it("(c) test-run: flags a shaped-but-too-short criterion (<= 40 chars)", () => {
+    // shape present but far too thin to name a runnable observable
+    expect(isWeakCriterion("When x then y", "test-run")).toBe(true);
+  });
+
+  it("(c) test-run: flags a shaped, long criterion made of PURELY abstract filler", () => {
+    // EVERY content token is abstract glue (works/correct/passes/valid/…) — names no
+    // concrete observable. Structural words (when/then/it/is/and/the) don't count.
+    const abstract = "When done then it works correctly and passes and is valid and complete and fine";
+    expect(abstract.length).toBeGreaterThan(40);
+    expect(isWeakCriterion(abstract, "test-run")).toBe(true);
+  });
+
+  it("(c) test-run: a single concrete token is enough to survive (false-negative bias)", () => {
+    // adding one non-abstract token ("parser") makes it pass — conservative on purpose.
+    const oneConcrete = "When done then the parser works correctly and passes and is valid and complete";
+    expect(oneConcrete.length).toBeGreaterThan(40);
+    expect(isWeakCriterion(oneConcrete, "test-run")).toBe(false);
+  });
+
+  it("(c) is NOT applied to judge/manual-ops (only test-run gets the concrete-signal bar)", () => {
+    // a short but shaped criterion is fine for judge / manual-ops (adjudicated by model/human)
+    expect(isWeakCriterion("When x then y", "judge")).toBe(false);
+    expect(isWeakCriterion("When x then y", "manual-ops")).toBe(false);
+  });
+
+  it("passes a well-formed, concrete test-run criterion (false-negative bias — good ones survive)", () => {
+    expect(isWeakCriterion(GOOD_TESTRUN, "test-run")).toBe(false);
+    // absent method is treated leniently (no test-run concrete-signal bar)
+    expect(isWeakCriterion("When the flag is set then the banner renders", undefined)).toBe(false);
+  });
+});
+
+describe("Stage C — applyCriteriaQa demotion", () => {
+  it("demotes a weak/absent-criterion test-run AP to judge and flags weakCriterion", () => {
+    const aps: ActionPoint[] = [
+      { title: "no dod", priority: "P0", verificationMethod: "test-run" }, // absent criterion
+      { title: "vacuous", priority: "P0", acceptanceCriterion: "When x then y", verificationMethod: "test-run" }, // too short
+    ];
+    const out = applyCriteriaQa(aps);
+    expect(out.map((a) => a.verificationMethod)).toEqual(["judge", "judge"]);
+    expect(out.map((a) => a.weakCriterion)).toEqual([true, true]);
+  });
+
+  it("leaves a GOOD test-run criterion untouched (no weakCriterion field, method unchanged)", () => {
+    const aps: ActionPoint[] = [
+      { title: "solid", priority: "P0", acceptanceCriterion: GOOD_TESTRUN, verificationMethod: "test-run" },
+    ];
+    const out = applyCriteriaQa(aps);
+    expect(out[0].verificationMethod).toBe("test-run");
+    expect(out[0].weakCriterion).toBeUndefined();
+    // returned unchanged (referential passthrough for a passing AP)
+    expect(out[0]).toBe(aps[0]);
+  });
+
+  it("PRESERVES manual-ops even when its criterion is weak (still flagged, never a test)", () => {
+    const aps: ActionPoint[] = [
+      { title: "rotate secret", priority: "P0", verificationMethod: "manual-ops" }, // absent criterion
+    ];
+    const out = applyCriteriaQa(aps);
+    expect(out[0].verificationMethod).toBe("manual-ops");
+    expect(out[0].weakCriterion).toBe(true);
+  });
+
+  it("does not mutate the input array/objects (pure)", () => {
+    const aps: ActionPoint[] = [{ title: "x", priority: "P0", verificationMethod: "test-run" }];
+    const out = applyCriteriaQa(aps);
+    expect(aps[0].weakCriterion).toBeUndefined();
+    expect(aps[0].verificationMethod).toBe("test-run");
+    expect(out).not.toBe(aps);
+  });
+});
