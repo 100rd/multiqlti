@@ -21,7 +21,6 @@ import { registerWorkspaceRoutes } from "./routes/workspaces";
 import { registerAuthRoutes } from "./routes/auth";
 import { registerSandboxRoutes } from "./routes/sandbox";
 import { registerSettingsRoutes } from "./routes/settings";
-import { registerMaintenanceRoutes } from "./routes/maintenance";
 import { registerSpecializationRoutes } from "./routes/specialization";
 import { registerContourObservabilityRoutes } from "./routes/observability";
 import { registerSkillRoutes } from "./routes/skills";
@@ -145,7 +144,6 @@ export async function registerRoutes(
   app.use("/api/tools", requireAuth, requireProject);
   app.use("/api/mcp", requireAuth, requireProject);
   app.use("/api/providers", requireAuth, requireProject);
-  app.use("/api/maintenance", requireAuth, requireProject);
   app.use("/api/specialization-profiles", requireAuth, requireProject);
   app.use("/api/skills", requireAuth, requireProject);
   app.use("/api/guardrails", requireAuth, requireProject);
@@ -209,7 +207,6 @@ export async function registerRoutes(
 
   registerSandboxRoutes(app as unknown as Router);
   registerSettingsRoutes(app as unknown as Router, gateway);
-  registerMaintenanceRoutes(app as unknown as Router);
   registerSpecializationRoutes(app, storage);
   registerModelSkillBindingRoutes(app, storage);
   registerSkillRoutes(app, storage);
