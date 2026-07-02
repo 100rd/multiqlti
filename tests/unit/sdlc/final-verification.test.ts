@@ -74,6 +74,15 @@ const baseReq = (over: Partial<SdlcHandoffRequest> = {}): SdlcHandoffRequest => 
 const pass: TestRunResult = { passed: true, ran: true, summary: "PASSED\nall green", exitCode: 0, timedOut: false };
 const fail: TestRunResult = { passed: false, ran: true, summary: "FAILED (exit 1)\n1 failing", exitCode: 1, timedOut: false };
 const notRun: TestRunResult = { passed: false, ran: false, summary: "not verified — no test command", exitCode: null, timedOut: false };
+/** The reported bug: the final command could NOT be LAUNCHED (env broken). ran:false ⇒
+ *  the final fix loop must be SKIPPED (no code change makes an unlaunchable command run). */
+const launchFail: TestRunResult = {
+  passed: false,
+  ran: false,
+  summary: "test command could not be launched (spawn uv ENOENT) — fix the environment or config testCommand",
+  exitCode: null,
+  timedOut: false,
+};
 
 function makeGitRaw() {
   return vi.fn(async (_repo: string, args: string[]) => {
@@ -269,6 +278,83 @@ describe("Stage A — VERIFY-ONLY (maxFinalFixIterations=0)", () => {
     );
     expect(res.finalVerification).toEqual(expect.objectContaining({ ran: false, passed: false }));
     expect(prBody(deps)).toMatch(/Final-state re-verification: NOT-RUN/);
+  });
+});
+
+describe("Stage A — launch failure (ran:false) SKIPS the final fix loop", () => {
+  it("a spawn-ENOENT final run burns ZERO final fix iterations even with budget left", async () => {
+    // The bug at the final-verification phase: an env error must NOT enter the fix loop.
+    const runTests = sequencedRunTests([launchFail]);
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(
+      baseReq({ finalVerification: FVCFG({ maxFinalFixIterations: 3 }) }),
+      deps as never,
+    );
+    // ONE final run; the loop is skipped (ran:false) despite a budget of 3.
+    expect(runTests).toHaveBeenCalledTimes(1);
+    // Only the 2 skilled implement steps; ZERO final fix coder re-invocations.
+    expect((deps.runCoder as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+    expect(res.finalVerification).toEqual(
+      expect.objectContaining({ ran: false, passed: false, fixIterations: 0 }),
+    );
+    expect(prBody(deps)).toMatch(/Final-state re-verification: NOT-RUN/);
+    // NEVER blocks PR creation.
+    expect(res.prRef).toBe("https://github.com/x/y/pull/9");
+  });
+});
+
+describe("Stage A — live progress beat (was silent → looked like a frozen 'committing')", () => {
+  function collect() {
+    const events: SdlcProgress[] = [];
+    return { events, onProgress: (p: SdlcProgress) => events.push(JSON.parse(JSON.stringify(p)) as SdlcProgress) };
+  }
+
+  it("emits a final-verification beat on start and per final fix iteration", async () => {
+    const runTests = sequencedRunTests([fail, pass]); // final#0 fail → fix → re-verify pass
+    const deps = makeDeps({ runTests });
+    const { events, onProgress } = collect();
+    await runSdlcHandoff(
+      baseReq({ finalVerification: FVCFG({ maxFinalFixIterations: 2 }) }),
+      deps as never,
+      onProgress,
+    );
+    const finalBeats = events.filter((e) => e.phase === "final-verification");
+    // start test-runner(0) → fix-coder(1) → re-verify test-runner(1).
+    expect(finalBeats.map((e) => `${e.step}:${e.fixIteration}`)).toEqual([
+      "test-runner:0",
+      "fix-coder:1",
+      "test-runner:1",
+    ]);
+    // The budget rides every final beat; it carries the AP total (no single AP).
+    for (const e of finalBeats) {
+      expect(e.fixBudget).toBe(2);
+      expect(e.actionPointTotal).toBe(1);
+      expect(e.actionPointTitle).toBe("");
+    }
+  });
+
+  it("verify-only (0 fixes) still emits exactly one start beat", async () => {
+    const runTests = sequencedRunTests([pass]);
+    const deps = makeDeps({ runTests });
+    const { events, onProgress } = collect();
+    await runSdlcHandoff(
+      baseReq({ finalVerification: FVCFG({ maxFinalFixIterations: 0 }) }),
+      deps as never,
+      onProgress,
+    );
+    const finalBeats = events.filter((e) => e.phase === "final-verification");
+    expect(finalBeats.map((e) => `${e.step}:${e.fixIteration}`)).toEqual(["test-runner:0"]);
+  });
+
+  it("NO callback ⇒ the final phase is a complete no-op (never throws)", async () => {
+    const runTests = sequencedRunTests([fail, pass]);
+    const deps = makeDeps({ runTests });
+    // No onProgress passed — must not throw and must still produce the final verification.
+    const res = await runSdlcHandoff(
+      baseReq({ finalVerification: FVCFG({ maxFinalFixIterations: 1 }) }),
+      deps as never,
+    );
+    expect(res.finalVerification).toEqual(expect.objectContaining({ passed: true, fixIterations: 1 }));
   });
 });
 

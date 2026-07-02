@@ -210,6 +210,43 @@ function scrub(raw: string): string {
   return raw.replace(/\/[^\s'"]+/g, "<path>").replace(/[ \t]+/g, " ").trim();
 }
 
+/**
+ * The errno strings that mean the child NEVER STARTED — the OS could not exec the
+ * binary at all: `ENOENT` (binary not on PATH / not found) or `EACCES` (found but not
+ * executable / permission denied). Node surfaces these as the `code` on the spawn
+ * `error` event (or a synchronous spawn throw). Kept STRICT (spawn-level only) on
+ * purpose — see {@link isLaunchFailure}.
+ */
+const LAUNCH_FAILURE_CODES: ReadonlySet<string> = new Set(["ENOENT", "EACCES"]);
+
+/**
+ * Is this a spawn-LAUNCH failure — the child process NEVER executed? True IFF the
+ * error carries an errno `code` of `ENOENT`/`EACCES` (the OS could not exec the
+ * binary). This is STRICTLY distinct from a test that RAN and then failed: a non-zero
+ * exit arrives on the `close` event with a NUMERIC `exitCode` and never reaches this
+ * predicate. A test-harness crash (segfault / uncaught throw) likewise exits non-zero
+ * AFTER launching — it is NOT a launch failure. Keeping the rule to these two spawn-
+ * time errnos is what prevents misclassifying a real test failure as an env error.
+ */
+function isLaunchFailure(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
+  return typeof code === "string" && LAUNCH_FAILURE_CODES.has(code);
+}
+
+/**
+ * Build the summary for a launch failure. Names the underlying spawn error (scrubbed,
+ * e.g. `spawn uv ENOENT`) and points the operator at the fix: the ENVIRONMENT or the
+ * configured `testCommand`. NO code change can make an unlaunchable command run, so
+ * this summary must read as an environment problem, never a test failure.
+ */
+function launchFailureSummary(err: unknown): string {
+  const msg = scrub(err instanceof Error ? err.message : String(err));
+  return `test command could not be launched (${msg}) — fix the environment or config testCommand`.slice(
+    0,
+    SUMMARY_MAX,
+  );
+}
+
 /** Build the bounded, scrubbed summary. Keeps the OUTPUT TAIL (failures live there). */
 function buildSummary(
   output: string,
@@ -330,10 +367,14 @@ export function runTests(opts: RunTestsOptions): Promise<TestRunResult> {
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (err) {
-      // Spawn threw synchronously (e.g. bad binary) — degrade, never throw.
+      // Spawn threw synchronously (e.g. bad binary) — degrade, never throw. The child
+      // never started ⇒ ran:false. A launch errno (ENOENT/EACCES) gets the explicit
+      // "could not be launched" summary so the caller reads it as an ENV error.
       resolve({
         passed: false,
-        summary: scrub(err instanceof Error ? err.message : String(err)).slice(0, SUMMARY_MAX),
+        summary: isLaunchFailure(err)
+          ? launchFailureSummary(err)
+          : scrub(err instanceof Error ? err.message : String(err)).slice(0, SUMMARY_MAX),
         exitCode: null,
         timedOut: false,
         ran: false,
@@ -373,15 +414,22 @@ export function runTests(opts: RunTestsOptions): Promise<TestRunResult> {
 
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
-    child.on("error", (err: Error) =>
+    // The spawn `error` event. A LAUNCH failure (ENOENT/EACCES — the binary never
+    // exec'd, e.g. `spawn uv ENOENT`) is an ENVIRONMENT problem: the child NEVER ran,
+    // so ran:false (no code change can fix it — the caller must SKIP the fix loop). Any
+    // OTHER error event fires only AFTER the child started (e.g. an I/O error mid-run),
+    // so it ran (ran:true) and is treated as before. A non-zero test exit does NOT come
+    // through here at all — it settles via the `close` handler with a numeric exitCode.
+    child.on("error", (err: Error) => {
+      const launch = isLaunchFailure(err);
       finish({
         passed: false,
-        summary: scrub(err.message).slice(0, SUMMARY_MAX),
+        summary: launch ? launchFailureSummary(err) : scrub(err.message).slice(0, SUMMARY_MAX),
         exitCode: null,
         timedOut,
-        ran: true,
-      }),
-    );
+        ran: !launch,
+      });
+    });
     child.on("close", (code: number | null) =>
       finish({
         passed: !timedOut && code === 0,

@@ -61,6 +61,15 @@ const baseReq = (over: Partial<SdlcHandoffRequest> = {}): SdlcHandoffRequest => 
 const pass: TestRunResult = { passed: true, ran: true, summary: "PASSED\nall green", exitCode: 0, timedOut: false };
 const fail: TestRunResult = { passed: false, ran: true, summary: "FAILED (exit 1)\n1 failing", exitCode: 1, timedOut: false };
 const notRun: TestRunResult = { passed: false, ran: false, summary: "not verified — no test command", exitCode: null, timedOut: false };
+/** The reported bug's shape: the test command could NOT be LAUNCHED (env broken —
+ *  `uv` not installed). ran:false ⇒ the fix loop must be SKIPPED (no code fixes this). */
+const launchFail: TestRunResult = {
+  passed: false,
+  ran: false,
+  summary: "test command could not be launched (spawn uv ENOENT) — fix the environment or config testCommand",
+  exitCode: null,
+  timedOut: false,
+};
 
 function makeGitRaw() {
   return vi.fn(async (_repo: string, args: string[]) => {
@@ -172,6 +181,51 @@ describe("Stage 2b — bounded code→test→fix loop", () => {
     // Only the initial verify ran; the budget guard stopped before any fix re-invoke.
     expect(runTests).toHaveBeenCalledTimes(1);
     expect((deps.runCoder as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2); // steps only, no fixes
+  });
+});
+
+describe("Stage 2b — launch failure (ran:false) SKIPS the fix loop", () => {
+  it("a spawn-ENOENT (could-not-run) burns ZERO fix iterations even with budget left", async () => {
+    // The bug: an env error (ran:false) looked like a test failure, so the fix-coder
+    // burned its whole budget. With a HEALTHY budget of 3, a not-run result must skip
+    // the loop entirely: NO fix coder runs, NO re-verify, verification.ran:false.
+    const runTests = sequencedRunTests([launchFail]);
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(baseReq({ verification: VCFG({ maxFixIterations: 3 }) }), deps as never);
+
+    // Exactly ONE test run — the initial one — then the loop is skipped (no re-verify).
+    expect(runTests).toHaveBeenCalledTimes(1);
+    // Only the 2 skilled implement steps ran; ZERO fix-coder re-invocations.
+    expect((deps.runCoder as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+    // The Draft PR still opens (never blocked) and the env reason is surfaced verbatim.
+    expect(res.prRef).toBe("https://github.com/x/y/pull/9");
+    const prBody = (deps.openPr as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string;
+    expect(prBody).toMatch(/could not be launched/i);
+    expect(prBody).toMatch(/spawn uv ENOENT/);
+  });
+
+  it("CONTRAST: a non-zero test EXIT (ran:true) DOES enter the fix loop", async () => {
+    // A test that ran and failed is a NORMAL signal — the fix loop must still engage.
+    const runTests = sequencedRunTests([fail, pass]); // ran:true fail → fix → pass
+    const deps = makeDeps({ runTests });
+    await runSdlcHandoff(baseReq({ verification: VCFG({ maxFixIterations: 3 }) }), deps as never);
+    // 2 skilled steps + 1 fix re-invocation (the ran:true failure engaged the loop).
+    expect((deps.runCoder as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3);
+    expect(runTests).toHaveBeenCalledTimes(2); // initial + one re-verify
+  });
+
+  it("emits NO fix-coder progress beat for a launch failure", async () => {
+    const runTests = sequencedRunTests([launchFail]);
+    const deps = makeDeps({ runTests });
+    const events: SdlcProgress[] = [];
+    await runSdlcHandoff(
+      baseReq({ verification: VCFG({ maxFixIterations: 3 }) }),
+      deps as never,
+      (p) => events.push(JSON.parse(JSON.stringify(p)) as SdlcProgress),
+    );
+    // The initial test-runner beat fires; NO fix-coder beat (the loop never ran).
+    expect(events.some((e) => e.step === "test-runner")).toBe(true);
+    expect(events.some((e) => e.step === "fix-coder")).toBe(false);
   });
 });
 

@@ -43,7 +43,10 @@ export type ConsiliumLoopListItem = Omit<ConsiliumLoopRow, "createdBy"> & {
  * every consumer reads it defensively.
  */
 export interface DevProgress {
-  phase?: "coding" | "committing" | "pushing" | "opening_pr" | "done";
+  /** `final-verification` = the Stage-A whole-suite re-run against the FINAL tree (after
+   *  the last action point, before the push). Optional/additive — an older snapshot omits
+   *  it and the UI degrades to the generic "developing…" line. */
+  phase?: "coding" | "committing" | "final-verification" | "pushing" | "opening_pr" | "done";
   actionPointIndex?: number;
   actionPointTotal?: number;
   actionPointTitle?: string;
