@@ -43,12 +43,14 @@ function makeApp(opts: {
   developResult?: DevelopResult;
   devProgress?: unknown;
   loop?: Record<string, unknown>;
+  rounds?: unknown[];
   user?: { id: string; role?: string };
 } = {}) {
   const {
     developResult = { ok: true, loop: { ...DEVELOPING_LOOP } as never },
     devProgress,
     loop = { ...TERMINAL_LOOP },
+    rounds = [{ round: 1, openP0: 2 }],
   } = opts;
   // Distinguish "explicitly unauthenticated" (key present, value undefined) from
   // "default to owner" (key absent) — a destructuring default would swallow the
@@ -62,7 +64,7 @@ function makeApp(opts: {
 
   const storage = {
     getLoop: vi.fn(async () => loop),
-    getLoopRounds: vi.fn(async () => [{ round: 1, openP0: 2 }]),
+    getLoopRounds: vi.fn(async () => rounds),
   } as unknown as IStorage;
 
   const app = express();
@@ -145,6 +147,50 @@ describe("GET /api/consilium-loops/:id — devProgress merge", () => {
     const res = await request(app).get(`/api/consilium-loops/${LOOP_ID}`);
     expect(res.status).toBe(200);
     expect(res.body.devProgress).toBeUndefined();
+  });
+});
+
+// Finding #5: the loop detail exposes a computed `openRemainder` (count-by-priority
+// of the LAST round's still-open action points) for a TERMINAL loop only.
+describe("GET /api/consilium-loops/:id — openRemainder (finding #5)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("a CONVERGED loop with a non-P0 remainder exposes openRemainder from the LAST round", async () => {
+    const { app } = makeApp({
+      loop: { ...TERMINAL_LOOP }, // state: converged
+      rounds: [
+        { round: 1, openP0: 2, openActionPoints: [{ title: "a", priority: "P0" }] },
+        { round: 2, openP0: 0, openActionPoints: [
+          { title: "b", priority: "P1" },
+          { title: "c", priority: "P2" },
+        ] },
+      ],
+    });
+    const res = await request(app).get(`/api/consilium-loops/${LOOP_ID}`);
+    expect(res.status).toBe(200);
+    // LAST round only — the round-1 P0 must NOT leak into the count.
+    expect(res.body.openRemainder).toEqual({ total: 2, byPriority: { P1: 1, P2: 1 } });
+  });
+
+  it("a converged-clean loop (empty last round) omits openRemainder entirely", async () => {
+    const { app } = makeApp({
+      loop: { ...TERMINAL_LOOP },
+      rounds: [{ round: 1, openP0: 0, openActionPoints: [] }],
+    });
+    const res = await request(app).get(`/api/consilium-loops/${LOOP_ID}`);
+    expect(res.status).toBe(200);
+    expect(res.body.openRemainder).toBeUndefined();
+    expect("openRemainder" in res.body).toBe(false);
+  });
+
+  it("a NON-terminal loop never computes openRemainder even when a round carries items", async () => {
+    const { app } = makeApp({
+      loop: { ...DEVELOPING_LOOP }, // non-terminal
+      rounds: [{ round: 1, openP0: 1, openActionPoints: [{ title: "a", priority: "P1" }] }],
+    });
+    const res = await request(app).get(`/api/consilium-loops/${LOOP_ID}`);
+    expect(res.status).toBe(200);
+    expect(res.body.openRemainder).toBeUndefined();
   });
 });
 

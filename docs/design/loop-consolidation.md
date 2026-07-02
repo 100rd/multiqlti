@@ -80,6 +80,18 @@ earlier step's check verified. A criterion counts as met only if it holds in the
 worktree state of the round (a final re-verification pass before the PR opens); per-step
 green at implementation time is necessary but not sufficient.
 
+**Convergence is keyed on `P0` by design — the non-P0 remainder is a first-class outcome
+(finding #5).** A loop reaches CONVERGED the moment no `P0` action point remains, but the
+judge may still leave actionable non-P0 items (P1/P2/…) standing. That remainder used to
+silently drop out of the lifecycle unless an operator noticed the leftover verdict. It is now
+surfaced as an explicit **"converged with remainder"** outcome: the loop detail response
+computes, at read time from the last round's persisted `openActionPoints` (no schema/FSM
+change), a count-by-priority summary, and the UI renders a *"Converged with N open non-P0
+items (X P1, Y P2, …)"* callout. The remainder stays executable through the **existing
+develop-from-terminal** flow (§9) — the callout's button drives the same `POST /:id/develop`
+promotion into a visible `developing` round; convergence remains "no open P0", nothing new is
+persisted, and the FSM is untouched.
+
 ## 4. Skills — the unit of agent capability
 
 A loop's steps are executed by **agents**, each dynamically pulling a **skill**. multiqlti
@@ -264,6 +276,11 @@ re-raises what is still open.
 - Where exactly task groups / pipelines surface for power users once demoted.
 - Ephemeral-env provisioning for `deploy-verify` (what backs it — kind/k3d, a cloud sandbox?).
 - How acceptance criteria are authored: model-proposed then engineer-edited?
+- Converged-with-remainder (finding #5): should a `maxRounds > 1` loop **auto-develop** the
+  non-P0 remainder instead of waiting for the operator to click develop-from-terminal? Today
+  it stays a human-gated one-click action (convergence = no-P0, no auto-execution); the open
+  question is whether a multi-round loop's leftover P1/P2 items should be promoted
+  automatically, and if so under what guard (cost/round cap, priority floor).
 
 ---
 
