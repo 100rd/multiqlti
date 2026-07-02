@@ -999,6 +999,17 @@ function humanizeDevPhase(progress: DevProgress | undefined, total: number): str
   switch (progress?.phase) {
     case "committing":
       return "Коммичу…";
+    case "final-verification": {
+      // Stage A: whole-suite re-run against the final combined tree (+ a bounded fix
+      // loop). Distinct from `committing` so it never reads as a frozen "Коммичу…".
+      const fi = progress?.fixIteration;
+      const fb = progress?.fixBudget;
+      if (progress?.step === "fix-coder" && typeof fi === "number" && fi > 0) {
+        const budget = typeof fb === "number" ? `/${fb}` : "";
+        return `Финальная проверка: исправляю (фикс ${fi}${budget})…`;
+      }
+      return "Финальная проверка всего дерева…";
+    }
     case "pushing":
       return "Пушу ветку…";
     case "opening_pr":

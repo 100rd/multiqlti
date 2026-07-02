@@ -290,11 +290,53 @@ describe("runTests / verifyInWorktree — degrade, never throw", () => {
     expect(res.exitCode).toBeNull();
   });
 
+  it("a LAUNCH failure (spawn ENOENT — binary not found) ⇒ ran:false + an env-error summary", async () => {
+    // The reported bug: `uv` not installed ⇒ Node emits an 'error' event with
+    // code:'ENOENT'. The child NEVER executed, so ran MUST be false (indistinguishable-
+    // from-a-test-failure was the bug) and the summary must read as an ENV problem.
+    const err = Object.assign(new Error("spawn uv ENOENT"), { code: "ENOENT" });
+    const { fn } = makeSpawn({ emitError: err });
+    const res = await runTests({ worktreeDir: WT, command: CMD, spawnFn: fn });
+    expect(res.passed).toBe(false);
+    expect(res.ran).toBe(false); // ← could NOT run; not a test failure
+    expect(res.exitCode).toBeNull();
+    expect(res.summary).toMatch(/could not be launched/i);
+    expect(res.summary).toMatch(/spawn uv ENOENT/);
+    expect(res.summary).toMatch(/fix the environment or config testCommand/);
+  });
+
+  it("a LAUNCH failure (spawn EACCES — not executable) ⇒ ran:false", async () => {
+    const err = Object.assign(new Error("spawn ./x EACCES"), { code: "EACCES" });
+    const { fn } = makeSpawn({ emitError: err });
+    const res = await runTests({ worktreeDir: WT, command: CMD, spawnFn: fn });
+    expect(res.ran).toBe(false);
+    expect(res.summary).toMatch(/could not be launched/i);
+  });
+
+  it("a POST-LAUNCH error event (no launch errno) ⇒ ran:true (the child DID start)", async () => {
+    // An 'error' event WITHOUT ENOENT/EACCES fires only after the child started (e.g.
+    // an I/O error mid-run). It ran ⇒ ran:true, NEVER misclassified as an env error —
+    // the STRICT spawn-level rule is what protects a legitimate harness crash.
+    const err = Object.assign(new Error("read EIO"), { code: "EIO" });
+    const { fn } = makeSpawn({ emitError: err });
+    const res = await runTests({ worktreeDir: WT, command: CMD, spawnFn: fn });
+    expect(res.ran).toBe(true);
+    expect(res.summary).not.toMatch(/could not be launched/i);
+  });
+
   it("a synchronous spawn throw ⇒ passed:false, ran:false", async () => {
     const { fn } = makeSpawn({ throwOnSpawn: new Error("bad binary") });
     const res = await runTests({ worktreeDir: WT, command: CMD, spawnFn: fn });
     expect(res.passed).toBe(false);
     expect(res.ran).toBe(false);
+  });
+
+  it("a synchronous spawn throw WITH a launch errno ⇒ ran:false + env-error summary", async () => {
+    const err = Object.assign(new Error("spawn uv ENOENT"), { code: "ENOENT" });
+    const { fn } = makeSpawn({ throwOnSpawn: err });
+    const res = await runTests({ worktreeDir: WT, command: CMD, spawnFn: fn });
+    expect(res.ran).toBe(false);
+    expect(res.summary).toMatch(/could not be launched/i);
   });
 
   it("verifyInWorktree with NO resolvable command ⇒ ran:false, passed:false (not verified)", async () => {

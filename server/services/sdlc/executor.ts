@@ -189,8 +189,14 @@ export interface FinalVerification {
  * complete no-op for it (behavior identical to before this field existed).
  */
 export interface SdlcProgress {
-  /** Which phase the executor is in right now. */
-  phase: "coding" | "committing" | "pushing" | "opening_pr" | "done";
+  /**
+   * Which phase the executor is in right now. `final-verification` (Stage A) is the
+   * whole-suite re-run against the FINAL combined tree after every action point — it
+   * runs AFTER the last AP commit but BEFORE the push, so without its own phase it was
+   * indistinguishable from a frozen `committing` beat. ADDITIVE: an old client that does
+   * not know this value degrades to its generic "developing…" line (see the FE switch).
+   */
+  phase: "coding" | "committing" | "final-verification" | "pushing" | "opening_pr" | "done";
   /** 1-based position of the action point being worked. For the push/opening_pr/
    *  done phases (no single AP) this carries the action-point TOTAL. */
   actionPointIndex: number;
@@ -582,8 +588,11 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
         "",
         "The following P0 acceptance criteria are NOT yet verified green (the fix budget was exhausted or no test command resolved). Review before merging:",
         ...unmetP0.map(
+          // A not-run criterion surfaces its OWN reason (no test command OR a launch
+          // failure like `spawn uv ENOENT`) from the scrubbed summary, rather than
+          // always claiming "no test command" — an env error is not a missing command.
           (o) =>
-            `- (${o.priority}) ${sanitizeLine(o.title, PR_BODY_TITLE_MAX)} — ${o.verification && !o.verification.ran ? "no test command" : "tests still failing"}`,
+            `- (${o.priority}) ${sanitizeLine(o.title, PR_BODY_TITLE_MAX)} — ${o.verification && !o.verification.ran ? sanitizeLine(o.verification.summary, 160) : "tests still failing"}`,
         ),
       );
     }
@@ -797,7 +806,11 @@ export async function runSdlcHandoff(
       // NEVER throws / blocks PR creation (same contract as the per-AP path).
       let finalVerification: FinalVerification | undefined;
       if (verifyCtx && (req.finalVerification?.enabled ?? false)) {
-        finalVerification = await runFinalVerification(runCoder, verifyCtx, req.finalVerification!, req, wt);
+        finalVerification = await runFinalVerification(runCoder, verifyCtx, req.finalVerification!, req, wt, {
+          progress,
+          total,
+          completedBefore: committedCount,
+        });
         if (await commitFinalFixes(gitRaw, wt, req)) committedCount += 1;
       }
 
@@ -1065,13 +1078,39 @@ async function runFinalVerification(
   config: FinalVerificationConfig,
   req: SdlcHandoffRequest,
   wt: CreateWorktreeResult,
+  beatCtx: {
+    progress: ProgressTracker;
+    /** Round action-point total (carried on the AP-less final beats). */
+    total: number;
+    /** Commits produced by the action points before final verification. */
+    completedBefore: number;
+  },
 ): Promise<FinalVerification> {
+  // Live progress beat for the FINAL phase (was silent → looked like a frozen
+  // `committing`). `fixIteration` = 0 for the initial whole-suite run, 1..N per fix.
+  const emitFinal = (step: NonNullable<SdlcProgress["step"]>, fixIteration: number): void =>
+    beatCtx.progress.beat({
+      phase: "final-verification",
+      actionPointIndex: beatCtx.total,
+      actionPointTotal: beatCtx.total,
+      actionPointTitle: "",
+      completedCount: beatCtx.completedBefore,
+      step,
+      fixIteration,
+      fixBudget: config.maxFinalFixIterations,
+    });
+
+  emitFinal("test-runner", 0); // initial whole-suite re-verification run.
   let result = await runTestOnce(vc, wt);
   let fixIterations = 0;
-  while (!result.passed && fixIterations < config.maxFinalFixIterations) {
+  // `result.ran` gate: a command that could NOT be LAUNCHED (env broken — ran:false)
+  // must NOT enter the code→test→fix loop; no code change can make it run, so we skip
+  // the fix budget entirely (mirrors the no-test-command convention) and record NOT-RUN.
+  while (!result.passed && result.ran && fixIterations < config.maxFinalFixIterations) {
     // Whole-run wall-clock backstop (shared budget): stop fixing once the run overran.
     if (vc.now() >= vc.deadline) break;
     fixIterations += 1;
+    emitFinal("fix-coder", fixIterations); // final fix pass k is running.
     try {
       const fixed = await runCoder(wt.worktreeDir, req.actionPoints, {
         timeoutMs: req.coderTimeoutMs,
@@ -1082,6 +1121,7 @@ async function runFinalVerification(
     } catch {
       break; // a crashed fix coder stops the loop; whatever landed is still committed.
     }
+    emitFinal("test-runner", fixIterations); // re-run the whole suite after fix pass k.
     result = await runTestOnce(vc, wt);
   }
 
@@ -1172,7 +1212,13 @@ async function runVerifyFixLoop(
   emitVerify("test-runner", 0); // initial verification run (before any fix).
   let result = await runOnce();
   let fixIterations = 0;
-  while (!result.passed && fixIterations < vc.config.maxFixIterations) {
+  // `result.ran` gate: a test command that could NOT be LAUNCHED (env broken —
+  // e.g. `spawn uv ENOENT` ⇒ ran:false) must NOT enter the code→test→fix loop. No
+  // code change can make an unlaunchable command run, so burning the fix budget on it
+  // wastes every coder invocation on an error the coder cannot fix (the reported bug).
+  // We skip straight to a NOT-RUN verdict (0 fix iterations) — the SAME convention as
+  // the existing no-test-command path.
+  while (!result.passed && result.ran && fixIterations < vc.config.maxFixIterations) {
     // Whole-run wall-clock backstop: stop fixing once the run has overrun (the
     // per-AP coder/test timeouts + this cap together bound total develop time).
     if (vc.now() >= vc.deadline) break;
