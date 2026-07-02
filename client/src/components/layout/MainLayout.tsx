@@ -59,7 +59,6 @@ export default function MainLayout({ children }: MainLayoutProps) {
 
   const navItems = [
     { icon: LayoutDashboard, label: "Dashboard", href: "/" },
-    { icon: BookMarked, label: "Task Library", href: "/task-library" },
     { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: Repeat, label: "Consilium Loops", href: "/consilium-loops" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },

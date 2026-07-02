@@ -29,8 +29,6 @@
 import type { IStorage } from "../storage";
 import type { TaskGroupRow, TaskRow, InsertTask } from "@shared/schema";
 import { validateTaskGraph } from "./task-graph.js";
-import type { VisibilityUser } from "../routes/authorize-run";
-import { composeTemplateFields } from "./task-template-compose.js";
 
 /** An edit-layer error that maps to a specific HTTP status in the route. */
 export class TaskGroupEditError extends Error {
@@ -71,10 +69,6 @@ export interface NewTaskInput {
   teamId?: string;
   input?: Record<string, unknown>;
   sortOrder?: number;
-  /** Add-from-template (§5.3/§6 COPY-IN): copy this template's fields into the new task. */
-  templateId?: string;
-  /** The caller, used to owner-check the composed template ONCE at compose time. */
-  composeUser?: VisibilityUser;
 }
 
 export class TaskGroupEditor {
@@ -142,9 +136,6 @@ export class TaskGroupEditor {
 
   /**
    * POST a new task — pending-only, DAG-validated, sortOrder = max+1 default.
-   * When `templateId` is set, COPY-IN the template's fields (§5.3/§6): the
-   * template is owner-checked ONCE here at compose time and `template_id` records
-   * provenance; explicit per-task fields override the template's where provided.
    */
   async addTask(groupId: string, input: NewTaskInput): Promise<TaskRow> {
     const group = await this.requireGroup(groupId);
@@ -164,7 +155,7 @@ export class TaskGroupEditor {
 
     const maxSort = siblings.reduce((m, s) => Math.max(m, s.sortOrder), -1);
     const status = dependsOn.length === 0 ? "ready" : "blocked";
-    const fields = await this.resolveTaskFields(input);
+    const fields = this.resolveTaskFields(input);
 
     return this.storage.createTask({
       groupId,
@@ -177,45 +168,27 @@ export class TaskGroupEditor {
       teamId: fields.teamId,
       input: fields.input,
       labels: fields.labels,
-      templateId: fields.templateId,
       sortOrder: input.sortOrder ?? maxSort + 1,
       status,
     } as InsertTask);
   }
 
-  /**
-   * Resolve a new task's copy-in fields. No `templateId` → manual fields verbatim.
-   * Otherwise COPY-IN the template (owner-checked once); explicit fields win.
-   */
-  private async resolveTaskFields(input: NewTaskInput): Promise<{
+  /** Resolve a new task's definition fields. */
+  private resolveTaskFields(input: NewTaskInput): {
     executionMode: "pipeline_run" | "direct_llm";
     pipelineId: string | null;
     modelSlug: string | null;
     teamId: string | null;
     input: Record<string, unknown>;
     labels: string[];
-    templateId: string | null;
-  }> {
-    if (!input.templateId) {
-      return {
-        executionMode: input.executionMode ?? "direct_llm",
-        pipelineId: input.pipelineId ?? null,
-        modelSlug: input.modelSlug ?? null,
-        teamId: input.teamId ?? null,
-        input: input.input ?? {},
-        labels: [],
-        templateId: null,
-      };
-    }
-    const tpl = await composeTemplateFields(this.storage, input.templateId, input.composeUser);
+  } {
     return {
-      executionMode: input.executionMode ?? tpl.executionMode,
-      pipelineId: input.pipelineId ?? tpl.pipelineId,
-      modelSlug: input.modelSlug ?? tpl.modelSlug,
-      teamId: input.teamId ?? tpl.teamId,
-      input: input.input ?? tpl.input,
-      labels: tpl.labels,
-      templateId: tpl.templateId,
+      executionMode: input.executionMode ?? "direct_llm",
+      pipelineId: input.pipelineId ?? null,
+      modelSlug: input.modelSlug ?? null,
+      teamId: input.teamId ?? null,
+      input: input.input ?? {},
+      labels: [],
     };
   }
 

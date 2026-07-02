@@ -58,7 +58,6 @@ import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consili
 import { registerModelSkillBindingRoutes } from "./routes/model-skill-bindings";
 import { registerTaskTraceRoutes } from "./routes/task-traces";
 import { registerTaskIterationRoutes } from "./routes/task-iterations";
-import { registerTaskTemplateRoutes } from "./routes/task-templates";
 import { registerTrackerRoutes } from "./routes/tracker";
 import { registerCredentialRoutes } from "./routes/credentials";
 import { expireStaleLeases } from "./credentials/db-crypto-provider";
@@ -152,7 +151,6 @@ export async function registerRoutes(
   app.use("/api/task-groups", requireAuth, requireProject);
   app.use("/api/consilium-loops", requireAuth, requireProject);
   app.use("/api/consilium-reviews", requireAuth, requireProject);
-  app.use("/api/task-templates", requireAuth, requireProject);
   app.use("/api/lmstudio", requireAuth, requireProject);       // UNCERTAIN — see note above
   app.use("/api/tracker-connections", requireAuth, requireProject);
   app.use("/api/remote-agents", requireAuth, requireProject);
@@ -236,7 +234,6 @@ export async function registerRoutes(
   registerTaskGroupRoutes(app, storage, taskOrchestrator);
   registerTaskGroupResolveRoute(app);
   registerTaskIterationRoutes(app as unknown as Router, storage);
-  registerTaskTemplateRoutes(app as unknown as Router, storage);
 
   // Consilium Loop (Phase B — auto-versioned FSM). KILL-SWITCH default FALSE:
   // the controller + routes + poller are only wired when explicitly enabled, so

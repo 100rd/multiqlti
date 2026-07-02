@@ -846,9 +846,8 @@ export const tasks = pgTable(
     modelSlug: text("model_slug"),
     teamId: text("team_id"),
     // v2 (task-groups-v2 §3.3): organizational labels (array, not a join table —
-    // mirrors library_items.tags) + provenance of a copied-in template definition.
+    // mirrors library_items.tags).
     labels: jsonb("labels").notNull().default(sql`'[]'::jsonb`).$type<string[]>(),
-    templateId: varchar("template_id").references(() => taskTemplates.id, { onDelete: "set null" }),
     input: jsonb("input").notNull().default(sql`'{}'::jsonb`),
     output: jsonb("output"),
     summary: text("summary"),
@@ -873,50 +872,6 @@ export const insertTaskSchema = createInsertSchema(tasks).omit({
 
 export type InsertTask = z.infer<typeof insertTaskSchema>;
 export type TaskRow = typeof tasks.$inferSelect;
-
-// ─── Task Templates (Library — task-groups-v2 §3.5) ─────────────────────────
-// Standalone, owner-scoped reusable single-task recipes + labels. No group_id /
-// dependsOn (dependencies are a group-graph concept resolved at compose time).
-// Composition is COPY-IN (§6): fields are snapshotted into a `tasks` definition
-// at compose time; `tasks.template_id` records provenance (set-null on delete).
-// Defined before `task_traces` so the forward reference from `tasks.templateId`
-// resolves; Drizzle .references() is a lazy thunk regardless of textual order.
-
-export const taskTemplates = pgTable(
-  "task_templates",
-  {
-    id: varchar("id")
-      .primaryKey()
-      .default(sql`gen_random_uuid()`),
-    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-    name: text("name").notNull(),
-    description: text("description").notNull(),
-    executionMode: text("execution_mode").notNull().default("direct_llm").$type<TaskExecutionMode>(),
-    pipelineId: varchar("pipeline_id"),
-    modelSlug: text("model_slug"),
-    teamId: text("team_id"),
-    input: jsonb("input").notNull().default(sql`'{}'::jsonb`).$type<Record<string, unknown>>(),
-    labels: jsonb("labels").notNull().default(sql`'[]'::jsonb`).$type<string[]>(),
-    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
-  },
-  (table) => ({
-    createdByIdx: index("task_templates_created_by_idx").on(table.createdBy),
-  }),
-);
-
-export const insertTaskTemplateSchema = createInsertSchema(taskTemplates).omit({
-  id: true,
-  createdAt: true,
-  updatedAt: true,
-}).extend({
-  executionMode: z.enum(TASK_EXECUTION_MODES).optional(),
-  labels: z.array(z.string()).optional(),
-});
-
-export type InsertTaskTemplate = z.infer<typeof insertTaskTemplateSchema>;
-export type TaskTemplateRow = typeof taskTemplates.$inferSelect;
 
 // ─── Task Group Iterations (task-groups-v2 §3.1) ────────────────────────────
 // One row per RUN of a group. status/timing/output projects onto the group row

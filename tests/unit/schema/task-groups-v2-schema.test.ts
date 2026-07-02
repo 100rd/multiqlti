@@ -2,17 +2,15 @@
  * BE1 — Task Groups v2 schema (task-groups-v2 §3).
  *
  * Insert-schema round-trip + enum acceptance/rejection + omit(id, createdAt) for
- * the three new tables (task_group_iterations, task_executions, task_templates)
- * and the new label/template columns. Pure Zod-level assertions — no DB.
+ * the new tables (task_group_iterations, task_executions) and the new label
+ * column. Pure Zod-level assertions — no DB.
  */
 import { describe, it, expect } from "vitest";
 import {
   insertTaskGroupIterationSchema,
   insertTaskExecutionSchema,
-  insertTaskTemplateSchema,
   TASK_GROUP_STATUSES,
   TASK_STATUSES,
-  TASK_EXECUTION_MODES,
 } from "@shared/schema";
 
 describe("insertTaskGroupIterationSchema", () => {
@@ -111,62 +109,5 @@ describe("insertTaskExecutionSchema", () => {
       modelSlug: "claude-haiku-4-5",
     });
     expect(parsed.success).toBe(true);
-  });
-});
-
-describe("insertTaskTemplateSchema", () => {
-  it("accepts a minimal valid template insert and omits id/createdAt/updatedAt", () => {
-    const parsed = insertTaskTemplateSchema.safeParse({
-      name: "Lint pass",
-      description: "Run the linter and summarize",
-    });
-    expect(parsed.success).toBe(true);
-    const data = parsed.success ? parsed.data : {};
-    expect("id" in data).toBe(false);
-    expect("createdAt" in data).toBe(false);
-    expect("updatedAt" in data).toBe(false);
-  });
-
-  it("accepts every TaskExecutionMode enum value", () => {
-    for (const executionMode of TASK_EXECUTION_MODES) {
-      const parsed = insertTaskTemplateSchema.safeParse({
-        name: "T",
-        description: "d",
-        executionMode,
-      });
-      expect(parsed.success).toBe(true);
-    }
-  });
-
-  it("rejects an out-of-enum executionMode", () => {
-    const parsed = insertTaskTemplateSchema.safeParse({
-      name: "T",
-      description: "d",
-      executionMode: "shell",
-    });
-    expect(parsed.success).toBe(false);
-  });
-
-  it("accepts a string[] labels array", () => {
-    const parsed = insertTaskTemplateSchema.safeParse({
-      name: "T",
-      description: "d",
-      labels: ["frontend", "high-priority"],
-    });
-    expect(parsed.success).toBe(true);
-  });
-
-  it("rejects a non-array labels value", () => {
-    const parsed = insertTaskTemplateSchema.safeParse({
-      name: "T",
-      description: "d",
-      labels: "frontend",
-    });
-    expect(parsed.success).toBe(false);
-  });
-
-  it("rejects a missing required field (description)", () => {
-    const parsed = insertTaskTemplateSchema.safeParse({ name: "T" });
-    expect(parsed.success).toBe(false);
   });
 });
