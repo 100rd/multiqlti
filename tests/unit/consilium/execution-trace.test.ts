@@ -44,6 +44,44 @@ describe("execution-trace — buildSdlcTrace (coder path)", () => {
     expect(t.controller.workers[1].note).toBe("coder errored");
   });
 
+  it("Stage A: stamps passedAtFinal on every test-run criterion when finalPassed is given", () => {
+    const green = buildSdlcTrace("repo-assessment", outcomes, { prRef: "x" }, true);
+    expect(green.controller.workers[0].criteria[0].passedAtFinal).toBe(true);
+    const red = buildSdlcTrace("repo-assessment", outcomes, { prRef: "x" }, false);
+    expect(red.controller.workers[0].criteria[0].passedAtFinal).toBe(false);
+    // A regression: the criterion passed at implement time but NOT at final re-verify.
+    expect(red.controller.workers[0].criteria[0].passed).toBe(true);
+    expect(red.controller.workers[0].criteria[0].passedAtFinal).toBe(false);
+  });
+
+  it("Stage A: OMITS passedAtFinal when finalPassed is undefined (byte-for-byte the prior trace)", () => {
+    const t = buildSdlcTrace("repo-assessment", outcomes, { prRef: "x" });
+    expect("passedAtFinal" in t.controller.workers[0].criteria[0]).toBe(false);
+  });
+
+  it("Stage A: clampTrace preserves an already-set passedAtFinal", () => {
+    const t = clampTrace({
+      schemaVersion: 1,
+      archetype: "repo-assessment",
+      controller: {
+        kind: "sdlc-executor",
+        label: "x",
+        green: false,
+        workers: [
+          {
+            index: 1,
+            priority: "P0",
+            title: "t",
+            status: "completed",
+            skills: [],
+            criteria: [{ criterion: "c", method: "test-run", ran: true, passed: true, passedAtFinal: false }],
+          },
+        ],
+      },
+    });
+    expect(t.controller.workers[0].criteria[0].passedAtFinal).toBe(false);
+  });
+
   it("controller green requires a PR AND no unmet P0 criterion", () => {
     expect(buildSdlcTrace("repo-assessment", outcomes, { prRef: "x" }).controller.green).toBe(true);
     expect(buildSdlcTrace("repo-assessment", outcomes, { prRef: null }).controller.green).toBe(false);

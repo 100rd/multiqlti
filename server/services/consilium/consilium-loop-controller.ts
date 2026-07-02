@@ -1215,6 +1215,12 @@ export class ConsiliumLoopController {
     // it degrades to Stage-2a (NO test runs) with a one-line warning. Single source of
     // truth: `effectiveVerificationEnabled`.
     const verifyOn = skilled && effectiveVerificationEnabled(this.deps.config());
+    // Stage A: FINAL-STATE re-verification. Gated by its OWN kill-switch ON TOP of the
+    // SAME sandbox gate as per-AP verification (`verifyOn`) — final verification re-runs
+    // the repo's test command on the host exactly as Stage 2b does, so it must obey the
+    // identical fail-closed gate. Optional-chained so a hand-built test config that omits
+    // the block degrades to OFF (never throws). null ⇒ the executor skips Stage A.
+    const finalOn = verifyOn && (cfg.implement.finalVerification?.enabled ?? false);
     if (skilled && cfg.implement.verification.enabled && !verifyOn && !this.warnedVerificationGate) {
       this.warnedVerificationGate = true;
       // eslint-disable-next-line no-console
@@ -1247,6 +1253,14 @@ export class ConsiliumLoopController {
             maxFixIterations: cfg.implement.maxFixIterations,
             testCommand: cfg.implement.testCommand,
             testRunTimeoutMs: cfg.implement.testRunTimeoutMs,
+          }
+        : null,
+      // Stage A: final-state re-verification config (null when the kill-switch is off OR
+      // the verification sandbox gate is closed ⇒ INERT, byte-for-byte the prior path).
+      finalVerification: finalOn
+        ? {
+            enabled: true,
+            maxFinalFixIterations: cfg.implement.finalVerification.maxFinalFixIterations,
           }
         : null,
     }, skilled ? { getSkills: () => this.storage.getSkills() } : undefined, onProgress);

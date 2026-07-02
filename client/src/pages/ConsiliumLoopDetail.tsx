@@ -394,6 +394,13 @@ function CriterionLeaf({ c }: { c: ExecutionCriterion }) {
       {typeof c.fixIterations === "number" && c.fixIterations > 0 && (
         <span className="text-muted-foreground">· {c.fixIterations} fix</span>
       )}
+      {/* Stage A: final-state re-verification of the whole worktree. A false here
+          (esp. alongside passed:true) reveals a late-AP regression. */}
+      {typeof c.passedAtFinal === "boolean" && (
+        <span className={c.passedAtFinal ? "text-muted-foreground" : "text-red-600 font-medium"}>
+          · final {c.passedAtFinal ? "green" : "regressed"}
+        </span>
+      )}
       <span className="text-foreground/80">{c.criterion || "—"}</span>
       {c.summary && !c.passed && (
         <span className="w-full text-muted-foreground font-mono text-[10px] break-words">{c.summary}</span>
