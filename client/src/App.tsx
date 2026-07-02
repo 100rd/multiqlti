@@ -31,7 +31,6 @@ import Login from "@/pages/Login";
 import UserManagement from "@/pages/UserManagement";
 import ProfileSettings from "@/pages/ProfileSettings";
 import Skills from "@/pages/Skills";
-import TaskLibrary from "@/pages/TaskLibrary";
 import { WorkspaceTracesPage, WorkspaceTraceDetailPage } from "@/pages/WorkspaceTraces";
 import Costs from "@/pages/Costs";
 import ConfigSync from "@/pages/ConfigSync";
@@ -143,9 +142,6 @@ function ProtectedRouter() {
         )} />
         <Route path="/contour" component={() => (
           <ErrorBoundary><ContourObservability /></ErrorBoundary>
-        )} />
-        <Route path="/task-library" component={() => (
-          <ErrorBoundary><TaskLibrary /></ErrorBoundary>
         )} />
         <Route path="/credentials" component={() => (
           <ErrorBoundary><CredentialAccess /></ErrorBoundary>

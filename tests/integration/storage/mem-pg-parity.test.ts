@@ -106,23 +106,6 @@ function runParityCases(label: string, makeStorage: () => IStorage): void {
       }
     });
 
-    it("label containment filter selects only templates carrying the label", async () => {
-      const storage = makeStorage();
-      const labelA = `pa-${uniq()}`;
-      const labelB = `pb-${uniq()}`;
-      const hit = await storage.createTaskTemplate({ name: "hit", description: "d", createdBy: null, labels: [labelA] });
-      const miss = await storage.createTaskTemplate({ name: "miss", description: "d", createdBy: null, labels: [labelB] });
-      try {
-        const rows = await storage.getTaskTemplates({ isAdmin: true, label: labelA, limit: 100 });
-        const names = rows.map((t) => t.name);
-        expect(names).toContain("hit");
-        expect(names).not.toContain("miss");
-      } finally {
-        await storage.deleteTaskTemplate(hit.id);
-        await storage.deleteTaskTemplate(miss.id);
-      }
-    });
-
     it("keyset ordering (iteration_number desc) is identical page shape", async () => {
       const storage = makeStorage();
       const groupId = await freshGroup(storage);

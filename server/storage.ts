@@ -44,8 +44,6 @@ import {
   type InsertTaskGroupIteration,
   type TaskExecutionRow,
   type InsertTaskExecution,
-  type TaskTemplateRow,
-  type InsertTaskTemplate,
   type TaskStatus,
   type TaskGroupStatus,
   type TaskExecutionMode,
@@ -227,7 +225,6 @@ import {
   IterationConflictError,
   buildVirtualIteration,
   type IterationListQuery,
-  type TaskTemplateListQuery,
   type IterationExecutionSeed,
   type IterationStartInput,
   type VirtualIteration,
@@ -240,7 +237,6 @@ export {
 } from "./storage-task-groups-v2";
 export type {
   IterationListQuery,
-  TaskTemplateListQuery,
   IterationExecutionSeed,
   IterationStartInput,
   VirtualIteration,
@@ -452,14 +448,6 @@ export interface IStorage {
   // ─── Per-iteration trace (task-groups-v2 §3.4 / MF-3 group-scoped) ──────────
   /** The trace for a specific iteration, scoped to `groupId` (MF-3). */
   getTaskTraceByIteration(groupId: string, iterationId: string): Promise<TaskTraceRow | null>;
-
-  // ─── Task Templates (Library — task-groups-v2 §3.5 / BE2) ───────────────────
-  /** Templates list: owner filter applied BEFORE label match (MF-4), keyset-paged. */
-  getTaskTemplates(query: TaskTemplateListQuery): Promise<TaskTemplateRow[]>;
-  getTaskTemplate(id: string): Promise<TaskTemplateRow | undefined>;
-  createTaskTemplate(data: InsertTaskTemplate): Promise<TaskTemplateRow>;
-  updateTaskTemplate(id: string, updates: Partial<TaskTemplateRow>): Promise<TaskTemplateRow>;
-  deleteTaskTemplate(id: string): Promise<void>;
 
   // ─── Consilium Loops (Phase B — auto-versioned FSM, design §4) ──────────────
   /** Insert a loop. The DB partial-unique index rejects a 2nd active loop per
@@ -1995,7 +1983,6 @@ export class MemStorage implements IStorage {
       modelSlug: data.modelSlug ?? null,
       teamId: data.teamId ?? null,
       labels: (data.labels as string[]) ?? [],
-      templateId: data.templateId ?? null,
       output: data.output ?? null,
       summary: data.summary ?? null,
       artifacts: data.artifacts ?? null,
@@ -2776,7 +2763,6 @@ export class MemStorage implements IStorage {
 
   private iterationsMap = new Map<string, TaskGroupIterationRow>();
   private executionsMap = new Map<string, TaskExecutionRow>();
-  private taskTemplatesMap = new Map<string, TaskTemplateRow>();
 
   private iterationExists(groupId: string, iterationNumber: number): boolean {
     for (const it of this.iterationsMap.values()) {
@@ -2961,78 +2947,6 @@ export class MemStorage implements IStorage {
       if (tr.iterationId === iterationId && tr.groupId === groupId) return tr;
     }
     return null;
-  }
-
-  // ─── Task Templates (Library) ───────────────────────────────────────────────
-
-  async getTaskTemplates(query: TaskTemplateListQuery): Promise<TaskTemplateRow[]> {
-    const limit = Math.min(query.limit, TASK_GROUP_V2_MAX_LIMIT);
-    let rows = Array.from(this.taskTemplatesMap.values());
-    // MF-4: apply the ownership filter BEFORE the label match.
-    if (!query.isAdmin && query.ownerId != null) {
-      rows = rows.filter((t) => t.createdBy === query.ownerId);
-    }
-    if (query.label != null) {
-      rows = rows.filter((t) => t.labels.includes(query.label!));
-    }
-    rows.sort((a, b) => {
-      const ta = a.createdAt?.getTime() ?? 0;
-      const tb = b.createdAt?.getTime() ?? 0;
-      if (ta !== tb) return tb - ta; // createdAt desc
-      return b.id.localeCompare(a.id); // id desc
-    });
-    if (query.cursor) {
-      const cTs = new Date(query.cursor.createdAt).getTime();
-      const cId = query.cursor.id;
-      rows = rows.filter((t) => {
-        const rt = t.createdAt?.getTime() ?? 0;
-        if (rt < cTs) return true;
-        if (rt > cTs) return false;
-        return t.id.localeCompare(cId) < 0;
-      });
-    }
-    return rows.slice(0, limit);
-  }
-
-  async getTaskTemplate(id: string): Promise<TaskTemplateRow | undefined> {
-    return this.taskTemplatesMap.get(id);
-  }
-
-  async createTaskTemplate(data: InsertTaskTemplate): Promise<TaskTemplateRow> {
-    const now = new Date();
-    const row: TaskTemplateRow = {
-      id: randomUUID(),
-      projectId: data.projectId ?? null,
-      name: data.name,
-      description: data.description,
-      executionMode: (data.executionMode as TaskExecutionMode) ?? "direct_llm",
-      pipelineId: data.pipelineId ?? null,
-      modelSlug: data.modelSlug ?? null,
-      teamId: data.teamId ?? null,
-      input: (data.input as Record<string, unknown>) ?? {},
-      labels: (data.labels as string[]) ?? [],
-      createdBy: data.createdBy ?? null,
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.taskTemplatesMap.set(row.id, row);
-    return row;
-  }
-
-  async updateTaskTemplate(id: string, updates: Partial<TaskTemplateRow>): Promise<TaskTemplateRow> {
-    const existing = this.taskTemplatesMap.get(id);
-    if (!existing) throw new Error(`TaskTemplate ${id} not found`);
-    const updated: TaskTemplateRow = { ...existing, ...updates, updatedAt: new Date() };
-    this.taskTemplatesMap.set(id, updated);
-    return updated;
-  }
-
-  async deleteTaskTemplate(id: string): Promise<void> {
-    this.taskTemplatesMap.delete(id);
-    // FK set-null: a copied-in definition keeps living, provenance soft-cleared.
-    for (const [tid, t] of this.tasksMap) {
-      if (t.templateId === id) this.tasksMap.set(tid, { ...t, templateId: null });
-    }
   }
 
 }

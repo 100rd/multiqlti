@@ -17,24 +17,24 @@ import {
   InvalidTaskGraphError,
 } from "../services/task-orchestrator.js";
 import { IterationConflictError } from "../storage-task-groups-v2.js";
-import { TaskTemplateComposeError } from "../services/task-template-compose.js";
 
 // ─── Validation Schemas ─────────────────────────────────────────────────────
 
-const TaskFieldsSchema = z.object({
-  name: z.string().min(1).max(200),
-  description: z.string().min(1).max(5000),
-  executionMode: z.enum(["pipeline_run", "direct_llm"]).optional(),
-  dependsOn: z.array(z.string().max(200)).max(50).optional(),
-  pipelineId: z.string().max(100).optional(),
-  modelSlug: z.string().max(100).optional(),
-  teamId: z.string().max(100).optional(),
-  input: z.record(z.unknown()).optional(),
-  sortOrder: z.number().int().min(0).max(1000).optional(),
-  // COPY-IN (§5.3/§6): when set, the template's fields are copied into this
-  // definition at compose time (owner-checked once); explicit fields override.
-  templateId: z.string().max(100).optional(),
-});
+// `.strict()` so a now-removed `templateId` (Task Library, deleted) — or any
+// other unknown field — is rejected with 400 rather than silently stripped.
+const TaskFieldsSchema = z
+  .object({
+    name: z.string().min(1).max(200),
+    description: z.string().min(1).max(5000),
+    executionMode: z.enum(["pipeline_run", "direct_llm"]).optional(),
+    dependsOn: z.array(z.string().max(200)).max(50).optional(),
+    pipelineId: z.string().max(100).optional(),
+    modelSlug: z.string().max(100).optional(),
+    teamId: z.string().max(100).optional(),
+    input: z.record(z.unknown()).optional(),
+    sortOrder: z.number().int().min(0).max(1000).optional(),
+  })
+  .strict();
 
 const CreateTaskGroupSchema = z.object({
   name: z.string().min(1).max(200),
@@ -79,7 +79,7 @@ const AddTaskSchema = TaskFieldsSchema;
  * Edit-layer errors carry their HTTP status; everything else is a generic 500.
  */
 function sendError(res: Response, err: unknown, fallbackMessage: string): void {
-  if (err instanceof TaskGroupEditError || err instanceof TaskTemplateComposeError) {
+  if (err instanceof TaskGroupEditError) {
     res.status(err.status).json({ error: err.message });
     return;
   }
@@ -157,11 +157,9 @@ export function registerTaskGroupRoutes(
       const result = await orchestrator.createTaskGroup({
         ...body,
         createdBy: req.user.id,
-        composeUser: req.user,
       });
       res.status(201).json({ ...result.group, tasks: result.tasks });
     } catch (err) {
-      // A composed template the caller cannot see / that is missing → 403/404.
       sendError(res, err, "Failed to create task group");
     }
   });
@@ -302,7 +300,6 @@ export function registerTaskGroupRoutes(
         const body = req.body as z.infer<typeof AddTaskSchema>;
         const task = await editor.addTask(String(req.params.id), {
           ...body,
-          composeUser: req.user,
         });
         res.status(201).json(task);
       } catch (err) {

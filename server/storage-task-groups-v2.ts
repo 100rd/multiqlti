@@ -32,22 +32,6 @@ export interface IterationListQuery {
 }
 
 /**
- * Keyset cursor for the template list (`created_at desc, id desc`), exclusive.
- * Owner filter is applied BEFORE the label match (MF-4: a non-admin must not be
- * able to enumerate another tenant's templates by label).
- */
-export interface TaskTemplateListQuery {
-  /** When set, restrict to templates owned by this user (non-admin scoping). */
-  ownerId?: string;
-  /** Whether the caller is an admin (admins see all owners). */
-  isAdmin: boolean;
-  /** Optional label-containment filter (a template matches if labels includes it). */
-  label?: string;
-  limit: number;
-  cursor?: { createdAt: string; id: string };
-}
-
-/**
  * Thrown when an iteration insert collides on UNIQUE(group_id, iteration_number)
  * — i.e. two concurrent `start` calls computed the same `max + 1`. The route maps
  * this to HTTP 409 (SF-1 / §4.1.d concurrency backstop).

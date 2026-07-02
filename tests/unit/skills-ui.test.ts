@@ -153,34 +153,6 @@ describe("SkillEditor component — team dropdown (PR #171)", () => {
   });
 });
 
-// ─── Task-form shared bits (still used by the Task Library) ───────────────────
-//
-// The standalone Task Groups pages (CreateTaskGroup / TaskGroup / …) were retired
-// once the dispute moved onto the consilium loop page. The shared task-form module
-// they used SURVIVES because the Task Library still authors templates with it, so
-// these assertions target the reusable module directly (not a deleted page).
-
-describe("shared task-form module (task-form-logic + task-form)", () => {
-  const formLogic = readSource("client/src/components/task-groups/task-form-logic.ts");
-  const formRow = readSource("client/src/components/task-groups/task-form.tsx");
-
-  it("exposes the shared emptyTask helper with executionMode + dependsOn", () => {
-    expect(formLogic).toContain("function emptyTask");
-    expect(formLogic).toContain("executionMode");
-    expect(formLogic).toContain("dependsOn");
-  });
-
-  it("supports both pipeline_run and direct_llm execution modes (shared TaskRow)", () => {
-    expect(formRow).toContain('"pipeline_run"');
-    expect(formRow).toContain('"direct_llm"');
-  });
-
-  it("has task dependency management (shared toggleDependency)", () => {
-    expect(formLogic).toContain("toggleDependency");
-    expect(formLogic).toContain("dependsOn");
-  });
-});
-
 // ─── emptyTask — pure logic ───────────────────────────────────────────────────
 
 describe("CreateTaskGroup — emptyTask helper logic", () => {

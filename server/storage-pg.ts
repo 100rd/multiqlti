@@ -10,7 +10,6 @@ import {
 } from "./storage-task-groups-v2";
 import type {
   IterationListQuery,
-  TaskTemplateListQuery,
   IterationExecutionSeed,
   IterationStartInput,
   VirtualIteration,
@@ -62,7 +61,6 @@ import {
   taskTraces,
   taskGroupIterations,
   taskExecutions,
-  taskTemplates,
   consiliumLoops,
   consiliumLoopRounds,
   type ConsiliumLoopRow,
@@ -81,8 +79,6 @@ import {
   type InsertTaskGroupIteration,
   type TaskExecutionRow,
   type InsertTaskExecution,
-  type TaskTemplateRow,
-  type InsertTaskTemplate,
   type TrackerConnectionRow,
   type InsertTrackerConnection,
   type ModelSkillBinding,
@@ -2464,64 +2460,6 @@ export class PgStorage implements IStorage {
           eq(taskTraces.groupId, groupId),
         ),));
     return row ?? null;
-  }
-
-  async getTaskTemplates(query: TaskTemplateListQuery): Promise<TaskTemplateRow[]> {
-    const limit = Math.min(query.limit, TASK_GROUP_V2_MAX_LIMIT);
-    const conditions: SQL[] = [];
-    // MF-4: ownership filter applied BEFORE/with the label match in the same WHERE.
-    if (!query.isAdmin && query.ownerId != null) {
-      conditions.push(eq(taskTemplates.createdBy, query.ownerId));
-    }
-    if (query.label != null) {
-      // SF-2: jsonb containment via a Drizzle bind param (never interpolated).
-      conditions.push(
-        drizzleSql`${taskTemplates.labels} @> ${JSON.stringify([query.label])}::jsonb`,
-      );
-    }
-    if (query.cursor) {
-      const c = new Date(query.cursor.createdAt);
-      conditions.push(
-        or(
-          lt(taskTemplates.createdAt, c),
-          and(eq(taskTemplates.createdAt, c), lt(taskTemplates.id, query.cursor.id)),
-        )!,
-      );
-    }
-    const where = conditions.length > 0 ? and(...conditions) : undefined;
-    return db
-      .select()
-      .from(taskTemplates)
-      .where(withProject(taskTemplates, where))
-      .orderBy(desc(taskTemplates.createdAt), desc(taskTemplates.id))
-      .limit(limit);
-  }
-
-  async getTaskTemplate(id: string): Promise<TaskTemplateRow | undefined> {
-    const [row] = await db.select().from(taskTemplates).where(withProject(taskTemplates, eq(taskTemplates.id, id)));
-    return row;
-  }
-
-  async createTaskTemplate(data: InsertTaskTemplate): Promise<TaskTemplateRow> {
-    const [row] = await db
-      .insert(taskTemplates)
-      .values(withProjectInsert(taskTemplates, data as typeof taskTemplates.$inferInsert))
-      .returning();
-    return row;
-  }
-
-  async updateTaskTemplate(id: string, updates: Partial<TaskTemplateRow>): Promise<TaskTemplateRow> {
-    const [row] = await db
-      .update(taskTemplates)
-      .set({ ...updates, updatedAt: new Date() })
-      .where(withProject(taskTemplates, eq(taskTemplates.id, id)))
-      .returning();
-    return row;
-  }
-
-  async deleteTaskTemplate(id: string): Promise<void> {
-    // FK onDelete:"set null" on tasks.template_id clears provenance automatically.
-    await db.delete(taskTemplates).where(withProject(taskTemplates, eq(taskTemplates.id, id)));
   }
 
 }

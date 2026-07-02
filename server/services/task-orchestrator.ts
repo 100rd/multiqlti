@@ -21,8 +21,6 @@ import type { TaskTracer } from "./task-tracer";
 import { configLoader } from "../config/loader.js";
 import { DEFAULT_TASK_MODEL } from "../config/schema.js";
 import type { IterationExecutionSeed } from "../storage-task-groups-v2.js";
-import type { VisibilityUser } from "../routes/authorize-run";
-import { composeTemplateFields } from "./task-template-compose.js";
 import { validateTaskGraph } from "./task-graph.js";
 import { ExecutionClaims } from "./orchestrator/execution-claims.js";
 import { IterationTracing } from "./orchestrator/iteration-tracing.js";
@@ -59,7 +57,7 @@ export {
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-/** One task in a create payload — manual, or COPY-IN from a library template. */
+/** One task in a create payload. */
 export interface CreateTaskParam {
   name: string;
   description: string;
@@ -75,8 +73,6 @@ export interface CreateTaskParam {
    * Additive: omitted/undefined = today's behaviour (no workspace on startRun).
    */
   workspaceId?: string;
-  /** When set, copy the template's fields into this definition (§5.3/§6 COPY-IN). */
-  templateId?: string;
 }
 
 export interface CreateTaskGroupParams {
@@ -85,11 +81,6 @@ export interface CreateTaskGroupParams {
   input: string;
   tasks: CreateTaskParam[];
   createdBy?: string;
-  /**
-   * The authenticated caller, used to owner-check any composed template ONCE at
-   * compose time (§6). Omitted only by tests that supply no `templateId`.
-   */
-  composeUser?: VisibilityUser;
 }
 
 export interface StartGroupOptions {
@@ -106,7 +97,7 @@ export interface StartGroupOptions {
   await?: boolean;
 }
 
-/** The resolved fields a definition row is created with (template overlay applied). */
+/** The resolved fields a definition row is created with. */
 interface ResolvedTaskFields {
   executionMode: "pipeline_run" | "direct_llm";
   pipelineId: string | null;
@@ -115,7 +106,6 @@ interface ResolvedTaskFields {
   input: Record<string, unknown>;
   workspaceId: string | null;
   labels: string[];
-  templateId: string | null;
 }
 
 // ─── Human-in-the-loop note carry-forward ───────────────────────────────────
@@ -235,37 +225,16 @@ export class TaskOrchestrator {
     return [...this.activeGroupIds];
   }
 
-  /**
-   * Resolve one create-payload task to its final definition fields. A `templateId`
-   * triggers COPY-IN: the template is owner-checked ONCE here (§6) and its fields
-   * are copied; explicit per-task fields override the template's where provided.
-   */
-  private async resolveTaskFields(
-    t: CreateTaskParam,
-    user: VisibilityUser | undefined,
-  ): Promise<ResolvedTaskFields> {
-    if (!t.templateId) {
-      return {
-        executionMode: t.executionMode ?? "direct_llm",
-        pipelineId: t.pipelineId ?? null,
-        modelSlug: t.modelSlug ?? null,
-        teamId: t.teamId ?? null,
-        input: t.input ?? {},
-        workspaceId: t.workspaceId ?? null,
-        labels: [],
-        templateId: null,
-      };
-    }
-    const tpl = await composeTemplateFields(this.storage, t.templateId, user);
+  /** Resolve one create-payload task to its final definition fields. */
+  private resolveTaskFields(t: CreateTaskParam): ResolvedTaskFields {
     return {
-      executionMode: t.executionMode ?? tpl.executionMode,
-      pipelineId: t.pipelineId ?? tpl.pipelineId,
-      modelSlug: t.modelSlug ?? tpl.modelSlug,
-      teamId: t.teamId ?? tpl.teamId,
-      input: t.input ?? tpl.input,
+      executionMode: t.executionMode ?? "direct_llm",
+      pipelineId: t.pipelineId ?? null,
+      modelSlug: t.modelSlug ?? null,
+      teamId: t.teamId ?? null,
+      input: t.input ?? {},
       workspaceId: t.workspaceId ?? null,
-      labels: tpl.labels,
-      templateId: tpl.templateId,
+      labels: [],
     };
   }
 
@@ -273,7 +242,6 @@ export class TaskOrchestrator {
    * Create a task group with task DEFINITIONS. Resolves task name references in
    * dependsOn to IDs and computes initial DEFINITION statuses (ready / blocked).
    * Definitions are templates: each `start` creates a fresh iteration of them.
-   * A task carrying `templateId` is COPIED-IN from the library (§5.3/§6).
    */
   async createTaskGroup(params: CreateTaskGroupParams): Promise<{ group: TaskGroupRow; tasks: TaskRow[] }> {
     const group = await this.storage.createTaskGroup({
@@ -284,13 +252,13 @@ export class TaskOrchestrator {
       createdBy: params.createdBy ?? null,
     } as InsertTaskGroup);
 
-    // First pass: create all tasks (template copy-in applied) with placeholder deps.
+    // First pass: create all tasks with placeholder deps.
     const nameToId = new Map<string, string>();
     const createdTasks: TaskRow[] = [];
 
     for (let i = 0; i < params.tasks.length; i++) {
       const t = params.tasks[i];
-      const fields = await this.resolveTaskFields(t, params.composeUser);
+      const fields = this.resolveTaskFields(t);
       const task = await this.storage.createTask({
         groupId: group.id,
         name: t.name,
@@ -303,7 +271,6 @@ export class TaskOrchestrator {
         teamId: fields.teamId,
         input: fields.input,
         labels: fields.labels,
-        templateId: fields.templateId,
         sortOrder: t.sortOrder ?? i,
         status: "pending",
       } as InsertTask);
