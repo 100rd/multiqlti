@@ -1,8 +1,8 @@
 /**
  * Activity — a read-only debugging lens at /activity with two tabs:
  *
- *  - "Live": what's running RIGHT NOW across the five run modes (pipeline /
- *    manager / orchestrator / consensus / task_group). Seeds from the polled
+ *  - "Live": what's running RIGHT NOW across the run modes (pipeline /
+ *    manager / task_group). Seeds from the polled
  *    GET /api/activity snapshot and merges additive live WS deltas onto the rows.
  *  - "History": past (terminal) runs across all modes, from
  *    GET /api/activity/history (keyset-paginated, "Load more" via nextCursor).

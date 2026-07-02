@@ -265,20 +265,6 @@ export function useSendChatMessage() {
   });
 }
 
-export function useStandaloneChat() {
-  return useMutation({
-    mutationFn: (data: {
-      content: string;
-      modelSlug?: string;
-      /** Explicit provider key for live-discovered models (no DB row). */
-      provider?: string;
-      /** Explicit provider-native model id/label for live-discovered models. */
-      modelId?: string;
-      history?: Array<{ role: string; content: string }>;
-    }) => apiRequest("POST", "/api/chat/standalone", data),
-  });
-}
-
 // ─── Gateway ────────────────────────────────────
 
 export function useGatewayStatus() {

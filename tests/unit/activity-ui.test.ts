@@ -143,51 +143,17 @@ describe("mergeWsEvent — manager:decision", () => {
   });
 });
 
-describe("mergeWsEvent — orchestrator:step", () => {
-  it("derives a 1-based label, sets agent=type, status, and model", () => {
-    const rows = [makeRun({ runId: "a", mode: "orchestrator" })];
-    const next = mergeWsEvent(
-      rows,
-      ev("orchestrator:step", "a", {
-        stepIndex: 2,
-        type: "debate",
-        status: "running",
-        modelSlug: "proposer-model",
-      }),
-      NOW,
-    );
-    expect(next[0].currentUnit).toEqual({
-      label: "Step 3",
-      agent: "debate",
-      modelSlug: "proposer-model",
-      status: "running",
-    });
-    expect(next[0].lastDeltaAt).toBe(NOW);
-  });
-
-  it("tolerates a malformed payload without throwing (falls back to prev unit)", () => {
-    const rows = [makeRun({ runId: "a" })];
-    const next = mergeWsEvent(
-      rows,
-      ev("orchestrator:step", "a", { stepIndex: "nope", modelSlug: 123 }),
-      NOW,
-    );
-    expect(next[0].currentUnit?.label).toBe("Stage 1"); // fell back to prev
-    expect(next[0].currentUnit?.modelSlug).toBe("claude-opus"); // bad number ignored
-  });
-});
-
 // ─── groupByMode ────────────────────────────────────────────────────────────────
 
 describe("groupByMode", () => {
   it("groups in the fixed mode order and omits empty modes", () => {
     const rows = [
-      makeRun({ runId: "c1", mode: "consensus" }),
+      makeRun({ runId: "m1", mode: "manager" }),
       makeRun({ runId: "p1", mode: "pipeline" }),
       makeRun({ runId: "p2", mode: "pipeline" }),
     ];
     const groups = groupByMode(rows);
-    expect(groups.map((g) => g.mode)).toEqual(["pipeline", "consensus"]);
+    expect(groups.map((g) => g.mode)).toEqual(["pipeline", "manager"]);
     expect(groups[0].runs).toHaveLength(2);
     expect(groups[1].runs).toHaveLength(1);
   });
@@ -196,12 +162,10 @@ describe("groupByMode", () => {
     expect(groupByMode([])).toEqual([]);
   });
 
-  it("covers all five contract modes in ACTIVITY_MODE_ORDER", () => {
+  it("covers all contract modes in ACTIVITY_MODE_ORDER", () => {
     const modes: ActivityMode[] = [
       "pipeline",
       "manager",
-      "orchestrator",
-      "consensus",
       "task_group",
     ];
     expect([...ACTIVITY_MODE_ORDER].sort()).toEqual([...modes].sort());
@@ -319,7 +283,7 @@ describe("mergeWsEvent — task_group deltas (runId = groupId)", () => {
 });
 
 describe("groupByMode — task_group", () => {
-  it("places task_group rows in their own group, after consensus", () => {
+  it("places task_group rows in their own group, after manager", () => {
     const rows = [
       makeRun({ runId: "g1", mode: "task_group" }),
       makeRun({ runId: "p1", mode: "pipeline" }),

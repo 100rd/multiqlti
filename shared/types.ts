@@ -479,12 +479,6 @@ export type WsEventType =
   | "manager:decision"
   | "manager:complete"
   | "manager:error"
-  // ─── Orchestrator (debate-research) run-mode events ──────────────────
-  | "orchestrator:plan"
-  | "orchestrator:step"
-  | "orchestrator:completed"
-  | "orchestrator:failed"
-  | "orchestrator:cancelled"
   | "workspace:index_start"
   | "workspace:index_progress"
   | "workspace:index_complete"
@@ -3238,70 +3232,13 @@ export interface CRDTPeerEntry {
 /** Response from GET /api/sessions/:id/crdt-peers */
 export type CRDTPeersResponse = CRDTPeerEntry[];
 
-// ─── Debate-Research Orchestrator (additive 3rd run mode) ───────────────────────
+// ─── Adaptive-Stability Deliberation ────────────────────────────────────────
 
-/** The typed step kinds Opus may place in an orchestrator plan. */
-export type OrchestratorStepType =
-  | "research"
-  | "analyze-code"
-  | "debate"
-  | "ground"
-  | "synthesize";
-
-/** Lifecycle status of an orchestrator run. */
-export type OrchestratorRunStatus =
-  | "planning"
-  | "awaiting_plan_approval"
-  | "executing"
-  | "completed"
-  | "failed"
-  | "cancelled";
-
-/** Lifecycle status of a single orchestrator step. */
-export type OrchestratorStepStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "skipped";
-
-/** Per-step arguments. Discriminated on `type`; validated by plan-schema.ts. */
-export type OrchestratorStepArgs =
-  | { type: "research"; query: string; candidateUrls: string[] }
-  | { type: "analyze-code"; query: string; paths?: string[] }
-  | { type: "debate"; question: string; rounds?: number }
-  | { type: "ground"; query: string }
-  | { type: "synthesize"; instruction?: string };
-
-/** A single cited research finding. */
-export interface ResearchFinding {
-  claim: string;
-  sourceUrl: string;
-  snippet: string;
-}
-
-
-// ─── Adaptive-Stability Deliberation Engine + /consensus ─────────────────────
-
-/** Why a deliberation (debate or consensus) stopped. */
+/** Why a deliberation stopped. */
 export type StopReason = "stable" | "hard-cap" | "budget" | "timeout" | "aborted";
 
 /** Confidence in a stable stop, derived only from convergence speed. */
 export type Confidence = "high" | "medium" | "low";
-
-/** A decision verdict emitted by a voter, the blind judge, or the adjudicator. */
-export type ConsensusVerdict = "APPROVE" | "REQUEST_CHANGES" | "REJECT";
-
-/** Lifecycle status of a /consensus run. */
-export type ConsensusRunStatus =
-  | "deliberating"
-  | "resolved"
-  | "unresolved"
-  | "failed"
-  | "cancelled";
-
-/** Phase of a single consensus round row. */
-export type ConsensusRoundPhase = "blind" | "review" | "adjudication";
 
 
 // ─── Live Run Activity (read-only observability lens) ───────────────
@@ -3312,7 +3249,7 @@ export type ConsensusRoundPhase = "blind" | "review" | "adjudication";
 // id, an enum-derived label, or a model slug.
 
 /** Which run mode an active run belongs to. */
-export type ActivityMode = "pipeline" | "manager" | "orchestrator" | "consensus" | "task_group";
+export type ActivityMode = "pipeline" | "manager" | "task_group";
 
 /** The current unit of work inside a run (stage / iteration / step / round). */
 export interface ActivityUnit {
@@ -3322,7 +3259,7 @@ export interface ActivityUnit {
   agent: string;
   /** Model slug for this unit (best-effort / null for manager mode when unknown). */
   modelSlug: string | null;
-  /** Status of this unit (StageStatus | OrchestratorStepStatus | phase-derived). */
+  /** Status of this unit (StageStatus | phase-derived). */
   status: string;
 }
 
@@ -3347,14 +3284,6 @@ export interface ActivitySnapshot {
   isAdmin: boolean;
   /** True iff the row count was capped (the FE can surface a "showing N of more"). */
   truncated: boolean;
-}
-
-/** Payload of the new `orchestrator:step` WS event (O-1). Metadata only. */
-export interface OrchestratorStepEventPayload {
-  stepIndex: number;
-  type: OrchestratorStepType;
-  status: OrchestratorStepStatus;
-  modelSlug: string | null;
 }
 
 // ─── Activity History (terminal runs, DB-backed, metadata-only) ──────────────

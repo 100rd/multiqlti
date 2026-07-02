@@ -9,7 +9,7 @@
  *
  * Shape:
  *   - useQuery(["/api/activity"]) with a refetchInterval fallback (5s) so a row
- *     that emits no WS events (consensus is poll-only) still refreshes, and so
+ *     that emits no WS events still refreshes, and so
  *     rows that started/ended get added/removed.
  *   - on each snapshot, subscribe to EXACTLY the snapshot's runIds (the server
  *     rejects subscribing to runs you don't own) and unsubscribe the rest.

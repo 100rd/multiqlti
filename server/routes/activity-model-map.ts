@@ -10,41 +10,6 @@
  * Callers: server/routes/activity.ts.
  */
 import { SDLC_TEAMS } from "@shared/constants";
-import type { OrchestratorStepType } from "@shared/types";
-
-/** The fixed orchestrator slugs the engine pins per step type. */
-export interface ActivityOrchestratorModels {
-  planModelSlug: string;
-  synthesizeModelSlug: string;
-  proposerModelSlug: string;
-  criticModelSlug: string;
-  judgeModelSlug: string;
-}
-
-/**
- * The model slug a single orchestrator step of `type` runs on.
- *
- * research / analyze-code / ground / synthesize all run through the
- * synthesize-class model; debate is multi-model — we report the proposer slug
- * as the representative model for the row. Unknown type → null (best-effort).
- */
-export function orchestratorStepModel(
-  type: OrchestratorStepType,
-  models: ActivityOrchestratorModels,
-): string | null {
-  switch (type) {
-    case "research":
-    case "analyze-code":
-    case "ground":
-    case "synthesize":
-      return models.synthesizeModelSlug;
-    case "debate":
-      return models.proposerModelSlug;
-    default:
-      // Defensive: an enum we don't recognise → no guess.
-      return null;
-  }
-}
 
 /**
  * Best-effort model for a manager-dispatched team. The manager does not persist
