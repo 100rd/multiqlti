@@ -2399,43 +2399,6 @@ export const decisionLog = pgTable(
 
 export type DecisionLogRow = typeof decisionLog.$inferSelect;
 
-// ─── Config applies audit log (issue #319) ─────────────────────────────────
-
-/**
- * Audit log for config-sync apply operations.
- * One row per apply attempt (success or failure).
- * Retrievable via `mqlti config history`.
- */
-export const configApplies = pgTable(
-  "config_applies",
-  {
-    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-    appliedAt: timestamp("applied_at").notNull().defaultNow(),
-    appliedBy: text("applied_by").notNull(),
-    gitCommitSha: text("git_commit_sha"),
-    summaryJson: jsonb("summary_json").notNull().default(sql`'{}'::jsonb`).$type<ConfigApplySummary>(),
-    success: boolean("success").notNull().default(false),
-    error: text("error"),
-  },
-  (table) => [
-    index("config_applies_applied_at_idx").on(table.appliedAt),
-    index("config_applies_success_idx").on(table.success),
-  ],
-);
-
-export interface ConfigApplySummary {
-  dryRun?: boolean;
-  repoPath?: string;
-  totalCreated?: number;
-  totalUpdated?: number;
-  totalDeleted?: number;
-  totalErrors?: number;
-  entityTypes?: string[];
-}
-
-export type ConfigApplyRow = typeof configApplies.$inferSelect;
-export type InsertConfigApply = typeof configApplies.$inferInsert;
-
 // ─── Config events outbox (issue #321) ─────────────────────────────────────
 
 /**
@@ -2467,29 +2430,6 @@ export const configEventsOutbox = pgTable(
 
 export type ConfigEventOutboxRow = typeof configEventsOutbox.$inferSelect;
 export type InsertConfigEventOutbox = typeof configEventsOutbox.$inferInsert;
-
-/**
- * Idempotency log for incoming federation config-sync events.
- *
- * Composite PK (peer_id, entity_kind, entity_id, version) prevents the same
- * event from being applied more than once on this instance.
- */
-export const configEventsReceived = pgTable("config_events_received", {
-  peerId: text("peer_id").notNull(),
-  entityKind: text("entity_kind").notNull(),
-  entityId: text("entity_id").notNull(),
-  version: text("version").notNull(),
-  receivedAt: timestamp("received_at").notNull().defaultNow(),
-}, (table) => [
-  {
-    pk: {
-      columns: [table.peerId, table.entityKind, table.entityId, table.version],
-      name: "config_events_received_pkey",
-    },
-  },
-]);
-
-export type ConfigEventReceivedRow = typeof configEventsReceived.$inferSelect;
 
 // ─── Peer pending events queue (issue #322) ────────────────────────────────
 
