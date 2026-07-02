@@ -89,6 +89,49 @@ export interface ResearchRunnerDeps {
   now?: () => number;
 }
 
+// ─── web_search unconfigured backstop (bug #4) ───────────────────────────────
+
+/**
+ * The marker web-search.ts surfaces when its research-grade backend (Tavily) has
+ * NO API key: `searchWithTavily` throws `"No Tavily API key"`, the handler falls
+ * back to DuckDuckGo, and when THAT also yields nothing the tool result carries
+ * this exact substring. DuckDuckGo's instant-answer API is a degenerate fallback
+ * (essentially empty for research queries), so an all-marker research step means
+ * the model is researching BLIND. We short-circuit rather than let synthesize/
+ * verify narrate a guessed report with a WRONG reason (live trial ac1cba9c).
+ */
+export const TAVILY_UNCONFIGURED_MARKER = "No Tavily API key";
+
+function toolCallEntryName(entry: unknown): string {
+  const e = entry as { call?: { name?: unknown } };
+  return typeof e?.call?.name === "string" ? e.call.name : "";
+}
+
+function toolCallEntryContent(entry: unknown): string {
+  const e = entry as { result?: { content?: unknown } };
+  return typeof e?.result?.content === "string" ? e.result.content : "";
+}
+
+/**
+ * Backstop detector: TRUE iff web_search was attempted at least once in this step
+ * AND every attempt surfaced the unconfigured-tool marker. This is the PRECISE
+ * blind-research signal — a genuinely-empty DuckDuckGo result does NOT carry the
+ * marker, so it never misfires on legitimately empty searches.
+ */
+export function allWebSearchCallsUnconfigured(toolCallLog: readonly unknown[]): boolean {
+  const webCalls = (toolCallLog ?? []).filter((e) => toolCallEntryName(e) === "web_search");
+  if (webCalls.length === 0) return false;
+  return webCalls.every((e) => toolCallEntryContent(e).includes(TAVILY_UNCONFIGURED_MARKER));
+}
+
+/** Sentinel thrown mid-pipeline when web_search is unconfigured (Tavily key missing). */
+class WebSearchUnconfiguredError extends Error {
+  constructor() {
+    super("web_search unconfigured");
+    this.name = "WebSearchUnconfiguredError";
+  }
+}
+
 // ─── Bounds / clamps ─────────────────────────────────────────────────────────
 
 /** Whole-run wall-clock deadline — mirrors the executor's WHOLE_RUN_BUDGET_MS (2h). */
@@ -312,7 +355,17 @@ class ResearchRun {
   ) {}
 
   async execute(): Promise<DevCloseoutResult> {
-    let report = await this.researchAndSynthesize();
+    let report: ResearchReport;
+    try {
+      report = await this.researchAndSynthesize();
+    } catch (err) {
+      // Backstop (bug #4): the research step ran BLIND — web_search is unconfigured.
+      // Skip synthesize/verify and emit a report with an ACCURATE reason instead of
+      // the model's guessed narration. Config is fixed for the run, so only the first
+      // research step needs guarding (a later re-research can't become unconfigured).
+      if (err instanceof WebSearchUnconfiguredError) return this.unconfiguredResult();
+      throw err;
+    }
     let evidence = await this.verify(report);
     let uncited = this.uncited(evidence);
 
@@ -350,6 +403,12 @@ class ResearchRun {
       options: { toolChoice: "auto" },
       maxIterations: this.maxIterations,
     });
+    // Backstop (bug #4): if EVERY web_search call in this step failed because the
+    // tool is unconfigured (Tavily key missing), the model researched BLIND — abort
+    // BEFORE the synthesize call so we never burn tokens narrating a guessed report.
+    if (allWebSearchCallsUnconfigured(draft.toolCallLog)) {
+      throw new WebSearchUnconfiguredError();
+    }
     const synth = await this.deps.gateway.completeWithTools({
       modelSlug: this.deps.config.model,
       messages: [
@@ -405,6 +464,31 @@ class ResearchRun {
 
   private uncited(evidence: CriterionEvidence[]): string[] {
     return evidence.filter((e) => !e.cited).map((e) => e.criterion);
+  }
+
+  /**
+   * Short-circuit result (bug #4) when web_search is unconfigured: a FLAGGED report
+   * whose recommendation states the ACCURATE reason (tool unconfigured — NOT a
+   * permissions problem, NOT a substantive finding), plus a matching digest so the
+   * judge is grounded in the truth. Mirrors the normal result shape (prRef null).
+   */
+  private unconfiguredResult(): DevCloseoutResult {
+    const report = clampReport({
+      question: clamp(this.req.objective, QUESTION_MAX),
+      recommendation:
+        "No recommendation: web research could not run because the web_search tool is " +
+        "not configured (providers.tavily.apiKey missing). This is a tooling gap, not a " +
+        "finding — configure the Tavily API key and re-run the research archetype.",
+      claims: [],
+      sources: [],
+      verdict: "flagged",
+      generatedAt: new Date().toISOString(),
+    });
+    const digest =
+      "web-evidence: web_search unconfigured (providers.tavily.apiKey missing) — " +
+      "FLAGGED, no web evidence gathered.";
+    const executionTrace = buildResearchTrace("research", [], report);
+    return { prRef: null, headCommit: "", report, testSummary: digest, executionTrace };
   }
 
   /** The convergence DIGEST written to `testSummary` (grounds the judge). */

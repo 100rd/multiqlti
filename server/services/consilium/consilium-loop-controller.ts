@@ -566,6 +566,19 @@ export class ConsiliumLoopController {
     return cfg.enabled && cfg.implement.enabled && cfg.implement.research.enabled;
   }
 
+  /**
+   * Preflight (bug #4) for the research archetype's ONLY tool, web_search. TRUE when
+   * its research-grade backend — Tavily — has an API key. web_search's DuckDuckGo
+   * fallback needs no key, but its instant-answer API is degenerate for research
+   * queries (live trial ac1cba9c: unconfigured Tavily ⇒ a BLIND report), so the
+   * research archetype is treated as unusable without Tavily. Keys off the EXISTING
+   * providers.tavily.apiKey — no new config surface. Optional-chained so a hand-built
+   * test config that omits `providers` degrades to "unconfigured" (never throws).
+   */
+  private webSearchConfigured(): boolean {
+    return Boolean(this.deps.config().providers?.tavily?.apiKey?.trim());
+  }
+
   /** Structured controller log — one line per decision (loopId-scoped). */
   private log(loopId: string, msg: string): void {
     // eslint-disable-next-line no-console
@@ -1180,6 +1193,21 @@ export class ConsiliumLoopController {
       }
       if (!this.deps.gateway) {
         return { prRef: null, headCommit: "", error: "research gateway unavailable" };
+      }
+      // Preflight (bug #4): the research runner's ONLY tool is web_search, whose
+      // research-grade backend is Tavily. If Tavily is unconfigured the model would
+      // research BLIND and emit a report with a WRONG reason after a full LLM run
+      // (live trial ac1cba9c). Fail soft BEFORE any gateway call with a PRECISE loop
+      // error — SAME convention as the disabled guards above (an INERT no-PR result
+      // the dev_completed event carries as `error`; NO FSM change, NO LLM calls).
+      if (!this.webSearchConfigured()) {
+        return {
+          prRef: null,
+          headCommit: "",
+          error:
+            "research archetype unavailable: web_search tool is not configured " +
+            "(providers.tavily.apiKey missing)",
+        };
       }
       const runResearch = this.deps.runResearch ?? runResearchHandoff;
       const group = await this.storage.getTaskGroup(loop.groupId);

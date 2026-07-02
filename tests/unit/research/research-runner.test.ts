@@ -137,6 +137,51 @@ describe("runResearchHandoff — NEVER throws (degrade-not-throw)", () => {
   });
 });
 
+describe("runResearchHandoff — web_search unconfigured backstop (bug #4)", () => {
+  /** A tool log whose every web_search call carries the unconfigured-Tavily marker. */
+  const unconfiguredLog = (n = 2) =>
+    Array.from({ length: n }, (_, i) => ({
+      iteration: i + 1,
+      call: { id: `c${i}`, name: "web_search", arguments: { query: "q" } },
+      result: { toolCallId: `c${i}`, content: "Search failed. Tavily: No Tavily API key. DuckDuckGo: API error 502", isError: false },
+    }));
+
+  it("short-circuits synthesize/verify with an ACCURATE flagged report when web_search is unconfigured", async () => {
+    const spy = vi.fn(async () => ({ content: "draft", tokensUsed: 1, toolCallLog: unconfiguredLog() as unknown[] }));
+    const gateway: ResearchGateway = { completeWithTools: spy };
+    const res = await runResearchHandoff(baseReq(), { gateway, config: cfg(), webSearchTool: WEB_SEARCH });
+
+    // Only the research step ran — synthesize + verify were SKIPPED (no wasted LLM run).
+    expect(spy).toHaveBeenCalledTimes(1);
+    const report = res.report as ResearchReport;
+    expect(report).toBeDefined();
+    expect(report.verdict).toBe("flagged");
+    expect(report.claims).toHaveLength(0);
+    expect(report.sources).toHaveLength(0);
+    // The reason is ACCURATE (tool unconfigured), NOT the model's wrong "permissions" guess.
+    expect(report.recommendation).toContain("web_search tool is");
+    expect(report.recommendation).toContain("providers.tavily.apiKey");
+    expect(report.recommendation).not.toMatch(/permission/i);
+    expect(res.testSummary).toContain("unconfigured");
+    expect(res.prRef).toBeNull();
+  });
+
+  it("does NOT misfire when web_search returns genuinely-empty (non-marker) results", async () => {
+    const emptyLog = [{ iteration: 1, call: { id: "c0", name: "web_search", arguments: {} }, result: { toolCallId: "c0", content: "No results found via DuckDuckGo.", isError: false } }];
+    const spy = vi.fn(async (p: { messages: Array<{ content: string }> }) => {
+      const sys = String(p.messages[0].content);
+      if (sys.includes("web researcher")) return { content: "draft", tokensUsed: 1, toolCallLog: emptyLog as unknown[] };
+      if (sys.includes("structured report author")) return { content: REPORT_JSON, tokensUsed: 1, toolCallLog: [] as unknown[] };
+      return { content: VERIFY_CITED, tokensUsed: 1, toolCallLog: [] as unknown[] };
+    });
+    const gateway: ResearchGateway = { completeWithTools: spy };
+    const res = await runResearchHandoff(baseReq(), { gateway, config: cfg(), webSearchTool: WEB_SEARCH });
+    // Empty results are a legitimate outcome — the normal pipeline runs to completion.
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect((res.report as ResearchReport).verdict).toBe("green");
+  });
+});
+
 describe("runResearchHandoff — web-evidence verifier tool wiring (R3) + no SSRF surface", () => {
   it("passes tools=[web_search] EXPLICITLY to the verifier — and web_search ONLY (no url_reader)", async () => {
     const { gateway, calls } = fakeGateway({ research: "draft", synthesize: REPORT_JSON, verify: VERIFY_CITED });
