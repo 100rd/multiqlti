@@ -82,6 +82,55 @@ describe("execution-trace — buildSdlcTrace (coder path)", () => {
     expect(t.controller.workers[0].criteria[0].passedAtFinal).toBe(false);
   });
 
+  it("Timeout policy: stamps timedOut:true from a per-AP verification that timed out", () => {
+    const apTimedOut: SdlcOutcomeLike[] = [
+      {
+        index: 1,
+        priority: "P0",
+        title: "t",
+        status: "completed",
+        verification: { method: "test-run", ran: true, passed: false, summary: "TIMED OUT after 300000ms", fixIterations: 0, criterion: "c", timedOut: true },
+      },
+    ];
+    const crit = buildSdlcTrace("repo-assessment", apTimedOut, { prRef: "x" }).controller.workers[0].criteria[0];
+    expect(crit.timedOut).toBe(true);
+    expect(crit.ran).toBe(true); // the process DID run — unlike a launch failure
+    expect(crit.passed).toBe(false);
+  });
+
+  it("Timeout policy: a FINAL timeout marks timedOut AND OMITS passedAtFinal (no bogus regression)", () => {
+    // finalPassed:false alongside finalTimedOut:true ⇒ do NOT stamp passedAtFinal (there
+    // is no adjudicated pass/fail); mark the criterion timedOut instead.
+    const t = buildSdlcTrace("repo-assessment", outcomes, { prRef: "x" }, false, true);
+    const crit = t.controller.workers[0].criteria[0];
+    expect(crit.timedOut).toBe(true);
+    expect("passedAtFinal" in crit).toBe(false);
+  });
+
+  it("Timeout policy: OMITS timedOut when neither the AP nor the final run timed out", () => {
+    const t = buildSdlcTrace("repo-assessment", outcomes, { prRef: "x" }, true);
+    expect("timedOut" in t.controller.workers[0].criteria[0]).toBe(false);
+  });
+
+  it("Timeout policy: clampTrace preserves an already-set timedOut and drops non-boolean (old snapshot)", () => {
+    const t = clampTrace({
+      schemaVersion: 1,
+      archetype: "repo-assessment",
+      controller: {
+        kind: "sdlc-executor",
+        label: "x",
+        green: false,
+        workers: [
+          { index: 1, priority: "P0", title: "t", status: "completed", skills: [], criteria: [{ criterion: "c", method: "test-run", ran: true, passed: false, timedOut: true }] },
+          // Old snapshot: absent timedOut field → stays absent (byte-for-byte legacy).
+          { index: 2, priority: "P0", title: "u", status: "completed", skills: [], criteria: [{ criterion: "d", method: "test-run", ran: true, passed: true }] },
+        ],
+      },
+    });
+    expect(t.controller.workers[0].criteria[0].timedOut).toBe(true);
+    expect("timedOut" in t.controller.workers[1].criteria[0]).toBe(false);
+  });
+
   it("controller green requires a PR AND no unmet P0 criterion", () => {
     expect(buildSdlcTrace("repo-assessment", outcomes, { prRef: "x" }).controller.green).toBe(true);
     expect(buildSdlcTrace("repo-assessment", outcomes, { prRef: null }).controller.green).toBe(false);

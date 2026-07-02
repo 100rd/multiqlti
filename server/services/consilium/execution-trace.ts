@@ -97,6 +97,8 @@ function clampCriterion(c: ExecutionCriterion): ExecutionCriterion {
   if (c.summary !== undefined) out.summary = scrub(c.summary, SUMMARY_MAX);
   // Stage A: additive final-state flag — carried through the clamp verbatim (boolean).
   if (typeof c.passedAtFinal === "boolean") out.passedAtFinal = c.passedAtFinal;
+  // Timeout policy: additive NOT-ADJUDICATED flag — carried verbatim (boolean).
+  if (typeof c.timedOut === "boolean") out.timedOut = c.timedOut;
   return out;
 }
 
@@ -156,6 +158,8 @@ export interface SdlcOutcomeLike {
     summary: string;
     fixIterations: number;
     criterion: string;
+    /** Timeout policy: this AP's own verification run was killed by the wall-clock cap. */
+    timedOut?: boolean;
   };
 }
 
@@ -189,12 +193,19 @@ function skillFromName(skillName: string, green: boolean): ExecutionSkill {
  * pass/fail is stamped onto every `test-run` criterion as `passedAtFinal` (a single
  * suite run covers all criteria). undefined ⇒ final verification did not run ⇒ the
  * field is omitted (byte-for-byte the pre-Stage-A trace).
+ *
+ * `finalTimedOut` (timeout policy): when the FINAL whole-suite run was KILLED by the
+ * wall-clock cap it was NOT adjudicated — so `passedAtFinal` is NOT stamped (there is
+ * no pass/fail to record; `finalPassed` would be a misleading `false`/"regressed"), and
+ * every criterion is marked `timedOut` instead. A per-AP run that itself timed out also
+ * marks its own criterion `timedOut` (from `verification.timedOut`).
  */
 export function buildSdlcTrace(
   archetype: Archetype | null,
   outcomes: readonly SdlcOutcomeLike[],
   result: { prRef: string | null; error?: string },
   finalPassed?: boolean,
+  finalTimedOut?: boolean,
 ): ExecutionTrace {
   const unmetP0 = outcomes.some(
     (o) => o.priority.toUpperCase().startsWith("P0") && o.verification !== undefined && !o.verification.passed,
@@ -211,8 +222,13 @@ export function buildSdlcTrace(
             passed: o.verification.passed,
             fixIterations: o.verification.fixIterations,
             summary: o.verification.summary,
-            // Stage A: stamp the final whole-suite result on the (test-run) criterion.
-            ...(finalPassed !== undefined ? { passedAtFinal: finalPassed } : {}),
+            // Stage A: stamp the final whole-suite result on the (test-run) criterion —
+            // UNLESS the final run itself TIMED OUT (unadjudicated: there is no pass/fail
+            // to stamp, and `false` here would read as a bogus regression).
+            ...(finalPassed !== undefined && !finalTimedOut ? { passedAtFinal: finalPassed } : {}),
+            // Timeout policy: NOT-ADJUDICATED iff this AP's own run timed out OR the final
+            // whole-suite run timed out (either leaves this criterion unadjudicated).
+            ...(o.verification.timedOut || finalTimedOut ? { timedOut: true } : {}),
           },
         ]
       : [];

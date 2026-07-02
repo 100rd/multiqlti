@@ -247,6 +247,23 @@ function launchFailureSummary(err: unknown): string {
   );
 }
 
+/**
+ * Build the summary for a run the WALL-CLOCK TIMEOUT killed (SIGKILL). Unlike a red
+ * test (which RAN and was adjudicated) OR a launch failure (which never started), a
+ * timeout is AMBIGUOUS and UNADJUDICATED: the suite may simply exceed the configured
+ * `testRunTimeoutMs`, or the change may have introduced a hang. A coder cannot fix a
+ * config-level cap and the NEXT run pays the SAME wall-clock, so the caller SKIPS the
+ * fix loop and records the criterion NOT-ADJUDICATED. `ran` stays true (the process DID
+ * run, unlike ENOENT) — the message names the cap + both hypotheses so an operator (or
+ * the next review round) can act, and states the policy (fix loop skipped) explicitly.
+ */
+function timeoutSummary(timeoutMs: number): string {
+  return `TIMED OUT after ${timeoutMs}ms — suite may exceed testRunTimeoutMs (raise the cap for a slow suite) or the change introduced a hang; not adjudicated, fix loop skipped`.slice(
+    0,
+    SUMMARY_MAX,
+  );
+}
+
 /** Build the bounded, scrubbed summary. Keeps the OUTPUT TAIL (failures live there). */
 function buildSummary(
   output: string,
@@ -430,10 +447,16 @@ export function runTests(opts: RunTestsOptions): Promise<TestRunResult> {
         ran: !launch,
       });
     });
+    // A wall-clock TIMEOUT (SIGKILL) settles here via the child's close event. It is
+    // AMBIGUOUS and UNADJUDICATED — the process DID run (ran:true, unlike ENOENT) but
+    // was killed before a verdict, so it gets the explicit "not adjudicated, fix loop
+    // skipped" summary naming the configured cap. The caller SKIPS the fix loop on the
+    // `timedOut` flag (see the executor's `!result.timedOut` gate). A NORMAL exit keeps
+    // the pass/fail summary with the captured output tail.
     child.on("close", (code: number | null) =>
       finish({
         passed: !timedOut && code === 0,
-        summary: buildSummary(output, code, timedOut, truncated),
+        summary: timedOut ? timeoutSummary(timeoutMs) : buildSummary(output, code, timedOut, truncated),
         exitCode: code,
         timedOut,
         ran: true,

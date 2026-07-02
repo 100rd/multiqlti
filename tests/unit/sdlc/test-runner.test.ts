@@ -217,7 +217,14 @@ describe("runTests — hard timeout → SIGKILL the PROCESS GROUP (MED-1)", () =
     expect(kills).toContain("SIGKILL");
     expect(res.timedOut).toBe(true);
     expect(res.passed).toBe(false);
-    expect(res.summary).toMatch(/TIMED OUT/);
+    // The summary is ACTIONABLE + NOT-ADJUDICATED: it names the configured cap and both
+    // hypotheses (slow suite vs hang) and states the policy (fix loop skipped). ran stays
+    // true (the process DID run — unlike a launch failure).
+    expect(res.summary).toMatch(/TIMED OUT after 10000ms/);
+    expect(res.summary).toMatch(/exceed testRunTimeoutMs/);
+    expect(res.summary).toMatch(/introduced a hang/);
+    expect(res.summary).toMatch(/not adjudicated, fix loop skipped/);
+    expect(res.ran).toBe(true);
   });
 
   it("the DEFAULT killGroup targets the NEGATIVE pid via process.kill (the whole group)", async () => {
