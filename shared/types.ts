@@ -1729,6 +1729,18 @@ export interface ActionPoint {
    * bounded to the fixed union; NEVER a shell/branch/PR sink.
    */
   verificationMethod?: VerificationMethod;
+  /**
+   * Stage C (design §9 "Stage 7") — SERVER-COMPUTED criterion-QA flag: `true` when this
+   * AP's {@link acceptanceCriterion} failed the mechanical generation-time LINT
+   * (`applyCriteriaQa`): absent/empty, missing the "When … Then …" shape, or — for a
+   * `test-run` criterion — too thin to name a concrete observable signal. A flagged AP is
+   * DEMOTED to `judge` (never counts as test-run green; §5) and surfaces a small amber
+   * "weak DoD" marker in the loop UI. NOT model text — derived deterministically from the
+   * criterion + method, never a shell/branch/PR sink. Absent (⇒ `undefined`/back-compat)
+   * whenever `pipeline.consiliumLoop.planner.criteriaQa.enabled` is off (byte-identical) or
+   * the criterion passed the lint.
+   */
+  weakCriterion?: boolean;
 }
 
 /**

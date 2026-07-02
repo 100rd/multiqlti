@@ -60,6 +60,21 @@ describe("pipeline.consiliumLoop schema", () => {
     expect(impl.testRunTimeoutMs).toBe(300_000);
   });
 
+  it("Stage C: planner.criteriaQa defaults to INERT (off) ⇒ byte-identical", () => {
+    const res = ConfigSchema.safeParse({});
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    expect(res.data.pipeline.consiliumLoop.planner.criteriaQa.enabled).toBe(false);
+  });
+
+  it("Stage C: accepts planner.criteriaQa.enabled override", () => {
+    const ok = parseLoop({ planner: { criteriaQa: { enabled: true } } });
+    expect(ok.success).toBe(true);
+    if (ok.success) {
+      expect(ok.data.pipeline.consiliumLoop.planner.criteriaQa.enabled).toBe(true);
+    }
+  });
+
   it("judgeRetry defaults to INERT (disabled, no fallback)", () => {
     const res = ConfigSchema.safeParse({});
     expect(res.success).toBe(true);

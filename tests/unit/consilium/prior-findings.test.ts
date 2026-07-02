@@ -97,6 +97,38 @@ describe("formatPriorFindings — assembly", () => {
     expect(out.indexOf("### Round 1")).toBeLessThan(out.indexOf("### Round 3"));
     expect(out).toContain("Open P0 trend across rounds: 2 -> 0");
   });
+
+  // Stage C (design §9 "Stage 7"): the DoD-adequacy re-check clause.
+  it("byte-identical without the adequacyCheck opt (default off)", () => {
+    const rows = [round({ round: 1, openP0: 1, openActionPoints: [{ title: "Fix", priority: "P0" }] })];
+    const base = formatPriorFindings(rows, 10_000);
+    const explicitOff = formatPriorFindings(rows, 10_000, { adequacyCheck: false });
+    expect(explicitOff).toEqual(base);
+    expect(base).not.toContain("ADEQUATE");
+  });
+
+  it("adds the DoD-adequacy instruction when adequacyCheck is on", () => {
+    const rows = [round({ round: 1, openP0: 1, openActionPoints: [{ title: "Fix", priority: "P0" }] })];
+    const out = formatPriorFindings(rows, 10_000, { adequacyCheck: true })!;
+    expect(out).toContain("ADEQUATE");
+    expect(out).toContain("corrected");
+    // the round detail still renders after the extended header
+    expect(out).toContain("### Round 1");
+    expect(out).toContain("- [P0] Fix");
+  });
+
+  it("adequacyCheck respects the byte budget (extended header still clamps whole rounds)", () => {
+    const rows = [
+      round({ round: 1, openP0: 1, openActionPoints: [{ title: `A ${"x".repeat(300)}`, priority: "P0" }] }),
+      round({ round: 2, openP0: 1, openActionPoints: [{ title: `B ${"y".repeat(300)}`, priority: "P0" }] }),
+    ];
+    // A budget that fits the (larger) header + one round but not both.
+    const out = formatPriorFindings(rows, 900, { adequacyCheck: true })!;
+    expect(out).not.toBeNull();
+    expect(Buffer.byteLength(out, "utf8")).toBeLessThanOrEqual(900);
+    expect(out).toContain("ADEQUATE"); // the clause survives; a round was dropped to fit
+    expect(out).toContain("omitted to fit the size budget");
+  });
 });
 
 describe("formatPriorFindings — oldest-first truncation under budget", () => {

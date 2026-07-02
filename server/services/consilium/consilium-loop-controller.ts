@@ -57,7 +57,7 @@ import { P0_PRIORITY } from "@shared/types";
 import type { TaskOrchestrator } from "../task-orchestrator.js";
 import type { AppConfig } from "../../config/schema.js";
 import { effectiveVerificationEnabled } from "../../config/schema.js";
-import { readConvergence, extractActionPoints, normalizeActionPointMethods } from "../orchestrator/convergence.js";
+import { readConvergence, extractActionPoints, normalizeActionPointMethods, applyCriteriaQa } from "../orchestrator/convergence.js";
 import { buildDiffContext } from "./diff-context.js";
 import type { DevCloseoutResult } from "./dev-closeout.js";
 import { runSdlcHandoff, type SdlcProgress, type JudgeVerifyFn, type JudgeVerifyInput } from "../sdlc/executor.js";
@@ -930,10 +930,20 @@ export class ConsiliumLoopController {
     // perCriterionMethod kill-switch; best-effort (never fails the plan). The executor
     // re-normalizes with the SAME pure function, so this is observability, not the source of
     // truth — an absent persist never diverges the develop routing.
-    if (cfg.implement?.perCriterionMethod?.enabled) {
-      const normalized = normalizeActionPointMethods(actionPoints, parsed.archetype);
+    // Stage C (design §9 "Stage 7"): AFTER the method assignment, LINT each acceptance
+    // criterion (mechanical, NO extra LLM call) — a weak/absent DoD is flagged
+    // `weakCriterion` and DEMOTED to `judge` so it can never converge as "tests green" on a
+    // vacuous target. Gated by its OWN kill-switch; independent of perCriterionMethod for the
+    // SURFACING (flag), though the demotion only routes when perCriterionMethod is also on.
+    const criteriaQaOn = cfg.planner?.criteriaQa?.enabled ?? false;
+    const perCriterionOn = cfg.implement?.perCriterionMethod?.enabled ?? false;
+    if (perCriterionOn || criteriaQaOn) {
+      let processed = perCriterionOn
+        ? normalizeActionPointMethods(actionPoints, parsed.archetype)
+        : actionPoints;
+      if (criteriaQaOn) processed = applyCriteriaQa(processed);
       await this.storage
-        .updateLoopRoundActionPoints?.(updated.id, updated.round, normalized)
+        .updateLoopRoundActionPoints?.(updated.id, updated.round, processed)
         .catch(() => undefined);
     }
     return { ok: true, loop: updated, archetype: parsed.archetype };
@@ -1376,9 +1386,16 @@ export class ConsiliumLoopController {
     // skip / judge verify / test-run). The judge-method verifier needs the gateway; when it
     // is absent a `judge` AP degrades to not-passed inside the executor (never green).
     const perCriterionOn = cfg.implement.perCriterionMethod?.enabled ?? false;
-    const routedActionPoints = perCriterionOn
+    // Stage C (design §9 "Stage 7"): criterion QA is applied on the develop ROUTING path too
+    // (not just plan()'s observability persist) — this is the SOURCE OF TRUTH the executor
+    // routes on, so a weak/absent DoD is demoted to `judge` HERE and never reaches the
+    // test-run harness as green. Default OFF ⇒ byte-identical (no lint, no demotion).
+    // Optional-chain `planner` — a hand-built test config may omit the whole block (→ off).
+    const criteriaQaOn = cfg.planner?.criteriaQa?.enabled ?? false;
+    let routedActionPoints = perCriterionOn
       ? normalizeActionPointMethods(verdict.openActionPoints, loop.archetype ?? null)
       : verdict.openActionPoints;
+    if (criteriaQaOn) routedActionPoints = applyCriteriaQa(routedActionPoints);
     if (cfg.implement.verification.enabled && !verifyOn && !this.warnedVerificationGate) {
       this.warnedVerificationGate = true;
       // eslint-disable-next-line no-console
@@ -1635,7 +1652,10 @@ export class ConsiliumLoopController {
       this.log(loop.id, `buildPriorFindings: getLoopRounds failed (no history injected): ${err instanceof Error ? err.message : String(err)}`);
       return undefined;
     }
-    return formatPriorFindings(rounds, budgetBytes) ?? undefined;
+    // Stage C: extend the re-assess instruction with the DoD-adequacy re-check when criterion
+    // QA is on (default off ⇒ byte-identical prior-findings block).
+    const adequacyCheck = this.loopConfig().planner?.criteriaQa?.enabled ?? false;
+    return formatPriorFindings(rounds, budgetBytes, { adequacyCheck }) ?? undefined;
   }
 
   /**
@@ -1753,16 +1773,30 @@ export function pickJudgeOutput(outputs: unknown[]): unknown {
 export function formatPriorFindings(
   rounds: ConsiliumLoopRoundRow[],
   budgetBytes: number,
+  opts?: { adequacyCheck?: boolean },
 ): string | null {
   if (rounds.length === 0) return null;
   const ordered = [...rounds].sort((a, b) => a.round - b.round);
 
   const trend = ordered.map((r) => r.openP0 ?? 0).join(" -> ");
+  // Stage C (design §9 "Stage 7"): when criterion QA is on, the re-assess round must not
+  // just confirm CLOSURE — it must also re-examine whether the DoD itself was ADEQUATE, and
+  // re-open a corrected criterion if not (an inadequate DoD becomes a NEW AP). This rides the
+  // EXISTING re-assess judge call (no extra model call); it is a small, fixed clause on the
+  // header, so the function's oldest-first byte-budget clamp still governs the whole block.
+  const adequacyClause = opts?.adequacyCheck
+    ? " For each item you confirm CLOSED, ALSO state HOW you verified it and whether the " +
+      "acceptance criterion (DoD) itself was ADEQUATE to the underlying problem. If the DoD " +
+      "was vacuous or off-target, do NOT confirm closure: raise a NEW action point with a " +
+      "corrected, observable 'When … Then …' criterion instead."
+    : "";
   const header =
     "## Prior findings to verify (from earlier rounds)\n\n" +
     "Earlier rounds flagged the items below. For EACH item: confirm it is ACTUALLY " +
     "closed by the changes above, or flag it as still-open / regressed. Do NOT " +
-    "re-discover items already listed here — only raise genuinely NEW issues.\n\n" +
+    "re-discover items already listed here — only raise genuinely NEW issues." +
+    adequacyClause +
+    "\n\n" +
     `Open P0 trend across rounds: ${trend}`;
 
   const chunkFor = (r: ConsiliumLoopRoundRow): string => {

@@ -598,6 +598,19 @@ function RoundRow({
                           {ap.acceptanceCriterion}
                         </p>
                       )}
+                      {/* Stage C (design §9 "Stage 7"): a criterion that FAILED the mechanical
+                          generation-time lint (weak/absent DoD) — surfaced as a small amber
+                          marker, following the manual-ops / timed-out idioms. It was demoted
+                          to the judge method so it can never converge as "tests green". */}
+                      {ap.weakCriterion && (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+                          title="Weak/absent acceptance criterion — demoted to judge verification (never counts as tests-green)."
+                        >
+                          <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                          weak DoD — demoted to judge
+                        </span>
+                      )}
                     </div>
                   </li>
                 ))}
