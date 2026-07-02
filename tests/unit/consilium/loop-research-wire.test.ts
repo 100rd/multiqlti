@@ -92,12 +92,17 @@ interface CfgOver {
   loopEnabled?: boolean;
   implementEnabled?: boolean;
   researchEnabled?: boolean;
+  /** Whether providers.tavily.apiKey is set (research web_search preflight, bug #4). */
+  tavilyKey?: boolean;
 }
 const makeConfig =
   (o: CfgOver = {}) =>
   () =>
     ({
       features: { sandbox: { enabled: false } },
+      // web_search's research-grade backend. Present by default so the research
+      // archetype's preflight (bug #4) passes; toggled off to assert it blocks.
+      providers: { tavily: { apiKey: o.tavilyKey === false ? undefined : "tvly-test-key" } },
       pipeline: {
         consiliumLoop: {
           enabled: o.loopEnabled ?? true,
@@ -209,6 +214,58 @@ describe("Stage 3 kill-switch — disabled research is INERT and never the coder
     await flush();
     expect(runResearch).not.toHaveBeenCalled();
     expect(runSdlc).not.toHaveBeenCalled();
+  });
+});
+
+describe("Stage 3 web_search preflight (bug #4) — no Tavily key ⇒ fail soft, no LLM", () => {
+  it("research enabled but providers.tavily.apiKey missing ⇒ INERT precise error; NO gateway call", async () => {
+    const loop = makeLoop({ state: "deciding", round: 2, archetype: "research" });
+    const { storage } = fakeStorage(loop);
+    const runResearch = vi.fn(async () => ({ prRef: null, headCommit: "", report: REPORT, testSummary: "x" }));
+    const runSdlc = vi.fn(async () => ({ prRef: null, headCommit: "" }));
+    // A real gateway whose completeWithTools MUST NOT be reached (assert via the spy).
+    const gw = gateway();
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: orchestrator(),
+      config: makeConfig({ tavilyKey: false }),
+      gateway: gw,
+      readIterationVerdict: async () => verdict(2),
+      runResearch: runResearch as never,
+      runSdlc: runSdlc as never,
+    });
+    // Tick until the background closeout settles and dev_completed drives the loop to
+    // awaiting_merge (carrying the error) — bounded so a hang can't spin forever.
+    for (let i = 0; i < 5 && (await storage.getLoop(loop.id)).state !== "awaiting_merge"; i++) {
+      await controller.tick(loop.id);
+      await flush();
+    }
+    // The preflight blocked dispatch BEFORE any research/LLM work.
+    expect(runResearch).not.toHaveBeenCalled();
+    expect(runSdlc).not.toHaveBeenCalled();
+    expect((gw as { completeWithTools: ReturnType<typeof vi.fn> }).completeWithTools).not.toHaveBeenCalled();
+    // The loop still advanced via dev_completed carrying the PRECISE error.
+    const l = await storage.getLoop(loop.id);
+    expect(l.state).toBe("awaiting_merge");
+    expect(l.error).toContain("web_search tool is not configured");
+    expect(l.error).toContain("providers.tavily.apiKey missing");
+  });
+
+  it("research enabled WITH a Tavily key ⇒ today's path unchanged (runResearch called)", async () => {
+    const loop = makeLoop({ state: "deciding", round: 2, archetype: "research" });
+    const { storage } = fakeStorage(loop);
+    const runResearch = vi.fn(async () => ({ prRef: null, headCommit: "", report: REPORT, testSummary: "x" }));
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: orchestrator(),
+      config: makeConfig({ tavilyKey: true }),
+      gateway: gateway(),
+      readIterationVerdict: async () => verdict(2),
+      runResearch: runResearch as never,
+    });
+    await controller.tick(loop.id);
+    await flush();
+    expect(runResearch).toHaveBeenCalledTimes(1);
   });
 });
 
