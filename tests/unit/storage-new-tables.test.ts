@@ -2,7 +2,6 @@
  * Unit tests for MemStorage — new tables added in PRs #167, #169, #171.
  *
  * Covers:
- * - SkillTeams: getSkillTeams, createSkillTeam, deleteSkillTeam
  * - TaskGroups: getTaskGroups, getTaskGroup, createTaskGroup, updateTaskGroup, deleteTaskGroup
  * - Tasks: createTask, getTask, getTasksByGroup, updateTask, getReadyTasks, getBlockedTasks
  * - TaskTraces: createTaskTrace, getTaskTrace, updateTaskTrace
@@ -18,61 +17,6 @@ describe("MemStorage — new tables", () => {
 
   beforeEach(() => {
     storage = new MemStorage();
-  });
-
-  // ─── SkillTeams ────────────────────────────────────────────────────────────
-
-  describe("SkillTeams", () => {
-    it("getSkillTeams() returns empty array initially", async () => {
-      const teams = await storage.getSkillTeams();
-      expect(teams).toEqual([]);
-    });
-
-    it("createSkillTeam() returns a team with generated id and timestamps", async () => {
-      const team = await storage.createSkillTeam({
-        name: "Frontend Squad",
-        description: "Owns all UI components",
-        createdBy: "user-1",
-      });
-
-      expect(team.id).toBeTruthy();
-      expect(team.name).toBe("Frontend Squad");
-      expect(team.description).toBe("Owns all UI components");
-      expect(team.createdBy).toBe("user-1");
-      expect(team.createdAt).toBeInstanceOf(Date);
-    });
-
-    it("getSkillTeams() returns all created teams sorted by createdAt", async () => {
-      await storage.createSkillTeam({ name: "Alpha", description: "", createdBy: "u1" });
-      await storage.createSkillTeam({ name: "Beta", description: "", createdBy: "u1" });
-
-      const teams = await storage.getSkillTeams();
-      expect(teams).toHaveLength(2);
-      const names = teams.map((t) => t.name);
-      expect(names).toContain("Alpha");
-      expect(names).toContain("Beta");
-    });
-
-    it("deleteSkillTeam() removes the team by id", async () => {
-      const team = await storage.createSkillTeam({ name: "To Delete", description: "", createdBy: "u1" });
-      await storage.deleteSkillTeam(team.id);
-
-      const teams = await storage.getSkillTeams();
-      expect(teams.find((t) => t.id === team.id)).toBeUndefined();
-    });
-
-    it("deleteSkillTeam() is a no-op for non-existent id (does not throw)", async () => {
-      await expect(storage.deleteSkillTeam("nonexistent-id")).resolves.toBeUndefined();
-    });
-
-    it("createSkillTeam() stores each team independently", async () => {
-      const t1 = await storage.createSkillTeam({ name: "T1", description: "d1", createdBy: "u1" });
-      const t2 = await storage.createSkillTeam({ name: "T2", description: "d2", createdBy: "u2" });
-
-      expect(t1.id).not.toBe(t2.id);
-      const teams = await storage.getSkillTeams();
-      expect(teams).toHaveLength(2);
-    });
   });
 
   // ─── TaskGroups ────────────────────────────────────────────────────────────

@@ -19,8 +19,27 @@ import express from "express";
 import { createServer } from "http";
 import { MemStorage } from "../../server/storage.js";
 import { registerSkillRoutes } from "../../server/routes/skills.js";
-import { BUILTIN_SKILLS } from "../../server/skills/builtin.js";
+import type { InsertSkill } from "../../shared/schema.js";
 import type { User } from "../../shared/types.js";
+
+// Local built-in fixtures. The former BUILTIN_SKILLS seed + /api/skills/builtin
+// endpoint were removed when the skills ecosystem was pruned; these two inert
+// built-in rows stand in as fixtures so the CRUD tests below (which assert that
+// built-in skills cannot be edited/deleted) still exercise that path.
+const SEED_SKILLS: InsertSkill[] = [
+  {
+    id: "builtin-code-review",
+    name: "Code Review",
+    teamId: "code_review",
+    isBuiltin: true,
+  } as InsertSkill,
+  {
+    id: "builtin-security-analysis",
+    name: "Security Analysis",
+    teamId: "development",
+    isBuiltin: true,
+  } as InsertSkill,
+];
 
 const TEST_ADMIN: User = {
   id: "test-admin-id",
@@ -43,8 +62,8 @@ async function createSkillsTestApp() {
   });
   registerSkillRoutes(app, storage);
 
-  // Seed built-in skills
-  for (const skill of BUILTIN_SKILLS) {
+  // Seed built-in skill fixtures
+  for (const skill of SEED_SKILLS) {
     await storage.createSkill(skill);
   }
 
@@ -101,15 +120,6 @@ describe("Skills API", () => {
     if (skills.length > 0) {
       expect(skills.every((s) => s.teamId === "code_review")).toBe(true);
     }
-  });
-
-  // ─── GET /api/skills/builtin ─────────────────────────────────────────────
-
-  it("GET /api/skills/builtin → returns built-in definitions array", async () => {
-    const res = await request(app).get("/api/skills/builtin");
-    expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
-    expect((res.body as unknown[]).length).toBeGreaterThan(0);
   });
 
   // ─── GET /api/skills/:id ─────────────────────────────────────────────────

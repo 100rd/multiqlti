@@ -51,8 +51,6 @@ import {
   type TaskExecutionMode,
   type TrackerConnectionRow,
   type InsertTrackerConnection,
-  type SkillTeam,
-  type InsertSkillTeam,
   type ModelSkillBinding,
   type InsertModelSkillBinding,
   type ArgoCdConfigRow,
@@ -78,7 +76,7 @@ import {
   type PracticeCardReviewState,
   type PracticeCardStatus,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace } from "@shared/types";
 import type { LessonRecallFilter } from "./memory/lessons/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
@@ -350,14 +348,7 @@ export interface IStorage {
   getSkillVersion(skillId: string, version: string): Promise<SkillVersionRecord | undefined>;
   createSkillVersion(data: InsertSkillVersionType): Promise<SkillVersionRecord>;
 
-  // Marketplace (Phase 6.16)
-  getMarketplaceSkills(filters: MarketplaceFilters): Promise<{ skills: MarketplaceSkill[]; total: number }>;
   incrementSkillUsage(id: string): Promise<number>;
-
-  // Skill Teams
-  getSkillTeams(): Promise<SkillTeam[]>;
-  createSkillTeam(data: InsertSkillTeam): Promise<SkillTeam>;
-  deleteSkillTeam(id: string): Promise<void>;
 
   // Manager Iterations (Phase 6.6)
   createManagerIteration(data: InsertManagerIteration): Promise<ManagerIterationRow>;
@@ -1557,73 +1548,6 @@ export class MemStorage implements IStorage {
     return row;
   }
 
-  // ─── Marketplace (Phase 6.16) ───────────────────────────────────────────────
-
-  async getMarketplaceSkills(
-    filters: MarketplaceFilters,
-  ): Promise<{ skills: MarketplaceSkill[]; total: number }> {
-    let result = Array.from(this.skillsMap.values()).filter((s) => {
-      const sharing = (s as Skill & { sharing?: string }).sharing ?? "public";
-      return sharing === "public" || sharing === "team";
-    });
-
-    if (filters.search) {
-      const lower = filters.search.toLowerCase();
-      result = result.filter(
-        (s) =>
-          s.name.toLowerCase().includes(lower) ||
-          s.description.toLowerCase().includes(lower) ||
-          (s.tags as string[]).some((t) => t.toLowerCase().includes(lower)),
-      );
-    }
-
-    if (filters.tags && filters.tags.length > 0) {
-      result = result.filter((s) =>
-        filters.tags!.some((t) => (s.tags as string[]).includes(t)),
-      );
-    }
-
-    if (filters.teamId) {
-      result = result.filter((s) => s.teamId === filters.teamId);
-    }
-
-    if (filters.author) {
-      result = result.filter((s) => s.createdBy === filters.author);
-    }
-
-    const mapped: MarketplaceSkill[] = result.map((s) => ({
-      id: s.id,
-      name: s.name,
-      description: s.description,
-      teamId: s.teamId,
-      tags: s.tags as string[],
-      version: (s as Skill & { version?: string }).version ?? "1.0.0",
-      author: s.createdBy,
-      usageCount: (s as Skill & { usageCount?: number }).usageCount ?? 0,
-      sharing: ((s as Skill & { sharing?: string }).sharing ?? "public") as MarketplaceSkill["sharing"],
-      modelPreference: s.modelPreference,
-      createdAt: s.createdAt ?? new Date(),
-      updatedAt: s.updatedAt ?? new Date(),
-    }));
-
-    switch (filters.sort) {
-      case "usageCount":
-        mapped.sort((a, b) => b.usageCount - a.usageCount);
-        break;
-      case "name":
-        mapped.sort((a, b) => a.name.localeCompare(b.name));
-        break;
-      case "newest":
-      default:
-        mapped.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-        break;
-    }
-
-    const total = mapped.length;
-    const skills = mapped.slice(filters.offset, filters.offset + filters.limit);
-    return { skills, total };
-  }
-
   async incrementSkillUsage(id: string): Promise<number> {
     const skill = this.skillsMap.get(id);
     if (!skill) throw new Error(`Skill not found: ${id}`);
@@ -1631,34 +1555,6 @@ export class MemStorage implements IStorage {
     const updated = { ...skill, usageCount: currentCount + 1 };
     this.skillsMap.set(id, updated as Skill);
     return currentCount + 1;
-  }
-
-  // ─── Skill Teams ────────────────────────────────────────────────
-
-  private skillTeamsMap: Map<string, SkillTeam> = new Map();
-
-  async getSkillTeams(): Promise<SkillTeam[]> {
-    return Array.from(this.skillTeamsMap.values()).sort((a, b) =>
-      a.createdAt.getTime() - b.createdAt.getTime(),
-    );
-  }
-
-  async createSkillTeam(data: InsertSkillTeam): Promise<SkillTeam> {
-    const id = randomUUID();
-    const row: SkillTeam = {
-      projectId: data.projectId ?? null,
-      id,
-      name: data.name,
-      description: data.description ?? "",
-      createdBy: data.createdBy ?? null,
-      createdAt: new Date(),
-    };
-    this.skillTeamsMap.set(id, row);
-    return row;
-  }
-
-  async deleteSkillTeam(id: string): Promise<void> {
-    this.skillTeamsMap.delete(id);
   }
 
   // ─── Manager Iterations (Phase 6.6) ────────────────────────────────────────

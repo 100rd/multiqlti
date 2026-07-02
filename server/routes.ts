@@ -40,7 +40,6 @@ import { TriggerService } from "./services/trigger-service";
 import { CronScheduler } from "./services/cron-scheduler";
 import { FileWatcherService } from "./services/file-watcher";
 import { stopRateLimitCleanup } from "./services/webhook-handler";
-import { BUILTIN_SKILLS } from "./skills/builtin";
 import { requireAuth } from "./auth/middleware";
 import { requireProject } from "./middleware/project";
 import { tracer } from "./tracing/tracer";
@@ -57,9 +56,7 @@ import { registerConsiliumReviewRoutes } from "./routes/consilium-reviews";
 import { createConsiliumReview } from "./services/consilium/review-factory";
 import { maybeLaunchConsiliumReview } from "./services/consilium/trigger-dispatch";
 import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consilium/consilium-loop-controller";
-import { registerSkillTeamRoutes } from "./routes/skill-teams";
 import { registerModelSkillBindingRoutes } from "./routes/model-skill-bindings";
-import { registerGitSkillSourceRoutes } from "./routes/git-skill-sources";
 import { registerTaskTraceRoutes } from "./routes/task-traces";
 import { registerTaskIterationRoutes } from "./routes/task-iterations";
 import { registerTaskTemplateRoutes } from "./routes/task-templates";
@@ -72,10 +69,6 @@ import { TaskSplitter } from "./services/task-splitter";
 import { TrackerSyncService } from "./services/tracker-sync";
 import { RemoteAgentManager } from "./remote-agents/remote-agent-manager";
 import { registerRemoteAgentRoutes } from "./routes/remote-agents";
-import { registerSkillMarketRoutes } from "./routes/skill-market";
-import { RegistryManager } from "./skill-market/registry-manager";
-import { McpRegistryAdapter } from "./skill-market/adapters/mcp-registry-adapter";
-import { SkillUpdateChecker } from "./skill-market/update-checker";
 import { registerFederationRoutes, registerCRDTRoutes, registerConfigConflictRoutes, registerConfigSyncStatusRoute } from "./routes/federation";
 import { registerConnectionRoutes } from "./routes/connections";
 import { registerConnectionsYamlRoutes } from "./routes/connections-yaml";
@@ -132,7 +125,6 @@ export async function registerRoutes(
   //   /api/lessons   — workspace-scoped (workspaceId), not directly project-scoped
   //   /api/traces    — indirectly scoped via runId → pipelineRuns.projectId
   //   /api/lmstudio  — local server config; import creates project-scoped models
-  //   /api/skill-market — external registry; install creates project-scoped skills
 
   // ── Project-scoped (requireAuth + requireProject) ──────────────────────────
   app.use("/api/pipelines", requireAuth, requireProject);
@@ -164,10 +156,8 @@ export async function registerRoutes(
   app.use("/api/consilium-reviews", requireAuth, requireProject);
   app.use("/api/task-templates", requireAuth, requireProject);
   app.use("/api/lmstudio", requireAuth, requireProject);       // UNCERTAIN — see note above
-  app.use("/api/skill-teams", requireAuth, requireProject);
   app.use("/api/tracker-connections", requireAuth, requireProject);
   app.use("/api/remote-agents", requireAuth, requireProject);
-  app.use("/api/skill-market", requireAuth, requireProject);   // UNCERTAIN — see note above
   app.use("/api/credentials", requireAuth, requireProject);
   // /api/workspaces/:id/knowledge is already covered by /api/workspaces above;
   // keep this explicit mount for clarity and so the middleware fires even if the
@@ -242,25 +232,6 @@ export async function registerRoutes(
   }
   registerRemoteAgentRoutes(app as unknown as Router, remoteAgentManager);
 
-  // Phase 9.5 + 9.8 — Skill Market unified search + update checker
-  let registryManager: RegistryManager | null = null;
-  let skillUpdateChecker: SkillUpdateChecker | null = null;
-  try {
-    registryManager = new RegistryManager();
-    registryManager.register(new McpRegistryAdapter());
-    log("[skill-market] Registry manager initialized with MCP adapter", "skill-market");
-
-    // Phase 9.8 — background update checker
-    skillUpdateChecker = new SkillUpdateChecker(registryManager);
-    skillUpdateChecker.start();
-    log("[skill-market] Update checker started", "skill-market");
-  } catch (e) {
-    log(`[skill-market] Skill market subsystem disabled: ${(e as Error).message}`, "skill-market");
-    registryManager = null;
-    skillUpdateChecker = null;
-  }
-  registerSkillMarketRoutes(app as unknown as Router, registryManager, skillUpdateChecker);
-
   // Task Orchestrator + Tracer
   const taskTracer = new TaskTracer(storage, wsManager);
   const taskOrchestrator = new TaskOrchestrator(storage, wsManager, controller, gateway);
@@ -324,8 +295,6 @@ export async function registerRoutes(
     pipelineController: controller,
     taskOrchestrator,
   });
-  registerSkillTeamRoutes(app, storage);
-  registerGitSkillSourceRoutes(app);
   registerTaskTraceRoutes(app, storage);
 
   // Tracker Integration
@@ -516,22 +485,10 @@ export async function registerRoutes(
     getRefreshScheduler()?.stop();
     stopRateLimitCleanup();
     await remoteAgentManager?.shutdown();
-    skillUpdateChecker?.stop();
   });
 
   // Phase 6.10 — ArgoCD auto-connect from env vars (if configured)
   await autoConnectArgoCdFromEnv();
-
-  // Seed built-in skills (idempotent — checks each by ID).
-  // Runs in system context: built-in skills have null projectId (globally shared).
-  await runAsSystem("startup-seed-builtin-skills", async () => {
-    for (const skill of BUILTIN_SKILLS) {
-      const existing = await storage.getSkill(skill.id as string);
-      if (!existing) {
-        await storage.createSkill(skill);
-      }
-    }
-  });
 
   // Seed default models. getModels() is an unscoped global select; createModel()
   // uses withProjectInsert which sets projectId=null in system context (global row).

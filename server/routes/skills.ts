@@ -3,10 +3,8 @@ import { z } from "zod";
 import type { IStorage } from "../storage";
 import type { InsertSkill, Skill } from "@shared/schema";
 import type { SharingLevel } from "@shared/types";
-import { BUILTIN_SKILLS } from "../skills/builtin";
 import { bumpVersion, snapshotConfig } from "../skills/version-service";
 import { serializeSkillToYaml, deserializeSkillYaml, SkillYamlSchema } from "../skills/yaml-service";
-import { MarketplaceService } from "../skills/marketplace-service";
 
 // ─── Zod Schemas ────────────────────────────────────────────────────────────
 
@@ -36,16 +34,6 @@ const ImportSkillsSchema = z.object({
 
 const ExportFormatSchema = z.object({
   format: z.enum(["json", "yaml"]).default("json"),
-});
-
-const MarketplaceQuerySchema = z.object({
-  search: z.string().max(200).optional(),
-  tags: z.string().max(500).optional(),
-  teamId: z.string().max(100).optional(),
-  author: z.string().max(200).optional(),
-  sort: z.enum(["usageCount", "newest", "name"]).default("newest"),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
-  offset: z.coerce.number().int().min(0).default(0),
 });
 
 const VersionBumpSchema = z.object({
@@ -87,8 +75,6 @@ function resolveSharingLevel(
 const YAML_IMPORT_MAX_BYTES = 100 * 1024;
 
 export function registerSkillRoutes(app: Express, storage: IStorage) {
-  const marketplace = new MarketplaceService(storage);
-
   // ─── LIST ─────────────────────────────────────────────────────────────────
 
   app.get("/api/skills", async (req, res) => {
@@ -99,34 +85,6 @@ export function registerSkillRoutes(app: Express, storage: IStorage) {
     if (isBuiltinParam !== undefined) filter.isBuiltin = isBuiltinParam === "true";
     const result = await storage.getSkills(filter);
     res.json(result);
-  });
-
-  // ─── BUILTIN ──────────────────────────────────────────────────────────────
-
-  app.get("/api/skills/builtin", (_req, res) => {
-    res.json(BUILTIN_SKILLS);
-  });
-
-  // ─── MARKETPLACE (must be before :id routes) ──────────────────────────────
-
-  app.get("/api/skills/marketplace", async (req: Request, res: Response) => {
-    const parsed = MarketplaceQuerySchema.safeParse(req.query);
-    if (!parsed.success) {
-      return res.status(400).json({ error: parsed.error.errors[0]?.message ?? "Invalid query" });
-    }
-    const { search, tags, teamId, author, sort, limit, offset } = parsed.data;
-    const tagArray = tags ? tags.split(",").map((t) => t.trim()).filter(Boolean) : undefined;
-
-    const result = await storage.getMarketplaceSkills({
-      search,
-      tags: tagArray,
-      teamId,
-      author,
-      sort,
-      limit,
-      offset,
-    });
-    res.json({ skills: result.skills, total: result.total });
   });
 
   // ─── BULK EXPORT ──────────────────────────────────────────────────────────
@@ -310,20 +268,6 @@ export function registerSkillRoutes(app: Express, storage: IStorage) {
     } as Partial<InsertSkill>);
 
     res.json(updated);
-  });
-
-  // ─── FORK ─────────────────────────────────────────────────────────────────
-
-  app.post("/api/skills/:id/fork", async (req: Request, res: Response) => {
-    const userId = req.user?.id ?? "user";
-    try {
-      const forked = await marketplace.fork(req.params.id as string, userId);
-      res.status(201).json(forked);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Fork failed";
-      const status = message === "Skill not found" ? 404 : 403;
-      res.status(status).json({ error: message });
-    }
   });
 
   // ─── USAGE COUNTER ────────────────────────────────────────────────────────
