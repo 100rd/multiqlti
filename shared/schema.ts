@@ -17,7 +17,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { MaintenanceCategoryConfig, ScoutFinding, TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, LogSourceConfig, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, ExecutionTrace } from "./types.js";
+import type { TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, ExecutionTrace } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -517,79 +517,6 @@ export const insertWorkspaceSchema = createInsertSchema(workspaces).omit({
 
 export type InsertWorkspace = z.infer<typeof insertWorkspaceSchema>;
 export type WorkspaceRow = typeof workspaces.$inferSelect;
-
-// ─── Maintenance Autopilot Schema (Phase 4.5) ────────────────────────────────
-
-export const maintenancePolicies = pgTable("maintenance_policies", {
-  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-  id: varchar("id")
-    .primaryKey()
-    .default(sql`gen_random_uuid()`),
-  workspaceId: varchar("workspace_id").references(() => workspaces.id, {
-    onDelete: "cascade",
-  }),
-  enabled: boolean("enabled").notNull().default(true),
-  schedule: text("schedule").notNull().default("0 9 * * 1"),
-  categories: jsonb("categories")
-    .notNull()
-    .$type<MaintenanceCategoryConfig[]>()
-    .default(sql`'[]'::jsonb`),
-  severityThreshold: text("severity_threshold").notNull().default("high"),
-  autoMerge: boolean("auto_merge").notNull().default(false),
-  notifyChannels: jsonb("notify_channels")
-    .$type<string[]>()
-    .default(sql`'[]'::jsonb`),
-  autoTriggerPipelineId: varchar("auto_trigger_pipeline_id"),
-  autoTriggerEnabled: boolean("auto_trigger_enabled").notNull().default(false),
-  logSourceConfig: jsonb("log_source_config").$type<LogSourceConfig | null>(),
-  createdAt: timestamp("created_at").defaultNow(),
-  updatedAt: timestamp("updated_at").defaultNow(),
-});
-
-export type MaintenancePolicyRow = typeof maintenancePolicies.$inferSelect;
-
-export const maintenanceScans = pgTable("maintenance_scans", {
-  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-  id: varchar("id")
-    .primaryKey()
-    .default(sql`gen_random_uuid()`),
-  policyId: varchar("policy_id").references(() => maintenancePolicies.id, {
-    onDelete: "cascade",
-  }),
-  workspaceId: varchar("workspace_id").references(() => workspaces.id, {
-    onDelete: "cascade",
-  }),
-  status: text("status").notNull().default("running"),
-  findings: jsonb("findings")
-    .notNull()
-    .$type<ScoutFinding[]>()
-    .default(sql`'[]'::jsonb`),
-  importantCount: integer("important_count").notNull().default(0),
-  triggeredPipelineId: varchar("triggered_pipeline_id"),
-  startedAt: timestamp("started_at").defaultNow(),
-  completedAt: timestamp("completed_at"),
-  createdAt: timestamp("created_at").defaultNow(),
-});
-
-export type MaintenanceScanRow = typeof maintenanceScans.$inferSelect;
-
-// ─── Auto-Trigger Audit (Phase 6.11) ─────────────────────────────────────────
-
-export const autoTriggerAudit = pgTable("auto_trigger_audit", {
-  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-  id: varchar("id")
-    .primaryKey()
-    .default(sql`gen_random_uuid()`),
-  scanId: varchar("scan_id")
-    .notNull()
-    .references(() => maintenanceScans.id, { onDelete: "restrict" }),
-  findingId: varchar("finding_id").notNull(),
-  pipelineRunId: varchar("pipeline_run_id").notNull(),
-  triggeredAt: timestamp("triggered_at").notNull().defaultNow(),
-  triggeredBy: varchar("triggered_by").references(() => users.id, { onDelete: "restrict" }),
-});
-
-export type AutoTriggerAuditRow = typeof autoTriggerAudit.$inferSelect;
 
 // ─── Delegation Requests (Phase 6.4) ─────────────────────────────────────────
 

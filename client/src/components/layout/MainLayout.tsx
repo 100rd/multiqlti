@@ -9,7 +9,6 @@ import {
   FolderGit2,
   LogOut,
   Users,
-  Wrench,
   Zap,
   ListChecks,
   BookMarked,
@@ -106,7 +105,6 @@ export default function MainLayout({ children }: MainLayoutProps) {
         ]
       : []),
     { icon: BarChart3, label: "Statistics", href: "/stats" },
-    { icon: Wrench, label: "Maintenance", href: "/maintenance" },
     { icon: KeyRound, label: "Credential Access", href: "/credentials" },
     { icon: Settings, label: "Settings", href: "/settings" },
     { icon: Radio, label: "Config Sync", href: "/settings/peers" },

@@ -30,7 +30,6 @@ import Inventory from "@/pages/Inventory";
 import Login from "@/pages/Login";
 import UserManagement from "@/pages/UserManagement";
 import ProfileSettings from "@/pages/ProfileSettings";
-import Maintenance from "@/pages/Maintenance";
 import Skills from "@/pages/Skills";
 import TaskGroupList from "@/pages/TaskGroupList";
 import TaskGroupPage from "@/pages/TaskGroup";
@@ -166,9 +165,6 @@ function ProtectedRouter() {
         )} />
         <Route path="/task-library" component={() => (
           <ErrorBoundary><TaskLibrary /></ErrorBoundary>
-        )} />
-        <Route path="/maintenance" component={() => (
-          <ErrorBoundary><Maintenance /></ErrorBoundary>
         )} />
         <Route path="/credentials" component={() => (
           <ErrorBoundary><CredentialAccess /></ErrorBoundary>
