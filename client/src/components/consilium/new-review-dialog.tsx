@@ -472,8 +472,8 @@ export function NewConsiliumReviewDialog({
           <div className="space-y-2">
             <div className="flex items-baseline justify-between gap-2">
               <Label htmlFor="new-review-engineer-instruction">
-                Инструкции инженеру{" "}
-                <span className="text-muted-foreground">(тон/требования для оценки)</span>
+                Instructions to the engineer{" "}
+                <span className="text-muted-foreground">(tone / requirements for the evaluation)</span>
               </Label>
               <span
                 className={
@@ -490,13 +490,13 @@ export function NewConsiliumReviewDialog({
               id="new-review-engineer-instruction"
               value={engineerInstruction}
               onChange={(e) => setEngineerInstruction(e.target.value)}
-              placeholder="Напр.: оценивай строго по безопасности; требуй тесты на каждый P0; тон — без воды."
+              placeholder="E.g.: evaluate strictly on security; require tests for every P0; keep the tone concise."
               rows={3}
               data-testid="new-review-engineer-instruction"
             />
             {engineerInstruction.length > MAX_INSTRUCTION_LEN && (
               <p className="text-xs text-destructive">
-                Слишком длинно — сервер примет не более {MAX_INSTRUCTION_LEN} символов.
+                Too long — the server accepts at most {MAX_INSTRUCTION_LEN} characters.
               </p>
             )}
           </div>

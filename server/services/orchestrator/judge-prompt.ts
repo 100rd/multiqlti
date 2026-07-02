@@ -8,13 +8,13 @@
  * `action_points`, so an unmodified judge keeps working — but a judge that
  * follows these instructions gives the FSM an authoritative signal.
  *
- * Kept in Russian to match the existing judge task descriptions / verdict UI.
+ * In English to match the product's user-facing judge descriptions / verdict UI.
  */
 export const JUDGE_CONVERGENCE_INSTRUCTIONS = `
-## Сигнал сходимости (convergence)
+## Convergence signal
 
-Дополнительно к полям verdict / pros / cons / action_points добавь в \`output\`
-объект \`convergence\`:
+In addition to the verdict / pros / cons / action_points fields, add a
+\`convergence\` object to \`output\`:
 
 \`\`\`json
 "convergence": {
@@ -27,22 +27,23 @@ export const JUDGE_CONVERGENCE_INSTRUCTIONS = `
       "effort": "...",
       "rationale": "...",
       "tradeoff": "...",
-      "acceptanceCriterion": "Когда <условие>, тогда <проверяемый результат>"
+      "acceptanceCriterion": "When <condition>, then <verifiable result>"
     }
   ]
 }
 \`\`\`
 
-Правила:
-- \`converged\` равно \`true\` тогда и только тогда, когда НЕ осталось ни одного
-  action point с приоритетом \`P0\`. Иначе — \`false\`.
-- \`open_p0\` — количество ещё открытых action points с приоритетом \`P0\`.
-- \`open_action_points\` — полный список ВСЕХ ещё открытых (нерешённых) action
-  points; перечисли каждый, не сокращая.
-- Приоритеты: P0 (блокирует сходимость) > P1 > P2 > P3.
-- НЕОБЯЗАТЕЛЬНО для каждого action point добавь поле \`acceptanceCriterion\`
-  (именно такой camelCase-ключ) — ОДНУ конкретную, проверяемую формулировку
-  «Когда … тогда …» (definition of done): по какому наблюдаемому условию можно
-  однозначно убедиться, что пункт закрыт. Если сформулировать проверяемый
-  критерий нельзя — просто опусти поле (verdict остаётся валидным без него).
+Rules:
+- \`converged\` is \`true\` if and only if no action point with priority \`P0\`
+  remains. Otherwise it is \`false\`.
+- \`open_p0\` — the number of still-open action points with priority \`P0\`.
+- \`open_action_points\` — the full list of ALL still-open (unresolved) action
+  points; list every one, without abbreviating.
+- Priorities: P0 (blocks convergence) > P1 > P2 > P3.
+- OPTIONALLY, for each action point add an \`acceptanceCriterion\` field
+  (exactly this camelCase key) — ONE concrete, verifiable
+  "When … then …" statement (definition of done): the observable condition by
+  which one can unambiguously confirm the item is closed. If no verifiable
+  criterion can be stated, simply omit the field (the verdict stays valid
+  without it).
 `.trim();

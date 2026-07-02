@@ -115,15 +115,15 @@ function buildFullText(data: VerdictOutput, groupName: string, source: string): 
 
   const lines: string[] = [`# ${groupName}`];
   if (source) lines.push(`_${source}_`);
-  if (data.verdict) lines.push("", "## Вердикт", data.verdict);
-  if (data.pros.length) lines.push("", "## Плюсы", ...data.pros.map((p) => `- ${p}`));
-  if (data.cons.length) lines.push("", "## Минусы", ...data.cons.map((c) => `- ${c}`));
+  if (data.verdict) lines.push("", "## Verdict", data.verdict);
+  if (data.pros.length) lines.push("", "## Pros", ...data.pros.map((p) => `- ${p}`));
+  if (data.cons.length) lines.push("", "## Cons", ...data.cons.map((c) => `- ${c}`));
   if (data.action_points.length) {
     lines.push(
       "",
       "## Action Points",
       "",
-      "| # | Действие | Приоритет | Усилие | Обоснование | Трейд-офф |",
+      "| # | Action | Priority | Effort | Rationale | Trade-off |",
       "| --- | --- | --- | --- | --- | --- |",
       ...data.action_points.map(
         (ap, i) =>
@@ -135,7 +135,7 @@ function buildFullText(data: VerdictOutput, groupName: string, source: string): 
     if (data.action_points.some((ap) => ap.acceptanceCriterion)) {
       lines.push(
         "",
-        "## Критерии приёмки (DoD)",
+        "## Acceptance criteria (DoD)",
         ...data.action_points.map(
           (ap, i) => `${i + 1}. ${ap.acceptanceCriterion ?? "—"}`,
         ),
@@ -181,15 +181,15 @@ export function VerdictPanel({
     if (await copyText(fullText)) {
       setCopied(true);
       toast({
-        title: "Скопировано",
-        description: "Полный текст вердикта — в буфере обмена.",
+        title: "Copied",
+        description: "The full verdict text is on the clipboard.",
       });
       window.setTimeout(() => setCopied(false), 2000);
     } else {
       toast({
         variant: "destructive",
-        title: "Не удалось скопировать",
-        description: "Буфер обмена недоступен в этом контексте.",
+        title: "Couldn't copy",
+        description: "The clipboard is unavailable in this context.",
       });
     }
   }
@@ -206,15 +206,15 @@ export function VerdictPanel({
     try {
       await developLoop.mutateAsync(loopId);
       toast({
-        title: "Передано в SDLC",
-        description: "Раунд developing запущен — открываю луп для наблюдения.",
+        title: "Handed off to SDLC",
+        description: "The developing round has started — opening the loop to observe.",
       });
       navigate(`/consilium-loops/${loopId}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast({
         variant: "destructive",
-        title: "Не удалось передать в SDLC",
+        title: "Couldn't hand off to SDLC",
         description: message,
       });
     }
@@ -226,7 +226,7 @@ export function VerdictPanel({
         <div className="flex items-start justify-between gap-2">
           <CardTitle className="flex items-center gap-2 text-base">
             <Gavel className="h-4 w-4 text-primary" />
-            Вердикт планирования
+            Planning verdict
             {source && (
               <span className="text-xs font-normal text-muted-foreground">— {source}</span>
             )}
@@ -244,14 +244,14 @@ export function VerdictPanel({
             variant="outline"
             onClick={copyFullText}
             className="shrink-0"
-            title="Скопировать полный текст вердикта для передачи в работу вне multiqlti"
+            title="Copy the full verdict text to hand off to work outside multiqlti"
           >
             {copied ? (
               <Check className="mr-2 h-4 w-4 text-green-600" />
             ) : (
               <Copy className="mr-2 h-4 w-4" />
             )}
-            {copied ? "Скопировано" : "Скопировать текст"}
+            {copied ? "Copied" : "Copy text"}
           </Button>
         </div>
       </CardHeader>
@@ -267,7 +267,7 @@ export function VerdictPanel({
             {data.pros.length > 0 && (
               <div>
                 <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-green-600 dark:text-green-400">
-                  <ThumbsUp className="h-4 w-4" /> Плюсы
+                  <ThumbsUp className="h-4 w-4" /> Pros
                 </h4>
                 <ul className="space-y-1 text-sm text-muted-foreground">
                   {data.pros.map((p, i) => (
@@ -282,7 +282,7 @@ export function VerdictPanel({
             {data.cons.length > 0 && (
               <div>
                 <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-red-600 dark:text-red-400">
-                  <ThumbsDown className="h-4 w-4" /> Минусы
+                  <ThumbsDown className="h-4 w-4" /> Cons
                 </h4>
                 <ul className="space-y-1 text-sm text-muted-foreground">
                   {data.cons.map((c, i) => (
@@ -305,11 +305,11 @@ export function VerdictPanel({
                 <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
                   <tr>
                     <th className="px-3 py-2 text-left font-medium">#</th>
-                    <th className="px-3 py-2 text-left font-medium">Действие</th>
-                    <th className="px-3 py-2 text-left font-medium">Приоритет</th>
-                    <th className="px-3 py-2 text-left font-medium">Усилие</th>
-                    <th className="px-3 py-2 text-left font-medium">Обоснование</th>
-                    <th className="px-3 py-2 text-left font-medium">Трейд-офф</th>
+                    <th className="px-3 py-2 text-left font-medium">Action</th>
+                    <th className="px-3 py-2 text-left font-medium">Priority</th>
+                    <th className="px-3 py-2 text-left font-medium">Effort</th>
+                    <th className="px-3 py-2 text-left font-medium">Rationale</th>
+                    <th className="px-3 py-2 text-left font-medium">Trade-off</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -339,7 +339,7 @@ export function VerdictPanel({
                           colSpan={5}
                         >
                           <span className="font-medium uppercase tracking-wide text-muted-foreground/70">
-                            Критерий приёмки (DoD):
+                            Acceptance criterion (DoD):
                           </span>{" "}
                           <span className="text-foreground/80">
                             {ap.acceptanceCriterion ?? "—"}
@@ -359,9 +359,9 @@ export function VerdictPanel({
             {loopId ? (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm text-muted-foreground">
-                  Фаза планирования завершена. Передать action points в SDLC —
-                  исполнение пройдёт видимым раундом <code>developing</code> на
-                  консилиум-лупе:
+                  Planning phase complete. Hand off the action points to SDLC —
+                  execution runs as a visible <code>developing</code> round on the
+                  consilium loop:
                 </span>
                 <Button size="sm" onClick={handleDevelop} disabled={developLoop.isPending}>
                   {developLoop.isPending ? (
@@ -369,15 +369,15 @@ export function VerdictPanel({
                   ) : (
                     <GitPullRequest className="mr-2 h-4 w-4" />
                   )}
-                  Передать в SDLC (develop-раунд)
+                  Hand off to SDLC (develop round)
                 </Button>
               </div>
             ) : (
               <div className="flex items-start gap-2 rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
                 <Info className="h-4 w-4 shrink-0 mt-0.5" />
                 <span>
-                  Для этой группы нет консилиум-лупа — исполнение action points
-                  запускается через луп. Создание лупа из вердикта появится позже.
+                  There is no consilium loop for this group — executing action points
+                  runs through a loop. Creating a loop from the verdict will come later.
                 </span>
               </div>
             )}

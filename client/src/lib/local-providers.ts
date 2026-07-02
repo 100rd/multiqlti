@@ -16,7 +16,7 @@ export const LOCAL_PROVIDER_KEYS = ["vllm", "ollama", "lmstudio"] as const;
 export type LocalProviderKey = (typeof LOCAL_PROVIDER_KEYS)[number];
 
 /** Label for the collapsible block that hides local model providers. */
-export const LOCAL_MODELS_SECTION_TITLE = "Локальные модели (экспериментально)";
+export const LOCAL_MODELS_SECTION_TITLE = "Local models (experimental)";
 
 /**
  * The local-models block is collapsed on a clean install. Persisted user

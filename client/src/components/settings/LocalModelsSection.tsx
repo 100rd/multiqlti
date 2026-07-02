@@ -35,8 +35,8 @@ export function LocalModelsSection({
       storageKey="settings-section-local-models"
       title={LOCAL_MODELS_SECTION_TITLE}
       icon={<Cpu className="h-4 w-4" />}
-      shortDescription="vLLM, Ollama и LM Studio — медленные, выключены по умолчанию."
-      longDescription="Локальные провайдеры (vLLM, Ollama, LM Studio) не активны, пока не задан endpoint. Они скрыты под этим блоком, чтобы не мешать облачным моделям. Сохранённые endpoint'ы не удаляются — раскройте блок и включите провайдер, чтобы вернуть прежнее поведение."
+      shortDescription="vLLM, Ollama, and LM Studio — slow, disabled by default."
+      longDescription="Local providers (vLLM, Ollama, LM Studio) stay inactive until an endpoint is set. They are tucked under this section so they don't clutter the cloud models. Saved endpoints are not deleted — expand this section and enable a provider to restore the previous behavior."
       defaultOpen={LOCAL_MODELS_SECTION_DEFAULT_OPEN}
     >
       <div className="divide-y divide-border">

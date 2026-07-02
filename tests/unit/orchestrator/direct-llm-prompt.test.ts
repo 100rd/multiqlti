@@ -13,13 +13,13 @@ describe("parseDirectLlmResponse — robust summary/output extraction", () => {
 
   it("extracts the real summary from a preamble + ```json fence (the debate case)", () => {
     const content =
-      "Это задача синтеза, инструменты не нужны. Привожу решение:\n\n" +
+      "This is a synthesis task, no tools needed. Here is the solution:\n\n" +
       "```json\n" +
-      JSON.stringify({ summary: "Арбитр синтезирует спор", output: { verdict: "6.5/10" }, decisions: ["d1"] }, null, 2) +
+      JSON.stringify({ summary: "The arbiter synthesizes the debate", output: { verdict: "6.5/10" }, decisions: ["d1"] }, null, 2) +
       "\n```";
     const r = parseDirectLlmResponse(content);
     // NOT the preamble slice — the model's actual summary field.
-    expect(r.summary).toBe("Арбитр синтезирует спор");
+    expect(r.summary).toBe("The arbiter synthesizes the debate");
     expect(r.output).toEqual({ verdict: "6.5/10" });
     expect(r.decisions).toEqual(["d1"]);
   });
@@ -34,10 +34,10 @@ describe("parseDirectLlmResponse — robust summary/output extraction", () => {
   });
 
   it("falls back to the de-hashed heading + full raw text for pure markdown (no JSON)", () => {
-    const content = "## Открывающий анализ\n\nЯ открываю спор взвешенной оценкой по brief.";
+    const content = "## Opening analysis\n\nI open the debate with a balanced assessment of the brief.";
     const r = parseDirectLlmResponse(content);
     // A markdown title makes a good summary: strip the `#` markers, keep the text.
-    expect(r.summary).toBe("Открывающий анализ");
+    expect(r.summary).toBe("Opening analysis");
     expect(r.output).toEqual({ raw: content });
   });
 

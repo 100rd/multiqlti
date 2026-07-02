@@ -36,7 +36,7 @@ describe("local provider keys", () => {
 
 describe("collapsible block defaults", () => {
   it("is labelled in Russian as experimental", () => {
-    expect(LOCAL_MODELS_SECTION_TITLE).toBe("Локальные модели (экспериментально)");
+    expect(LOCAL_MODELS_SECTION_TITLE).toBe("Local models (experimental)");
   });
 
   it("is COLLAPSED by default on a clean install", () => {

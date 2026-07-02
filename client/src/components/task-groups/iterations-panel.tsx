@@ -203,12 +203,12 @@ function IterationNoteEditor({
     save.mutate(note, {
       onSuccess: () => {
         setDirty(false);
-        toast({ title: "Заметка сохранена", description: "Будет учтена в следующей итерации (Run again)." });
+        toast({ title: "Note saved", description: "It will be taken into account in the next iteration (Run again)." });
       },
       onError: (e) =>
         toast({
-          title: "Не удалось сохранить заметку",
-          description: e instanceof Error ? e.message : "Ошибка",
+          title: "Couldn't save the note",
+          description: e instanceof Error ? e.message : "Error",
           variant: "destructive",
         }),
     });
@@ -219,13 +219,13 @@ function IterationNoteEditor({
       <CardHeader className="py-3 pb-1">
         <CardTitle className="flex items-center gap-2 text-sm font-medium">
           <MessageSquarePlus className="h-4 w-4" aria-hidden="true" />
-          Ваши мысли и решения
+          Your thoughts and decisions
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 py-2">
         <p className="text-xs text-muted-foreground">
-          Запишите выводы по этой итерации. При запуске следующей итерации («Run again») они
-          будут добавлены в контекст спора — участники и судья учтут их.
+          Jot down your takeaways from this iteration. When you start the next iteration ("Run again"),
+          they are added to the debate context — the participants and the judge will take them into account.
         </p>
         <Textarea
           value={note}
@@ -233,7 +233,7 @@ function IterationNoteEditor({
             setNote(e.target.value);
             setDirty(true);
           }}
-          placeholder="Например: судья переоценил риск X — считаю его P1; в следующем раунде сфокусируйтесь на Y…"
+          placeholder="For example: the judge overrated risk X — I consider it P1; in the next round focus on Y…"
           className="min-h-[120px] text-sm"
           data-testid="iteration-human-note"
         />
@@ -242,9 +242,9 @@ function IterationNoteEditor({
             {save.isPending ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
             ) : null}
-            Сохранить заметку
+            Save note
           </Button>
-          {dirty ? <span className="text-xs text-muted-foreground">Есть несохранённые изменения</span> : null}
+          {dirty ? <span className="text-xs text-muted-foreground">You have unsaved changes</span> : null}
         </div>
       </CardContent>
     </Card>
