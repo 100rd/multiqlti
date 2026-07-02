@@ -2694,7 +2694,6 @@ export const consiliumLoops = pgTable(
     archetypeParams: jsonb("archetype_params").$type<Record<string, string>>(),
     archetypeDecidedAt: timestamp("archetype_decided_at"),
     currentIterationNumber: integer("current_iteration_number"),
-    devPipelineId: varchar("dev_pipeline_id"),
     devGroupId: varchar("dev_group_id"),
     prRef: text("pr_ref"),
     // M-3 (TOCTOU): HEAD captured when entering AWAITING_MERGE; merge-approved

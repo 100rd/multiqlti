@@ -32,7 +32,6 @@ const SHA_RE = /^[0-9a-f]{7,64}$/;
 const CreateLoopSchema = z.object({
   groupId: z.string().min(1),
   repoPath: z.string().min(1),
-  devPipelineId: z.string().min(1).optional(),
   maxRounds: z.coerce.number().int().min(1).max(6).optional(),
   // H-2: a baseline supplied at create time MUST be a strict hex sha (no refs).
   lastReviewedCommit: z.string().regex(SHA_RE).optional(),
@@ -79,11 +78,6 @@ export function registerConsiliumLoopRoutes(
         return res.status(400).json({ error: "repoPath is not in the configured allowlist" });
       }
 
-      const devPipelineId = body.devPipelineId ?? cfg.devPipelineId;
-      if (!devPipelineId) {
-        return res.status(400).json({ error: "no DEV pipeline configured (body or config)" });
-      }
-
       // H-3: reject a 2nd active loop on the same group (app-level pre-check; the
       // DB partial-unique index is the authoritative backstop on a create race).
       const active = await storage.getActiveLoopByGroup(body.groupId);
@@ -96,7 +90,6 @@ export function registerConsiliumLoopRoutes(
           groupId: body.groupId,
           repoPath: body.repoPath,
           maxRounds: body.maxRounds ?? cfg.maxRounds,
-          devPipelineId,
           lastReviewedCommit: body.lastReviewedCommit ?? null,
           createdBy: req.user.id,
         });

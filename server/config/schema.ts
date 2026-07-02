@@ -324,8 +324,6 @@ export const ConfigSchema = z.object({
        * env-mapped (matches the federation.peers / omniscience.args pattern).
        */
       allowedRepoPaths: z.array(z.string()).default([]),
-      /** Default DEV pipeline used for the loop's DEV handoff step (Phase B). */
-      devPipelineId: z.string().optional(),
       /**
        * Hard wall-clock timeout PER action-point SDLC coder run (ms). The SDLC
        * executor runs the agentic coder once per action point sequentially in one

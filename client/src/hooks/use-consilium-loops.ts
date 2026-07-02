@@ -237,7 +237,6 @@ export function useConsiliumLoop(id: string | undefined) {
 export interface CreateLoopInput {
   groupId: string;
   repoPath: string;
-  devPipelineId?: string;
   maxRounds?: number;
   lastReviewedCommit?: string;
 }

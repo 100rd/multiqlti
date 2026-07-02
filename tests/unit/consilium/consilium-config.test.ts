@@ -24,11 +24,10 @@ describe("pipeline.consiliumLoop schema", () => {
     expect(c.pollIntervalMs).toBe(5_000);
     expect(c.maxDiffBytes).toBe(200_000);
     expect(c.allowedRepoPaths).toEqual([]); // fail-closed default
-    expect(c.devPipelineId).toBeUndefined();
   });
 
   it("accepts valid overrides", () => {
-    const res = parseLoop({ enabled: true, maxRounds: 3, pollIntervalMs: 2000, maxDiffBytes: 50_000, allowedRepoPaths: ["/srv/repo"], devPipelineId: "p1" });
+    const res = parseLoop({ enabled: true, maxRounds: 3, pollIntervalMs: 2000, maxDiffBytes: 50_000, allowedRepoPaths: ["/srv/repo"] });
     expect(res.success).toBe(true);
     if (!res.success) return;
     expect(res.data.pipeline.consiliumLoop.maxRounds).toBe(3);

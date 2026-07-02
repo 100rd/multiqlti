@@ -213,6 +213,13 @@ Each stage is independently shippable and testable (evolutionary; refine while t
 - **Stage 2 — skilled implement.**
   Implement phase runs **skill-agents + controllers** (wire to existing skills/agent-defs);
   add **verification-method-per-criterion**; convergence on criteria (not subjective verdict).
+  **Phase 2 follow-up (done):** the legacy `dev-handoff` path — a DEV task-group whose tasks
+  each carried a `devPipelineId` — is gone; the skilled SDLC executor is now the *only* implement
+  path, so the loop no longer references the *pipelines* entity at all (`devPipelineId` removed
+  end-to-end, `consilium_loops.dev_pipeline_id` dropped). When `implement.enabled=false` the
+  develop phase **fails soft** with the loop error `"implement path disabled by config"` (same
+  no-PR `dev_completed` convention as a disabled research archetype) rather than silently
+  falling back to an unskilled coder — the operator turns the key on or the loop won't develop.
 
 - **Stage 3 — archetypes.**
   Research archetype (web-evidence, report artifact) and Infra archetype with the
