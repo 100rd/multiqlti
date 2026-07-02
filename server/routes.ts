@@ -29,17 +29,12 @@ import { registerGuardrailRoutes } from "./routes/guardrails";
 import { registerDelegationRoutes } from "./routes/delegations";
 import { DelegationService } from "./pipeline/delegation-service";
 import { ManagerAgent } from "./pipeline/manager-agent";
-import { buildOrchestratorAgent } from "./orchestrator/build-agent";
-import { registerOrchestratorRoutes } from "./routes/orchestrator";
-import { registerConsensusRoutes } from "./routes/consensus";
 import { registerActivityRoutes } from "./routes/activity";
-import { ConsensusController } from "./consensus/consensus-controller";
 import { registerDAGRoutes } from "./routes/dag";
 import { registerTraceRoutes } from "./routes/traces";
 import { registerTriggerRoutes } from "./routes/triggers";
 import { registerWebhookRoutes } from "./routes/webhooks";
 import { registerHealthRoutes } from "./routes/health";
-import { registerLibraryRoutes } from "./routes/library";
 import { registerLmStudioRoutes } from "./routes/lmstudio";
 import { TriggerService } from "./services/trigger-service";
 import { CronScheduler } from "./services/cron-scheduler";
@@ -93,10 +88,6 @@ import { registerKnowledgeRoutes } from "./routes/knowledge";
 import { registerPracticeCardRoutes } from "./routes/practice-cards";
 import { buildPracticeCardDeps } from "./knowledge/practice-card-deps";
 import { initRefreshScheduler, getRefreshScheduler } from "./knowledge/refresh-scheduler";
-import { registerNewsRoutes } from "./routes/news";
-import { BriefScheduler } from "./news/brief-scheduler";
-import { generateBrief } from "./news/brief-generator";
-import { buildNewsLiveDeps, bindGeneratorDeps } from "./news/news-deps";
 import { configLoader as appConfigLoader } from "./config/loader";
 import { seedExampleTerraformCards, resolveFirstAdminUserId } from "./knowledge/seed-terraform-cards";
 import { SessionSharingService } from "./federation/session-sharing";
@@ -118,11 +109,7 @@ export async function registerRoutes(
   const teamRegistry = new TeamRegistry(gateway, wsManager);
   const delegationService = new DelegationService(storage, teamRegistry, wsManager, gateway);
   const managerAgent = new ManagerAgent(storage, teamRegistry, wsManager, gateway, delegationService);
-  const orchestratorAgent = buildOrchestratorAgent(storage, gateway, wsManager);
-  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService, managerAgent, tracer, undefined, orchestratorAgent);
-  const consensusController = new ConsensusController(storage, gateway, {
-    claudeModelSlug: process.env.CONSENSUS_CLAUDE_MODEL ?? "claude-opus",
-  });
+  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService, managerAgent, tracer, undefined);
 
   // Register public routes (no auth required) — must come before requireAuth middleware
   registerHealthRoutes(app);
@@ -176,7 +163,6 @@ export async function registerRoutes(
   app.use("/api/consilium-loops", requireAuth, requireProject);
   app.use("/api/consilium-reviews", requireAuth, requireProject);
   app.use("/api/task-templates", requireAuth, requireProject);
-  app.use("/api/library", requireAuth, requireProject);
   app.use("/api/lmstudio", requireAuth, requireProject);       // UNCERTAIN — see note above
   app.use("/api/skill-teams", requireAuth, requireProject);
   app.use("/api/tracker-connections", requireAuth, requireProject);
@@ -203,8 +189,6 @@ export async function registerRoutes(
   // Register route implementations
   registerModelRoutes(app, storage);
   registerPipelineRoutes(app, storage, gateway);
-  registerOrchestratorRoutes(app, storage, controller);
-  registerConsensusRoutes(app, storage, consensusController);
   registerRunRoutes(app, storage, controller);
   registerChatRoutes(app, storage, gateway, wsManager);
   registerGatewayRoutes(app, gateway);
@@ -233,14 +217,6 @@ export async function registerRoutes(
     }),
   );
 
-  // Morning News Board (morning-news-board-mvp.md) — LAZY-on-first-GET, no cron.
-  // Live deps degrade gracefully when backend=local (boardProvider=null →
-  // internalDegraded). The Omniscience token stays env-only inside news-deps.
-  const newsLive = await buildNewsLiveDeps(appConfigLoader.get(), gateway);
-  const briefScheduler = new BriefScheduler(storage, (params) =>
-    generateBrief(bindGeneratorDeps(storage, newsLive.deps), params),
-  );
-  registerNewsRoutes(app as unknown as Router, storage, { scheduler: briefScheduler });
   registerSandboxRoutes(app as unknown as Router);
   registerSettingsRoutes(app as unknown as Router, gateway);
   registerMaintenanceRoutes(app as unknown as Router);
@@ -252,7 +228,6 @@ export async function registerRoutes(
   registerDAGRoutes(app, storage);
   registerTraceRoutes(app, storage);
   registerArgoCdSettingsRoutes(app as unknown as Router, storage);
-  registerLibraryRoutes(app as unknown as Router);
   registerLmStudioRoutes(app as unknown as Router, storage, gateway);
 
   // Phase 8.9 — Remote Agent CRUD routes
@@ -344,20 +319,10 @@ export async function registerRoutes(
 
   // Live Activity observability lens (read-only, owner/admin-scoped, metadata-only).
   // Registered AFTER the task orchestrator so task-groups can join the live snapshot
-  // (and the History tab) as the fifth mode. Model slugs mirror buildOrchestratorAgent
-  // + the consensus controller wiring.
+  // (and the History tab).
   registerActivityRoutes(app, storage, {
     pipelineController: controller,
-    consensusController,
     taskOrchestrator,
-    orchestratorModels: {
-      planModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
-      synthesizeModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
-      proposerModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
-      criticModelSlug: process.env.ORCHESTRATOR_CRITIC_MODEL ?? "gemini-flash",
-      judgeModelSlug: process.env.ORCHESTRATOR_PLAN_MODEL ?? "claude-opus",
-    },
-    consensusClaudeModelSlug: process.env.CONSENSUS_CLAUDE_MODEL ?? "claude-opus",
   });
   registerSkillTeamRoutes(app, storage);
   registerGitSkillSourceRoutes(app);
@@ -549,7 +514,6 @@ export async function registerRoutes(
     consiliumLoopPoller?.stop();
     fileWatcherService?.stopAll();
     getRefreshScheduler()?.stop();
-    await newsLive.close();
     stopRateLimitCleanup();
     await remoteAgentManager?.shutdown();
     skillUpdateChecker?.stop();

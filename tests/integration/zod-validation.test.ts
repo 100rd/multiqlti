@@ -353,57 +353,6 @@ describe("Zod validation — POST /api/chat/:runId/messages", () => {
   });
 });
 
-describe("Zod validation — POST /api/chat/standalone", () => {
-  it("returns 400 when content is missing", async () => {
-    const app = createChatApp();
-    const res = await request(app)
-      .post("/api/chat/standalone")
-      .send({ modelSlug: "mock" });
-    expect(res.status).toBe(400);
-    expectValidationFailure(res.body);
-  });
-
-  it("returns 400 when content is empty", async () => {
-    const app = createChatApp();
-    const res = await request(app)
-      .post("/api/chat/standalone")
-      .send({ content: "" });
-    expect(res.status).toBe(400);
-  });
-
-  it("passes through with valid body and optional history", async () => {
-    const app = createChatApp();
-    const res = await request(app)
-      .post("/api/chat/standalone")
-      .send({
-        content: "Tell me something",
-        history: [{ role: "user", content: "Hi" }],
-      });
-    expect(res.status).toBe(200);
-  });
-});
-
-describe("Zod validation — POST /api/chat/stream", () => {
-  it("returns 400 when content is missing", async () => {
-    const app = createChatApp();
-    const res = await request(app)
-      .post("/api/chat/stream")
-      .send({});
-    expect(res.status).toBe(400);
-    expectValidationFailure(res.body);
-  });
-
-  it("accepts valid content and returns SSE headers", async () => {
-    const app = createChatApp();
-    const res = await request(app)
-      .post("/api/chat/stream")
-      .send({ content: "Stream me" });
-    // SSE endpoint returns 200 with text/event-stream
-    expect(res.status).toBe(200);
-    expect(res.headers["content-type"]).toContain("text/event-stream");
-  });
-});
-
 // ─── Gateway route tests ──────────────────────────────────────────────────────
 
 describe("Zod validation — POST /api/gateway/complete", () => {
@@ -522,15 +471,6 @@ describe("Zod validation — maxLength constraints", () => {
     const res = await request(testApp.app)
       .post("/api/runs")
       .send({ pipelineId: "pid-1", input: "x".repeat(50001) });
-    expect(res.status).toBe(400);
-    expectValidationFailure(res.body);
-  });
-
-  it("returns 400 when POST /api/chat/standalone content exceeds 50000 chars", async () => {
-    const app = createChatApp();
-    const res = await request(app)
-      .post("/api/chat/standalone")
-      .send({ content: "x".repeat(50001) });
     expect(res.status).toBe(400);
     expectValidationFailure(res.body);
   });

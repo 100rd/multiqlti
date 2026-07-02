@@ -18,24 +18,13 @@ import type { ActivityRouteDeps } from "../../../server/routes/activity.js";
 import type { User, UserRole } from "../../../shared/types.js";
 import type { InsertTaskGroup, InsertTask } from "@shared/schema";
 
-const ORCH_MODELS = {
-  planModelSlug: "claude-opus",
-  synthesizeModelSlug: "claude-opus",
-  proposerModelSlug: "claude-opus",
-  criticModelSlug: "gemini-flash",
-  judgeModelSlug: "claude-opus",
-};
-
 function buildApp(
   storage: MemStorage,
   opts: { userId?: string; role?: UserRole; activeGroupIds?: string[] } = {},
 ) {
   const deps: ActivityRouteDeps = {
     pipelineController: { getActiveRunIds: () => [] },
-    consensusController: { getActiveRunIds: () => [] },
     taskOrchestrator: { getActiveGroupIds: () => opts.activeGroupIds ?? [] },
-    orchestratorModels: ORCH_MODELS,
-    consensusClaudeModelSlug: "claude-opus",
   };
   const user: User = {
     id: opts.userId ?? "owner",

@@ -12,7 +12,6 @@ import { useAuth } from "@/hooks/use-auth";
 
 import MainLayout from "@/components/layout/MainLayout";
 import Dashboard from "@/pages/Dashboard";
-import Chat from "@/pages/Chat";
 import PipelineList from "@/pages/PipelineList";
 import PipelineDetail from "@/pages/PipelineDetail";
 import PipelineRun from "@/pages/PipelineRun";
@@ -24,8 +23,6 @@ import Privacy from "@/pages/Privacy";
 import Statistics from "@/pages/Statistics";
 import Memory from "@/pages/Memory";
 import KnowledgeBase from "@/pages/KnowledgeBase";
-import MorningBrief from "@/pages/MorningBrief";
-import Orchestrator from "@/pages/Orchestrator";
 import WorkspaceList from "@/pages/WorkspaceList";
 import Workspace from "@/pages/Workspace";
 import Connections from "@/pages/Connections";
@@ -39,7 +36,6 @@ import SkillMarketplace from "@/pages/SkillMarketplace";
 import SkillMarket from "@/pages/SkillMarket";
 import TaskGroupList from "@/pages/TaskGroupList";
 import TaskGroupPage from "@/pages/TaskGroup";
-import Library from "@/pages/Library";
 import CreateTaskGroup from "@/pages/CreateTaskGroup";
 import TaskGroupTrace from "@/pages/TaskGroupTrace";
 import TaskLibrary from "@/pages/TaskLibrary";
@@ -72,9 +68,6 @@ function ProtectedRouter() {
       <Switch>
         <Route path="/" component={() => (
           <ErrorBoundary><Dashboard /></ErrorBoundary>
-        )} />
-        <Route path="/chat" component={() => (
-          <ErrorBoundary><Chat /></ErrorBoundary>
         )} />
         <Route path="/pipelines" component={() => (
           <ErrorBoundary><PipelineList /></ErrorBoundary>
@@ -121,15 +114,6 @@ function ProtectedRouter() {
         )} />
         <Route path="/workspaces/:id/inventory" component={() => (
           <ErrorBoundary><Inventory /></ErrorBoundary>
-        )} />
-        <Route path="/workspaces/:id/morning-brief" component={() => (
-          <ErrorBoundary><MorningBrief /></ErrorBoundary>
-        )} />
-        <Route path="/workspaces/:id/orchestrator/:runId" component={() => (
-          <ErrorBoundary><Orchestrator /></ErrorBoundary>
-        )} />
-        <Route path="/workspaces/:id/orchestrator" component={() => (
-          <ErrorBoundary><Orchestrator /></ErrorBoundary>
         )} />
         <Route path="/workspaces/:id/knowledge-base" component={() => (
           <ErrorBoundary><KnowledgeBase /></ErrorBoundary>
@@ -193,9 +177,6 @@ function ProtectedRouter() {
         )} />
         <Route path="/maintenance" component={() => (
           <ErrorBoundary><Maintenance /></ErrorBoundary>
-        )} />
-        <Route path="/library" component={() => (
-          <ErrorBoundary><Library /></ErrorBoundary>
         )} />
         <Route path="/credentials" component={() => (
           <ErrorBoundary><CredentialAccess /></ErrorBoundary>

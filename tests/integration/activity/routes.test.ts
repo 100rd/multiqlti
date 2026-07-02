@@ -21,28 +21,16 @@ import type { User, UserRole } from "../../../shared/types.js";
 
 afterEach(() => vi.restoreAllMocks());
 
-const ORCH_MODELS = {
-  planModelSlug: "claude-opus",
-  synthesizeModelSlug: "claude-opus",
-  proposerModelSlug: "claude-opus",
-  criticModelSlug: "gemini-flash",
-  judgeModelSlug: "claude-opus",
-};
-
 interface BuildOpts {
   userId?: string;
   role?: UserRole;
   noUser?: boolean;
   activePipelineManagerOrch?: string[];
-  activeConsensus?: string[];
 }
 
 function buildApp(storage: MemStorage, opts: BuildOpts = {}) {
   const deps: ActivityRouteDeps = {
     pipelineController: { getActiveRunIds: () => opts.activePipelineManagerOrch ?? [] },
-    consensusController: { getActiveRunIds: () => opts.activeConsensus ?? [] },
-    orchestratorModels: ORCH_MODELS,
-    consensusClaudeModelSlug: "claude-opus",
   };
 
   const user: User = {
@@ -87,51 +75,6 @@ async function seedPipeline(
     modelSlug: "claude-sonnet",
     status: "running",
     input: { secret: "stage prompt should never appear" },
-  });
-  return run.id;
-}
-
-async function seedOrchestrator(storage: MemStorage, triggeredBy: string): Promise<string> {
-  const run = await storage.createPipelineRun({
-    pipelineId: "orch1",
-    status: "running",
-    input: "orchestrator task secret",
-    currentStageIndex: 0,
-    startedAt: new Date(),
-    triggeredBy,
-    dagMode: false,
-  });
-  await storage.createOrchestratorRun({ runId: run.id, task: "secret", status: "executing" });
-  await storage.createOrchestratorStep({
-    runId: run.id,
-    stepIndex: 0,
-    type: "debate",
-    args: { type: "debate", question: "secret question" },
-    status: "running",
-  });
-  return run.id;
-}
-
-async function seedConsensus(storage: MemStorage, triggeredBy: string): Promise<string> {
-  const run = await storage.createPipelineRun({
-    pipelineId: "cons1",
-    status: "running",
-    input: "consensus decision secret",
-    currentStageIndex: 0,
-    startedAt: new Date(),
-    triggeredBy,
-    dagMode: false,
-  });
-  await storage.createConsensusRun({
-    runId: run.id,
-    decisionText: "secret decision text",
-    status: "deliberating",
-  });
-  await storage.createConsensusRound({
-    runId: run.id,
-    round: 1,
-    phase: "review",
-    tokensUsed: 0,
   });
   return run.id;
 }
@@ -249,30 +192,6 @@ describe("GET /api/activity — mode classification + current unit", () => {
     expect(row.currentUnit.status).toBe("running");
   });
 
-  it("classifies an orchestrator run with step type + model", async () => {
-    const storage = new MemStorage();
-    const id = await seedOrchestrator(storage, "owner");
-    const app = buildApp(storage, { userId: "owner", activePipelineManagerOrch: [id] });
-    const res = await request(app).get("/api/activity");
-    const row = res.body.runs[0];
-    expect(row.mode).toBe("orchestrator");
-    expect(row.currentUnit.agent).toBe("debate");
-    expect(row.currentUnit.modelSlug).toBe("claude-opus");
-    expect(row.currentUnit.label).toBe("Step 1");
-  });
-
-  it("classifies a consensus run with phase + voter model", async () => {
-    const storage = new MemStorage();
-    const id = await seedConsensus(storage, "owner");
-    const app = buildApp(storage, { userId: "owner", activeConsensus: [id] });
-    const res = await request(app).get("/api/activity");
-    const row = res.body.runs[0];
-    expect(row.mode).toBe("consensus");
-    expect(row.currentUnit.agent).toBe("voters");
-    expect(row.currentUnit.modelSlug).toBeNull(); // review phase = voter roster
-    expect(row.currentUnit.label).toBe("Round 1 · review");
-  });
-
   it("classifies a manager run with team + best-effort model", async () => {
     const storage = new MemStorage();
     const id = await seedManager(storage, "owner");
@@ -291,14 +210,11 @@ describe("GET /api/activity — metadata-only (security)", () => {
     const storage = new MemStorage();
     const p = await seedPipeline(storage, "owner");
     const m = await seedManager(storage, "owner");
-    const c = await seedConsensus(storage, "owner");
-    const o = await seedOrchestrator(storage, "owner");
 
     const app = buildApp(storage, {
       userId: "owner",
       role: "admin",
-      activePipelineManagerOrch: [p, m, o],
-      activeConsensus: [c],
+      activePipelineManagerOrch: [p, m],
     });
     const res = await request(app).get("/api/activity");
     const serialized = JSON.stringify(res.body);
@@ -312,7 +228,6 @@ describe("GET /api/activity — metadata-only (security)", () => {
       "transcript",
       "prompt",
       "do not leak",
-      "secret question",
     ]) {
       expect(serialized).not.toContain(banned);
     }

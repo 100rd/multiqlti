@@ -4,7 +4,6 @@
  * Endpoints covered:
  *   GET  /api/chat/:runId/messages  — returns messages array
  *   POST /api/chat/:runId/messages  — add message; 400 on missing content
- *   POST /api/chat/standalone       — standalone chat; 400 on missing content
  *
  * Auth: 401 on all endpoints when no token is provided.
  * The tests for 404 (non-existent runId) are omitted because the route does
@@ -251,62 +250,3 @@ describe("POST /api/chat/:runId/messages", () => {
   });
 });
 
-// ─── POST /api/chat/standalone ───────────────────────────────────────────────
-
-describe("POST /api/chat/standalone", () => {
-  let app: Express;
-
-  beforeAll(async () => {
-    const ctx = await createAuthenticatedApp();
-    app = ctx.app;
-  });
-
-  it("returns 400 when content is missing", async () => {
-    const res = await request(app).post("/api/chat/standalone").send({});
-    expect(res.status).toBe(400);
-  });
-
-  it("returns 400 when content is an empty string", async () => {
-    const res = await request(app)
-      .post("/api/chat/standalone")
-      .send({ content: "" });
-    expect(res.status).toBe(400);
-  });
-
-  it("returns 200 with content, modelSlug and tokensUsed on valid body", async () => {
-    const res = await request(app)
-      .post("/api/chat/standalone")
-      .send({ content: "Tell me a joke" });
-    expect(res.status).toBe(200);
-
-    const body = res.body as {
-      content: string;
-      modelSlug: string;
-      tokensUsed: number;
-    };
-    expect(body.content).toBeTruthy();
-    expect(typeof body.modelSlug).toBe("string");
-    expect(typeof body.tokensUsed).toBe("number");
-  });
-
-  it("accepts optional history array", async () => {
-    const res = await request(app)
-      .post("/api/chat/standalone")
-      .send({
-        content: "Continue the story",
-        history: [
-          { role: "user", content: "Once upon a time" },
-          { role: "assistant", content: "There was a dragon" },
-        ],
-      });
-    expect(res.status).toBe(200);
-  });
-
-  it("returns 401 when no auth token is provided", async () => {
-    const ctx = await createUnauthenticatedApp();
-    const res = await request(ctx.app)
-      .post("/api/chat/standalone")
-      .send({ content: "hello" });
-    expect(res.status).toBe(401);
-  });
-});

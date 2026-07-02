@@ -37,8 +37,6 @@ export type {
 export const ACTIVITY_MODE_ORDER: readonly ActivityMode[] = [
   "pipeline",
   "manager",
-  "orchestrator",
-  "consensus",
   "task_group",
 ] as const;
 
@@ -46,8 +44,6 @@ export const ACTIVITY_MODE_ORDER: readonly ActivityMode[] = [
 export const ACTIVITY_MODE_LABELS: Record<ActivityMode, string> = {
   pipeline: "Pipelines",
   manager: "Manager loops",
-  orchestrator: "Orchestrator runs",
-  consensus: "Consensus runs",
   task_group: "Task groups",
 };
 
@@ -109,15 +105,6 @@ function payloadString(
   return typeof v === "string" ? v : null;
 }
 
-/** Read a finite number field from an untrusted WS payload, or null. */
-function payloadNumber(
-  payload: Record<string, unknown>,
-  key: string,
-): number | null {
-  const v = payload[key];
-  return typeof v === "number" && Number.isFinite(v) ? v : null;
-}
-
 /** A row carrying the live pulse timestamp the page uses to show "live now". */
 export interface LiveActivityRun extends ActivityRun {
   /** Epoch ms of the last live WS delta merged onto this row; undefined if none. */
@@ -128,7 +115,6 @@ export interface LiveActivityRun extends ActivityRun {
 const LIVE_EVENT_TYPES: ReadonlySet<WsEvent["type"]> = new Set<WsEvent["type"]>([
   "stage:progress",
   "manager:decision",
-  "orchestrator:step",
   // task_group deltas: the orchestrator broadcasts these with runId = groupId.
   "task:started",
   "task:completed",
@@ -159,8 +145,7 @@ const LIVE_EVENT_TYPES: ReadonlySet<WsEvent["type"]> = new Set<WsEvent["type"]>(
  *
  * The merge is intentionally additive/best-effort: the periodic snapshot refetch
  * is the source of truth (it adds/removes rows); WS deltas only keep already-known
- * rows feeling live between refetches. Consensus emits no WS events, so consensus
- * rows are refresh-only by construction.
+ * rows feeling live between refetches.
  */
 export function mergeWsEvent(
   runs: readonly LiveActivityRun[],
@@ -190,24 +175,6 @@ function applyDelta(
 ): LiveActivityRun {
   const payload = event.payload ?? {};
   const prevUnit = row.currentUnit;
-
-  if (event.type === "orchestrator:step") {
-    const label = stepIndexLabel(payloadNumber(payload, "stepIndex"));
-    const type = payloadString(payload, "type");
-    const status =
-      payloadString(payload, "status") ?? prevUnit?.status ?? "running";
-    return {
-      ...row,
-      currentUnit: {
-        label: label ?? prevUnit?.label ?? "Step",
-        agent: type ?? prevUnit?.agent ?? "orchestrator",
-        modelSlug:
-          payloadString(payload, "modelSlug") ?? prevUnit?.modelSlug ?? null,
-        status,
-      },
-      lastDeltaAt: now,
-    };
-  }
 
   // task_group deltas (runId = groupId). The current "unit" is the task in
   // motion; we surface its enum-derived name/team/model/status as metadata.
@@ -287,12 +254,6 @@ function applyTaskGroupDelta(
     },
     lastDeltaAt: now,
   };
-}
-
-/** "Step 0" → "Step 1" (1-based, human) for an orchestrator step index. */
-function stepIndexLabel(stepIndex: number | null): string | null {
-  if (stepIndex === null) return null;
-  return `Step ${stepIndex + 1}`;
 }
 
 /** Freshness window for the "live now" pulse. */

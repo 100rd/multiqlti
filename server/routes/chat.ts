@@ -8,36 +8,7 @@ import type { ProviderMessage } from "@shared/types";
 import { validateBody, validateQuery } from "../middleware/validate";
 import { toolRegistry } from "../tools/index";
 
-// ─── Error sanitization ──────────────────────────────────────────────────────
-
-/**
- * CLI-provider error names whose messages embed raw stderr (host paths, install
- * hints, "run /login"). These must not reach the client.
- */
-const CLI_ERROR_NAMES: ReadonlySet<string> = new Set([
-  "CliExecutionError",
-  "CliNotInstalledError",
-  "AntigravityCliError",
-]);
-
-/**
- * Map an error to a safe client-facing message. CLI errors carry host-revealing
- * stderr, so they are logged server-side and replaced with a generic message.
- */
-export function toClientErrorMessage(error: unknown): string {
-  if (error instanceof Error && CLI_ERROR_NAMES.has(error.name)) {
-    console.error("[chat] model backend (CLI) error:", error.message);
-    return "Model backend unavailable. Please try again.";
-  }
-  return error instanceof Error ? error.message : "Unexpected error";
-}
-
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
-
-const HistoryMessageSchema = z.object({
-  role: z.enum(["user", "assistant", "system"]),
-  content: z.string().min(1).max(100000),
-});
 
 const GetChatMessagesQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(500).optional(),
@@ -52,22 +23,6 @@ const SendChatSchema = z.object({
   modelSlug: z.string().max(200).optional(),
   provider: ProviderField,
   modelId: ModelIdField,
-});
-
-const StandaloneChatSchema = z.object({
-  content: z.string().min(1, "content is required").max(50000),
-  modelSlug: z.string().max(200).optional(),
-  provider: ProviderField,
-  modelId: ModelIdField,
-  history: z.array(HistoryMessageSchema).max(100).optional(),
-});
-
-const StreamChatSchema = z.object({
-  content: z.string().min(1, "content is required").max(50000),
-  modelSlug: z.string().max(200).optional(),
-  provider: ProviderField,
-  modelId: ModelIdField,
-  history: z.array(HistoryMessageSchema).max(100).optional(),
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -167,77 +122,4 @@ export function registerChatRoutes(
     });
   };
   router.post("/api/chat/:runId/messages", validateBody(SendChatSchema), sendChatHandler);
-
-  // Standalone chat (no pipeline) — now with platform tools
-  const standaloneChatHandler: RequestHandler = async (req, res) => {
-    const body = req.body as z.infer<typeof StandaloneChatSchema>;
-    const content: string = body.content;
-    const modelSlug: string | undefined = body.modelSlug;
-    const history = body.history;
-
-    const slug: string = modelSlug ?? "llama3-70b";
-    const messages: ProviderMessage[] = [
-      { role: "system" as const, content: PLATFORM_SYSTEM_PROMPT },
-      ...(Array.isArray(history)
-        ? history.map((h): ProviderMessage => ({ role: toProviderRole(h.role), content: h.content }))
-        : []),
-      { role: "user" as const, content },
-    ];
-
-    const userRole = (req as unknown as { user?: { role?: string } }).user?.role;
-    const tools = getPlatformToolDefinitions(userRole);
-    const response = await gateway.completeWithTools({
-      modelSlug: slug,
-      provider: body.provider,
-      modelId: body.modelId,
-      messages,
-      tools,
-    });
-
-    res.json({
-      content: response.content,
-      modelSlug: slug,
-      tokensUsed: response.tokensUsed,
-      toolCallLog: response.toolCallLog,
-    });
-  };
-  router.post("/api/chat/standalone", validateBody(StandaloneChatSchema), standaloneChatHandler);
-
-  // SSE streaming endpoint for standalone chat
-  const streamChatHandler: RequestHandler = async (req, res) => {
-    const body = req.body as z.infer<typeof StreamChatSchema>;
-    const content: string = body.content;
-    const modelSlug: string | undefined = body.modelSlug;
-    const history = body.history;
-
-    const slug: string = modelSlug ?? "llama3-70b";
-    const messages: ProviderMessage[] = [
-      ...(Array.isArray(history)
-        ? history.map((h): ProviderMessage => ({ role: toProviderRole(h.role), content: h.content }))
-        : []),
-      { role: "user" as const, content },
-    ];
-
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-
-    try {
-      for await (const chunk of gateway.stream({
-        modelSlug: slug,
-        provider: body.provider,
-        modelId: body.modelId,
-        messages,
-      })) {
-        res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
-      }
-      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
-    } catch (error) {
-      res.write(
-        `data: ${JSON.stringify({ error: toClientErrorMessage(error) })}\n\n`,
-      );
-    }
-    res.end();
-  };
-  router.post("/api/chat/stream", validateBody(StreamChatSchema), streamChatHandler);
 }

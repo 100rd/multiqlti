@@ -3,8 +3,8 @@
  * tab.
  *
  * GET /api/activity            — owner/admin-scoped snapshot of runs active NOW
- *                                across all FIVE modes (pipeline / manager /
- *                                orchestrator / consensus / task_group).
+ *                                across all modes (pipeline / manager /
+ *                                task_group).
  * GET /api/activity/history    — DB-backed list of PAST (terminal) runs across
  *                                all modes, owner/admin-scoped, METADATA-ONLY,
  *                                keyset-paginated (H1/H4).
@@ -29,7 +29,6 @@ import { z } from "zod";
 import type { Router, Request, Response } from "express";
 import type { IStorage, RunHistoryQuery } from "../storage";
 import type { PipelineController } from "../controller/pipeline-controller";
-import type { ConsensusController } from "../consensus/consensus-controller";
 import type { TaskOrchestrator } from "../services/task-orchestrator";
 import type {
   ActivityMode,
@@ -40,11 +39,7 @@ import type {
   ActivityHistoryPage,
 } from "@shared/types";
 import { isVisible } from "./authorize-run.js";
-import {
-  orchestratorStepModel,
-  managerTeamModel,
-  type ActivityOrchestratorModels,
-} from "./activity-model-map.js";
+import { managerTeamModel } from "./activity-model-map.js";
 
 /** Hard cap on returned rows; we log (never silently drop) when we truncate. */
 const MAX_ACTIVITY_ROWS = 200;
@@ -57,67 +52,16 @@ const HISTORY_MAX_LIMIT = 100;
 const MODE_TITLES: Record<ActivityMode, string> = {
   pipeline: "Pipeline run",
   manager: "Manager run",
-  orchestrator: "Orchestrator run",
-  consensus: "Consensus run",
   task_group: "Task group",
 };
 
 export interface ActivityRouteDeps {
   pipelineController: Pick<PipelineController, "getActiveRunIds">;
-  consensusController: Pick<ConsensusController, "getActiveRunIds">;
   /** Optional — the task orchestrator's in-flight group ids (live task_group rows). */
   taskOrchestrator?: Pick<TaskOrchestrator, "getActiveGroupIds">;
-  /** Fixed orchestrator model slugs (matches buildOrchestratorAgent). */
-  orchestratorModels: ActivityOrchestratorModels;
-  /** Claude slug the consensus engine pins for blind/adjudication. */
-  consensusClaudeModelSlug: string;
 }
 
 // ─── Current-unit builders (metadata only) ────────────────────────────────────
-
-/** Build the current-unit summary for a CONSENSUS run (metadata only). */
-async function consensusUnit(
-  storage: IStorage,
-  runId: string,
-  claudeModelSlug: string,
-): Promise<{ unit: ActivityUnit | null; status: string }> {
-  const run = await storage.getConsensusRun(runId);
-  const rounds = await storage.getConsensusRounds(runId);
-  const latest = rounds.length > 0 ? rounds[rounds.length - 1] : undefined;
-  const status = run?.status ?? "deliberating";
-  if (!latest) {
-    return { unit: { label: "Round 0", agent: "consensus", modelSlug: null, status }, status };
-  }
-  const modelSlug = latest.phase === "review" ? null : claudeModelSlug;
-  const agent = latest.phase === "review" ? "voters" : latest.phase;
-  return {
-    unit: { label: `Round ${latest.round} · ${latest.phase}`, agent, modelSlug, status },
-    status,
-  };
-}
-
-/** Build the current-unit summary for an ORCHESTRATOR run (metadata only). */
-async function orchestratorUnit(
-  storage: IStorage,
-  runId: string,
-  models: ActivityOrchestratorModels,
-): Promise<{ unit: ActivityUnit | null; status: string }> {
-  const run = await storage.getOrchestratorRun(runId);
-  const steps = await storage.getOrchestratorSteps(runId);
-  const status = run?.status ?? "executing";
-  const running = steps.find((s) => s.status === "running");
-  const current = running ?? (steps.length > 0 ? steps[steps.length - 1] : undefined);
-  if (!current) return { unit: null, status };
-  return {
-    unit: {
-      label: `Step ${current.stepIndex + 1}`,
-      agent: current.type,
-      modelSlug: orchestratorStepModel(current.type, models),
-      status: current.status,
-    },
-    status,
-  };
-}
 
 /** Build the current-unit summary for a MANAGER run (best-effort model). */
 async function managerUnit(
@@ -199,28 +143,11 @@ interface ClassifiedRun {
  */
 async function classifyPipelineFamily(
   storage: IStorage,
-  deps: Pick<ActivityRouteDeps, "consensusClaudeModelSlug" | "orchestratorModels">,
   runId: string,
 ): Promise<ClassifiedRun | null> {
   const run = await storage.getPipelineRun(runId);
   if (!run) return null;
 
-  const consensus = await storage.getConsensusRun(runId);
-  if (consensus) {
-    return {
-      mode: "consensus",
-      title: MODE_TITLES.consensus,
-      unitResult: await consensusUnit(storage, runId, deps.consensusClaudeModelSlug),
-    };
-  }
-  const orchestrator = await storage.getOrchestratorRun(runId);
-  if (orchestrator) {
-    return {
-      mode: "orchestrator",
-      title: MODE_TITLES.orchestrator,
-      unitResult: await orchestratorUnit(storage, runId, deps.orchestratorModels),
-    };
-  }
   const managerResult = await managerUnit(storage, runId, run.status);
   if (managerResult) {
     return { mode: "manager", title: MODE_TITLES.manager, unitResult: managerResult };
@@ -235,12 +162,11 @@ async function classifyPipelineFamily(
 /** Build a metadata-only live ActivityRun for a pipeline-family run. */
 async function buildActivityRun(
   storage: IStorage,
-  deps: ActivityRouteDeps,
   runId: string,
   ownerId: string | null,
   isAdmin: boolean,
 ): Promise<ActivityRun | null> {
-  const classified = await classifyPipelineFamily(storage, deps, runId);
+  const classified = await classifyPipelineFamily(storage, runId);
   if (!classified) return null;
   const run = await storage.getPipelineRun(runId);
   if (!run) return null;
@@ -307,7 +233,7 @@ function decodeCursor(raw: string): Cursor | null {
 const HistoryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(HISTORY_MAX_LIMIT).optional(),
   cursor: z.string().min(1).max(2000).optional(),
-  mode: z.enum(["pipeline", "manager", "orchestrator", "consensus", "task_group"]).optional(),
+  mode: z.enum(["pipeline", "manager", "task_group"]).optional(),
 });
 
 /** A merged history candidate keyed on the global (completedAt, id) ordering. */
@@ -340,7 +266,6 @@ export function registerActivityRoutes(
     try {
       const pipelineFamilyIds = [
         ...deps.pipelineController.getActiveRunIds(),
-        ...deps.consensusController.getActiveRunIds(),
       ];
       const groupIds = deps.taskOrchestrator?.getActiveGroupIds() ?? [];
       const uniquePipeline = [...new Set(pipelineFamilyIds)];
@@ -358,7 +283,7 @@ export function registerActivityRoutes(
           truncated = true;
           break;
         }
-        const row = await buildActivityRun(storage, deps, runId, run.triggeredBy, isAdmin);
+        const row = await buildActivityRun(storage, runId, run.triggeredBy, isAdmin);
         if (row) rows.push(row);
       }
 
@@ -435,7 +360,7 @@ export function registerActivityRoutes(
       for (const cand of page) {
         const row = cand.isTaskGroup
           ? await buildTaskGroupHistoryRow(storage, cand.id, isAdmin)
-          : await buildPipelineHistoryRow(storage, deps, cand.id, isAdmin);
+          : await buildPipelineHistoryRow(storage, cand.id, isAdmin);
         if (row) {
           // Mode filter (defense in depth — already partitioned by source).
           if (mode && row.mode !== mode) continue;
@@ -464,13 +389,12 @@ export function registerActivityRoutes(
 
 async function buildPipelineHistoryRow(
   storage: IStorage,
-  deps: Pick<ActivityRouteDeps, "consensusClaudeModelSlug" | "orchestratorModels">,
   runId: string,
   isAdmin: boolean,
 ): Promise<ActivityHistoryRow | null> {
   const run = await storage.getPipelineRun(runId);
   if (!run) return null;
-  const classified = await classifyPipelineFamily(storage, deps, runId);
+  const classified = await classifyPipelineFamily(storage, runId);
   if (!classified) return null;
 
   // Explicit allowlist — only enum/id/timestamp fields; NO output/input/summary.

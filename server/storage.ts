@@ -23,20 +23,6 @@ import {
   type InsertSkill,
   type InsertManagerIteration,
   type ManagerIterationRow,
-  type InsertOrchestratorRun,
-  type OrchestratorRunRow,
-  type InsertOrchestratorStep,
-  type OrchestratorStepRow,
-  type InsertOrchestratorDebate,
-  type OrchestratorDebateRow,
-  type InsertOrchestratorResearch,
-  type OrchestratorResearchRow,
-  type InsertConsensusRun,
-  type ConsensusRunRow,
-  type InsertConsensusRound,
-  type ConsensusRoundRow,
-  type InsertConsensusCriticalIssue,
-  type ConsensusCriticalIssueRow,
   type TriggerRow,
   type InsertTrace,
   type TraceRow,
@@ -91,15 +77,6 @@ import {
   type PracticeCardRefreshRunRow,
   type PracticeCardReviewState,
   type PracticeCardStatus,
-  type NewsProfileRow,
-  type InsertNewsProfile,
-  type MorningBriefRow,
-  type InsertMorningBrief,
-  type NewsItemRow,
-  type InsertNewsItem,
-  type BriefStatus,
-  type NewsFeedback,
-  type NewsReadState,
 } from "@shared/schema";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, MarketplaceSkill, MarketplaceFilters, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace } from "@shared/types";
 import type { LessonRecallFilter } from "./memory/lessons/types";
@@ -118,20 +95,6 @@ export interface LlmRequestFilters {
   to?: Date;
   page?: number;
   limit?: number;
-}
-
-// ─── Morning News Board query filters ────────────────────────────────────────
-
-export interface MorningBriefFilters {
-  userId?: string;
-  status?: BriefStatus;
-  limit?: number;
-  offset?: number;
-}
-
-export interface NewsItemFilters {
-  category?: "internal" | "external";
-  readState?: NewsReadState;
 }
 
 export interface LlmRequestStats {
@@ -406,36 +369,6 @@ export interface IStorage {
   getManagerIterations(runId: string, offset?: number, limit?: number): Promise<ManagerIterationRow[]>;
   countManagerIterations(runId: string): Promise<number>;
 
-  // Debate-Research Orchestrator (additive 3rd run mode)
-  createOrchestratorRun(data: InsertOrchestratorRun): Promise<OrchestratorRunRow>;
-  getOrchestratorRun(runId: string): Promise<OrchestratorRunRow | undefined>;
-  updateOrchestratorRun(
-    runId: string,
-    updates: Partial<Omit<OrchestratorRunRow, "id" | "runId" | "createdAt">>,
-  ): Promise<void>;
-  createOrchestratorStep(data: InsertOrchestratorStep): Promise<OrchestratorStepRow>;
-  updateOrchestratorStep(
-    stepId: string,
-    updates: Partial<Omit<OrchestratorStepRow, "id" | "runId" | "createdAt">>,
-  ): Promise<void>;
-  getOrchestratorSteps(runId: string): Promise<OrchestratorStepRow[]>;
-  createOrchestratorDebate(data: InsertOrchestratorDebate): Promise<OrchestratorDebateRow>;
-  getOrchestratorDebates(runId: string): Promise<OrchestratorDebateRow[]>;
-  createOrchestratorResearch(data: InsertOrchestratorResearch): Promise<OrchestratorResearchRow>;
-  getOrchestratorResearch(runId: string): Promise<OrchestratorResearchRow[]>;
-
-  // /consensus run mode (adaptive-stability deliberation engine)
-  createConsensusRun(data: InsertConsensusRun): Promise<ConsensusRunRow>;
-  getConsensusRun(runId: string): Promise<ConsensusRunRow | undefined>;
-  updateConsensusRun(
-    runId: string,
-    updates: Partial<Omit<ConsensusRunRow, "id" | "runId" | "createdAt">>,
-  ): Promise<void>;
-  createConsensusRound(data: InsertConsensusRound): Promise<ConsensusRoundRow>;
-  getConsensusRounds(runId: string): Promise<ConsensusRoundRow[]>;
-  upsertConsensusIssue(data: InsertConsensusCriticalIssue): Promise<ConsensusCriticalIssueRow>;
-  getConsensusIssues(runId: string): Promise<ConsensusCriticalIssueRow[]>;
-
   // Triggers (Phase 6.3)
   getTriggers(pipelineId: string): Promise<TriggerRow[]>;
   getTrigger(id: string): Promise<TriggerRow | undefined>;
@@ -456,19 +389,6 @@ export interface IStorage {
   createRefreshRun(workspaceId: string, topic: string, trigger: string): Promise<PracticeCardRefreshRunRow>;
   getRefreshRun(id: string): Promise<PracticeCardRefreshRunRow | null>;
   updateRefreshRun(id: string, updates: Partial<PracticeCardRefreshRunRow>): Promise<PracticeCardRefreshRunRow>;
-
-  // Morning News Board (morning-news-board-mvp.md)
-  getNewsProfile(workspaceId: string, userId: string): Promise<NewsProfileRow | null>;
-  upsertNewsProfile(data: InsertNewsProfile): Promise<NewsProfileRow>;
-  createMorningBrief(data: InsertMorningBrief): Promise<{ brief: MorningBriefRow; claimed: boolean }>;
-  getMorningBriefByDate(workspaceId: string, userId: string, briefDate: string): Promise<MorningBriefRow | null>;
-  getMorningBrief(id: string): Promise<MorningBriefRow | null>;
-  listMorningBriefs(workspaceId: string, filters?: MorningBriefFilters): Promise<{ briefs: MorningBriefRow[]; total: number }>;
-  updateMorningBriefStatus(id: string, updates: { status?: BriefStatus; internalDegraded?: boolean; meta?: Record<string, unknown> }): Promise<MorningBriefRow>;
-  upsertNewsItems(items: InsertNewsItem[]): Promise<NewsItemRow[]>;
-  setNewsItemFeedback(id: string, updates: { feedback?: NewsFeedback; readState?: NewsReadState }): Promise<NewsItemRow>;
-  getNewsItem(id: string): Promise<NewsItemRow | null>;
-  listNewsItems(briefId: string, filters?: NewsItemFilters): Promise<NewsItemRow[]>;
 
   // Traces (Phase 6.5)
   createTrace(data: InsertTrace): Promise<TraceRow>;
@@ -1796,134 +1716,6 @@ export class MemStorage implements IStorage {
       .length;
   }
 
-  // ─── Debate-Research Orchestrator ───────────────────────────────────────────
-
-  private orchestratorRunsMap: Map<string, OrchestratorRunRow> = new Map();
-  private orchestratorStepsMap: Map<string, OrchestratorStepRow> = new Map();
-  private orchestratorDebatesMap: Map<string, OrchestratorDebateRow> = new Map();
-  private orchestratorResearchMap: Map<string, OrchestratorResearchRow> = new Map();
-
-  async createOrchestratorRun(data: InsertOrchestratorRun): Promise<OrchestratorRunRow> {
-    const row: OrchestratorRunRow = {
-      id: crypto.randomUUID(),
-      runId: data.runId,
-      task: data.task,
-      needs: data.needs ?? null,
-      workspaceId: data.workspaceId ?? null,
-      status: data.status ?? "planning",
-      planApprovedAt: data.planApprovedAt ?? null,
-      planApprovedBy: data.planApprovedBy ?? null,
-      totalTokensUsed: data.totalTokensUsed ?? 0,
-      stepCount: data.stepCount ?? 0,
-      output: data.output ?? null,
-      error: data.error ?? null,
-      createdAt: new Date(),
-      completedAt: data.completedAt ?? null,
-    };
-    this.orchestratorRunsMap.set(row.runId, row);
-    return row;
-  }
-
-  async getOrchestratorRun(runId: string): Promise<OrchestratorRunRow | undefined> {
-    return this.orchestratorRunsMap.get(runId);
-  }
-
-  async updateOrchestratorRun(
-    runId: string,
-    updates: Partial<Omit<OrchestratorRunRow, "id" | "runId" | "createdAt">>,
-  ): Promise<void> {
-    const existing = this.orchestratorRunsMap.get(runId);
-    if (!existing) return;
-    this.orchestratorRunsMap.set(runId, { ...existing, ...updates });
-  }
-
-  async createOrchestratorStep(data: InsertOrchestratorStep): Promise<OrchestratorStepRow> {
-    const row: OrchestratorStepRow = {
-      id: crypto.randomUUID(),
-      runId: data.runId,
-      stepIndex: data.stepIndex,
-      type: data.type,
-      args: data.args,
-      status: data.status ?? "pending",
-      output: data.output ?? null,
-      tokensUsed: data.tokensUsed ?? 0,
-      error: data.error ?? null,
-      startedAt: data.startedAt ?? null,
-      completedAt: data.completedAt ?? null,
-      createdAt: new Date(),
-    };
-    this.orchestratorStepsMap.set(row.id, row);
-    return row;
-  }
-
-  async updateOrchestratorStep(
-    stepId: string,
-    updates: Partial<Omit<OrchestratorStepRow, "id" | "runId" | "createdAt">>,
-  ): Promise<void> {
-    const existing = this.orchestratorStepsMap.get(stepId);
-    if (!existing) return;
-    this.orchestratorStepsMap.set(stepId, { ...existing, ...updates });
-  }
-
-  async getOrchestratorSteps(runId: string): Promise<OrchestratorStepRow[]> {
-    return Array.from(this.orchestratorStepsMap.values())
-      .filter((r) => r.runId === runId)
-      .sort((a, b) => a.stepIndex - b.stepIndex);
-  }
-
-  async createOrchestratorDebate(data: InsertOrchestratorDebate): Promise<OrchestratorDebateRow> {
-    const row: OrchestratorDebateRow = {
-      id: crypto.randomUUID(),
-      runId: data.runId,
-      stepId: data.stepId,
-      question: data.question,
-      rounds: data.rounds,
-      judgeVerdict: data.judgeVerdict,
-      arbitratorVerdict: data.arbitratorVerdict ?? null,
-      providerDiversityScore: data.providerDiversityScore ?? null,
-      recommendation: data.recommendation ?? null,
-      confidence: data.confidence ?? null,
-      dissent: data.dissent ?? null,
-      degraded: data.degraded ?? false,
-      totalTokensUsed: data.totalTokensUsed ?? 0,
-      stopReason: data.stopReason ?? null,
-      stopConfidence: data.stopConfidence ?? null,
-      createdAt: new Date(),
-    };
-    this.orchestratorDebatesMap.set(row.id, row);
-    return row;
-  }
-
-  async getOrchestratorDebates(runId: string): Promise<OrchestratorDebateRow[]> {
-    return Array.from(this.orchestratorDebatesMap.values())
-      .filter((r) => r.runId === runId)
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  }
-
-  async createOrchestratorResearch(
-    data: InsertOrchestratorResearch,
-  ): Promise<OrchestratorResearchRow> {
-    const row: OrchestratorResearchRow = {
-      id: crypto.randomUUID(),
-      runId: data.runId,
-      stepId: data.stepId,
-      query: data.query,
-      findings: data.findings,
-      sourcesFetched: data.sourcesFetched ?? 0,
-      sourcesSkipped: data.sourcesSkipped ?? 0,
-      workspaceEvidence: data.workspaceEvidence ?? null,
-      createdAt: new Date(),
-    };
-    this.orchestratorResearchMap.set(row.id, row);
-    return row;
-  }
-
-  async getOrchestratorResearch(runId: string): Promise<OrchestratorResearchRow[]> {
-    return Array.from(this.orchestratorResearchMap.values())
-      .filter((r) => r.runId === runId)
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  }
-
   // ─── Consilium Loops (Phase B — auto-versioned FSM) ───────────────────────
 
   private consiliumLoopsMap: Map<string, ConsiliumLoopRow> = new Map();
@@ -2127,108 +1919,6 @@ export class MemStorage implements IStorage {
         return;
       }
     }
-  }
-
-  // ─── /consensus run mode ──────────────────────────────────────────────────
-
-  private consensusRunsMap: Map<string, ConsensusRunRow> = new Map();
-  private consensusRoundsMap: Map<string, ConsensusRoundRow> = new Map();
-  private consensusIssuesMap: Map<string, ConsensusCriticalIssueRow> = new Map();
-
-  async createConsensusRun(data: InsertConsensusRun): Promise<ConsensusRunRow> {
-    const row: ConsensusRunRow = {
-      id: crypto.randomUUID(),
-      runId: data.runId,
-      decisionText: data.decisionText,
-      subjectKind: data.subjectKind ?? "freeform",
-      subjectRef: data.subjectRef ?? null,
-      status: data.status ?? "deliberating",
-      roundsRun: data.roundsRun ?? 0,
-      stopReason: data.stopReason ?? null,
-      confidence: data.confidence ?? null,
-      finalVerdict: data.finalVerdict ?? null,
-      voterCount: data.voterCount ?? 0,
-      totalTokensUsed: data.totalTokensUsed ?? 0,
-      error: data.error ?? null,
-      createdAt: new Date(),
-      completedAt: data.completedAt ?? null,
-    };
-    this.consensusRunsMap.set(row.runId, row);
-    return row;
-  }
-
-  async getConsensusRun(runId: string): Promise<ConsensusRunRow | undefined> {
-    return this.consensusRunsMap.get(runId);
-  }
-
-  async updateConsensusRun(
-    runId: string,
-    updates: Partial<Omit<ConsensusRunRow, "id" | "runId" | "createdAt">>,
-  ): Promise<void> {
-    const existing = this.consensusRunsMap.get(runId);
-    if (!existing) return;
-    this.consensusRunsMap.set(runId, { ...existing, ...updates });
-  }
-
-  async createConsensusRound(data: InsertConsensusRound): Promise<ConsensusRoundRow> {
-    // MF-5: enforce the (run_id, round, phase) uniqueness in-memory too — a
-    // duplicate blind row THROWS (the engine must never back-edit a blind row).
-    for (const r of this.consensusRoundsMap.values()) {
-      if (r.runId === data.runId && r.round === data.round && r.phase === data.phase) {
-        throw new Error(
-          `consensus_rounds duplicate (run_id, round, phase): ${data.runId}/${data.round}/${data.phase}`,
-        );
-      }
-    }
-    const row: ConsensusRoundRow = {
-      id: crypto.randomUUID(),
-      runId: data.runId,
-      round: data.round,
-      phase: data.phase,
-      claudeVerdict: data.claudeVerdict ?? null,
-      claudeRationale: data.claudeRationale ?? null,
-      voterReviews: data.voterReviews ?? null,
-      adjudication: data.adjudication ?? null,
-      tokensUsed: data.tokensUsed ?? 0,
-      createdAt: new Date(),
-    };
-    this.consensusRoundsMap.set(row.id, row);
-    return row;
-  }
-
-  async getConsensusRounds(runId: string): Promise<ConsensusRoundRow[]> {
-    return Array.from(this.consensusRoundsMap.values())
-      .filter((r) => r.runId === runId)
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  }
-
-  async upsertConsensusIssue(
-    data: InsertConsensusCriticalIssue,
-  ): Promise<ConsensusCriticalIssueRow> {
-    const existing = Array.from(this.consensusIssuesMap.values()).find(
-      (r) => r.runId === data.runId && r.issueKey === data.issueKey,
-    );
-    const row: ConsensusCriticalIssueRow = {
-      id: existing?.id ?? crypto.randomUUID(),
-      runId: data.runId,
-      issueKey: data.issueKey,
-      raisedBy: data.raisedBy,
-      summary: data.summary,
-      status: data.status ?? "open",
-      resolution: data.resolution ?? null,
-      dismissalJustification: data.dismissalJustification ?? null,
-      openedRound: data.openedRound,
-      closedRound: data.closedRound ?? null,
-      createdAt: existing?.createdAt ?? new Date(),
-    };
-    this.consensusIssuesMap.set(row.id, row);
-    return row;
-  }
-
-  async getConsensusIssues(runId: string): Promise<ConsensusCriticalIssueRow[]> {
-    return Array.from(this.consensusIssuesMap.values())
-      .filter((r) => r.runId === runId)
-      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }
 
   // ─── Triggers (Phase 6.3) ─────────────────────────────────────────────────
@@ -3071,9 +2761,6 @@ export class MemStorage implements IStorage {
 
   private practiceCardsMap: Map<string, PracticeCardRow> = new Map();
   private refreshRunsMap: Map<string, PracticeCardRefreshRunRow> = new Map();
-  private newsProfilesMap: Map<string, NewsProfileRow> = new Map();
-  private morningBriefsMap: Map<string, MorningBriefRow> = new Map();
-  private newsItemsMap: Map<string, NewsItemRow> = new Map();
 
   async createPracticeCard(data: InsertPracticeCard): Promise<PracticeCardRow> {
     // Idempotent upsert by (workspaceId, contentHash) — ON CONFLICT DO NOTHING.
@@ -3183,160 +2870,6 @@ export class MemStorage implements IStorage {
     const updated: PracticeCardRefreshRunRow = { ...existing, ...updates, id: existing.id };
     this.refreshRunsMap.set(id, updated);
     return updated;
-  }
-
-  // ─── Morning News Board ──────────────────────────────────────────────────
-
-  async getNewsProfile(workspaceId: string, userId: string): Promise<NewsProfileRow | null> {
-    return (
-      Array.from(this.newsProfilesMap.values()).find(
-        (p) => p.workspaceId === workspaceId && p.userId === userId,
-      ) ?? null
-    );
-  }
-
-  async upsertNewsProfile(data: InsertNewsProfile): Promise<NewsProfileRow> {
-    const existing = await this.getNewsProfile(data.workspaceId, data.userId);
-    const now = new Date();
-    if (existing) {
-      const updated: NewsProfileRow = {
-        ...existing,
-        role: (data.role ?? existing.role),
-        stack: data.stack ?? existing.stack,
-        mutedCategories: data.mutedCategories ?? existing.mutedCategories,
-        updatedAt: now,
-      };
-      this.newsProfilesMap.set(existing.id, updated);
-      return updated;
-    }
-    const row: NewsProfileRow = {
-      id: randomUUID(),
-      workspaceId: data.workspaceId,
-      userId: data.userId,
-      role: data.role ?? "sre",
-      stack: data.stack ?? ["terraform", "kubernetes", "aws", "argocd", "go"],
-      mutedCategories: data.mutedCategories ?? [],
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.newsProfilesMap.set(row.id, row);
-    return row;
-  }
-
-  async createMorningBrief(data: InsertMorningBrief): Promise<{ brief: MorningBriefRow; claimed: boolean }> {
-    // Atomic claim: the (workspace,user,brief_date) uniqueness IS the gen lock.
-    const existing = await this.getMorningBriefByDate(data.workspaceId, data.userId, data.briefDate);
-    if (existing) return { brief: existing, claimed: false };
-    const now = new Date();
-    const row: MorningBriefRow = {
-      id: randomUUID(),
-      workspaceId: data.workspaceId,
-      userId: data.userId,
-      briefDate: data.briefDate,
-      status: data.status ?? "generating",
-      internalDegraded: data.internalDegraded ?? false,
-      meta: data.meta ?? {},
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.morningBriefsMap.set(row.id, row);
-    return { brief: row, claimed: true };
-  }
-
-  async getMorningBriefByDate(workspaceId: string, userId: string, briefDate: string): Promise<MorningBriefRow | null> {
-    return (
-      Array.from(this.morningBriefsMap.values()).find(
-        (b) => b.workspaceId === workspaceId && b.userId === userId && b.briefDate === briefDate,
-      ) ?? null
-    );
-  }
-
-  async getMorningBrief(id: string): Promise<MorningBriefRow | null> {
-    return this.morningBriefsMap.get(id) ?? null;
-  }
-
-  async listMorningBriefs(workspaceId: string, filters: MorningBriefFilters = {}): Promise<{ briefs: MorningBriefRow[]; total: number }> {
-    let briefs = Array.from(this.morningBriefsMap.values()).filter((b) => b.workspaceId === workspaceId);
-    if (filters.userId) briefs = briefs.filter((b) => b.userId === filters.userId);
-    if (filters.status) briefs = briefs.filter((b) => b.status === filters.status);
-    briefs.sort((a, b) => (a.briefDate < b.briefDate ? 1 : a.briefDate > b.briefDate ? -1 : 0));
-    const total = briefs.length;
-    const offset = filters.offset ?? 0;
-    const limit = filters.limit ?? 14;
-    return { briefs: briefs.slice(offset, offset + limit), total };
-  }
-
-  async updateMorningBriefStatus(id: string, updates: { status?: BriefStatus; internalDegraded?: boolean; meta?: Record<string, unknown> }): Promise<MorningBriefRow> {
-    const existing = this.morningBriefsMap.get(id);
-    if (!existing) throw new Error(`Morning brief not found: ${id}`);
-    const updated: MorningBriefRow = {
-      ...existing,
-      status: updates.status ?? existing.status,
-      internalDegraded: updates.internalDegraded ?? existing.internalDegraded,
-      meta: updates.meta ?? existing.meta,
-      updatedAt: new Date(),
-    };
-    this.morningBriefsMap.set(id, updated);
-    return updated;
-  }
-
-  async upsertNewsItems(items: InsertNewsItem[]): Promise<NewsItemRow[]> {
-    // onConflict(briefId, contentHash) DO NOTHING — idempotent dedup.
-    const out: NewsItemRow[] = [];
-    for (const data of items) {
-      const dup = Array.from(this.newsItemsMap.values()).find(
-        (i) => i.briefId === data.briefId && i.contentHash === data.contentHash,
-      );
-      if (dup) {
-        out.push(dup);
-        continue;
-      }
-      const row: NewsItemRow = {
-        id: randomUUID(),
-        briefId: data.briefId,
-        workspaceId: data.workspaceId,
-        category: data.category,
-        title: data.title,
-        summary: data.summary,
-        sourceUri: data.sourceUri ?? null,
-        sourceName: data.sourceName ?? null,
-        provider: data.provider ?? null,
-        whyRelevant: data.whyRelevant ?? null,
-        affects: (data.affects ?? []) as NewsItemRow["affects"],
-        relevanceScore: data.relevanceScore ?? 0,
-        readState: data.readState ?? "unread",
-        feedback: data.feedback ?? "none",
-        contentHash: data.contentHash,
-        createdAt: new Date(),
-      };
-      this.newsItemsMap.set(row.id, row);
-      out.push(row);
-    }
-    return out;
-  }
-
-  async setNewsItemFeedback(id: string, updates: { feedback?: NewsFeedback; readState?: NewsReadState }): Promise<NewsItemRow> {
-    const existing = this.newsItemsMap.get(id);
-    if (!existing) throw new Error(`News item not found: ${id}`);
-    const updated: NewsItemRow = {
-      ...existing,
-      feedback: updates.feedback ?? existing.feedback,
-      readState: updates.readState ?? existing.readState,
-    };
-    this.newsItemsMap.set(id, updated);
-    return updated;
-  }
-
-  async getNewsItem(id: string): Promise<NewsItemRow | null> {
-    return this.newsItemsMap.get(id) ?? null;
-  }
-
-  async listNewsItems(briefId: string, filters: NewsItemFilters = {}): Promise<NewsItemRow[]> {
-    let items = Array.from(this.newsItemsMap.values()).filter((i) => i.briefId === briefId);
-    if (filters.category) items = items.filter((i) => i.category === filters.category);
-    if (filters.readState) items = items.filter((i) => i.readState === filters.readState);
-    items.sort((a, b) => b.relevanceScore - a.relevanceScore);
-    return items;
   }
 
   // ─── Task Groups v2 — iterations / executions / templates (BE2) ─────────────

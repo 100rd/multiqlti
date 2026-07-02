@@ -2,7 +2,7 @@ import type { IStorage } from "../storage";
 import type { TeamRegistry } from "../teams/registry";
 import type { WsManager } from "../ws/manager";
 import type { Gateway } from "../gateway/index";
-import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput, DelegationRequest, DelegateFn, PipelineDAG, DAGStage, SwarmResult, RemoteAgentStageConfig, A2AMessage, TeamResult, OrchestratorStepArgs } from "@shared/types";
+import type { PipelineStageConfig, WsEvent, SandboxFile, StageOutput, DelegationRequest, DelegateFn, PipelineDAG, DAGStage, SwarmResult, RemoteAgentStageConfig, A2AMessage, TeamResult } from "@shared/types";
 import { DelegationService } from "../pipeline/delegation-service";
 import { DAGExecutor } from "../pipeline/dag-executor";
 import type { StageExecuteFn } from "../pipeline/dag-executor";
@@ -21,9 +21,6 @@ import type { Lesson } from "@shared/schema";
 import { ephemeralVarStore } from "../run-variables/store";
 import { GuardrailValidator } from "../pipeline/guardrail-validator.js";
 import { ManagerAgent } from "../pipeline/manager-agent";
-import type { OrchestratorAgent, PlanInput } from "../orchestrator/orchestrator-agent";
-import { resolveCaps, type CapOverrides } from "../orchestrator/orchestrator-config";
-import { validateSteps } from "../orchestrator/plan-schema";
 import type { ManagerConfig } from "@shared/types";
 import type { Tracer } from "../tracing/tracer";
 import { exportTrace } from "../tracing/otlp-exporter";
@@ -55,7 +52,6 @@ export class PipelineController {
   private tracer?: Tracer;
   private remoteAgentManager?: RemoteAgentManager;
   private stageQueueProducer?: StageQueueProducer;
-  private orchestrator?: OrchestratorAgent;
 
   constructor(
     private storage: IStorage,
@@ -66,7 +62,6 @@ export class PipelineController {
     managerAgent?: ManagerAgent,
     tracer?: Tracer,
     remoteAgentManager?: RemoteAgentManager,
-    orchestrator?: OrchestratorAgent,
   ) {
     this.sandboxExecutor = new SandboxExecutor();
     this.parallelExecutor = new ParallelExecutor(
@@ -88,7 +83,6 @@ export class PipelineController {
     this.managerAgent = managerAgent;
     this.tracer = tracer;
     this.remoteAgentManager = remoteAgentManager;
-    this.orchestrator = orchestrator;
     this.dagExecutor = new DAGExecutor(storage, wsManager);
 
     // Initialize Redis-backed stage queue when feature flag is enabled
@@ -1185,166 +1179,6 @@ export class PipelineController {
       payload: {},
       timestamp: new Date().toISOString(),
     });
-  }
-
-  // ─── Debate-Research Orchestrator (additive 3rd run mode) ────────────────────
-
-  /**
-   * Start an orchestrator run. Creates the pipelineRuns row (reusing its
-   * workspace/owner scoping) + the orchestrator_runs row, registers the per-run
-   * AbortController (so POST /api/runs/:id/cancel cancels it mid-step), runs the
-   * Opus plan turn, and PAUSES at awaiting_plan_approval. No step executes until
-   * approvePlan(). L1: refuses when the kill-switch is off.
-   */
-  async startOrchestratorRun(
-    input: PlanInput,
-    triggeredBy?: string,
-    workspaceId?: string,
-    capOverrides?: CapOverrides,
-  ): Promise<{ run: PipelineRun; orchestratorRunId: string; plan: OrchestratorStepArgs[] }> {
-    const cfg = configLoader.get().pipeline.orchestrator;
-    // L1: kill-switch enforced at the controller, not only the route.
-    if (!cfg.enabled || this.orchestrator == null) {
-      throw new Error("Orchestrator mode is disabled");
-    }
-    const caps = resolveCaps(configLoader.get(), capOverrides);
-
-    const run = await this.storage.createPipelineRun({
-      pipelineId: `orchestrator:${crypto.randomUUID()}`,
-      status: "running",
-      input: input.task,
-      workspaceId: workspaceId ?? null,
-      currentStageIndex: 0,
-      startedAt: new Date(),
-      triggeredBy: triggeredBy ?? null,
-      dagMode: false,
-    });
-
-    await this.storage.createOrchestratorRun({
-      runId: run.id,
-      task: input.task,
-      needs: input.needs ?? null,
-      workspaceId: workspaceId ?? null,
-      status: "planning",
-    });
-
-    this.tracer?.startTrace(run.id);
-
-    const abortController = new AbortController();
-    this.activeRuns.set(run.id, abortController);
-
-    const planResult = await this.orchestrator.planAndPause(
-      run.id,
-      { ...input, workspaceId },
-      caps,
-      abortController.signal,
-    );
-
-    if (!planResult.ok) {
-      // Plan turn failed/cancelled — settle the parent run and clear the slot.
-      const failedStatus = planResult.error === "cancelled" ? "cancelled" : "failed";
-      await this.storage.updatePipelineRun(run.id, { status: failedStatus, completedAt: new Date() });
-      this.activeRuns.delete(run.id);
-      throw new Error(`Plan turn failed: ${planResult.error}`);
-    }
-
-    // Register the human gate so cancelRun can reject it and approvePlan resumes.
-    void this.waitForApproval(this.makeApprovalKey(run.id, 0));
-    await this.storage.updatePipelineRun(run.id, { status: "paused" });
-
-    return { run, orchestratorRunId: run.id, plan: planResult.steps };
-  }
-
-  /**
-   * Approve the proposed plan (human gate). H3: optional edited steps[] are
-   * re-validated via plan-schema AND every cap re-clamped server-side. Resumes
-   * execution on the SAME run AbortController.
-   */
-  async approvePlan(
-    runId: string,
-    approvedBy?: string,
-    editedSteps?: unknown,
-    capOverrides?: CapOverrides,
-  ): Promise<void> {
-    if (this.orchestrator == null) throw new Error("Orchestrator mode is disabled");
-
-    const orch = await this.storage.getOrchestratorRun(runId);
-    if (!orch) throw new Error(`No orchestrator run for ${runId}`);
-    if (orch.status !== "awaiting_plan_approval") {
-      throw new Error(`Run ${runId} is not awaiting plan approval (status: ${orch.status})`);
-    }
-
-    const caps = resolveCaps(configLoader.get(), capOverrides);
-
-    // H3: re-validate + re-clamp any edited plan server-side before it runs.
-    if (editedSteps !== undefined) {
-      const revalidated = validateSteps(editedSteps, caps.maxSteps);
-      if (!revalidated.ok) {
-        throw new Error(`Edited plan rejected: ${revalidated.error}`);
-      }
-      // Replace the persisted plan with the re-validated steps.
-      const existing = await this.storage.getOrchestratorSteps(runId);
-      for (let i = 0; i < existing.length; i++) {
-        await this.storage.updateOrchestratorStep(existing[i].id, { status: "skipped" });
-      }
-      for (let i = 0; i < revalidated.steps.length; i++) {
-        const step = revalidated.steps[i];
-        await this.storage.createOrchestratorStep({
-          runId,
-          stepIndex: existing.length + i,
-          type: step.type,
-          args: step,
-          status: "pending",
-        });
-      }
-    }
-
-    // Resolve the pending gate (unblocks any waiter), mark resumed.
-    const key = this.makeApprovalKey(runId, 0);
-    const handle = this.pendingApprovals.get(key);
-    if (handle) {
-      this.pendingApprovals.delete(key);
-      handle.resolve(true);
-    }
-    await this.storage.updateOrchestratorRun(runId, {
-      status: "executing",
-      planApprovedAt: new Date(),
-      planApprovedBy: approvedBy ?? null,
-    });
-    await this.storage.updatePipelineRun(runId, { status: "running" });
-
-    const abortController = this.activeRuns.get(runId) ?? new AbortController();
-    this.activeRuns.set(runId, abortController);
-
-    const result = await this.orchestrator.executeApprovedPlan(runId, caps, abortController.signal);
-    const finalStatus =
-      result.status === "completed" ? "completed" : result.status === "cancelled" ? "cancelled" : "failed";
-    await this.storage.updatePipelineRun(runId, { status: finalStatus, completedAt: new Date() });
-    this.activeRuns.delete(runId);
-
-    const traceId = this.tracer?.getActiveTraceId(runId);
-    if (traceId) await this.tracer?.flushTrace(traceId, this.storage);
-  }
-
-  /** Reject the proposed plan — settle the run as cancelled; no step runs. */
-  async rejectPlan(runId: string): Promise<void> {
-    if (this.orchestrator == null) throw new Error("Orchestrator mode is disabled");
-    const orch = await this.storage.getOrchestratorRun(runId);
-    if (!orch) throw new Error(`No orchestrator run for ${runId}`);
-
-    const key = this.makeApprovalKey(runId, 0);
-    const handle = this.pendingApprovals.get(key);
-    if (handle) {
-      this.pendingApprovals.delete(key);
-      handle.resolve(false);
-    }
-    const abort = this.activeRuns.get(runId);
-    if (abort) {
-      abort.abort();
-      this.activeRuns.delete(runId);
-    }
-    await this.storage.updateOrchestratorRun(runId, { status: "cancelled", completedAt: new Date() });
-    await this.storage.updatePipelineRun(runId, { status: "cancelled", completedAt: new Date() });
   }
 
   async answerQuestion(questionId: string, answer: string): Promise<void> {
