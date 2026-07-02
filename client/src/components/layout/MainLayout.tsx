@@ -2,37 +2,25 @@ import { ReactNode, useState } from "react";
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
-  MessageSquare,
-  GitMerge,
   Settings,
   ShieldAlert,
   MessageCircleQuestion,
-  ShieldCheck,
   BarChart3,
-  Brain,
   FolderGit2,
   LogOut,
   Users,
   Wrench,
   Zap,
-  Sparkles,
-  Store,
-  ShoppingBag,
   ListChecks,
-  BookOpen,
   BookMarked,
   Plug,
   Network,
   GitBranchPlus,
   DollarSign,
   Radio,
-  Newspaper,
-  Bot,
-  Activity,
   Repeat,
   ChevronDown,
   ChevronRight,
-  Archive,
   KeyRound,
   Layers,
 } from "lucide-react";
@@ -56,7 +44,6 @@ const ROLE_BADGE: Record<UserRole, { label: string; className: string }> = {
 
 export default function MainLayout({ children }: MainLayoutProps) {
   const [location, navigate] = useLocation();
-  const [isV1Open, setIsV1Open] = useState(false);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const { data: pendingQuestions } = usePendingQuestions();
   const pendingList = Array.isArray(pendingQuestions)
@@ -102,18 +89,6 @@ export default function MainLayout({ children }: MainLayoutProps) {
             icon: BookMarked,
             label: "Knowledge Base",
             href: `/workspaces/${currentWorkspaceId}/knowledge-base`,
-            indent: true,
-          },
-          {
-            icon: Newspaper,
-            label: "Morning Brief",
-            href: `/workspaces/${currentWorkspaceId}/morning-brief`,
-            indent: true,
-          },
-          {
-            icon: Bot,
-            label: "Orchestrator",
-            href: `/workspaces/${currentWorkspaceId}/orchestrator`,
             indent: true,
           },
           {
@@ -236,66 +211,6 @@ export default function MainLayout({ children }: MainLayoutProps) {
                       )}>
                         <Icon className="h-3.5 w-3.5" />
                         <span className="flex-1">{item.label}</span>
-                      </div>
-                    </Link>
-                  );
-                })}
-              </nav>
-            )}
-          </div>
-
-          <div className="px-4 py-2 mt-2 border-t border-border/50">
-            <button
-              onClick={() => setIsV1Open(!isV1Open)}
-              className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <div className="flex items-center gap-2">
-                <Archive className="h-4 w-4" />
-                <span>Legacy V1</span>
-              </div>
-              {isV1Open ? (
-                <ChevronDown className="h-4 w-4" />
-              ) : (
-                <ChevronRight className="h-4 w-4" />
-              )}
-            </button>
-
-            {isV1Open && (
-              <nav className="mt-1 space-y-1 pb-2">
-                {[
-                  { icon: MessageSquare, label: "Chat & Models", href: "/chat" },
-                  {
-                    icon: GitMerge,
-                    label: "Pipelines",
-                    href: "/pipelines",
-                    badge: pendingCount > 0 ? pendingCount : undefined,
-                  },
-                  { icon: Activity, label: "Live Activity", href: "/activity" },
-                  { icon: Sparkles, label: "Skills", href: "/skills" },
-                  { icon: Store, label: "Marketplace", href: "/skills/marketplace" },
-                  { icon: ShoppingBag, label: "Skill Market", href: "/skills/market" },
-                  { icon: BookOpen, label: "Library", href: "/library" },
-                  { icon: Brain, label: "Memory", href: "/memories" },
-                  { icon: ShieldAlert, label: "Contour Trust", href: "/contour" },
-                  { icon: ShieldCheck, label: "Privacy", href: "/privacy" },
-                ].map((item) => {
-                  const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
-                  const Icon = item.icon;
-                  return (
-                    <Link key={item.href} href={item.href}>
-                      <div className={cn(
-                        "flex items-center gap-3 px-3 py-1.5 rounded-md transition-colors cursor-pointer text-xs font-medium",
-                        isActive
-                          ? "bg-primary/10 text-primary"
-                          : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground",
-                      )}>
-                        <Icon className="h-3.5 w-3.5" />
-                        <span className="flex-1">{item.label}</span>
-                        {"badge" in item && item.badge && (
-                          <span className="ml-auto bg-amber-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
-                            {item.badge}
-                          </span>
-                        )}
                       </div>
                     </Link>
                   );
