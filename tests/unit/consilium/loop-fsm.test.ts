@@ -129,7 +129,6 @@ function makeLoop(over: Partial<ConsiliumLoopRow>): ConsiliumLoopRow {
     repoPath: process.cwd(),
     lastReviewedCommit: null,
     currentIterationNumber: null,
-    devPipelineId: "dev-pipe",
     devGroupId: null,
     prRef: null,
     headCommitAtReview: null,
@@ -195,17 +194,21 @@ const fakeConfig = () =>
         pollIntervalMs: 5000,
         maxDiffBytes: 200000,
         allowedRepoPaths: [process.cwd()],
-        devPipelineId: "dev-pipe",
-        // Stage 2a: the implement kill-switch (default off ⇒ today's unskilled coder
-        // path). These FSM tests inject runSdlc and assert the develop wiring, not the
-        // skilled path, so this stays disabled. Stage 2b: verification is likewise OFF
-        // (mirrors the schema defaults the real loader always provides).
+        // Phase 2: the skilled SDLC executor is the ONLY develop path, so it must be
+        // ENABLED for these FSM tests to dispatch the (injected fake) coder — with it
+        // OFF the develop phase fails soft (see the dedicated fail-soft test below).
+        // These tests inject runSdlc/runCloseout and assert the develop WIRING, not the
+        // skilled-coder internals, so the fake ignores the archetype/skills args.
+        // Stage 2b: verification stays OFF (mirrors the schema defaults).
         implement: {
-          enabled: false,
+          enabled: true,
           verification: { enabled: false },
           maxFixIterations: 3,
           testCommand: null,
           testRunTimeoutMs: 300000,
+          // Coder path (archetype null/undefined ⇒ runSdlc), so research stays OFF —
+          // present so `researchImplementEnabled` reads a defined key (schema default).
+          research: { enabled: false, maxResearchIterations: 3, model: "claude-sonnet" },
         },
       },
     },
@@ -673,6 +676,39 @@ describe("controller — D.6 non-blocking startGroupAsync + prRef close-out flow
     expect(res?.state).toBe("awaiting_merge"); // NOT failed — gate still meaningful
     expect(res?.prRef).toBeNull();
     expect(res?.error).toContain("open PR manually");
+  });
+
+  it("implement.enabled=false ⇒ develop FAILS SOFT: the coder NEVER runs, dev_completed carries the disabled error", async () => {
+    // Phase 2: the skilled SDLC executor is the ONLY develop path. With the implement
+    // kill-switch OFF there is nothing to fall back to, so the develop phase fails soft
+    // (same no-PR `dev_completed` convention as a disabled research archetype) instead
+    // of silently running an unskilled coder. NO FSM/reducer change: the loop still
+    // enters developing, then advances to awaiting_merge carrying the error.
+    const loop = makeLoop({ state: "deciding", round: 2, currentIterationNumber: 2 });
+    const { storage } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
+    // Inject the REAL close-out seam (runSdlc, not runCloseout) so the controller's
+    // own implement-disabled guard decides — and prove the coder is never reached.
+    const runSdlc = vi.fn(async () => ({ prRef: "https://github.com/o/r/pull/1", headCommit: "abc" }));
+    const disabledImplement = () => {
+      const c = fakeConfig() as { pipeline: { consiliumLoop: { implement: { enabled: boolean } } } };
+      c.pipeline.consiliumLoop.implement.enabled = false;
+      return c as never;
+    };
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: disabledImplement,
+      readIterationVerdict: async () => verdict(false, 2),
+      readRepoHead: async () => "abc",
+      runSdlc: runSdlc as never,
+    });
+    await controller.tick(loop.id); // deciding → developing (dispatch fail-soft close-out)
+    await flush();
+    const res = await controller.tick(loop.id); // developing → awaiting_merge
+    expect(runSdlc).not.toHaveBeenCalled(); // the coder is NEVER run when implement is off
+    expect(res?.state).toBe("awaiting_merge"); // loop is NOT failed
+    expect(res?.prRef).toBeNull();
+    expect(res?.error).toBe("implement path disabled by config");
   });
 
   it("dispatch single-flight: two concurrent DECIDING→DEVELOPING ticks dispatch the close-out ONCE (CAS-gated)", async () => {

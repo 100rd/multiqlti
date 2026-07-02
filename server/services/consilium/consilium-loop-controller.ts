@@ -1200,28 +1200,32 @@ export class ConsiliumLoopController {
         },
       );
     }
+    // Phase 2: the skilled SDLC executor is the ONLY develop path — the legacy
+    // dev-handoff was removed. When the `implement` kill-switch is OFF there is no
+    // path to fall back to, so fail-soft with a clear loop error instead of silently
+    // running an unskilled coder: the operator turns the key or the loop won't
+    // develop. Same failure convention as the research-disabled guard above — an
+    // INERT no-PR result the `dev_completed` event carries as `error` (no FSM change).
+    if (!cfg.implement.enabled) {
+      return { prRef: null, headCommit: "", error: "implement path disabled by config" };
+    }
     const run = this.deps.runSdlc ?? runSdlcHandoff;
-    // Stage 2a: thread the loop's Stage-1 archetype into the executor ONLY when the
-    // `implement` kill-switch is on. When OFF (default) we pass archetype=null and
-    // no skills resolver ⇒ selectSkillSet returns [] ⇒ the executor runs TODAY'S
-    // single unskilled coder per action point (byte-for-byte unchanged). When ON,
-    // the executor selects the archetype's skilled step set and binds it against the
-    // existing skills table (storage.getSkills). NOTHING new executes either way.
-    const skilled = cfg.implement.enabled;
+    // Stage 2a: thread the loop's Stage-1 archetype into the executor. The executor
+    // selects the archetype's skilled step set and binds it against the existing skills
+    // table (storage.getSkills); a null archetype resolves the default step set.
     // Stage 2b: per-criterion sandboxed verification + fix loop. Gated by its OWN
-    // kill-switch ON TOP of the skilled path (the test-runner only makes sense for the
-    // TDD skill set). MED-2 fail-closed: `verification.enabled` is HONORED only when a
-    // container sandbox is on OR the operator acked trusted-repo host exec — otherwise
-    // it degrades to Stage-2a (NO test runs) with a one-line warning. Single source of
-    // truth: `effectiveVerificationEnabled`.
-    const verifyOn = skilled && effectiveVerificationEnabled(this.deps.config());
+    // kill-switch (the test-runner only makes sense for the TDD skill set). MED-2
+    // fail-closed: `verification.enabled` is HONORED only when a container sandbox is
+    // on OR the operator acked trusted-repo host exec — otherwise it degrades to NO
+    // test runs with a one-line warning. Single source: `effectiveVerificationEnabled`.
+    const verifyOn = effectiveVerificationEnabled(this.deps.config());
     // Stage A: FINAL-STATE re-verification. Gated by its OWN kill-switch ON TOP of the
     // SAME sandbox gate as per-AP verification (`verifyOn`) — final verification re-runs
     // the repo's test command on the host exactly as Stage 2b does, so it must obey the
     // identical fail-closed gate. Optional-chained so a hand-built test config that omits
     // the block degrades to OFF (never throws). null ⇒ the executor skips Stage A.
     const finalOn = verifyOn && (cfg.implement.finalVerification?.enabled ?? false);
-    if (skilled && cfg.implement.verification.enabled && !verifyOn && !this.warnedVerificationGate) {
+    if (cfg.implement.verification.enabled && !verifyOn && !this.warnedVerificationGate) {
       this.warnedVerificationGate = true;
       // eslint-disable-next-line no-console
       console.warn(
@@ -1243,9 +1247,9 @@ export class ConsiliumLoopController {
       // Per-action-point coder timeout (configurable). The executor runs the
       // coder once per action point sequentially; this bounds a SINGLE run.
       coderTimeoutMs: cfg.sdlcTimeoutMs,
-      // Stage 2a archetype-branched skilled coder (null when the kill-switch is off).
-      archetype: skilled ? loop.archetype ?? null : null,
-      archetypeParams: skilled ? loop.archetypeParams ?? null : null,
+      // Stage 2a archetype-branched skilled coder (null archetype ⇒ default step set).
+      archetype: loop.archetype ?? null,
+      archetypeParams: loop.archetypeParams ?? null,
       // Stage 2b: verification config (null when EITHER kill-switch is off ⇒ INERT).
       verification: verifyOn
         ? {
@@ -1263,7 +1267,7 @@ export class ConsiliumLoopController {
             maxFinalFixIterations: cfg.implement.finalVerification.maxFinalFixIterations,
           }
         : null,
-    }, skilled ? { getSkills: () => this.storage.getSkills() } : undefined, onProgress);
+    }, { getSkills: () => this.storage.getSkills() }, onProgress);
   }
 
   /**

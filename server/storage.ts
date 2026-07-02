@@ -1965,7 +1965,6 @@ export class MemStorage implements IStorage {
       archetypeParams: data.archetypeParams ?? null,
       archetypeDecidedAt: data.archetypeDecidedAt ?? null,
       currentIterationNumber: data.currentIterationNumber ?? null,
-      devPipelineId: data.devPipelineId ?? null,
       devGroupId: data.devGroupId ?? null,
       prRef: data.prRef ?? null,
       headCommitAtReview: data.headCommitAtReview ?? null,

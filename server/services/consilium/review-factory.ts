@@ -1115,13 +1115,13 @@ export async function createConsiliumReview(
     createdBy: params.createdBy,
   });
 
-  // 2) The consilium loop over that group. devPipelineId comes from config (a
-  //    review-only maxRounds:1 loop never reaches DEVELOPING, so it stays unused).
+  // 2) The consilium loop over that group. A review-only maxRounds:1 loop never
+  //    reaches DEVELOPING; when it does, the skilled SDLC executor is the only
+  //    develop path (gated by pipeline.consiliumLoop.implement.enabled).
   const loop = await storage.createLoop({
     groupId: group.id,
     repoPath: resolvedRepo,
     maxRounds: clampRounds(params.maxRounds),
-    devPipelineId: cfg.devPipelineId ?? null,
     lastReviewedCommit: baseline,
     // BRANCH-targeted review: the chosen ref (null ⇒ working-tree HEAD).
     reviewRef,

@@ -243,7 +243,7 @@ describe("createConsiliumReview — allowlist gate, baseline threading, rounds",
       storage: { createLoop, getWorkspaces },
       orchestrator: { createTaskGroup },
       controller: { start },
-      config: () => ({ pipeline: { consiliumLoop: { allowedRepoPaths, devPipelineId: undefined } } }),
+      config: () => ({ pipeline: { consiliumLoop: { allowedRepoPaths } } }),
     } as unknown as CreateConsiliumReviewDeps;
     return { deps, createTaskGroup, createLoop, start, getWorkspaces };
   }
@@ -569,7 +569,7 @@ describe("createConsiliumReview — persists reviewRef + validates it at the bou
       storage: { createLoop, getWorkspaces },
       orchestrator: { createTaskGroup },
       controller: { start },
-      config: () => ({ pipeline: { consiliumLoop: { allowedRepoPaths: [repo], devPipelineId: undefined } } }),
+      config: () => ({ pipeline: { consiliumLoop: { allowedRepoPaths: [repo] } } }),
       ...(gitClientFactory ? { gitClientFactory } : {}),
     } as unknown as CreateConsiliumReviewDeps;
     return { deps, createTaskGroup, createLoop };

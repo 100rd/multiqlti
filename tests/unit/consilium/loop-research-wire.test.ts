@@ -46,7 +46,6 @@ function makeLoop(over: Partial<ConsiliumLoopRow>): ConsiliumLoopRow {
     archetype: null,
     lastReviewedCommit: null,
     currentIterationNumber: 2,
-    devPipelineId: "dev-pipe",
     devGroupId: null,
     prRef: null,
     headCommitAtReview: null,
@@ -106,7 +105,6 @@ const makeConfig =
           pollIntervalMs: 5000,
           maxDiffBytes: 200000,
           allowedRepoPaths: [process.cwd()],
-          devPipelineId: "dev-pipe",
           implement: {
             enabled: o.implementEnabled ?? true,
             verification: { enabled: false },

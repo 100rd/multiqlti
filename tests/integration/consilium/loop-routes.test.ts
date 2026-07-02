@@ -57,7 +57,6 @@ const fakeConfig = () =>
         pollIntervalMs: 5000,
         maxDiffBytes: 200000,
         allowedRepoPaths: [REPO_ROOT],
-        devPipelineId: "dev-pipe",
       },
     },
   }) as never;
@@ -144,7 +143,7 @@ describe("consilium-loop routes", () => {
     send(() => request(ctx.app).get(path));
 
   it("POST create → 201, stamps createdBy = caller", async () => {
-    const res = await post("/api/consilium-loops", { groupId: ctx.group.id, repoPath: REPO_ROOT, devPipelineId: "dev-pipe" });
+    const res = await post("/api/consilium-loops", { groupId: ctx.group.id, repoPath: REPO_ROOT });
     expect(res.status).toBe(201);
     expect(res.body.createdBy).toBe(OWNER_USER.id);
     expect(res.body.state).toBe("pending");

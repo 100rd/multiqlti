@@ -1,0 +1,37 @@
+-- migration: 0036_drop_consilium_loops_dev_pipeline_id
+-- Drops the dead `dev_pipeline_id` column from `consilium_loops`.
+--
+-- Context:
+--   Phase 2 of the loop-centric simplification severs the last thread tying the
+--   consilium loop to the *pipelines* entity. The legacy dev-handoff path
+--   (server/services/consilium/dev-handoff.ts — built a DEV task-group whose tasks
+--   each carried a `devPipelineId`) was removed: the skilled SDLC executor
+--   (server/services/sdlc/executor.ts) is now the ONLY develop path, gated by
+--   `pipeline.consiliumLoop.implement.enabled`. With the handoff gone, the
+--   `devPipelineId` config key, its create-route zod field, the review-factory
+--   pass-through, and this column have ZERO remaining code usage.
+--
+--   Runtime evidence (dev DB): pipeline_runs = 0 ever; all real tasks have
+--   pipeline_id NULL; the only pipelines rows were operator placeholders created
+--   solely to satisfy the removed devPipelineId config key.
+--
+-- Tolerance:
+--   The column is nullable and read only through Drizzle `select()` over the
+--   schema definition — after schema.ts drops the field, a row that still carries
+--   a `dev_pipeline_id` value (pre-migration) is simply never selected, so old
+--   loops load unchanged whether the column is present or absent. Dropping it is
+--   therefore safe in either order relative to a code deploy.
+--
+-- Deploy sequence (push-based):
+--   1. psql "$DATABASE_URL" -f migrations/0036_drop_consilium_loops_dev_pipeline_id.sql
+--   2. npm run db:push   (schema.ts no longer declares this column)
+--
+-- Drop-only. Idempotent (IF EXISTS). Do NOT apply automatically — run against a DB
+-- only after a reviewed backup.
+
+ALTER TABLE consilium_loops DROP COLUMN IF EXISTS dev_pipeline_id;
+
+-- Rollback:
+--   ALTER TABLE consilium_loops ADD COLUMN dev_pipeline_id varchar;
+--   (the column was nullable with no default; no data to restore — it only ever
+--   held operator-placeholder pipeline ids.)
