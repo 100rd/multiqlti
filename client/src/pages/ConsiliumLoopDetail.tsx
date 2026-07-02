@@ -388,14 +388,22 @@ function CriterionLeaf({ c }: { c: ExecutionCriterion }) {
     <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
       <GreenDot green={c.passed} />
       <Badge variant="outline" className="text-[10px] py-0">{c.method}</Badge>
-      <span className={c.passed ? "text-muted-foreground" : "text-red-600"}>
-        {c.ran ? (c.passed ? "passed" : "unmet") : "not run"}
+      {/* A TIMED-OUT run (ran:true, passed:false) is NOT-ADJUDICATED — checked before
+          `passed` so it reads "timed out" (amber), never "unmet" (red). */}
+      <span className={c.passed ? "text-muted-foreground" : c.timedOut ? "text-amber-600" : "text-red-600"}>
+        {!c.ran ? "not run" : c.timedOut ? "timed out" : c.passed ? "passed" : "unmet"}
       </span>
       {typeof c.fixIterations === "number" && c.fixIterations > 0 && (
         <span className="text-muted-foreground">· {c.fixIterations} fix</span>
       )}
+      {/* Timeout policy: NOT-ADJUDICATED marker (ambiguous: slow suite vs a hang; the
+          fix loop was skipped). Distinct from a red regression — a small amber note. */}
+      {c.timedOut === true && (
+        <span className="text-amber-600 font-medium">· not adjudicated (timeout)</span>
+      )}
       {/* Stage A: final-state re-verification of the whole worktree. A false here
-          (esp. alongside passed:true) reveals a late-AP regression. */}
+          (esp. alongside passed:true) reveals a late-AP regression. Omitted when the
+          final run timed out (unadjudicated — the timeout marker above carries it). */}
       {typeof c.passedAtFinal === "boolean" && (
         <span className={c.passedAtFinal ? "text-muted-foreground" : "text-red-600 font-medium"}>
           · final {c.passedAtFinal ? "green" : "regressed"}

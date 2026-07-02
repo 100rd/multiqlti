@@ -1954,6 +1954,16 @@ export interface ExecutionCriterion {
    * criteria. A `false` here alongside `passed:true` reveals a late-AP REGRESSION.
    */
   passedAtFinal?: boolean;
+  /**
+   * Additive: whether the verification run was KILLED by the wall-clock timeout
+   * (SIGKILL) rather than adjudicated. true ⇒ NOT-ADJUDICATED — the test-run was
+   * AMBIGUOUS (the suite may exceed `testRunTimeoutMs`, or the change introduced a
+   * hang) and the fix loop was SKIPPED (a coder cannot fix a config-level cap, and the
+   * next run pays the same wall-clock). Distinct from `passed:false` (a real, adjudicated
+   * red) and from `ran:false` (a launch failure). OPTIONAL/ADDITIVE — absent on
+   * adjudicated runs and on pre-timeout-policy snapshots (no schemaVersion bump).
+   */
+  timedOut?: boolean;
 }
 
 /** A worker agent: one action point (coder) or one research step. */

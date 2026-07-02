@@ -152,6 +152,13 @@ export interface ApVerification {
   fixIterations: number;
   /** The action point's acceptance criterion (sanitized + clamped; display only). */
   criterion: string;
+  /**
+   * Additive: the verification run was KILLED by the wall-clock timeout (SIGKILL), not
+   * adjudicated. true ⇒ NOT-ADJUDICATED (ambiguous: a slow suite exceeding
+   * testRunTimeoutMs vs a code-introduced hang) and the fix loop was SKIPPED — `ran`
+   * stays true (the process DID run, unlike a launch failure). Absent on adjudicated runs.
+   */
+  timedOut?: boolean;
 }
 
 /**
@@ -173,6 +180,12 @@ export interface FinalVerification {
   summary: string;
   /** How many FINAL fix re-invocations of the coder ran after the initial re-verify. */
   fixIterations: number;
+  /**
+   * Additive: the FINAL whole-suite run was KILLED by the wall-clock timeout (SIGKILL),
+   * not adjudicated. true ⇒ NOT-ADJUDICATED (a slow suite vs a code-introduced hang) and
+   * the final fix loop was SKIPPED. `ran` stays true (the process DID run). Absent otherwise.
+   */
+  timedOut?: boolean;
 }
 
 /**
@@ -553,9 +566,11 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
         ? ` [skills: ${o.skills.map((s) => sanitizeLine(s, 40)).join(" -> ")}]`
         : "";
     // Stage 2b: per-criterion verification verdict (absent ⇒ no tag, Stage-2a shape).
+    // A TIMED-OUT run (ran:true, passed:false) reads NOT-ADJUDICATED, never RED — the
+    // signal was ambiguous and the fix loop was skipped (checked before `passed`).
     const v = o.verification;
     const verifyTag = v
-      ? ` [verify: ${!v.ran ? "not-run" : v.passed ? "green" : "RED"}${v.fixIterations > 0 ? ` after ${v.fixIterations} fix` : ""}]`
+      ? ` [verify: ${!v.ran ? "not-run" : v.timedOut ? "not-adjudicated (timeout)" : v.passed ? "green" : "RED"}${v.fixIterations > 0 ? ` after ${v.fixIterations} fix` : ""}]`
       : "";
     return `- [${o.status}] (${o.priority}) ${sanitizeLine(o.title, PR_BODY_TITLE_MAX)}${skillTag}${verifyTag}${tail}`;
   });
@@ -586,14 +601,21 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
         "",
         `### Verification gate: FLAGGED — ${unmetP0.length} unmet P0 criteria (${green}/${verified.length} green)`,
         "",
-        "The following P0 acceptance criteria are NOT yet verified green (the fix budget was exhausted or no test command resolved). Review before merging:",
-        ...unmetP0.map(
+        "The following P0 acceptance criteria are NOT yet verified green (the fix budget was exhausted, the run TIMED OUT and was not adjudicated, or no test command resolved). Review before merging:",
+        ...unmetP0.map((o) => {
           // A not-run criterion surfaces its OWN reason (no test command OR a launch
-          // failure like `spawn uv ENOENT`) from the scrubbed summary, rather than
-          // always claiming "no test command" — an env error is not a missing command.
-          (o) =>
-            `- (${o.priority}) ${sanitizeLine(o.title, PR_BODY_TITLE_MAX)} — ${o.verification && !o.verification.ran ? sanitizeLine(o.verification.summary, 160) : "tests still failing"}`,
-        ),
+          // failure like `spawn uv ENOENT`) from the scrubbed summary; a TIMED-OUT run
+          // is labelled NOT-ADJUDICATED (timeout) — ambiguous, not a confirmed red — with
+          // its summary; only a genuinely adjudicated red says "tests still failing".
+          const v = o.verification;
+          const reason =
+            v && !v.ran
+              ? sanitizeLine(v.summary, 160)
+              : v && v.timedOut
+                ? `NOT-ADJUDICATED (timeout) — ${sanitizeLine(v.summary, 160)}`
+                : "tests still failing";
+          return `- (${o.priority}) ${sanitizeLine(o.title, PR_BODY_TITLE_MAX)} — ${reason}`;
+        }),
       );
     }
   }
@@ -606,7 +628,10 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
   const finalBlock: string[] = [];
   if (finalVerification) {
     const fv = finalVerification;
-    const status = !fv.ran ? "NOT-RUN" : fv.passed ? "GREEN" : "RED";
+    // A TIMED-OUT final run is NOT-ADJUDICATED (timeout), never RED (checked before
+    // `passed`) — the whole-suite run was killed before a verdict, so it is not a
+    // confirmed regression.
+    const status = !fv.ran ? "NOT-RUN" : fv.timedOut ? "NOT-ADJUDICATED (timeout)" : fv.passed ? "GREEN" : "RED";
     const fixTag = fv.fixIterations > 0 ? ` (after ${fv.fixIterations} final fix attempt(s))` : "";
     finalBlock.push(
       "",
@@ -614,9 +639,11 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
       "",
       fv.passed
         ? "The full test suite passes against the FINAL combined worktree (all action points applied) — no cross-AP regression detected."
-        : !fv.ran
-          ? "The full test suite could NOT be re-run against the final worktree (no test command resolved). The final combined state is UNVERIFIED — review before merging."
-          : "REGRESSION — the full test suite does NOT pass against the FINAL combined worktree. A later action point may have regressed an earlier one. This Draft PR still opens for human review; review before merging.",
+        : fv.timedOut
+          ? "TIMED OUT — the full test suite was KILLED by the wall-clock cap before a verdict (the suite may exceed testRunTimeoutMs, or a change may have introduced a hang). NOT adjudicated; the final fix loop was skipped. This is NOT a confirmed regression — review before merging (raise the cap for a slow suite, or investigate a possible hang)."
+          : !fv.ran
+            ? "The full test suite could NOT be re-run against the final worktree (no test command resolved). The final combined state is UNVERIFIED — review before merging."
+            : "REGRESSION — the full test suite does NOT pass against the FINAL combined worktree. A later action point may have regressed an earlier one. This Draft PR still opens for human review; review before merging.",
     );
   }
 
@@ -835,7 +862,13 @@ export async function runSdlcHandoff(
       // rescues data we already computed). Rides the result out-of-band, exactly like
       // testSummary; the dev_completed event / FSM are untouched. Stage A stamps the
       // final whole-suite pass/fail onto each test-run criterion (`passedAtFinal`).
-      result.executionTrace = buildSdlcTrace(req.archetype ?? null, outcomes, result, finalVerification?.passed);
+      result.executionTrace = buildSdlcTrace(
+        req.archetype ?? null,
+        outcomes,
+        result,
+        finalVerification?.passed,
+        finalVerification?.timedOut,
+      );
       // Terminal beat — the executor finished its work for this round (the SERVICE
       // separately classifies done/failed from the result; this is phase-only).
       progress.beat({
@@ -1106,7 +1139,13 @@ async function runFinalVerification(
   // `result.ran` gate: a command that could NOT be LAUNCHED (env broken — ran:false)
   // must NOT enter the code→test→fix loop; no code change can make it run, so we skip
   // the fix budget entirely (mirrors the no-test-command convention) and record NOT-RUN.
-  while (!result.passed && result.ran && fixIterations < config.maxFinalFixIterations) {
+  // `!result.timedOut` gate: a run the wall-clock KILLED (SIGKILL) is AMBIGUOUS and
+  // UNADJUDICATED — a slow suite exceeding testRunTimeoutMs vs a code-introduced hang.
+  // A coder cannot fix a config-level cap and the NEXT final run pays the SAME wall-clock,
+  // so we SKIP the final fix loop (0 iterations) and record NOT-ADJUDICATED (loudly, in
+  // the PR body + trace + UI) rather than "fix" a state that was never adjudicated. Same
+  // shape as the ran:false skip (#444) — the failure path stays identical, PR still opens.
+  while (!result.passed && result.ran && !result.timedOut && fixIterations < config.maxFinalFixIterations) {
     // Whole-run wall-clock backstop (shared budget): stop fixing once the run overran.
     if (vc.now() >= vc.deadline) break;
     fixIterations += 1;
@@ -1131,6 +1170,8 @@ async function runFinalVerification(
     passed: result.passed,
     summary: clampStr(result.summary, FIX_SUMMARY_MAX),
     fixIterations,
+    // Additive: mark NOT-ADJUDICATED only when the final run timed out (legacy shape else).
+    ...(result.timedOut ? { timedOut: true } : {}),
   };
 }
 
@@ -1218,7 +1259,13 @@ async function runVerifyFixLoop(
   // wastes every coder invocation on an error the coder cannot fix (the reported bug).
   // We skip straight to a NOT-RUN verdict (0 fix iterations) — the SAME convention as
   // the existing no-test-command path.
-  while (!result.passed && result.ran && fixIterations < vc.config.maxFixIterations) {
+  // `!result.timedOut` gate: a run the wall-clock KILLED (SIGKILL) is AMBIGUOUS and
+  // UNADJUDICATED — the suite may just exceed testRunTimeoutMs, or the change may have
+  // introduced a hang. A coder cannot fix a config-level cap and the NEXT run pays the
+  // SAME wall-clock, so we SKIP the fix loop (0 iterations) and record NOT-ADJUDICATED,
+  // surfacing it loudly (PR body + trace + UI) instead of burning the budget "fixing"
+  // code that was never adjudicated. Mirrors the ran:false skip; failure path identical.
+  while (!result.passed && result.ran && !result.timedOut && fixIterations < vc.config.maxFixIterations) {
     // Whole-run wall-clock backstop: stop fixing once the run has overrun (the
     // per-AP coder/test timeouts + this cap together bound total develop time).
     if (vc.now() >= vc.deadline) break;
@@ -1245,6 +1292,8 @@ async function runVerifyFixLoop(
     summary: clampStr(result.summary, FIX_SUMMARY_MAX),
     fixIterations,
     criterion,
+    // Additive: mark NOT-ADJUDICATED only when this AP's run timed out (legacy shape else).
+    ...(result.timedOut ? { timedOut: true } : {}),
   };
 }
 
@@ -1295,7 +1344,9 @@ function aggregateTestSummary(
     const header = `Per-criterion verification: ${passed}/${verified.length} green.`;
     const lines = verified.map((o) => {
       const v = o.verification as ApVerification;
-      const status = !v.ran ? "NOT-RUN" : v.passed ? "PASS" : "FAIL";
+      // A TIMED-OUT run is NOT-ADJUDICATED (ambiguous, fix loop skipped), never FAIL —
+      // so the next review round grounds on "unadjudicated", not a confirmed red.
+      const status = !v.ran ? "NOT-RUN" : v.timedOut ? "NOT-ADJUDICATED (timeout)" : v.passed ? "PASS" : "FAIL";
       const fixes = v.fixIterations > 0 ? ` after ${v.fixIterations} fix attempt(s)` : "";
       const crit = v.criterion ? ` — criterion: ${v.criterion}` : "";
       return `- [${status}] (${o.priority}) ${o.title}${fixes}${crit}\n    ${sanitizeLine(v.summary, 280)}`;
@@ -1314,13 +1365,15 @@ function aggregateTestSummary(
 
 /** Stage A: the round `testSummary` block for the final whole-suite re-verification. */
 function buildFinalVerificationSummary(fv: FinalVerification): string {
-  const status = !fv.ran ? "NOT-RUN" : fv.passed ? "PASS" : "FAIL";
+  const status = !fv.ran ? "NOT-RUN" : fv.timedOut ? "NOT-ADJUDICATED (timeout)" : fv.passed ? "PASS" : "FAIL";
   const fixes = fv.fixIterations > 0 ? ` after ${fv.fixIterations} final fix attempt(s)` : "";
   const verdict = fv.passed
     ? "The full test suite passes against the final combined worktree (no cross-AP regression)."
-    : !fv.ran
-      ? "The full test suite could not be re-run against the final worktree (no test command)."
-      : "REGRESSION: the full test suite does NOT pass against the final combined worktree.";
+    : fv.timedOut
+      ? "The full test suite TIMED OUT (killed by the wall-clock cap) before a verdict — NOT adjudicated (the suite may exceed testRunTimeoutMs, or a change may have introduced a hang); the final fix loop was skipped. Not a confirmed regression."
+      : !fv.ran
+        ? "The full test suite could not be re-run against the final worktree (no test command)."
+        : "REGRESSION: the full test suite does NOT pass against the final combined worktree.";
   return [`Final-state re-verification: [${status}]${fixes}.`, verdict, `    ${sanitizeLine(fv.summary, 280)}`].join("\n");
 }
 

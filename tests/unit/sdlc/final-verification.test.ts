@@ -83,6 +83,16 @@ const launchFail: TestRunResult = {
   exitCode: null,
   timedOut: false,
 };
+/** Finding #6 at the final phase: the whole-suite final run was KILLED by the wall-clock
+ *  cap. ran:true but AMBIGUOUS/UNADJUDICATED ⇒ the final fix loop must be SKIPPED. */
+const timedOut: TestRunResult = {
+  passed: false,
+  ran: true,
+  summary:
+    "TIMED OUT after 300000ms — suite may exceed testRunTimeoutMs (raise the cap for a slow suite) or the change introduced a hang; not adjudicated, fix loop skipped",
+  exitCode: null,
+  timedOut: true,
+};
 
 function makeGitRaw() {
   return vi.fn(async (_repo: string, args: string[]) => {
@@ -300,6 +310,76 @@ describe("Stage A — launch failure (ran:false) SKIPS the final fix loop", () =
     expect(prBody(deps)).toMatch(/Final-state re-verification: NOT-RUN/);
     // NEVER blocks PR creation.
     expect(res.prRef).toBe("https://github.com/x/y/pull/9");
+  });
+});
+
+describe("Stage A — final-run TIMEOUT (ambiguous) SKIPS the final fix loop, NOT-ADJUDICATED", () => {
+  it("a TIMED-OUT final run burns ZERO final fix iterations even with budget left (finding #6)", async () => {
+    // The finding-#6 bug at the final phase: a timeout must NOT enter the fix loop — no
+    // code change makes a config-level cap pass, and the next final run pays the same
+    // wall-clock. With a budget of 3, the loop must be skipped entirely.
+    const runTests = sequencedRunTests([timedOut]);
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(
+      baseReq({ finalVerification: FVCFG({ maxFinalFixIterations: 3 }) }),
+      deps as never,
+    );
+    // ONE final run; the loop is skipped (timedOut) despite a budget of 3.
+    expect(runTests).toHaveBeenCalledTimes(1);
+    // Only the 2 skilled implement steps; ZERO final fix coder re-invocations.
+    expect((deps.runCoder as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+    expect(res.finalVerification).toEqual(
+      expect.objectContaining({ ran: true, passed: false, fixIterations: 0, timedOut: true }),
+    );
+    // NEVER blocks PR creation.
+    expect(res.prRef).toBe("https://github.com/x/y/pull/9");
+  });
+
+  it("classifies the final block NOT-ADJUDICATED (timeout), never RED/REGRESSION", async () => {
+    const runTests = sequencedRunTests([timedOut]);
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(
+      baseReq({ finalVerification: FVCFG({ maxFinalFixIterations: 3 }) }),
+      deps as never,
+    );
+    const body = prBody(deps);
+    expect(body).toMatch(/Final-state re-verification: NOT-ADJUDICATED \(timeout\)/);
+    expect(body).not.toMatch(/Final-state re-verification: RED/);
+    expect(body).not.toMatch(/REGRESSION/);
+    expect(body).toMatch(/not a confirmed regression/i);
+    // The testSummary (convergence wire) grounds the next review on NOT-ADJUDICATED.
+    expect(res.testSummary).toMatch(/NOT-ADJUDICATED \(timeout\)/);
+    expect(res.testSummary).not.toMatch(/REGRESSION/);
+  });
+
+  it("does NOT stamp a bogus passedAtFinal:false when the FINAL run timed out (marks timedOut instead)", async () => {
+    // AP WITH a criterion that PASSED at implement time; the final whole-suite run then
+    // TIMES OUT. passedAtFinal must be OMITTED (unadjudicated — `false` would read as a
+    // regression); the criterion is marked timedOut so the UI shows "not adjudicated".
+    const runTests = sequencedRunTests([pass, timedOut]); // per-AP pass, then final timeout
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(
+      baseReq({
+        actionPoints: [AP({ acceptanceCriterion: "When built Then compiles" })],
+        finalVerification: FVCFG({ maxFinalFixIterations: 3 }),
+      }),
+      deps as never,
+    );
+    const crit = res.executionTrace!.controller.workers[0].criteria[0];
+    expect(crit.passed).toBe(true); // green when the AP was implemented
+    expect(crit.timedOut).toBe(true); // final run unadjudicated
+    expect("passedAtFinal" in crit).toBe(false); // NOT stamped (no bogus "regressed")
+  });
+
+  it("CONTRAST: a non-timeout final RED still enters the final fix loop", async () => {
+    const runTests = sequencedRunTests([fail, pass]); // red → fix → pass
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(
+      baseReq({ finalVerification: FVCFG({ maxFinalFixIterations: 3 }) }),
+      deps as never,
+    );
+    expect(runTests).toHaveBeenCalledTimes(2); // initial + one re-verify
+    expect(res.finalVerification).toEqual(expect.objectContaining({ passed: true, fixIterations: 1 }));
   });
 });
 

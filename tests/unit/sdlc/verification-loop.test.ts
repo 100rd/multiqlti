@@ -70,6 +70,17 @@ const launchFail: TestRunResult = {
   exitCode: null,
   timedOut: false,
 };
+/** The finding-#6 bug shape: the run was KILLED by the wall-clock cap (SIGKILL). ran:true
+ *  (the process DID run, unlike ENOENT) but AMBIGUOUS/UNADJUDICATED ⇒ the fix loop must be
+ *  SKIPPED (a coder cannot fix a config-level cap; the next run pays the same wall-clock). */
+const timedOut: TestRunResult = {
+  passed: false,
+  ran: true,
+  summary:
+    "TIMED OUT after 300000ms — suite may exceed testRunTimeoutMs (raise the cap for a slow suite) or the change introduced a hang; not adjudicated, fix loop skipped",
+  exitCode: null,
+  timedOut: true,
+};
 
 function makeGitRaw() {
   return vi.fn(async (_repo: string, args: string[]) => {
@@ -224,6 +235,77 @@ describe("Stage 2b — launch failure (ran:false) SKIPS the fix loop", () => {
       (p) => events.push(JSON.parse(JSON.stringify(p)) as SdlcProgress),
     );
     // The initial test-runner beat fires; NO fix-coder beat (the loop never ran).
+    expect(events.some((e) => e.step === "test-runner")).toBe(true);
+    expect(events.some((e) => e.step === "fix-coder")).toBe(false);
+  });
+});
+
+describe("Stage 2b — test-run TIMEOUT (ambiguous) SKIPS the fix loop, NOT-ADJUDICATED", () => {
+  it("a TIMED-OUT run burns ZERO fix iterations even with budget left (finding #6)", async () => {
+    // The finding-#6 bug: a timeout was treated as a plain red, so the fix-coder burned
+    // its WHOLE budget "fixing" code that was never adjudicated (the next run pays the
+    // same wall-clock). With a healthy budget of 3, a timeout must skip the loop entirely.
+    const runTests = sequencedRunTests([timedOut]);
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(baseReq({ verification: VCFG({ maxFixIterations: 3 }) }), deps as never);
+
+    // Exactly ONE test run — the initial one — then the loop is skipped (no re-verify).
+    expect(runTests).toHaveBeenCalledTimes(1);
+    // Only the 2 skilled implement steps ran; ZERO fix-coder re-invocations.
+    expect((deps.runCoder as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+    // The Draft PR still opens (never blocked) — the failure path is identical to a red.
+    expect(res.prRef).toBe("https://github.com/x/y/pull/9");
+  });
+
+  it("CONTRAST: a non-timeout RED (ran:true, timedOut:false) STILL enters the fix loop", async () => {
+    // A test that ran and was adjudicated red is a NORMAL signal — the loop must engage;
+    // only the ambiguous timeout is skipped. This is the guard against over-skipping.
+    const runTests = sequencedRunTests([fail, pass]); // red → fix → pass
+    const deps = makeDeps({ runTests });
+    await runSdlcHandoff(baseReq({ verification: VCFG({ maxFixIterations: 3 }) }), deps as never);
+    expect((deps.runCoder as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3); // 2 skilled + 1 fix
+    expect(runTests).toHaveBeenCalledTimes(2); // initial + one re-verify
+  });
+
+  it("classifies the criterion NOT-ADJUDICATED (timeout), never FAIL, in the PR body + testSummary", async () => {
+    const runTests = sequencedRunTests([timedOut]);
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(baseReq({ verification: VCFG({ maxFixIterations: 3 }) }), deps as never);
+
+    const prBody = (deps.openPr as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string;
+    // The per-AP verify tag reads not-adjudicated (timeout), never RED.
+    expect(prBody).toMatch(/not-adjudicated \(timeout\)/i);
+    expect(prBody).not.toMatch(/\bRED\b/);
+    // The gate flags it (unmet P0) — surfaced loudly, nothing reported green.
+    expect(prBody).toMatch(/FLAGGED/);
+    expect(prBody).toMatch(/NOT-ADJUDICATED \(timeout\)/);
+    // The actionable summary rides through (the configured cap + both hypotheses).
+    expect(prBody).toMatch(/TIMED OUT after 300000ms/);
+    expect(prBody).toMatch(/not adjudicated, fix loop skipped/);
+    // The round testSummary (convergence wire) grounds the next review on NOT-ADJUDICATED.
+    expect(res.testSummary).toMatch(/NOT-ADJUDICATED \(timeout\)/);
+    expect(res.testSummary).not.toMatch(/\[FAIL\]/);
+  });
+
+  it("stamps timedOut:true on the trace criterion (loop page distinguishes it)", async () => {
+    const runTests = sequencedRunTests([timedOut]);
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(baseReq({ verification: VCFG({ maxFixIterations: 3 }) }), deps as never);
+    const crit = res.executionTrace?.controller.workers[0].criteria[0];
+    expect(crit?.timedOut).toBe(true);
+    expect(crit?.passed).toBe(false);
+    expect(crit?.ran).toBe(true); // the process DID run — unlike a launch failure.
+  });
+
+  it("emits NO fix-coder progress beat for a timed-out run", async () => {
+    const runTests = sequencedRunTests([timedOut]);
+    const deps = makeDeps({ runTests });
+    const events: SdlcProgress[] = [];
+    await runSdlcHandoff(
+      baseReq({ verification: VCFG({ maxFixIterations: 3 }) }),
+      deps as never,
+      (p) => events.push(JSON.parse(JSON.stringify(p)) as SdlcProgress),
+    );
     expect(events.some((e) => e.step === "test-runner")).toBe(true);
     expect(events.some((e) => e.step === "fix-coder")).toBe(false);
   });
