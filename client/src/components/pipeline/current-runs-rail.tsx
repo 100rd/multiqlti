@@ -1,7 +1,7 @@
 /**
  * CurrentRunsRail — the left rail on the Pipelines page listing the actual
  * pipeline RUNS (not definitions). This is where action points handed off from
- * a planning verdict (VerdictPanel → "Передать в пайплайн") show up once they
+ * a planning verdict (VerdictPanel → "Hand off to pipeline") show up once they
  * start executing.
  *
  * Active runs (running / queued / paused) float to the top; finished runs follow
@@ -28,19 +28,19 @@ interface PipelineRun {
 }
 
 const STATUS: Record<string, { dot: string; label: string; text: string }> = {
-  running: { dot: "bg-blue-500 animate-pulse", label: "идёт", text: "text-blue-600 dark:text-blue-400" },
-  queued: { dot: "bg-amber-500", label: "в очереди", text: "text-amber-600 dark:text-amber-400" },
-  paused: { dot: "bg-violet-500", label: "пауза", text: "text-violet-600 dark:text-violet-400" },
-  completed: { dot: "bg-green-500", label: "готово", text: "text-green-600 dark:text-green-400" },
-  failed: { dot: "bg-red-500", label: "ошибка", text: "text-red-600 dark:text-red-400" },
-  cancelled: { dot: "bg-slate-400", label: "отменён", text: "text-muted-foreground" },
+  running: { dot: "bg-blue-500 animate-pulse", label: "running", text: "text-blue-600 dark:text-blue-400" },
+  queued: { dot: "bg-amber-500", label: "queued", text: "text-amber-600 dark:text-amber-400" },
+  paused: { dot: "bg-violet-500", label: "paused", text: "text-violet-600 dark:text-violet-400" },
+  completed: { dot: "bg-green-500", label: "done", text: "text-green-600 dark:text-green-400" },
+  failed: { dot: "bg-red-500", label: "failed", text: "text-red-600 dark:text-red-400" },
+  cancelled: { dot: "bg-slate-400", label: "cancelled", text: "text-muted-foreground" },
 };
 
 const ACTIVE = new Set(["running", "queued", "paused"]);
 
 /** A run's display title: handoff runs store JSON input ({feature,source,…}). */
 function runTitle(input: string | null): string {
-  if (!input) return "Запуск пайплайна";
+  if (!input) return "Pipeline run";
   try {
     const o = JSON.parse(input) as Record<string, unknown>;
     const feature = typeof o.feature === "string" ? o.feature : "";
@@ -84,9 +84,9 @@ export function CurrentRunsRail({
   async function copyId(e: React.MouseEvent, id: string) {
     e.stopPropagation(); // don't navigate when copying
     if (await copyText(id)) {
-      toast({ title: "ID скопирован", description: id });
+      toast({ title: "ID copied", description: id });
     } else {
-      toast({ variant: "destructive", title: "Не удалось скопировать ID" });
+      toast({ variant: "destructive", title: "Couldn't copy ID" });
     }
   }
 
@@ -109,9 +109,9 @@ export function CurrentRunsRail({
       <div className="h-16 border-b border-border flex items-center gap-2 px-4 shrink-0">
         <Activity className="h-4 w-4 text-primary" />
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold leading-tight">Текущие пайплайны</h3>
+          <h3 className="text-sm font-semibold leading-tight">Current pipelines</h3>
           <p className="text-[11px] text-muted-foreground">
-            {activeCount > 0 ? `${activeCount} активных` : "Запуски пайплайнов"}
+            {activeCount > 0 ? `${activeCount} active` : "Pipeline runs"}
           </p>
         </div>
       </div>
@@ -120,16 +120,16 @@ export function CurrentRunsRail({
         {isLoading && (
           <div className="flex items-center justify-center py-10 text-muted-foreground text-xs gap-2">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            Загрузка…
+            Loading…
           </div>
         )}
 
         {!isLoading && runs.length === 0 && (
           <div className="px-4 py-10 text-center">
-            <p className="text-xs text-muted-foreground">Активных запусков нет</p>
+            <p className="text-xs text-muted-foreground">No active runs</p>
             <p className="text-[11px] text-muted-foreground/70 mt-1">
-              Передайте action points из вердикта планирования в пайплайн — запуски
-              появятся здесь.
+              Hand off action points from a planning verdict to the pipeline —
+              runs will show up here.
             </p>
           </div>
         )}
@@ -161,7 +161,7 @@ export function CurrentRunsRail({
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") copyId(e as unknown as React.MouseEvent, run.id);
                       }}
-                      title={`${run.id} — кликните, чтобы скопировать`}
+                      title={`${run.id} — click to copy`}
                       className="font-mono text-[10px] text-muted-foreground hover:text-foreground cursor-pointer"
                     >
                       #{run.id.slice(0, 8)}

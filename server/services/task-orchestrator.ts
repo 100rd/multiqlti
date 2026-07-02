@@ -121,7 +121,7 @@ interface ResolvedTaskFields {
 // ─── Human-in-the-loop note carry-forward ───────────────────────────────────
 
 /** Marker that opens the carried human-note block in an iteration's input. */
-export const HUMAN_NOTE_HEADING = "## Решения и заметки человека (предыдущий раунд)";
+export const HUMAN_NOTE_HEADING = "## Human decisions and notes (previous round)";
 
 /**
  * Fold the previous iteration's human note (if any) into the next iteration's

@@ -24,7 +24,7 @@ import type { ConsiliumLoopRow } from "@shared/schema";
 // ─── Piece A: the silent-drop guard ─────────────────────────────────────────
 
 describe("acceptanceCriterion survives the verdict round-trip (silent-drop guard)", () => {
-  const CRIT = "Когда пользователь без прав вызывает /plan, тогда ответ 404";
+  const CRIT = "When an unauthorized user calls /plan, then the response is 404";
 
   it("extractActionPoints carries acceptanceCriterion through boundActionPoint", () => {
     const judge = {

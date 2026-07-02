@@ -119,7 +119,7 @@ const PRIORITY_COLOR: Record<string, string> = {
 // Clarifies that the (intentionally red) P0 badge is a SEVERITY tier, not a
 // failure status — so a wall of red P0s reads as "these are the critical items".
 const PRIORITY_LEGEND =
-  "P0–P3 — приоритет важности (P0 = критический), не статус выполнения.";
+  "P0–P3 — priority (P0 = critical), not completion status.";
 
 /**
  * Open-P0 text colour. Mid-loop (non-terminal) an open P0 is EXPECTED
@@ -562,7 +562,7 @@ function RoundRow({
                       {ap.acceptanceCriterion && (
                         <p className="text-xs text-muted-foreground">
                           <span className="font-medium uppercase tracking-wide text-muted-foreground/70">
-                            Критерий приёмки (DoD):
+                            Acceptance criterion (DoD):
                           </span>{" "}
                           {ap.acceptanceCriterion}
                         </p>
@@ -729,7 +729,7 @@ function VerifiedMark({ verified }: { verified: boolean | undefined }) {
     return (
       <span
         className="inline-flex items-center gap-1 text-[10px] font-medium text-green-600 dark:text-green-400"
-        title="Проверено — заявление подтверждено цитируемым источником"
+        title="Verified — the claim is backed by a citable source"
       >
         <ShieldCheck className="h-3.5 w-3.5" />
         verified
@@ -740,7 +740,7 @@ function VerifiedMark({ verified }: { verified: boolean | undefined }) {
     return (
       <span
         className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-600 dark:text-amber-400"
-        title="Не подтверждено цитируемым источником"
+        title="Not backed by a citable source"
       >
         <ShieldAlert className="h-3.5 w-3.5" />
         unverified
@@ -948,7 +948,7 @@ function ReportPanel({ report }: { report: ResearchReport }) {
                       </ul>
                     ) : (
                       <p className="text-xs text-muted-foreground">
-                        Источники не приведены.
+                        No sources provided.
                       </p>
                     )}
                   </li>
@@ -992,39 +992,39 @@ function ReportPanel({ report }: { report: ResearchReport }) {
 // React text; the PR link uses rel="noopener noreferrer".
 
 /**
- * Humanize the current SDLC phase into one Russian status line. Falls back to a
+ * Humanize the current SDLC phase into one English status line. Falls back to a
  * generic "developing…" whenever `devProgress` (or the specific phase) is absent.
  */
 function humanizeDevPhase(progress: DevProgress | undefined, total: number): string {
   switch (progress?.phase) {
     case "committing":
-      return "Коммичу…";
+      return "Committing…";
     case "final-verification": {
       // Stage A: whole-suite re-run against the final combined tree (+ a bounded fix
-      // loop). Distinct from `committing` so it never reads as a frozen "Коммичу…".
+      // loop). Distinct from `committing` so it never reads as a frozen "Committing…".
       const fi = progress?.fixIteration;
       const fb = progress?.fixBudget;
       if (progress?.step === "fix-coder" && typeof fi === "number" && fi > 0) {
         const budget = typeof fb === "number" ? `/${fb}` : "";
-        return `Финальная проверка: исправляю (фикс ${fi}${budget})…`;
+        return `Final verification: fixing (fix ${fi}${budget})…`;
       }
-      return "Финальная проверка всего дерева…";
+      return "Final verification of the whole tree…";
     }
     case "pushing":
-      return "Пушу ветку…";
+      return "Pushing the branch…";
     case "opening_pr":
-      return "Открываю Draft PR…";
+      return "Opening the Draft PR…";
     case "done":
-      return "Готово — Draft PR открыт.";
+      return "Done — Draft PR opened.";
     case "coding": {
       const idx = progress?.actionPointIndex;
       const pos =
         typeof idx === "number" ? `${idx + 1}${total > 0 ? `/${total}` : ""}` : "";
       const title = progress?.actionPointTitle;
-      const titlePart = title ? `: «${title}»` : "";
+      const titlePart = title ? `: "${title}"` : "";
       return pos
-        ? `Кодирую action point ${pos}${titlePart}`
-        : `Кодирую action point${titlePart}`;
+        ? `Coding action point ${pos}${titlePart}`
+        : `Coding action point${titlePart}`;
     }
     default:
       return "developing…";
@@ -1036,25 +1036,25 @@ function humanizeDevPhase(progress: DevProgress | undefined, total: number): str
 function ApStatusIcon({ status }: { status: NonNullable<DevProgress["aps"]>[number]["status"] }) {
   switch (status) {
     case "active":
-      return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" aria-label="в работе" />;
+      return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" aria-label="in progress" />;
     case "completed":
-      return <Check className="h-3.5 w-3.5 shrink-0 text-green-600" aria-label="готово" />;
+      return <Check className="h-3.5 w-3.5 shrink-0 text-green-600" aria-label="done" />;
     case "partial":
-      return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="частично" />;
+      return <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="partial" />;
     case "failed":
-      return <X className="h-3.5 w-3.5 shrink-0 text-red-500" aria-label="ошибка" />;
+      return <X className="h-3.5 w-3.5 shrink-0 text-red-500" aria-label="failed" />;
     case "pending":
     default:
-      return <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="в очереди" />;
+      return <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="queued" />;
   }
 }
 
 /** Humanize the running agent/skill step for the active-row badge. */
 const DEV_STEP_LABELS: Record<NonNullable<DevProgress["step"]>, string> = {
-  "test-author": "автор тестов",
-  coder: "кодер",
-  "test-runner": "прогон тестов",
-  "fix-coder": "фикс",
+  "test-author": "test author",
+  coder: "coder",
+  "test-runner": "test run",
+  "fix-coder": "fix",
 };
 
 /**
@@ -1140,15 +1140,15 @@ function DevelopProgressPanel({
         <div className="space-y-1">
           <Progress value={pct} className="h-2" />
           <div className="text-xs tabular-nums text-muted-foreground">
-            {completed ?? 0}/{total} готово
+            {completed ?? 0}/{total} done
           </div>
         </div>
       )}
 
       <p className="text-xs leading-relaxed text-muted-foreground">
-        SDLC-агент кодит каждый action point в изолированном git-worktree, коммитит
-        по одному на пункт, затем пушит ветку и открывает Draft PR. Агенты не
-        мержат — ревью и merge за тобой.
+        The SDLC agent codes each action point in an isolated git worktree, commits
+        one per item, then pushes the branch and opens a Draft PR. The agents don't
+        merge — review and merge are up to you.
       </p>
 
       {/* Draft PR link appears once the executor has opened it (near completion). */}
@@ -1160,7 +1160,7 @@ function DevelopProgressPanel({
           className="inline-flex items-center gap-1 text-sm font-medium text-primary underline underline-offset-2"
         >
           <ExternalLink className="h-3.5 w-3.5" />
-          Открыть Draft PR
+          Open Draft PR
         </a>
       )}
     </div>
@@ -1244,7 +1244,7 @@ function PlannedArchetypeCard({
     } catch (err) {
       toast({
         variant: "destructive",
-        title: "Не удалось классифицировать",
+        title: "Couldn't classify",
         description: err instanceof Error ? err.message : String(err),
       });
     }
@@ -1261,7 +1261,7 @@ function PlannedArchetypeCard({
     } catch (err) {
       toast({
         variant: "destructive",
-        title: "Не удалось задать archetype",
+        title: "Couldn't set the archetype",
         description: err instanceof Error ? err.message : String(err),
       });
     }
@@ -1304,11 +1304,11 @@ function PlannedArchetypeCard({
         {planning && loop.archetype == null ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Sparkles className="h-4 w-4 animate-pulse text-primary" />
-            Классифицирую вердикт…
+            Classifying the verdict…
           </div>
         ) : loop.archetype == null ? (
           <p className="text-sm text-muted-foreground">
-            Архетип ещё не определён. Запусти классификацию или выбери вручную.
+            The archetype isn't determined yet. Run classification or pick one manually.
           </p>
         ) : (
           loop.archetypeRationale && (
@@ -1337,7 +1337,7 @@ function PlannedArchetypeCard({
             onValueChange={(v) => setChoice(v as Archetype)}
           >
             <SelectTrigger className="w-56" data-testid="archetype-select">
-              <SelectValue placeholder="Выбери archetype" />
+              <SelectValue placeholder="Pick an archetype" />
             </SelectTrigger>
             <SelectContent>
               {ARCHETYPES.map((a: Archetype) => (
@@ -1485,8 +1485,8 @@ export default function ConsiliumLoopDetail() {
     try {
       await developLoop.mutateAsync(id);
       toast({
-        title: "Передано в SDLC",
-        description: "Раунд developing запущен — следи за прогрессом ниже.",
+        title: "Handed off to SDLC",
+        description: "The developing round has started — follow the progress below.",
       });
     } catch (err) {
       // 400 (NO_ACTION_POINTS / REPO_NOT_*) | 409 (WRONG_STATE /
@@ -1558,7 +1558,7 @@ export default function ConsiliumLoopDetail() {
                 ) : (
                   <Hammer className="mr-2 h-4 w-4" />
                 )}
-                Передать в SDLC
+                Hand off to SDLC
               </Button>
             )}
             {canCancel && (
