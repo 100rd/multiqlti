@@ -74,7 +74,7 @@ import {
   type PracticeCardReviewState,
   type PracticeCardStatus,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace, ActionPoint } from "@shared/types";
 import type { LessonRecallFilter } from "./memory/lessons/types";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
@@ -528,6 +528,13 @@ export interface IStorage {
   updateLoopRoundReport(loopId: string, round: number, report: ResearchReport): Promise<void>;
   /** Stage 4: persist the per-round execution trace out-of-band (mirror of report). */
   updateLoopRoundExecutionTrace(loopId: string, round: number, trace: ExecutionTrace): Promise<void>;
+  /**
+   * Stage B (design §5): persist the planner's per-criterion METHOD assignment onto the
+   * round's `open_action_points` (each ActionPoint's additive `verificationMethod`). Mirror
+   * of the trace/report updates — additive, no migration; no-op when the (loop, round) row
+   * is absent. Idempotent / best-effort (observability only; the executor re-normalizes).
+   */
+  updateLoopRoundActionPoints(loopId: string, round: number, actionPoints: ActionPoint[]): Promise<void>;
 
 
   // Tracker Connections (Issue Tracker Integration)
@@ -1800,6 +1807,15 @@ export class MemStorage implements IStorage {
     for (const r of this.consiliumLoopRoundsMap.values()) {
       if (r.loopId === loopId && r.round === round) {
         this.consiliumLoopRoundsMap.set(r.id, { ...r, executionTrace: trace });
+        return;
+      }
+    }
+  }
+
+  async updateLoopRoundActionPoints(loopId: string, round: number, actionPoints: ActionPoint[]): Promise<void> {
+    for (const r of this.consiliumLoopRoundsMap.values()) {
+      if (r.loopId === loopId && r.round === round) {
+        this.consiliumLoopRoundsMap.set(r.id, { ...r, openActionPoints: actionPoints });
         return;
       }
     }

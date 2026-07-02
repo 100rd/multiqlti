@@ -152,7 +152,7 @@ export interface SdlcOutcomeLike {
   note?: string;
   skills?: string[];
   verification?: {
-    method: "test-run";
+    method: "test-run" | "judge" | "manual-ops";
     ran: boolean;
     passed: boolean;
     summary: string;
@@ -222,13 +222,20 @@ export function buildSdlcTrace(
             passed: o.verification.passed,
             fixIterations: o.verification.fixIterations,
             summary: o.verification.summary,
-            // Stage A: stamp the final whole-suite result on the (test-run) criterion —
-            // UNLESS the final run itself TIMED OUT (unadjudicated: there is no pass/fail
+            // Stage A: stamp the final whole-suite result on the criterion — ONLY for
+            // `test-run` criteria (Stage B: the final re-verification is a whole-SUITE test
+            // run, irrelevant to `judge`/`manual-ops` leaves, so it is not stamped on them),
+            // and UNLESS the final run itself TIMED OUT (unadjudicated: there is no pass/fail
             // to stamp, and `false` here would read as a bogus regression).
-            ...(finalPassed !== undefined && !finalTimedOut ? { passedAtFinal: finalPassed } : {}),
-            // Timeout policy: NOT-ADJUDICATED iff this AP's own run timed out OR the final
-            // whole-suite run timed out (either leaves this criterion unadjudicated).
-            ...(o.verification.timedOut || finalTimedOut ? { timedOut: true } : {}),
+            ...(o.verification.method === "test-run" && finalPassed !== undefined && !finalTimedOut
+              ? { passedAtFinal: finalPassed }
+              : {}),
+            // Timeout policy: NOT-ADJUDICATED iff this AP's own run timed out OR (for a
+            // test-run criterion) the final whole-suite run timed out. A judge/manual-ops
+            // leaf is never affected by the final SUITE timeout.
+            ...(o.verification.timedOut || (o.verification.method === "test-run" && finalTimedOut)
+              ? { timedOut: true }
+              : {}),
           },
         ]
       : [];

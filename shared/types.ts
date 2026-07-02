@@ -1714,7 +1714,42 @@ export interface ActionPoint {
    * same "When…Then…" FORMAT convention, different feature/type; not coupled.
    */
   acceptanceCriterion?: string;
+  /**
+   * Stage B (design §5 + §9 "Stage 6"): the OPTIONAL per-criterion VERIFICATION METHOD.
+   * The judge PROPOSES it (one of {@link JUDGE_PROPOSABLE_METHODS}) and the planner
+   * ASSIGNS/normalizes it — enum-clamped, with an absent/invalid value filled from the
+   * archetype default (`repo-assessment → test-run`, `research → web-evidence`). The
+   * "verification method is a per-criterion property, not an archetype property" (§5): a
+   * single verdict routinely mixes `test-run` code criteria with `manual-ops` operational
+   * ones (e.g. "rotate the leaked secrets") no code change can verify.
+   *
+   * Absent on pre-Stage-B verdicts, on judges that don't follow the prompt, and whenever
+   * `implement.perCriterionMethod` is off ⇒ fully back-compat. UNTRUSTED model text but
+   * ENUM-CLAMPED on parse (an invalid value is dropped → the planner default), so it is
+   * bounded to the fixed union; NEVER a shell/branch/PR sink.
+   */
+  verificationMethod?: VerificationMethod;
 }
+
+/**
+ * The verification methods a criterion can carry (design §5 — the ground-truth check).
+ * Single source of truth for the enum-clamp shared by the judge prompt, the convergence
+ * reader, the planner normalizer, the SDLC executor's routing, and the FE. `none` is a
+ * trace-only sentinel (a criterion with no method) and is intentionally NOT part of this
+ * assignable set.
+ */
+export const VERIFICATION_METHODS = ["test-run", "web-evidence", "judge", "manual-ops"] as const;
+export type VerificationMethod = (typeof VERIFICATION_METHODS)[number];
+
+/**
+ * The subset a JUDGE may PROPOSE per action point. `web-evidence` is deliberately
+ * EXCLUDED — it is the research archetype's ground truth (cited sources), assigned by the
+ * planner's archetype default, never proposed on a code action point. `manual-ops` marks
+ * an operational action outside the repo (rotate a secret, revoke a key, file a ticket)
+ * that NO code change can verify — the loop can only surface it, never close it (§5).
+ */
+export const JUDGE_PROPOSABLE_METHODS = ["test-run", "judge", "manual-ops"] as const;
+export type JudgeProposableMethod = (typeof JUDGE_PROPOSABLE_METHODS)[number];
 
 /**
  * The convergence-blocking priority tier. An action point at `P0` keeps the
@@ -1844,7 +1879,12 @@ export interface ExecutionSkill {
 export interface ExecutionCriterion {
   /** The Definition-of-Done text (clamped, inert). */
   criterion: string;
-  method: "test-run" | "web-evidence" | "judge" | "none";
+  /**
+   * How the criterion was checked (design §5). Stage B adds `manual-ops` — an
+   * operational action outside the repo that the loop only SURFACES (`ran:false`,
+   * `passed:false` ALWAYS — a manual op is NEVER green, only surfaced).
+   */
+  method: "test-run" | "web-evidence" | "judge" | "manual-ops" | "none";
   /** Whether the verification method actually ran. */
   ran: boolean;
   /** Acceptance-criterion green. */

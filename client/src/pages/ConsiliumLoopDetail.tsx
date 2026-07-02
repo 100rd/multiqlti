@@ -388,6 +388,24 @@ function GreenDot({ green }: { green: boolean }) {
 }
 
 function CriterionLeaf({ c }: { c: ExecutionCriterion }) {
+  // Stage B (design §5): a manual-ops criterion is an operational action OUTSIDE the repo
+  // that the pipeline can only SURFACE — it is NEVER green (adversarial risk 1). Render it
+  // distinctly (amber "manual op — needs human"), never the misleading test "not run"/"unmet".
+  if (c.method === "manual-ops") {
+    return (
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+        <span
+          className="inline-block h-2 w-2 rounded-full bg-amber-500"
+          aria-label="manual operation required"
+        />
+        <Badge variant="outline" className="text-[10px] py-0 border-amber-500 text-amber-700">
+          manual-ops
+        </Badge>
+        <span className="text-amber-700 font-medium">manual op — needs human</span>
+        <span className="text-foreground/80">{c.criterion || "—"}</span>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
       <GreenDot green={c.passed} />
