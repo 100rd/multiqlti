@@ -227,7 +227,7 @@ export class PgStorage implements IStorage {
 
   async getPipelines(): Promise<Pipeline[]> {
     // Project-scoped in a request context; cross-project in a system context
-    // (config-sync, federation, catalog reconcile, startup seed) via runAsSystem.
+    // (federation, catalog reconcile, startup seed) via runAsSystem.
     return db.select().from(pipelines).where(withProjectList(pipelines));
   }
 

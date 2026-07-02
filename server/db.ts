@@ -96,7 +96,7 @@ export function withProject(table: any, condition?: SQL | undefined): SQL {
  * cross-project even with NO extra condition: it returns the (possibly
  * undefined) condition, i.e. "no project filter = all rows", audited by the
  * surrounding runAsSystem() call. This is exactly what legitimate cross-project
- * background callers need: config-sync CLI, federation peer sync, catalog
+ * background callers need: federation peer sync, catalog
  * reconcile, the consilium-loop sweep poller, and startup seeds.
  *
  * withProject (strict — throws on system + no-condition) is deliberately

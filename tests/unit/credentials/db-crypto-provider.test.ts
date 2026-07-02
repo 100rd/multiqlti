@@ -1102,8 +1102,6 @@ describe("DbCryptoCredentialProvider", () => {
         "server/credentials/db-crypto-provider.ts",
         // The function definition itself.
         "server/crypto.ts",
-        // age-crypto has its own decrypt(EncryptedFile, KeyObject) — different function.
-        "server/config-sync/age-crypto.ts",
         // Federation encryption: class method, not main crypto.
         "server/federation/encryption.ts",
         "server/federation/transport.ts",
