@@ -10,7 +10,13 @@ import type {
   TaskGroupIterationRow,
   TaskExecutionRow,
 } from "@shared/schema";
-import type { WsEvent, TaskResult } from "@shared/types";
+import type {
+  WsEvent,
+  TaskResult,
+  GatewayRequest,
+  GatewayResponse,
+  StreamingStageOptions,
+} from "@shared/types";
 import type { TaskTracer } from "./task-tracer";
 import { configLoader } from "../config/loader.js";
 import { DEFAULT_TASK_MODEL } from "../config/schema.js";
@@ -127,6 +133,62 @@ export function composeIterationInput(baseInput: string, humanNote: string | nul
   const note = (humanNote ?? "").trim();
   if (!note) return baseInput;
   return `${baseInput}\n\n${HUMAN_NOTE_HEADING}:\n${note}`;
+}
+
+// ─── Judge timeout resilience (fix: bounded retry with model fallback) ──────
+
+/** Structured record of the single bounded retry, surfaced for observability. */
+interface RetryNote {
+  cause: "timeout" | "empty output";
+  /** The fallback slug used, or null when the retry re-used the task's model. */
+  fallbackModel: string | null;
+  /** The slug the retry attempt actually ran under. */
+  retriedModel: string;
+}
+
+/** A direct_llm gateway call that returned no usable content (0-token/empty). */
+function isEmptyCompletion(response: GatewayResponse): boolean {
+  return response.content.trim().length === 0;
+}
+
+/**
+ * A gateway error that is a WALL-CLOCK TIMEOUT (the judge's cap on the largest-
+ * context call), as opposed to a budget/auth/other failure. Matched by the
+ * provider error name/message so it is cross-provider: the CLI providers throw
+ * `CliOverallTimeoutError` / "CLI timed out after …" / "exceeded overall cap",
+ * the API providers throw a `TimeoutError`. NON-timeout errors are NOT retried —
+ * they propagate exactly as today.
+ */
+function isTimeoutError(err: unknown): boolean {
+  const name = err instanceof Error ? err.name : "";
+  const message = err instanceof Error ? err.message : String(err);
+  return /timeout/i.test(name) || /timed out|timeout|overall cap/i.test(message);
+}
+
+/**
+ * Fold the retry note into the parsed result so an operator can SEE that the
+ * judge/LLM call retried and under which model — additive `output._retry`
+ * structured record + one human-readable `decisions[]` line. When there was no
+ * retry the result is returned byte-identical (inert path).
+ */
+function annotateRetry(result: TaskResult, note: RetryNote | null): TaskResult {
+  if (!note) return result;
+  const label = note.fallbackModel
+    ? `retried (fallback: ${note.fallbackModel})`
+    : "retried (same model)";
+  return {
+    ...result,
+    output: {
+      ...(result.output ?? {}),
+      _retry: {
+        retried: true,
+        cause: note.cause,
+        model: note.retriedModel,
+        fallbackModel: note.fallbackModel,
+      },
+    },
+    decisions: [...(result.decisions ?? []), `judge/LLM call ${label} after ${note.cause}`],
+  };
 }
 
 // ─── Task Orchestrator ──────────────────────────────────────────────────────
@@ -666,23 +728,75 @@ export class TaskOrchestrator {
     // drains deltas incrementally. Overall cap is the configurable per-task
     // timeout; no idle cap so a long initial think is not mistaken for a stall.
     const taskTimeoutMs = configLoader.get().pipeline.taskGroups.taskTimeoutMs;
-    const response = await this.gateway.completeStreaming(
-      {
-        modelSlug,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: inputContent },
-        ],
-        temperature: 0.7,
-        maxTokens: 4096,
-      },
-      undefined,
-      undefined,
-      { overallTimeoutMs: taskTimeoutMs },
-    );
+    const request: GatewayRequest = {
+      modelSlug,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: inputContent },
+      ],
+      temperature: 0.7,
+      maxTokens: 4096,
+    };
+    // fix (judge timeout resilience): the judge's largest-context call can hit
+    // the wall-clock cap and return 0 tokens; completeDirectLlm adds an optional
+    // single bounded retry (default OFF ⇒ byte-identical to the single call above).
+    const { response, retry } = await this.completeDirectLlm(request, {
+      overallTimeoutMs: taskTimeoutMs,
+    });
 
-    this.tracing.completeLlmSpan(group.id, llmSpanId, { response, modelSlug, inputContent });
-    return parseDirectLlmResponse(response.content);
+    this.tracing.completeLlmSpan(group.id, llmSpanId, {
+      response,
+      modelSlug: response.modelSlug,
+      inputContent,
+    });
+    return annotateRetry(parseDirectLlmResponse(response.content), retry);
+  }
+
+  /**
+   * Run the direct_llm gateway call with an OPTIONAL single bounded retry
+   * (fix: bounded retry with model fallback for judge timeouts). Config
+   * `pipeline.consiliumLoop.judgeRetry` is default-OFF ⇒ EXACTLY ONE attempt and
+   * ANY throw/empty propagates unchanged (byte-identical to pre-fix; the FSM/
+   * reducer failure path is untouched). When enabled, a first attempt that ends
+   * in a gateway TIMEOUT (throw) or an EMPTY (0-token) completion is retried
+   * EXACTLY ONCE, optionally under `fallbackModel`.
+   *
+   * Idempotency (adversarial review, risk 1): the completion is a PURE gateway
+   * call — no outbox/webhook/business side effect fires per attempt. The gateway
+   * logs one llm_request + cost row per PHYSICAL call, which is the intended
+   * per-attempt accounting, so a retry cannot double-charge a business action or
+   * duplicate a side effect.
+   *
+   * Bound (adversarial review, risk 2): EXACTLY one retry. A second timeout/error
+   * is NOT caught here — it propagates so the task fails cleanly (retry exhausted
+   * → today's failure path). No backoff/exponential machinery, so no retry storms.
+   */
+  private async completeDirectLlm(
+    request: GatewayRequest,
+    streamOptions: StreamingStageOptions,
+  ): Promise<{ response: GatewayResponse; retry: RetryNote | null }> {
+    const cfg = configLoader.get().pipeline.consiliumLoop.judgeRetry;
+
+    let cause: RetryNote["cause"];
+    try {
+      const response = await this.gateway.completeStreaming(request, undefined, undefined, streamOptions);
+      // Disabled OR a non-empty completion ⇒ today's behaviour, no retry.
+      if (!cfg.enabled || !isEmptyCompletion(response)) return { response, retry: null };
+      cause = "empty output";
+    } catch (err) {
+      // Disabled OR a non-timeout error ⇒ propagate exactly as today.
+      if (!cfg.enabled || !isTimeoutError(err)) throw err;
+      cause = "timeout";
+    }
+
+    // ── single bounded retry (enabled AND timeout/empty only) ──
+    const retriedModel = cfg.fallbackModel ?? request.modelSlug;
+    const retryRequest: GatewayRequest = { ...request, modelSlug: retriedModel };
+    const response = await this.gateway.completeStreaming(retryRequest, undefined, undefined, streamOptions);
+    return {
+      response,
+      retry: { cause, fallbackModel: cfg.fallbackModel ?? null, retriedModel },
+    };
   }
 
   private async executePipelineRun(

@@ -333,6 +333,36 @@ export const ConfigSchema = z.object({
        */
       sdlcTimeoutMs: z.coerce.number().int().min(60_000).max(1_800_000).default(1_200_000),
       /**
+       * Judge timeout resilience (fix: bounded retry with model fallback for
+       * judge timeouts). In a consilium dispute the JUDGE task receives the FULL
+       * debate context — the largest-context call of the round — and can hit the
+       * gateway wall-clock cap (observed: latency ≈ 600_000ms, 0 output tokens),
+       * which FAILS the judge task_execution, cancels its dependents, fails the
+       * task_group_iteration, and drives the loop to FAILED.
+       *
+       * When `enabled`, a direct_llm LLM-stage task whose gateway call ends in a
+       * TIMEOUT (throw) or an EMPTY (0-token) completion is retried EXACTLY ONCE;
+       * on the retry an optional `fallbackModel` overrides the slug. Bounded to a
+       * SINGLE retry — no backoff/exponential machinery, so no retry storms. The
+       * LLM completion is a pure gateway call (no outbox/webhook side effect per
+       * attempt), so a retry cannot double-charge a business action.
+       *
+       * Default FALSE ⇒ INERT: exactly one attempt and any throw/empty propagates
+       * unchanged (byte-identical to today). The FSM/reducer failure path when the
+       * retry is disabled OR exhausted is untouched — the loop still fails cleanly.
+       */
+      judgeRetry: z.object({
+        /** Kill-switch: false → single attempt, today's failure path (inert). */
+        enabled: z.boolean().default(false),
+        /**
+         * Optional model slug used ONLY on the single retry attempt (e.g. a
+         * faster/cheaper model that fits the large judge context under the cap).
+         * Omitted ⇒ the retry re-uses the task's own model. min(1) when present
+         * so an empty string is rejected rather than silently blanking the slug.
+         */
+        fallbackModel: z.string().min(1).optional(),
+      }).default({}),
+      /**
        * Stage 1 (design §6): the intent→archetype PLANNER — a single OUT-OF-BAND
        * lightweight model call (NOT a DAG task, NOT an FSM state) that proposes one
        * of a fixed enum of archetypes for a verdict-terminal loop. The whole planner
