@@ -60,6 +60,26 @@ describe("pipeline.consiliumLoop schema", () => {
     expect(impl.testRunTimeoutMs).toBe(300_000);
   });
 
+  it("judgeRetry defaults to INERT (disabled, no fallback)", () => {
+    const res = ConfigSchema.safeParse({});
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    const jr = res.data.pipeline.consiliumLoop.judgeRetry;
+    expect(jr.enabled).toBe(false); // default OFF ⇒ byte-identical to today
+    expect(jr.fallbackModel).toBeUndefined();
+  });
+
+  it("judgeRetry accepts enable + fallbackModel; rejects an empty fallback slug", () => {
+    const ok = parseLoop({ judgeRetry: { enabled: true, fallbackModel: "claude-sonnet" } });
+    expect(ok.success).toBe(true);
+    if (ok.success) {
+      expect(ok.data.pipeline.consiliumLoop.judgeRetry.enabled).toBe(true);
+      expect(ok.data.pipeline.consiliumLoop.judgeRetry.fallbackModel).toBe("claude-sonnet");
+    }
+    // min(1): an empty slug is rejected rather than silently blanking the model.
+    expect(parseLoop({ judgeRetry: { fallbackModel: "" } }).success).toBe(false);
+  });
+
   it("Stage 2b: accepts valid verification overrides", () => {
     const res = parseLoop({
       implement: {
