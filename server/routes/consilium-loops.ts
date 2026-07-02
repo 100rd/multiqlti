@@ -20,6 +20,8 @@ import type {
   PlanErrorCode,
 } from "../services/consilium/consilium-loop-controller.js";
 import { ARCHETYPES } from "@shared/types";
+import { CONSILIUM_LOOP_TERMINAL_STATES } from "@shared/schema";
+import { computeOpenRemainder } from "@shared/consilium-remainder";
 import type { AppConfig } from "../config/schema.js";
 import { requireRole } from "../auth/middleware.js";
 import { validateBody } from "../middleware/validate.js";
@@ -121,10 +123,21 @@ export function registerConsiliumLoopRoutes(
     // ephemeral — degrades to undefined cross-instance; DB state stays authoritative).
     const devProgress = controller.getDevProgress(auth.loop.id);
     const isAdmin = req.user?.role === "admin";
+    // Finding #5: for a TERMINAL loop, surface a READ-TIME count-by-priority of
+    // the LAST round's still-open action points so a "converged with remainder"
+    // outcome (convergence keys on P0 by design; non-P0 items still standing) is
+    // visible + executable via develop-from-terminal. Computed here from the
+    // already-fetched `rounds` — no schema change; `undefined` (omitted from the
+    // JSON) for a non-terminal loop or an empty last round.
+    const openRemainder = (CONSILIUM_LOOP_TERMINAL_STATES as readonly string[]).includes(
+      auth.loop.state,
+    )
+      ? computeOpenRemainder(rounds)
+      : undefined;
     // Stage 1: the new loop columns (engineerInstruction, archetype, archetypeSource,
     // archetypeRationale, archetypeParams, archetypeDecidedAt) ride the maskLoop
     // spread of `auth.loop` automatically — no per-field allowlist to keep in sync.
-    res.json({ ...maskLoop({ ...auth.loop }, !!isAdmin), rounds, devProgress });
+    res.json({ ...maskLoop({ ...auth.loop }, !!isAdmin), rounds, devProgress, openRemainder });
   });
 
   // ── Start (PENDING → BUILDING_CONTEXT) ──────────────────────────────────────

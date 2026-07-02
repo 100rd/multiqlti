@@ -1735,6 +1735,30 @@ export interface ConvergenceVerdict {
   openActionPoints: ActionPoint[];
 }
 
+/**
+ * Finding #5 — the READ-TIME (never-persisted) summary of the STILL-OPEN action
+ * points carried by a TERMINAL loop's LAST recorded round. Convergence is keyed
+ * on `P0` BY DESIGN (a loop converges the moment no P0 remains), but the judge
+ * may leave actionable non-P0 items (P1/P2/…) standing; without surfacing them
+ * that remainder silently drops out of the lifecycle. The loop detail response
+ * attaches this (only when non-empty) so a "converged with remainder" outcome is
+ * VISIBLE and executable via develop-from-terminal. Computed from
+ * `consilium_loop_rounds.openActionPoints` (LAST round ONLY — each round persists
+ * the set still open AT THAT round's decide, so summing across rounds would
+ * double-count items later closed). No schema/FSM change; see
+ * `computeOpenRemainder` in `shared/consilium-remainder.ts`.
+ */
+export interface OpenRemainder {
+  /** Total still-open action points on the last recorded round (always > 0 when present). */
+  total: number;
+  /**
+   * Count per priority tier, keyed by the UPPERCASED priority label
+   * (e.g. `{ P1: 1, P2: 1 }`); an action point with no priority is counted under
+   * `"P?"`. Only tiers with a non-zero count appear.
+   */
+  byPriority: Record<string, number>;
+}
+
 // ─── Loop ARCHETYPE (Stage 1 — intent→archetype planner, design §5/§6) ──────
 // The intent class a lightweight planner proposes (and a human may override) for a
 // verdict-terminal loop. Stage 1 STORES it; it does NOT yet branch implement on it

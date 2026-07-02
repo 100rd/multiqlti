@@ -107,8 +107,9 @@ import {
 } from "@/components/ui/select";
 import type { ConsiliumLoopState } from "@/hooks/use-consilium-loops";
 import { IterationDetailView } from "@/components/task-groups/iterations-panel";
-import type { ActionPoint, Archetype } from "@shared/types";
+import type { ActionPoint, Archetype, OpenRemainder } from "@shared/types";
 import { ARCHETYPES } from "@shared/types";
+import { summarizeNonP0Remainder } from "@shared/consilium-remainder";
 
 // Priority palette for action-point severity tiers (P0–P3). The loop page is now
 // the canonical home of this taxonomy (the task-group verdict panel is retired).
@@ -708,6 +709,19 @@ function ResultPanel({
                 {latest.openP0 ?? "—"} open P0
               </span>
             </div>
+            {/* Finding #5 — trivial priority breakdown of the still-open remainder.
+                A CONVERGED loop gets the dedicated actionable callout above; here
+                we only enrich the OTHER terminal verdicts (stopped_cap/escalated,
+                where the verdict is already front-and-center) with the counts. */}
+            {loop.openRemainder && loop.state !== "converged" && (
+              <p className="text-[11px] text-muted-foreground">
+                Open remainder:{" "}
+                {Object.entries(loop.openRemainder.byPriority)
+                  .sort((a, b) => a[0].localeCompare(b[0]))
+                  .map(([priority, count]) => `${count} ${priority}`)
+                  .join(", ")}
+              </p>
+            )}
             {latestAps.length > 0 ? (
               <ul className="space-y-1.5">
                 {latestAps.map((ap, i) => (
@@ -729,6 +743,63 @@ function ResultPanel({
               </p>
             )}
           </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Converged-with-remainder callout (finding #5) ──────────────────────────────
+//
+// Convergence is keyed on P0 BY DESIGN: a loop reaches `converged` the moment no
+// P0 action point remains. The judge may still leave actionable non-P0 items
+// (P1/P2/…) standing — historically they silently dropped out of the lifecycle
+// unless an operator noticed the leftover verdict. This callout makes that
+// remainder VISIBLE on a CONVERGED loop and one-click actionable by REUSING the
+// existing develop-from-terminal flow (the SAME `useDevelopLoop` mutation the
+// header "Hand off to SDLC" action drives — no duplicated logic, no FSM change).
+// Renders NOTHING when the loop converged clean (no non-P0 remainder).
+//
+// SECURITY: `openRemainder` is server-computed from priority LABELS only (counts,
+// no model prose) and rendered as inert React text.
+function ConvergedRemainderCallout({
+  remainder,
+  canDevelop,
+  developing,
+  onDevelop,
+}: {
+  remainder: OpenRemainder | null | undefined;
+  canDevelop: boolean;
+  developing: boolean;
+  onDevelop: () => void;
+}) {
+  const summary = summarizeNonP0Remainder(remainder);
+  if (!summary) return null;
+  return (
+    <Card className="border-primary/40 bg-primary/5">
+      <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-2 min-w-0">
+          <Check className="h-4 w-4 text-green-600 shrink-0 mt-0.5" />
+          <div className="min-w-0 text-sm">
+            <p className="font-medium">
+              Converged with {summary.total} open non-P0 item
+              {summary.total === 1 ? "" : "s"} ({summary.breakdown})
+            </p>
+            <p className="text-muted-foreground">
+              Convergence is keyed on P0 by design — these lower-priority items are
+              still open. Hand them off to run the existing develop-from-terminal round.
+            </p>
+          </div>
+        </div>
+        {canDevelop && (
+          <Button size="sm" onClick={onDevelop} disabled={developing} className="shrink-0">
+            {developing ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <Hammer className="mr-2 h-4 w-4" />
+            )}
+            Develop the remainder
+          </Button>
         )}
       </CardContent>
     </Card>
@@ -1623,6 +1694,18 @@ export default function ConsiliumLoopDetail() {
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
         {/* Result — the outcome the human gate decides on (near the top). */}
         <ResultPanel loop={loop} terminal={terminal} />
+
+        {/* Finding #5 — a CONVERGED loop still carrying non-P0 action points
+            surfaces them here + a one-click develop-from-terminal hand-off that
+            reuses the SAME `useDevelopLoop` mutation as the header action. */}
+        {loop.state === "converged" && (
+          <ConvergedRemainderCallout
+            remainder={loop.openRemainder}
+            canDevelop={canDevelop}
+            developing={developLoop.isPending}
+            onDevelop={handleDevelop}
+          />
+        )}
 
         {/* Research report (Stage 3) — the researched outcome of a `research`
             loop, on the latest round. Rendered only when a report is present

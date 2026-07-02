@@ -21,6 +21,7 @@ import type {
 } from "@shared/schema";
 import type {
   Archetype,
+  OpenRemainder,
   ResearchReport,
   ResearchClaim,
   ResearchCitation,
@@ -165,6 +166,13 @@ export type ConsiliumLoopRoundDetail = ConsiliumLoopRoundRow & {
 export type ConsiliumLoopDetail = ConsiliumLoopListItem & {
   rounds: ConsiliumLoopRoundDetail[];
   devProgress?: DevProgress;
+  /**
+   * Finding #5: on a TERMINAL loop, the READ-TIME count-by-priority of the last
+   * round's still-open action points (source: server-side `computeOpenRemainder`).
+   * Absent for a non-terminal loop or a clean last round — consumers render it
+   * defensively (the "converged with remainder" callout).
+   */
+  openRemainder?: OpenRemainder | null;
   /** The classified/overridden archetype, or null when not yet planned. */
   archetype?: Archetype | null;
   /** Whether the archetype was model-`proposed` or human-`override`. */
