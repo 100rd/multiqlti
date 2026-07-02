@@ -23,7 +23,6 @@ import Settings from "@/pages/Settings";
 import Privacy from "@/pages/Privacy";
 import Statistics from "@/pages/Statistics";
 import Memory from "@/pages/Memory";
-import Knowledge from "@/pages/Knowledge";
 import KnowledgeBase from "@/pages/KnowledgeBase";
 import MorningBrief from "@/pages/MorningBrief";
 import Orchestrator from "@/pages/Orchestrator";
@@ -134,9 +133,6 @@ function ProtectedRouter() {
         )} />
         <Route path="/workspaces/:id/knowledge-base" component={() => (
           <ErrorBoundary><KnowledgeBase /></ErrorBoundary>
-        )} />
-        <Route path="/workspaces/:id/knowledge" component={() => (
-          <ErrorBoundary><Knowledge /></ErrorBoundary>
         )} />
         <Route path="/workspaces/:id" component={() => (
           <ErrorBoundary><Workspace /></ErrorBoundary>
