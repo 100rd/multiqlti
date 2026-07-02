@@ -153,38 +153,21 @@ describe("SkillEditor component — team dropdown (PR #171)", () => {
   });
 });
 
-// ─── CreateTaskGroup page (PR #167) ──────────────────────────────────────────
+// ─── Task-form shared bits (still used by the Task Library) ───────────────────
+//
+// The standalone Task Groups pages (CreateTaskGroup / TaskGroup / …) were retired
+// once the dispute moved onto the consilium loop page. The shared task-form module
+// they used SURVIVES because the Task Library still authors templates with it, so
+// these assertions target the reusable module directly (not a deleted page).
 
-describe("CreateTaskGroup page (PR #167)", () => {
-  const source = readSource("client/src/pages/CreateTaskGroup.tsx");
-  // The shared task-form bits were extracted into a reusable module (used by
-  // BOTH CreateTaskGroup and the TaskGroup edit mode). emptyTask/validate/the
-  // dependsOn toggle now live in task-form-logic; the TaskRow + execution-mode
-  // options live in task-form.tsx. CreateTaskGroup imports + uses them.
+describe("shared task-form module (task-form-logic + task-form)", () => {
   const formLogic = readSource("client/src/components/task-groups/task-form-logic.ts");
   const formRow = readSource("client/src/components/task-groups/task-form.tsx");
 
-  it("imports the shared emptyTask helper (extracted to task-form-logic)", () => {
-    expect(source).toContain("emptyTask");
-    expect(source).toContain("@/components/task-groups/task-form");
+  it("exposes the shared emptyTask helper with executionMode + dependsOn", () => {
     expect(formLogic).toContain("function emptyTask");
     expect(formLogic).toContain("executionMode");
     expect(formLogic).toContain("dependsOn");
-  });
-
-  it("supports both manual and submit-work view modes", () => {
-    expect(source).toContain('"manual"');
-    expect(source).toContain('"submit-work"');
-  });
-
-  it("has split preview functionality (LLM-assisted task splitting)", () => {
-    expect(source).toContain("splitPreview");
-    expect(source).toContain("useSplitPreview");
-  });
-
-  it("has submit-work flow with tracker integration", () => {
-    expect(source).toContain("useSubmitWork");
-    expect(source).toContain("trackerUrl");
   });
 
   it("supports both pipeline_run and direct_llm execution modes (shared TaskRow)", () => {
@@ -196,25 +179,9 @@ describe("CreateTaskGroup page (PR #167)", () => {
     expect(formLogic).toContain("toggleDependency");
     expect(formLogic).toContain("dependsOn");
   });
-
-  it("navigates back on success", () => {
-    expect(source).toContain("useLocation");
-  });
-
-  it("route /task-groups/new is registered in App.tsx", () => {
-    const appSource = readSource("client/src/App.tsx");
-    expect(appSource).toContain("/task-groups/new");
-    expect(appSource).toContain("CreateTaskGroup");
-  });
-
-  it("route /task-groups/:id/trace is registered in App.tsx (PR #169)", () => {
-    const appSource = readSource("client/src/App.tsx");
-    expect(appSource).toContain("/task-groups/:id/trace");
-    expect(appSource).toContain("TaskGroupTrace");
-  });
 });
 
-// ─── CreateTaskGroup — pure logic (emptyTask) ─────────────────────────────────
+// ─── emptyTask — pure logic ───────────────────────────────────────────────────
 
 describe("CreateTaskGroup — emptyTask helper logic", () => {
   // Re-implement emptyTask in test scope to verify behavior

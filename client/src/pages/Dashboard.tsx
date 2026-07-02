@@ -85,18 +85,18 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        <Link href="/task-groups" data-testid="link-stat-task-groups">
-          <Card className="border-border shadow-sm cursor-pointer hover:bg-accent/40 transition-colors">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Task Groups</CardTitle>
-              <Layers className="h-4 w-4 text-primary" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{taskGroupsTotal}</div>
-              <p className="text-xs text-muted-foreground mt-1">{taskGroupsActive} running</p>
-            </CardContent>
-          </Card>
-        </Link>
+        {/* Task groups are internal machinery of the consilium loop now — surfaced
+            as a static metric (their standalone pages have been retired). */}
+        <Card className="border-border shadow-sm" data-testid="stat-task-groups">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Task Groups</CardTitle>
+            <Layers className="h-4 w-4 text-primary" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{taskGroupsTotal}</div>
+            <p className="text-xs text-muted-foreground mt-1">{taskGroupsActive} running</p>
+          </CardContent>
+        </Card>
 
         <Link href="/consilium-loops" data-testid="link-stat-consilium-loops">
           <Card className="border-border shadow-sm cursor-pointer hover:bg-accent/40 transition-colors">
