@@ -452,3 +452,64 @@ describe("runSdlcHandoff — LIVE per-AP task list (progress.aps)", () => {
     expect(events[0].aps![99].i).toBe(100);
   });
 });
+
+// ─── §3E verify-before-merge — base→round integration merge ─────────────────────
+
+/** A git runner that discriminates the integration calls; `merge` conflicts when
+ *  `conflict` is set. Records every call for assertion. */
+function makeIntegGitRaw(opts: { conflict?: boolean; remoteResolves?: boolean } = {}) {
+  return vi.fn(async (_repo: string, args: string[]) => {
+    if (args[0] === "status") return " M server/x.ts\n"; // dirty → commits happen
+    if (args[0] === "fetch") return "";
+    if (args[0] === "rev-parse") {
+      if (args.includes("HEAD")) return "headsha000\n";
+      if (args.includes("--verify")) return opts.remoteResolves === false ? "" : "originsha\n";
+      return "basesha111\n"; // resolved integration base (--end-of-options <target>)
+    }
+    if (args[0] === "merge") {
+      if (args[1] === "--abort") return "";
+      if (opts.conflict) throw new Error("merge conflict in server/x.ts");
+      return "";
+    }
+    return "";
+  });
+}
+
+describe("runSdlcHandoff — §3E integration merge (integrateBase)", () => {
+  it("integrateBase=true, CLEAN merge: merges the base INTO the round branch, pushes, returns integrationBase", async () => {
+    const gitRaw = makeIntegGitRaw();
+    const deps = makeDeps({ gitRaw });
+    const res = await runSdlcHandoff(baseReq({ integrateBase: true }), deps as never);
+    // A merge of the resolved base ran before the push.
+    const merged = gitRaw.mock.calls.find((c) => (c[1] as string[])[0] === "merge" && (c[1] as string[]).includes("basesha111"));
+    expect(merged).toBeDefined();
+    expect(res.prRef).toBe("https://github.com/x/y/pull/9"); // PR still opened
+    expect(res.integrationBase).toBe("basesha111"); // baseline the controller diffs against
+    expect(res.integrationConflict).toBeUndefined();
+    expect(deps.push).toHaveBeenCalledTimes(1);
+  });
+
+  it("integrateBase=true, CONFLICT: aborts the merge, surfaces the error, NEVER pushes a broken merge", async () => {
+    const gitRaw = makeIntegGitRaw({ conflict: true });
+    const deps = makeDeps({ gitRaw });
+    const res = await runSdlcHandoff(baseReq({ integrateBase: true }), deps as never);
+    expect(res.prRef).toBeNull();
+    expect(res.integrationConflict).toBe(true);
+    expect(res.error).toContain("integration conflict");
+    // The merge was aborted and NOTHING was pushed / PR'd (no silent broken-merge landing).
+    expect(gitRaw.mock.calls.some((c) => (c[1] as string[])[0] === "merge" && (c[1] as string[])[1] === "--abort")).toBe(true);
+    expect(deps.push).not.toHaveBeenCalled();
+    expect(deps.openPr).not.toHaveBeenCalled();
+    expect(deps.removeWorktree).toHaveBeenCalledTimes(1); // cleanup still guaranteed
+  });
+
+  it("integrateBase absent (default): NO fetch/merge runs — byte-identical to today", async () => {
+    const gitRaw = makeIntegGitRaw();
+    const deps = makeDeps({ gitRaw });
+    const res = await runSdlcHandoff(baseReq(), deps as never); // integrateBase omitted
+    expect(gitRaw.mock.calls.some((c) => (c[1] as string[])[0] === "fetch")).toBe(false);
+    expect(gitRaw.mock.calls.some((c) => (c[1] as string[])[0] === "merge")).toBe(false);
+    expect(res.integrationBase).toBeUndefined();
+    expect(res.prRef).toBe("https://github.com/x/y/pull/9");
+  });
+})

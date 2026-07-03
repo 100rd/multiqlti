@@ -514,6 +514,25 @@ export const ConfigSchema = z.object({
           .default("claude-opus"),
       }).default({}),
       /**
+       * §3E verify-before-merge: move the CONFIRMATION re-review BEFORE the human ship
+       * gate. When `enabled` (default FALSE ⇒ byte-identical to today), after the develop
+       * close-out the loop (1) integrates its BASE branch INTO the round branch — so the
+       * PR is "base + our changes", the realistic landing state — and (2) runs the
+       * confirmation review AUTOMATICALLY (no human gate to START it). A converged
+       * confirmation lands at `awaiting_merge` where the human's ONLY job is the FINAL ship
+       * of already-confirmed code (the `merge_approved` event then terminates the loop with
+       * NO second review). A non-converged confirmation re-develops (bounded by maxRounds).
+       * Default FALSE keeps today's `awaiting_merge → merge_approved → round-2 review` flow
+       * BYTE-IDENTICAL. Gated (like every enhancement here) under the parent
+       * `consiliumLoop.enabled`.
+       */
+      verifyBeforeMerge: z.object({
+        /** Kill-switch: false (default) → today's human-triggered confirmation flow
+         *  (byte-identical). true → confirm against the main-integrated branch BEFORE
+         *  the human ship gate. */
+        enabled: z.boolean().default(false),
+      }).default({}),
+      /**
        * Stage 2a (design §3.C/§4): the SKILLED, archetype-branched implement
        * (develop) phase. When `enabled` is FALSE the loop runs TODAY'S single
        * unskilled coder per action point (byte-for-byte unchanged). When TRUE the

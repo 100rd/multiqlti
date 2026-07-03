@@ -65,6 +65,7 @@ import type { DevCloseoutResult } from "./dev-closeout.js";
 import { runSdlcHandoff, type SdlcProgress, type JudgeVerifyFn, type JudgeVerifyInput } from "../sdlc/executor.js";
 import { runResearchHandoff, type ResearchGateway } from "../research/research-runner.js";
 import { assertAllowedRepoPath } from "./repo-allowlist.js";
+import { buildBranchName } from "./pr-wrapper.js";
 import { assertRepoIsProjectWorkspace, backtickFence, stripControlMultiline, buildSingleVerifierTask, VERIFIER_TASK_NAME } from "./review-factory.js";
 
 // ─── FSM events (design §3 "Event / guard" column) ──────────────────────────
@@ -76,7 +77,7 @@ export type LoopEvent =
   | { kind: "review_completed"; verdict: ConvergenceVerdict }
   | { kind: "review_failed"; error: string }
   | { kind: "decided"; verdict: ConvergenceVerdict; priorOpenP0: number[] }
-  | { kind: "dev_completed"; prRef: string | null; headCommit: string; error?: string }
+  | { kind: "dev_completed"; prRef: string | null; headCommit: string; error?: string; integrationBase?: string }
   | { kind: "merge_approved" }
   // HUMAN-only: an authorized re-open of a verdict-terminal loop back to
   // DEVELOPING (injected ONLY by `controller.develop`, NEVER by `deriveEvent` —
@@ -470,7 +471,16 @@ export function composeCancelExplanation(at: Date, actor?: string, reason?: stri
  * `event`, return the single transition to commit, or `null` for a no-op.
  * No storage, no I/O, no `any` — the whole table is unit-testable in isolation.
  */
-export function reduce(state: ConsiliumLoopState, event: LoopEvent): LoopTransition | null {
+export function reduce(
+  state: ConsiliumLoopState,
+  event: LoopEvent,
+  opts?: { verifyBeforeMerge?: boolean },
+): LoopTransition | null {
+  // §3E verify-before-merge (kill-switched, default OFF ⇒ every branch below is
+  // byte-identical to today). When ON it (a) routes the CONFIRMATION review BEFORE the
+  // human ship gate, (b) lands a converged confirmation at awaiting_merge, and (c) makes
+  // the human `merge_approved` the FINAL ship (terminal, NO second review).
+  const vbm = opts?.verifyBeforeMerge ?? false;
   // `cancel` from any non-terminal state → CANCELLED (design §3 last row). Same
   // target/extra shape as before (NO FSM state-table change) plus the `error`
   // column reused as a terminal explanation so the UI never shows a bare
@@ -516,7 +526,7 @@ export function reduce(state: ConsiliumLoopState, event: LoopEvent): LoopTransit
       return null;
 
     case "deciding":
-      if (event.kind === "decided") return decide(event.verdict, event.priorOpenP0);
+      if (event.kind === "decided") return decide(event.verdict, event.priorOpenP0, vbm);
       return null;
 
     case "developing":
@@ -524,11 +534,18 @@ export function reduce(state: ConsiliumLoopState, event: LoopEvent): LoopTransit
         // H-2: the SDLC close-out ran in the BACKGROUND while the loop sat in
         // `developing`; the event carries the REAL prRef/headCommit (+ optional
         // error) the coder produced. The CAS persists them atomically with the
-        // state change, so AWAITING_MERGE always opens with a real PR (never a
-        // half-open gate).
+        // state change, so the gate always opens with a real PR (never a half-open gate).
+        //
+        // §3E: when verify-before-merge is ON and the close-out was CLEAN, route into
+        // `building_context` FIRST — the confirmation re-review of the main-integrated
+        // round branch runs AUTOMATICALLY (no human gate). An integration/close-out ERROR
+        // (`event.error`, incl. an integration CONFLICT) must NOT run a confirmation on a
+        // broken merge, so it falls through to `awaiting_merge` where the human sees it.
+        // Default OFF ⇒ `awaiting_merge`, byte-identical.
+        const confirmFirst = vbm && !event.error;
         return {
           from: "developing",
-          to: "awaiting_merge",
+          to: confirmFirst ? "building_context" : "awaiting_merge",
           extra: {
             prRef: event.prRef,
             headCommitAtReview: event.headCommit,
@@ -539,7 +556,14 @@ export function reduce(state: ConsiliumLoopState, event: LoopEvent): LoopTransit
       return null;
 
     case "awaiting_merge":
-      if (event.kind === "merge_approved") return { from: "awaiting_merge", to: "building_context" };
+      // §3E: with verify-before-merge the confirmation ALREADY ran before this gate, so the
+      // human merge is the FINAL ship of confirmed, main-integrated code → CONVERGED
+      // (terminal, NO second review). Default OFF ⇒ today's re-review re-entry.
+      if (event.kind === "merge_approved") {
+        return vbm
+          ? { from: "awaiting_merge", to: "converged", extra: { completedAt: new Date() } }
+          : { from: "awaiting_merge", to: "building_context" };
+      }
       return null;
 
     default:
@@ -548,16 +572,23 @@ export function reduce(state: ConsiliumLoopState, event: LoopEvent): LoopTransit
 }
 
 /** DECIDING precedence: converged → cap → anti-stall → DEVELOPING (design §3). */
-function decide(verdict: ConvergenceVerdict, priorOpenP0: number[]): LoopTransition {
+function decide(verdict: ConvergenceVerdict, priorOpenP0: number[], vbm = false): LoopTransition {
   const completedAt = new Date();
+  // `priorOpenP0` already includes this round's count as its last element; its length is
+  // the round number reached (round 1 = the initial review before any develop).
+  const round = priorOpenP0.length;
   // 1. A clean verdict wins, even at the cap round (design §3 "round 6 clean").
   if (verdict.converged) {
+    // §3E: a converged CONFIRMATION (round >= 2 ⇒ code WAS developed and re-reviewed) lands
+    // at the human ship gate so the human ships already-confirmed, main-integrated code.
+    // Round-1 immediate convergence (NOTHING developed) stays terminal as before. Default
+    // OFF ⇒ always terminal CONVERGED (byte-identical).
+    if (vbm && round >= 2) {
+      return { from: "deciding", to: "awaiting_merge", extra: { completedAt } };
+    }
     return { from: "deciding", to: "converged", extra: { completedAt } };
   }
   // 2. Cap: the last-allowed round produced open P0s → STOPPED_CAP.
-  //    `priorOpenP0` already includes this round's count as its last element;
-  //    its length is the round number reached.
-  const round = priorOpenP0.length;
   // 3. Anti-stall: open_p0 flat (non-decreasing) across 2 consecutive rounds.
   if (isAntiStall(priorOpenP0, round)) {
     return { from: "deciding", to: "escalated", extra: { completedAt } };
@@ -707,6 +738,19 @@ export class ConsiliumLoopController {
   }
 
   /**
+   * §3E verify-before-merge kill-switch: TRUE only when the parent loop AND
+   * verifyBeforeMerge are both enabled. The SINGLE gate that (a) tells the reducer to
+   * confirm-before-ship (threaded into `reduce`/`onMergeApproved`) and (b) tells the develop
+   * close-out to integrate the base branch into the round branch (`integrateBase` on the SDLC
+   * request). Optional-chained so a hand-built test config omitting the block reads as OFF
+   * ⇒ byte-identical to today.
+   */
+  private verifyBeforeMergeEnabled(): boolean {
+    const cfg = this.loopConfig();
+    return cfg.enabled && (cfg.verifyBeforeMerge?.enabled ?? false);
+  }
+
+  /**
    * Preflight (bug #4) for the research archetype's ONLY tool, web_search. TRUE when
    * its research-grade backend — Tavily — has an API key. web_search's DuckDuckGo
    * fallback needs no key, but its instant-answer API is degenerate for research
@@ -759,7 +803,11 @@ export class ConsiliumLoopController {
     const loop = await this.storage.getLoop(loopId);
     if (!loop || loop.state !== "awaiting_merge") return null;
     const mergedHead = await this.readRepoHead(loop); // SERVER-read, never client.
-    const transition = reduce(loop.state, { kind: "merge_approved" });
+    // §3E: when verify-before-merge is on, `merge_approved` is the FINAL ship → CONVERGED
+    // (terminal, NO second review). Off ⇒ today's re-review re-entry (building_context).
+    const transition = reduce(loop.state, { kind: "merge_approved" }, {
+      verifyBeforeMerge: this.verifyBeforeMergeEnabled(),
+    });
     if (!transition) return null;
     // Audit the delta vs the HEAD we reviewed (M-3); empty string = unreadable.
     const error =
@@ -1146,7 +1194,9 @@ export class ConsiliumLoopController {
       });
     }
 
-    const transition = reduce(loop.state, event);
+    const transition = reduce(loop.state, event, {
+      verifyBeforeMerge: this.verifyBeforeMergeEnabled(),
+    });
     if (!transition) return null;
 
     // H-3 (BLOCKER fix): CLAIM the transition with the CAS FIRST, then run any
@@ -1468,8 +1518,11 @@ export class ConsiliumLoopController {
   private deriveDevEvent(loop: ConsiliumLoopRow): LoopEvent | null {
     const run = this.sdlcRuns.get(loop.id);
     if (!run || run.round !== loop.round || !run.done || !run.result) return null;
-    const { prRef, headCommit, error } = run.result;
-    return { kind: "dev_completed", prRef, headCommit, error };
+    const { prRef, headCommit, error, integrationBase } = run.result;
+    // §3E: `integrationBase` (the base sha merged into the round branch) rides the event so
+    // the developing→building_context side effect can baseline the confirmation review at
+    // `base..roundBranch`. Undefined when verify-before-merge is off ⇒ unused (byte-identical).
+    return { kind: "dev_completed", prRef, headCommit, error, integrationBase };
   }
 
   /**
@@ -1487,12 +1540,29 @@ export class ConsiliumLoopController {
     if (transition.to === "developing" && event.kind === "decided") {
       return this.startDevHandoff(loop, event.verdict);
     }
+    // §3E verify-before-merge: developing→building_context is the CONFIRMATION entry (fires
+    // ONLY on `dev_completed` when verifyBeforeMerge is on and the close-out was clean — the
+    // `start` and human-`merge_approved` routes into building_context carry OTHER events and
+    // fall through untouched, byte-identical). Point the confirmation review at the
+    // main-integrated round branch (`buildBranchName(loop.id, loop.round)`) baselined at the
+    // integrated base sha, so it diffs EXACTLY what will land (`base..roundBranch`).
+    if (transition.to === "building_context" && event.kind === "dev_completed") {
+      const extra: Record<string, unknown> = { reviewRef: buildBranchName(loop.id, loop.round) };
+      if (event.integrationBase) extra.lastReviewedCommit = event.integrationBase;
+      return extra;
+    }
     // §14.4 H-2: the SDLC close-out already ran in the BACKGROUND during
     // `developing`; the `dev_completed` event carried prRef/headCommit/error which
     // `reduce` wrote into this transition's extra. Nothing to run here — just drop
     // the settled registry entry so it can never be re-read.
     if (transition.to === "awaiting_merge") {
       this.sdlcRuns.delete(loop.id);
+      // §3E: a converged CONFIRMATION reaches the ship gate from DECIDING (`decided`), not
+      // from developing — so the terminal `recordRound` branch below is bypassed. Record the
+      // round audit here too so the Rounds panel is complete (idempotent, CAS-winner-only).
+      // The develop entry (from `developing`, `dev_completed`) already recorded on develop
+      // start, and the disabled path never routes DECIDING→awaiting_merge ⇒ byte-identical.
+      if (event.kind === "decided") await this.recordRound(loop, event.verdict);
       return {};
     }
     // Verdict-terminal exits (converged / stopped_cap / escalated) leave DECIDING
@@ -1677,6 +1747,12 @@ export class ConsiliumLoopController {
       actionPoints: routedActionPoints,
       allowedRepoPaths: cfg.allowedRepoPaths,
       ownerId: loop.createdBy ?? "",
+      // §3E verify-before-merge: when on, the executor merges the base branch INTO the round
+      // branch after the coders commit, so the Draft PR is "base + our changes" (the
+      // realistic landing state) and does NOT conflict with main. Off ⇒ no integration merge
+      // (byte-identical). On conflict the executor returns a no-PR result with an error the
+      // `dev_completed` event carries to the human ship gate (no confirmation on a broken merge).
+      integrateBase: this.verifyBeforeMergeEnabled(),
       // Per-action-point coder timeout (configurable). The executor runs the
       // coder once per action point sequentially; this bounds a SINGLE run.
       coderTimeoutMs: cfg.sdlcTimeoutMs,

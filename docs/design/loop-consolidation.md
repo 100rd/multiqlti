@@ -92,6 +92,51 @@ develop-from-terminal** flow (§9) — the callout's button drives the same `POS
 promotion into a visible `developing` round; convergence remains "no open P0", nothing new is
 persisted, and the FSM is untouched.
 
+### E. VERIFY-BEFORE-MERGE — confirm before the human ship gate (implemented, kill-switched)
+
+**The confirmation re-review moves BEFORE the human ship gate, and it verifies the
+main-integrated state.** Previously the single-verifier/re-review confirmation ran only
+*after* a human triggered merge-approval:
+`develop → dev_completed → awaiting_merge → [human merge_approved] → reviewing (round 2)`.
+Two problems: (1) the loop could not confirm its own work autonomously — a human had to act
+first; and (2) the round branch was cut from a stale base, so its PR conflicted with `main`
+and the verifier judged a state that is **not** what would actually land (observed:
+Omniscience#353 "Conflicting").
+
+Under the kill-switch `pipeline.consiliumLoop.verifyBeforeMerge.enabled` (default **FALSE** ⇒
+today's flow byte-identical), the develop close-out and the FSM routing change so the loop
+confirms itself first:
+
+1. **Integrate main into the round branch.** As a side effect of the develop close-out (like
+   the existing dev-closeout / PR-open — *not* a reducer change), the executor merges the base
+   branch (`origin/<base>`, else the local base ref) **into** the round branch, producing
+   "base + our changes" — the realistic landing state. This also keeps the eventual PR
+   non-conflicting. A merge **conflict** is surfaced clearly (aborted merge → a no-PR result
+   carrying `integrationConflict`), never silently dropped onto a broken merge.
+2. **Run the confirmation review automatically** (the existing round > 1 re-review —
+   single-verifier when `reviewMode = single-verifier`, else the full dispute) against that
+   integrated branch, with **no human gate to start it**. The review is baselined at
+   `base..roundBranch` (its `reviewRef` is pointed at the integrated round branch), so it
+   judges exactly what will land.
+3. **Loop autonomously.** A converged confirmation → `awaiting_merge` (the human's *only* job
+   is now the FINAL ship of already-confirmed, main-integrated code). A non-converged
+   confirmation with rounds left → `developing` again (address the findings, re-integrate,
+   re-confirm), bounded by `maxRounds` → `stopped_cap` exactly as today.
+4. **The human merge becomes the FINAL ship.** With the switch on, `merge_approved` from
+   `awaiting_merge` terminates the loop as `converged` — it does **not** trigger a second
+   review (the confirmation already ran). With the switch off, `merge_approved` re-enters
+   `building_context` (today's re-review trigger), byte-identical.
+
+**FSM discipline — no new states.** The existing transitions are reused: after `dev_completed`
+the loop routes into `reviewing` (via `building_context`) **before** `awaiting_merge`, instead
+of after; `awaiting_merge` becomes the post-confirmation ship gate. The only reducer tweaks are
+three guarded, kill-switched edges (`developing→building_context` on a clean close-out;
+`deciding`-converged→`awaiting_merge` once code has been developed, i.e. round ≥ 2;
+`awaiting_merge`-`merge_approved`→`converged`); each is reversible and inert when the switch is
+off. The main-integration and the confirmation `reviewRef`/baseline are controller side effects
+(deriving the round branch from `buildBranchName`), not reducer state. No schema migration — the
+existing `reviewRef` / `lastReviewedCommit` / round columns and round mechanics are reused.
+
 ## 4. Skills — the unit of agent capability
 
 A loop's steps are executed by **agents**, each dynamically pulling a **skill**. multiqlti
