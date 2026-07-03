@@ -1855,10 +1855,14 @@ function LiveCurrentRound({ loop }: { loop: ConsiliumLoopDetailRow }) {
       </CardHeader>
       <CardContent className="space-y-2">
         <p className="text-[11px] text-muted-foreground/80">
-          The dispute for round {loop.round || 1} is running (iteration #{iter}). Cards
-          update as each participant completes.
+          The dispute for round {loop.round || 1} is running (iteration #{iter}). Each
+          row shows what its model is doing, for how long, and flags a stalled run.
         </p>
-        <IterationDetailView groupId={loop.groupId} iterationNumber={iter} />
+        <IterationDetailView
+          groupId={loop.groupId}
+          iterationNumber={iter}
+          live={{ loopUpdatedAt: loop.updatedAt, roundLabel: loop.round || 1 }}
+        />
       </CardContent>
     </Card>
   );
