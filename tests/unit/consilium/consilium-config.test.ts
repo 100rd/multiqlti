@@ -123,6 +123,39 @@ describe("pipeline.consiliumLoop schema", () => {
     expect(parseLoop({ implement: { testRunTimeoutMs: "abc" } }).success).toBe(false);
   });
 
+  it("coderModel: absent by default (⇒ CLI default model, byte-for-byte today's coder)", () => {
+    const res = ConfigSchema.safeParse({});
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    expect(res.data.pipeline.consiliumLoop.implement.coderModel).toBeUndefined();
+  });
+
+  it("coderModel: accepts a valid model slug (sonnet / gemini-pro / dotted)", () => {
+    for (const slug of ["sonnet", "gemini-pro", "claude-3.5-sonnet", "opus"]) {
+      const res = parseLoop({ implement: { coderModel: slug } });
+      expect(res.success).toBe(true);
+      if (res.success) {
+        expect(res.data.pipeline.consiliumLoop.implement.coderModel).toBe(slug);
+      }
+    }
+  });
+
+  it("coderModel: SECURITY — rejects an injection / flag-like / whitespaced value at load (fail-closed)", () => {
+    for (const evil of [
+      "",
+      "--dangerously-skip-permissions",
+      "-p",
+      "sonnet --dangerously-skip-permissions",
+      "sonnet; rm -rf /",
+      "sonnet\n--verbose",
+      "$(whoami)",
+      "a b",
+      "a/b",
+    ]) {
+      expect(parseLoop({ implement: { coderModel: evil } }).success).toBe(false);
+    }
+  });
+
   it("Stage 2b: trustedRepoAck defaults to false (fail-closed enable-gate)", () => {
     const res = ConfigSchema.safeParse({});
     expect(res.success).toBe(true);
