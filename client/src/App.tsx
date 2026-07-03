@@ -11,7 +11,6 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import { useAuth } from "@/hooks/use-auth";
 
 import MainLayout from "@/components/layout/MainLayout";
-import Dashboard from "@/pages/Dashboard";
 import PipelineList from "@/pages/PipelineList";
 import PipelineDetail from "@/pages/PipelineDetail";
 import PipelineRun from "@/pages/PipelineRun";
@@ -59,7 +58,7 @@ function ProtectedRouter() {
     <MainLayout>
       <Switch>
         <Route path="/" component={() => (
-          <ErrorBoundary><Dashboard /></ErrorBoundary>
+          <ErrorBoundary><Statistics /></ErrorBoundary>
         )} />
         <Route path="/pipelines" component={() => (
           <ErrorBoundary><PipelineList /></ErrorBoundary>
