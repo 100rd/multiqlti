@@ -1532,10 +1532,71 @@ export class ConsiliumLoopController {
     viaCommand = false,
   ): Promise<Record<string, unknown>> {
     await this.recordRound(loop, verdict);
-    this.dispatchSdlc(loop, verdict, viaCommand);
+    // Finding #8 (live loop 83190a0e): the SKILLED implement path keys ENTIRELY off
+    // `loop.archetype` — the archetype skill set (test-author/coder), Stage-B
+    // per-criterion methods, and Stage-C criteria QA all resolve to the default /
+    // unskilled path when it is null. The planner was previously reachable ONLY via
+    // the manual POST /:id/plan, so the AUTOMATIC deciding->developing transition (and
+    // a human POST /:id/develop from a verdict-terminal state) dispatched with
+    // archetype=null and silently ran the legacy single-coder path. Run the planner
+    // FIRST here — the ONE seam ALL three dispatch paths (auto-tick, /develop, redrive)
+    // funnel through — so the archetype is decided before `dispatchSdlc` reads it. The
+    // returned loop carries the freshly-persisted archetype/params; fail-soft leaves it
+    // untouched (see `ensureArchetypePlanned`).
+    const devLoop = await this.ensureArchetypePlanned(loop);
+    this.dispatchSdlc(devLoop, verdict, viaCommand);
     // Persist openP0 + bump updatedAt so the freshly-entered developing loop reads
     // as in-flight (within grace), not stranded. devGroupId stays null (marker).
     return { openP0: verdict.openP0 };
+  }
+
+  /**
+   * Finding #8 fix — run the intent planner before dispatch when the develop path is
+   * reached with NO archetype and the planner is enabled, so the auto-develop path is
+   * SKILLED (archetype skill set + Stage-B/C routing), not just the manual POST /plan.
+   *
+   * Reuses the PUBLIC {@link plan} verbatim (it has NO state guard to weaken — it writes
+   * the archetype columns via a PLAIN partial `updateLoopArchetypeIfNotOverridden`, so
+   * calling it from `developing` never re-transitions the loop). That inherits ALL of
+   * plan()'s contract — idempotent, OVERRIDE-safe (a human `override` is never clobbered),
+   * TOCTOU-guarded, and the SAME Stage-B `normalizeActionPointMethods` + Stage-C
+   * `applyCriteriaQa` persist. `archetypeSource` stays "proposed".
+   *
+   * Guards / safety:
+   *   - `archetype != null` (incl. any pre-develop engineer override, which is always
+   *     non-null) SKIPS planning entirely — the override / prior proposal is honoured.
+   *   - Double-planning race (adversarial risk 1): the tick / develop() single-flight
+   *     lock (`inFlight`) already serializes this per loop, and plan() is a no-op once
+   *     the archetype is set — so a crash-recovery redrive re-reads it non-null and skips.
+   *   - Added latency (adversarial risk 2): one extra LLM call before dispatch. Accepted;
+   *     the AUTONOMOUS path is deliberately NOT gated by the R1 human-dev cap.
+   *   - FAIL-SOFT: planner disabled / no gateway / model error / unparseable reply leaves
+   *     the archetype null and returns the loop UNCHANGED, so dispatch proceeds on today's
+   *     unskilled fallback — WITH a visible note (this file's `this.log` fail-soft
+   *     convention) so the operator can see "planner failed, ran unskilled".
+   */
+  private async ensureArchetypePlanned(loop: ConsiliumLoopRow): Promise<ConsiliumLoopRow> {
+    const cfg = this.loopConfig();
+    // No planning when an archetype is already decided (override or prior proposal), the
+    // kill-switch is off, or no gateway is wired ⇒ byte-identical to today's behavior.
+    // `planner` is optional-chained (a hand-built test config may omit the whole block ⇒
+    // treated as disabled), matching the rest of this file's config-access discipline.
+    if (loop.archetype != null || !cfg.planner?.enabled || !this.deps.gateway) return loop;
+    const planned = await this.plan(loop.id);
+    if (planned.ok && planned.archetype != null) {
+      this.log(
+        loop.id,
+        `auto-plan before develop: archetype=${planned.archetype} (source=${planned.loop.archetypeSource ?? "proposed"})`,
+      );
+      return planned.loop;
+    }
+    // FAIL-SOFT: archetype stays null → dispatch proceeds UNSKILLED, but the operator sees
+    // WHY (same fail-soft convention as the research-preflight / plan() fail-softs).
+    const why = planned.ok
+      ? "planner produced no archetype (model error / unparseable reply)"
+      : `planner unavailable (${planned.code})`;
+    this.log(loop.id, `auto-plan before develop: ${why} — dispatching on UNSKILLED fallback (archetype=null)`);
+    return loop;
   }
 
   /**
