@@ -28,6 +28,11 @@ import { validateBody } from "../middleware/validate.js";
 import { authorizeConsiliumLoop } from "./authorize-consilium-loop.js";
 import { isVisible } from "./authorize-run.js";
 import { assertAllowedRepoPath } from "../services/consilium/repo-allowlist.js";
+import {
+  buildLoopComposition,
+  parseConsiliumPreset,
+  type LoopComposition,
+} from "../services/consilium/composition.js";
 
 const SHA_RE = /^[0-9a-f]{7,64}$/;
 
@@ -137,7 +142,32 @@ export function registerConsiliumLoopRoutes(
     // Stage 1: the new loop columns (engineerInstruction, archetype, archetypeSource,
     // archetypeRationale, archetypeParams, archetypeDecidedAt) ride the maskLoop
     // spread of `auth.loop` automatically — no per-field allowlist to keep in sync.
-    res.json({ ...maskLoop({ ...auth.loop }, !!isAdmin), rounds, devProgress, openRemainder });
+    //
+    // Observability (GAP 2): the computed `composition` — WHICH models/tools fill
+    // each role (debaters + judge from the review-factory preset panel, planner,
+    // judge-retry fallback, SDLC coder, Stage-B verifier) + the active verification
+    // config. Read-only, additive, and a strict NAME/BOOLEAN allowlist (never a
+    // secret — see composition.ts). The preset is recovered from the group NAME;
+    // the whole block is best-effort: any read failure (or a partial config) omits
+    // it rather than breaking the GET (parity with `devProgress`).
+    let composition: LoopComposition | undefined;
+    try {
+      const group =
+        typeof storage.getTaskGroup === "function"
+          ? await storage.getTaskGroup(auth.loop.groupId)
+          : undefined;
+      const preset = parseConsiliumPreset(group?.name);
+      composition = buildLoopComposition(preset, config());
+    } catch {
+      composition = undefined;
+    }
+    res.json({
+      ...maskLoop({ ...auth.loop }, !!isAdmin),
+      rounds,
+      devProgress,
+      openRemainder,
+      composition,
+    });
   });
 
   // ── Start (PENDING → BUILDING_CONTEXT) ──────────────────────────────────────

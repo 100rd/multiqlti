@@ -153,6 +153,50 @@ export type ConsiliumLoopRoundDetail = ConsiliumLoopRoundRow & {
   executionTrace?: ExecutionTrace | null;
 };
 
+// ─── Composition (Observability GAP 2 — the "who does what" of a round) ───────
+//
+// The computed `composition` block surfaced on the loop GET: WHICH models/tools
+// fill each role. It mirrors the server-side `LoopComposition` (server/services/
+// consilium/composition.ts) — kept as a client-side interface (the canonical
+// shape has no @shared home). Every value is a NAME or a BOOLEAN — the server
+// allowlists them explicitly and NEVER exposes a secret. Absent on old backends
+// (or a degraded read), so the UI treats its presence as the only render signal.
+
+/** One role → the model/tool that fills it. */
+export interface CompositionRole {
+  role: string;
+  label: string;
+  model: string | null;
+  tool?: string | null;
+  enabled?: boolean;
+}
+
+/** The active verification config — names + booleans only. */
+export interface CompositionVerification {
+  implementEnabled: boolean;
+  perCriterionMethodEnabled: boolean;
+  verificationEnabled: boolean;
+  effectiveVerificationEnabled: boolean;
+  finalVerificationEnabled: boolean;
+  testCommand: string | null;
+  lintCommand: string | null;
+  testRunTimeoutMs: number;
+  sdlcTimeoutMs: number;
+  maxFixIterations: number;
+}
+
+/** The computed composition block (declared from the preset panel + config). */
+export interface LoopComposition {
+  preset: string | null;
+  debaters: CompositionRole[];
+  judge: CompositionRole;
+  judgeRetry: { enabled: boolean; fallbackModel: string | null };
+  planner: CompositionRole;
+  coder: CompositionRole;
+  verifier: CompositionRole;
+  verification: CompositionVerification;
+}
+
 /**
  * The detail endpoint returns the loop fields spread WITH a `rounds` array and,
  * while the loop is `developing`, an optional `devProgress` snapshot.
@@ -183,6 +227,12 @@ export type ConsiliumLoopDetail = ConsiliumLoopListItem & {
   archetypeParams?: Record<string, string> | null;
   /** The optional human instruction captured at review creation (INERT text). */
   engineerInstruction?: string | null;
+  /**
+   * Observability (GAP 2): the computed role→model/tool composition + verification
+   * config. Server-derived, read-only, secret-free. Absent on a pre-composition
+   * backend or a degraded read — consumers render it defensively.
+   */
+  composition?: LoopComposition | null;
 };
 
 export type { ConsiliumLoopState, ConsiliumLoopRow, ConsiliumLoopRoundRow };
