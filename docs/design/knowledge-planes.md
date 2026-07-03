@@ -66,6 +66,8 @@ Omniscience won't hold it (ADR-0015). Today its fragments are scattered and most
   lessons, trust-gated by the success-delta lifecycle. So the Experience plane is partly a
   **feeder of the Skill plane**, not only a standalone store.
 
+> **Concrete mechanism:** the distillation is specified in [experience-plane-dream.md](experience-plane-dream.md) (the "Dream" — a grounded adaptation of QoderWake's Memory Dream).
+
 **The discipline that makes it real (or it's just another unread `lessons` table):** every
 experience item needs *two ends* — a **write trigger** (on loop close-out: what was tried, the
 verdict, what the verifier confirmed/refuted) and a **read point** (the planner's prompt build,
