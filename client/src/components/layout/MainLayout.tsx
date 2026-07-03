@@ -16,6 +16,7 @@ import {
   Radio,
   Repeat,
   GitPullRequest,
+  ShieldCheck,
   KeyRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -56,6 +57,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: Repeat, label: "Consilium Loops", href: "/consilium-loops" },
     { icon: GitPullRequest, label: "PR Queue", href: "/pr-queue" },
+    { icon: ShieldCheck, label: "Trust", href: "/trust" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
     // Show "Connections", "Inventory", "Knowledge Base", and "Traces" sub-items
     // when inside a workspace
