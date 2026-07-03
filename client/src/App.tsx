@@ -37,6 +37,7 @@ import Activity from "@/pages/Activity";
 import ConsiliumLoopList from "@/pages/ConsiliumLoopList";
 import ConsiliumLoopDetail from "@/pages/ConsiliumLoopDetail";
 import PrReviewQueue from "@/pages/PrReviewQueue";
+import TrustTelemetry from "@/pages/TrustTelemetry";
 import ContourObservability from "@/pages/ContourObservability";
 import CredentialAccess from "@/pages/CredentialAccess";
 
@@ -88,6 +89,9 @@ function ProtectedRouter() {
         )} />
         <Route path="/consilium-loops" component={() => (
           <ErrorBoundary><ConsiliumLoopList /></ErrorBoundary>
+        )} />
+        <Route path="/trust" component={() => (
+          <ErrorBoundary><TrustTelemetry /></ErrorBoundary>
         )} />
         <Route path="/pr-queue" component={() => (
           <ErrorBoundary><PrReviewQueue /></ErrorBoundary>

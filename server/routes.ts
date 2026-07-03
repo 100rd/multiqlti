@@ -14,6 +14,7 @@ import { registerGatewayRoutes } from "./routes/gateway";
 import { registerStrategyRoutes } from "./routes/strategies";
 import { registerPrivacyRoutes } from "./routes/privacy";
 import { registerStatsRoutes } from "./routes/stats";
+import { registerTelemetryRoutes } from "./routes/telemetry";
 import { registerMemoryRoutes } from "./routes/memory";
 import { registerLessonRoutes } from "./routes/lessons";
 import { registerToolRoutes } from "./routes/tools";
@@ -151,6 +152,10 @@ export async function registerRoutes(
   app.use("/api/task-groups", requireAuth, requireProject);
   app.use("/api/consilium-loops", requireAuth, requireProject);
   app.use("/api/pr-queue", requireAuth, requireProject);
+  // NEW prefix (Stage D — trust telemetry). Read-only, project-scoped. This mount
+  // is LOAD-BEARING: without it getLoops() has no project context (500) and the
+  // route is unauthenticated (the /api/pr-queue class of bug). Do not drop it.
+  app.use("/api/telemetry", requireAuth, requireProject);
   app.use("/api/consilium-reviews", requireAuth, requireProject);
   app.use("/api/lmstudio", requireAuth, requireProject);       // UNCERTAIN — see note above
   app.use("/api/tracker-connections", requireAuth, requireProject);
@@ -182,6 +187,7 @@ export async function registerRoutes(
   registerStrategyRoutes(app, storage);
   registerPrivacyRoutes(app);
   registerStatsRoutes(app, storage);
+  registerTelemetryRoutes(app, storage);
   registerMemoryRoutes(app, storage);
   registerLessonRoutes(app, storage);
   registerToolRoutes(app, storage);
