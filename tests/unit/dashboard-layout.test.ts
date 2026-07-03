@@ -136,4 +136,76 @@ describe("dashboard-layout persistence", () => {
     // Subsequent load also yields the default (storage was cleared).
     expect(loadLayout()).toEqual(DEFAULT_LAYOUT);
   });
+
+  // ── Operator acceptance scenario ──────────────────────────────────────────────
+  // "Shrink the Timeline widget (w:12 → w:6), move it to the left column, reload →
+  //  it stays." This is the persistence contract the acceptance test exercises: the
+  //  layout react-grid-layout emits from onLayoutChange is saved verbatim, and a
+  //  reload (loadLayout) must return Timeline at exactly the resized + moved
+  //  geometry — never snapping back to the default full-width top position.
+  describe("operator acceptance: shrink + move Timeline, reload keeps it", () => {
+    // The exact `allLayouts` react-grid-layout hands to saveLayout after the
+    // operator shrinks Timeline to w:6 and drags it to x:0 in the left column,
+    // with by-model pulled up beside it at x:6 — proving two widgets sit side by
+    // side (only possible because Timeline is now half width).
+    const movedLg = [
+      { i: "totals", x: 0, y: 0, w: 12, h: 3, minW: 4, minH: 2 },
+      { i: "timeline", x: 0, y: 3, w: 6, h: 7, minW: 4, minH: 4 },
+      { i: "by-model", x: 6, y: 3, w: 6, h: 7, minW: 4, minH: 3 },
+      { i: "by-workspace", x: 0, y: 10, w: 12, h: 7, minW: 4, minH: 3 },
+      { i: "request-log", x: 0, y: 17, w: 12, h: 10, minW: 5, minH: 5 },
+    ];
+
+    it("persists the shrunk + moved Timeline across a reload (lg breakpoint)", () => {
+      saveLayout({ lg: movedLg });
+
+      const timeline = loadLayout().lg!.find((i) => i.i === "timeline")!;
+      expect(timeline).toBeDefined();
+      // Shrunk to half width and moved into the left column — and it stays.
+      expect(timeline.w).toBe(6);
+      expect(timeline.x).toBe(0);
+      expect(timeline.y).toBe(3);
+      expect(timeline.h).toBe(7);
+      // The shrink limits survive too, so the widget can be re-shrunk after reload.
+      expect(timeline.minW).toBe(4);
+      expect(timeline.minH).toBe(4);
+    });
+
+    it("keeps a second widget beside the shrunk Timeline (side-by-side layout survives)", () => {
+      saveLayout({ lg: movedLg });
+
+      const loaded = loadLayout().lg!;
+      const timeline = loaded.find((i) => i.i === "timeline")!;
+      const byModel = loaded.find((i) => i.i === "by-model")!;
+      // by-model occupies the right half on the same row → they render side by side.
+      expect(timeline.x).toBe(0);
+      expect(byModel.x).toBe(6);
+      expect(byModel.y).toBe(timeline.y);
+      expect(timeline.w + byModel.w).toBe(12);
+    });
+
+    it("persists the shrunk + moved Timeline at a NON-lg breakpoint (md)", () => {
+      // When the dashboard is viewed below 1200px, react-grid-layout emits the
+      // moved layout under the CURRENT breakpoint key (md) alongside lg. reconcile
+      // must preserve the md geometry too — there is no breakpoint-key mismatch
+      // between what RGL emits (md) and what loadLayout reconciles.
+      const movedMd = [
+        { i: "totals", x: 0, y: 0, w: 10, h: 3, minW: 4, minH: 2 },
+        { i: "timeline", x: 0, y: 3, w: 6, h: 7, minW: 4, minH: 4 },
+        { i: "by-model", x: 0, y: 10, w: 10, h: 7, minW: 4, minH: 3 },
+        { i: "by-workspace", x: 0, y: 17, w: 10, h: 7, minW: 4, minH: 3 },
+        { i: "request-log", x: 0, y: 24, w: 10, h: 10, minW: 5, minH: 5 },
+      ];
+      saveLayout({ lg: DEFAULT_LAYOUT.lg!, md: movedMd });
+
+      const reloaded = loadLayout();
+      // The md breakpoint the operator actually interacted with is preserved…
+      const mdTimeline = reloaded.md!.find((i) => i.i === "timeline")!;
+      expect(mdTimeline.w).toBe(6);
+      expect(mdTimeline.x).toBe(0);
+      // …and lg is left untouched (still full-width default).
+      const lgTimeline = reloaded.lg!.find((i) => i.i === "timeline")!;
+      expect(lgTimeline.w).toBe(12);
+    });
+  });
 });

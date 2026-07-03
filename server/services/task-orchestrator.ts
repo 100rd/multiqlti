@@ -1,7 +1,7 @@
 import type { IStorage } from "../storage";
 import type { WsManager } from "../ws/manager";
 import type { PipelineController } from "../controller/pipeline-controller";
-import type { Gateway } from "../gateway/index";
+import type { Gateway, GatewayLoggingOptions } from "../gateway/index";
 import type {
   TaskGroupRow,
   TaskRow,
@@ -707,9 +707,18 @@ export class TaskOrchestrator {
     // fix (judge timeout resilience): the judge's largest-context call can hit
     // the wall-clock cap and return 0 tokens; completeDirectLlm adds an optional
     // single bounded retry (default OFF ⇒ byte-identical to the single call above).
-    const { response, retry } = await this.completeDirectLlm(request, {
-      overallTimeoutMs: taskTimeoutMs,
-    });
+    // Source-side workspace attribution (BUG 2 fix): stamp the consilium task-group
+    // id onto llm_requests.run_id. The read side (getLlmStatsByWorkspace) resolves
+    // run_id -> consilium_loops.groupId -> repoPath -> workspace. Before this, the
+    // direct_llm path passed no logging options, so run_id was NULL on every row and
+    // the Per-Workspace Breakdown panel was always empty (all "Unattributed").
+    // Only runId is stamped: workspaceId here would additionally trigger the gateway
+    // budget pre-check + cost-ledger write, which this path intentionally does not do.
+    const { response, retry } = await this.completeDirectLlm(
+      request,
+      { overallTimeoutMs: taskTimeoutMs },
+      { runId: group.id },
+    );
 
     this.tracing.completeLlmSpan(group.id, llmSpanId, {
       response,
@@ -741,12 +750,13 @@ export class TaskOrchestrator {
   private async completeDirectLlm(
     request: GatewayRequest,
     streamOptions: StreamingStageOptions,
+    loggingOptions?: GatewayLoggingOptions,
   ): Promise<{ response: GatewayResponse; retry: RetryNote | null }> {
     const cfg = configLoader.get().pipeline.consiliumLoop.judgeRetry;
 
     let cause: RetryNote["cause"];
     try {
-      const response = await this.gateway.completeStreaming(request, undefined, undefined, streamOptions);
+      const response = await this.gateway.completeStreaming(request, undefined, loggingOptions, streamOptions);
       // Disabled OR a non-empty completion ⇒ today's behaviour, no retry.
       if (!cfg.enabled || !isEmptyCompletion(response)) return { response, retry: null };
       cause = "empty output";
@@ -759,7 +769,7 @@ export class TaskOrchestrator {
     // ── single bounded retry (enabled AND timeout/empty only) ──
     const retriedModel = cfg.fallbackModel ?? request.modelSlug;
     const retryRequest: GatewayRequest = { ...request, modelSlug: retriedModel };
-    const response = await this.gateway.completeStreaming(retryRequest, undefined, undefined, streamOptions);
+    const response = await this.gateway.completeStreaming(retryRequest, undefined, loggingOptions, streamOptions);
     return {
       response,
       retry: { cause, fallbackModel: cfg.fallbackModel ?? null, retriedModel },

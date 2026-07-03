@@ -695,6 +695,21 @@ const ResponsiveGridLayout = WidthProvider(Responsive);
 const BREAKPOINTS = { lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 };
 const COLS = { lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 };
 
+// Scoped interaction CSS for the RGL grid. The pure data/config (draggableHandle,
+// isDraggable/isResizable, controlled `layouts`, persistence) is correct in
+// isolation; what an SSR/jsdom harness cannot exercise is real pointer-gesture
+// arbitration. The grid lives inside an `overflow-y-auto` scroll container, so on
+// touch / pen / precision-pointer devices the browser's default `touch-action`
+// lets that scroll container claim a gesture that STARTS on a drag/resize handle
+// (pan) before RGL's DraggableCore/Resizable can act — the widget then "can't be
+// moved or resized". `touch-action: none` on the two handle selectors hands those
+// gestures to RGL instead. The z-index keeps the SE resize corner hit-target above
+// any widget body content (tables/charts) that paints into the same corner.
+const DASHBOARD_GRID_CSS = `
+.stats-dashboard-grid .widget-drag-handle { touch-action: none; }
+.stats-dashboard-grid .react-resizable-handle { touch-action: none; z-index: 3; }
+`;
+
 export default function Statistics() {
   const { data: overview, isLoading: overviewLoading } = useQuery<StatsOverview>({
     queryKey: ["stats-overview"],
@@ -726,6 +741,7 @@ export default function Statistics() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-6">
+        <style>{DASHBOARD_GRID_CSS}</style>
         <ResponsiveGridLayout
           className="stats-dashboard-grid"
           layouts={layouts}
