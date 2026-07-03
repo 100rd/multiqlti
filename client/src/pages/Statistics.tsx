@@ -145,11 +145,16 @@ function WidgetShell({
     <div className="h-full flex flex-col rounded-lg border border-border bg-card overflow-hidden">
       <div className="flex items-center justify-between gap-2 px-4 pt-3 pb-2 shrink-0 border-b border-border/50">
         <div
-          className="widget-drag-handle flex items-center gap-1.5 cursor-move select-none min-w-0"
-          title="Drag to move"
+          className="widget-drag-handle group flex items-center gap-1.5 cursor-move select-none min-w-0 -ml-1.5 pl-1.5 pr-2 py-0.5 rounded-md hover:bg-muted/70 transition-colors"
+          title="Drag to rearrange"
+          aria-label={`Drag to rearrange the ${title} widget`}
+          role="button"
         >
-          <GripVertical className="h-4 w-4 text-muted-foreground shrink-0" />
+          <GripVertical className="h-4 w-4 text-muted-foreground group-hover:text-foreground shrink-0 transition-colors" />
           <p className="text-sm font-medium truncate">{title}</p>
+          <span className="ml-1.5 hidden lg:inline text-[10px] uppercase tracking-wide text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+            drag
+          </span>
         </div>
         {actions ? <div className="flex gap-2 flex-wrap justify-end">{actions}</div> : null}
       </div>
@@ -689,25 +694,83 @@ function RequestLog() {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 // Classic WidthProvider(Responsive) composition from the `legacy` entry point:
-// auto-measures container width and supplies responsive breakpoints.
+// measures the container width and supplies responsive breakpoints. `measureBeforeMount`
+// is passed as a prop on the element below (see the render) — WidthProvider takes only
+// the composed component as its argument.
 const ResponsiveGridLayout = WidthProvider(Responsive);
 
 const BREAKPOINTS = { lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 };
 const COLS = { lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 };
 
-// Scoped interaction CSS for the RGL grid. The pure data/config (draggableHandle,
-// isDraggable/isResizable, controlled `layouts`, persistence) is correct in
-// isolation; what an SSR/jsdom harness cannot exercise is real pointer-gesture
-// arbitration. The grid lives inside an `overflow-y-auto` scroll container, so on
-// touch / pen / precision-pointer devices the browser's default `touch-action`
-// lets that scroll container claim a gesture that STARTS on a drag/resize handle
-// (pan) before RGL's DraggableCore/Resizable can act — the widget then "can't be
-// moved or resized". `touch-action: none` on the two handle selectors hands those
-// gestures to RGL instead. The z-index keeps the SE resize corner hit-target above
-// any widget body content (tables/charts) that paints into the same corner.
+// ─── Load-bearing grid CSS, inlined and scoped ──────────────────────────────────
+//
+// ROOT CAUSE of the live "widgets shifted right / overflow" bug: react-grid-layout
+// positions every grid item with an INLINE `position: absolute` + `transform:
+// translate(x,y)` (verified in the 2.2.3 build — see setTransform()). Those offsets
+// are resolved against the *nearest positioned ancestor*. The only thing that makes
+// that ancestor the grid itself is a single rule from the vendored stylesheet:
+//   .react-grid-layout { position: relative }
+// If that vendored CSS (`react-grid-layout/css/styles.css`) is not actually applied
+// at runtime — dropped/reordered by the production bundler, or shadowed by a global
+// reset — the items resolve against an OUTER positioned ancestor (or the viewport)
+// and the whole grid visibly shifts right and escapes its card, while the grid box
+// itself keeps ~zero height (all children are out of flow) → "fields shifted right,
+// the window stayed the same size". We therefore no longer DEPEND on the external
+// import for correctness: the essential positioning + placeholder + resize-handle
+// rules are inlined here, scoped to `.stats-dashboard-grid`. The vendored imports
+// stay for the cosmetic transitions.
+//
+// Pointer-gesture arbitration: the grid lives inside an `overflow-y-auto` scroll
+// container, so on touch/pen/precision-pointer devices the browser's default
+// `touch-action` lets that scroll container claim a gesture that STARTS on a
+// drag/resize handle (pan) before RGL's DraggableCore/Resizable can act — the
+// widget then "can't be moved or resized". `touch-action: none` hands those
+// gestures to RGL instead.
 const DASHBOARD_GRID_CSS = `
+/* Positioning context for the absolutely-positioned grid items. LOAD-BEARING. */
+.stats-dashboard-grid.react-grid-layout,
+.stats-dashboard-grid { position: relative; }
+.stats-dashboard-grid .react-grid-item { box-sizing: border-box; }
+.stats-dashboard-grid .react-grid-item.react-draggable-dragging { z-index: 3; transition: none; }
+.stats-dashboard-grid .react-grid-item.resizing { z-index: 3; transition: none; }
+.stats-dashboard-grid .react-grid-item.react-grid-placeholder {
+  background: hsl(var(--primary));
+  opacity: 0.15;
+  border-radius: 0.5rem;
+  z-index: 2;
+  transition-duration: 100ms;
+}
+
+/* Pointer-gesture arbitration (see note above). */
 .stats-dashboard-grid .widget-drag-handle { touch-action: none; }
-.stats-dashboard-grid .react-resizable-handle { touch-action: none; z-index: 3; }
+.stats-dashboard-grid .react-resizable-handle { touch-action: none; z-index: 4; }
+
+/* Resize affordance — inline the SE handle so the corner is visible + grabbable
+   even if the vendored react-resizable CSS (icon/background) fails to apply. */
+.stats-dashboard-grid .react-grid-item > .react-resizable-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 20px;
+  height: 20px;
+  cursor: se-resize;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+.stats-dashboard-grid .react-grid-item:hover > .react-resizable-handle,
+.stats-dashboard-grid .react-grid-item.resizing > .react-resizable-handle {
+  opacity: 0.9;
+}
+.stats-dashboard-grid .react-grid-item > .react-resizable-handle::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid hsl(var(--muted-foreground));
+  border-bottom: 2px solid hsl(var(--muted-foreground));
+}
 `;
 
 export default function Statistics() {
@@ -728,22 +791,30 @@ export default function Statistics() {
   };
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="h-16 border-b border-border flex items-center justify-between px-6 shrink-0">
-        <h1 className="text-base font-semibold">Statistics</h1>
+    <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+      <div className="h-16 border-b border-border flex items-center justify-between gap-4 px-6 shrink-0">
+        <h1 className="text-base font-semibold shrink-0">Statistics</h1>
+        <p className="hidden md:block flex-1 text-center text-xs text-muted-foreground truncate">
+          Drag a widget by its header to rearrange · drag the bottom-right corner to resize
+        </p>
         <button
           onClick={handleReset}
-          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded border border-border text-muted-foreground hover:border-primary/50 hover:text-foreground transition-colors"
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded border border-border text-muted-foreground hover:border-primary/50 hover:text-foreground transition-colors shrink-0"
           title="Restore the default dashboard layout"
         >
           <RotateCcw className="h-3.5 w-3.5" /> Reset layout
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-6 min-w-0">
         <style>{DASHBOARD_GRID_CSS}</style>
+        {/* Compact on-screen hint next to the grid — the affordance was not
+            discoverable, so spell it out (shown on narrow widths too). */}
+        <p className="md:hidden mb-3 text-xs text-muted-foreground">
+          Drag widget headers to rearrange · drag corners to resize · use “Reset layout” to restore defaults.
+        </p>
         <ResponsiveGridLayout
-          className="stats-dashboard-grid"
+          className="stats-dashboard-grid w-full min-w-0"
           layouts={layouts}
           breakpoints={BREAKPOINTS}
           cols={COLS}
@@ -754,6 +825,7 @@ export default function Statistics() {
           isDraggable
           isResizable
           useCSSTransforms
+          measureBeforeMount
           onLayoutChange={handleLayoutChange}
         >
           <div key="totals">
