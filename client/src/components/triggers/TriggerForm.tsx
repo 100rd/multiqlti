@@ -23,9 +23,13 @@ import { WebhookDetails } from "./WebhookDetails";
 import {
   LOOP_FIRING_TYPES,
   GITHUB_EVENT_MAPPINGS,
+  GITHUB_DEFAULT_EVENTS,
   isTriggerFormValid,
+  isGitHubRepoValid,
   buildLoopTemplate,
+  formatValidationIssues,
   type LoopTemplateState,
+  type TriggerValidationIssue,
 } from "./trigger-form-logic";
 import {
   CONSILIUM_REVIEW_PRESETS,
@@ -300,6 +304,12 @@ function GitHubConfigFields({
     onChange({ events: next });
   }
 
+  // Inline format feedback: empty is "not yet an error" (the * still gates submit),
+  // a non-empty malformed slug shows the error immediately.
+  const repoTouched = repository.trim().length > 0;
+  const repoFormatValid = !repoTouched || isGitHubRepoValid(repository);
+  const noEvents = events.length === 0;
+
   return (
     <div className="space-y-3">
       <p className="text-[11px] text-muted-foreground">
@@ -320,7 +330,20 @@ function GitHubConfigFields({
           placeholder="owner/repo"
           className="text-xs h-8"
           required
+          aria-invalid={!repoFormatValid}
+          aria-describedby="gh-repo-help"
         />
+        <p id="gh-repo-help" className="text-[10px] text-muted-foreground">
+          Format <span className="font-mono">owner/repo</span> — e.g.{" "}
+          <span className="font-mono">100rd/multiqlti</span>. This is the repository whose
+          webhook events fire the review.
+        </p>
+        {!repoFormatValid && (
+          <p className="text-[10px] text-destructive" role="alert">
+            Repository must be in <span className="font-mono">owner/repo</span> format
+            (exactly one <span className="font-mono">/</span>, no spaces).
+          </p>
+        )}
       </div>
 
       <fieldset>
@@ -344,6 +367,11 @@ function GitHubConfigFields({
             </div>
           ))}
         </div>
+        {noEvents && (
+          <p className="mt-1.5 text-[10px] text-destructive" role="alert">
+            Select at least one event for the trigger to fire.
+          </p>
+        )}
       </fieldset>
 
       <div className="rounded-md border border-border p-2.5">
@@ -464,7 +492,8 @@ export function TriggerForm({
   const [webhookSecret, setWebhookSecret] = useState("");
   const [cron, setCron] = useState("");
   const [ghRepo, setGhRepo] = useState("");
-  const [ghEvents, setGhEvents] = useState<string[]>([]);
+  // Server requires events.min(1); a fresh github trigger must not start empty.
+  const [ghEvents, setGhEvents] = useState<string[]>([...GITHUB_DEFAULT_EVENTS]);
   const [watchPath, setWatchPath] = useState("");
   const [filePatterns, setFilePatterns] = useState<string[]>([]);
   const [template, setTemplate] = useState<LoopTemplateState>({
@@ -500,7 +529,7 @@ export function TriggerForm({
     setGhEvents(
       trigger?.type === "github_event"
         ? (trigger.config as GitHubEventTriggerConfig).events
-        : [],
+        : [...GITHUB_DEFAULT_EVENTS],
     );
     setWatchPath(
       trigger?.type === "file_change"
@@ -597,6 +626,12 @@ export function TriggerForm({
 
   const isPending = createTrigger.isPending || updateTrigger.isPending;
   const error = createTrigger.error ?? updateTrigger.error;
+  // The server returns { error: "Validation failed", issues: [...] } on a 400. Render
+  // EVERY issue as "field path: message" instead of the bare summary so the operator
+  // knows exactly which field to fix.
+  const errorIssues = formatValidationIssues(
+    (error as (Error & { issues?: TriggerValidationIssue[] }) | null)?.issues,
+  );
 
   // ── After-creation webhook reveal ───────────────────────────────────────────
   if (createdWebhook) {
@@ -705,9 +740,25 @@ export function TriggerForm({
           </div>
 
           {error && (
-            <p className="text-xs text-destructive" role="alert">
-              {error.message}
-            </p>
+            <div
+              className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-2.5"
+              role="alert"
+            >
+              <p className="text-xs font-medium text-destructive">
+                {errorIssues.length > 0
+                  ? "Could not save — please fix:"
+                  : error.message}
+              </p>
+              {errorIssues.length > 0 && (
+                <ul className="list-disc space-y-0.5 pl-4">
+                  {errorIssues.map((line, i) => (
+                    <li key={i} className="text-[11px] text-destructive break-words">
+                      {line}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
 
           <DialogFooter className="pt-2">

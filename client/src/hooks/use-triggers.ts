@@ -1,5 +1,14 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PipelineTrigger, InsertTrigger, UpdateTrigger } from "@shared/types";
+import type { TriggerValidationIssue } from "@/components/triggers/trigger-form-logic";
+
+/** Error thrown by {@link apiRequest}, carrying the server's structured validation issues. */
+export type TriggerApiError = Error & {
+  disabled?: boolean;
+  status?: number;
+  /** Present on a 400 "Validation failed" — zod issues the form renders line-by-line. */
+  issues?: TriggerValidationIssue[];
+};
 
 function getAuthToken(): string | null {
   return localStorage.getItem("auth_token");
@@ -17,11 +26,19 @@ async function apiRequest(method: string, url: string, body?: unknown): Promise<
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText })) as { message?: string; error?: string; disabled?: boolean };
+    const err = await res.json().catch(() => ({ error: res.statusText })) as {
+      message?: string;
+      error?: string;
+      disabled?: boolean;
+      issues?: TriggerValidationIssue[];
+    };
     const message = err.message ?? err.error ?? res.statusText;
-    const error = new Error(message) as Error & { disabled?: boolean; status?: number };
+    const error = new Error(message) as TriggerApiError;
     error.disabled = err.disabled ?? false;
     error.status = res.status;
+    // Preserve the server's structured validation issues so the form can render each
+    // "field path: message" instead of just the bare "Validation failed" summary.
+    if (Array.isArray(err.issues)) error.issues = err.issues;
     throw error;
   }
   if (res.status === 204) return null;
