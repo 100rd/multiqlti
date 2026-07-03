@@ -50,6 +50,8 @@ import {
   FlaskConical,
   GitBranch,
   Radio,
+  Info,
+  CheckCircle2,
 } from "lucide-react";
 import {
   useConsiliumLoop,
@@ -119,6 +121,10 @@ import { IterationDetailView } from "@/components/task-groups/iterations-panel";
 import type { ActionPoint, Archetype, OpenRemainder } from "@shared/types";
 import { ARCHETYPES } from "@shared/types";
 import { summarizeNonP0Remainder } from "@shared/consilium-remainder";
+import {
+  explainLoopState,
+  type LoopStatusTone,
+} from "@shared/loop-status";
 
 // Priority palette for action-point severity tiers (P0–P3). The loop page is now
 // the canonical home of this taxonomy (the task-group verdict panel is retired).
@@ -665,6 +671,69 @@ function RoundRow({
 
 // ─── Result panel — the human-gate outcome surface ─────────────────────────────
 //
+// ─── Status callout — a plain-English "what & why" for EVERY state ──────────────
+//
+// The FSM stepper shows WHERE the loop is with colour; this adds the WORDS. #466
+// gave a CANCELLED loop a callout that rendered its error ("who/when/why"); an
+// operator who hit `stopped_cap` got no words at all. This generalizes it: for
+// EVERY state — non-terminal and terminal — `explainLoopState` (shared, pure,
+// unit-tested) returns a toned `{ title, detail }` grounded in the loop's own
+// numbers (round/maxRounds/open remainder/open P0). It reuses #466's behaviour
+// for failed/cancelled (detail = the loop's error) and NEVER renders blank (a
+// safe neutral default backs any unknown state).
+//
+// SECURITY: `detail` may be the loop/user-authored `error` (cancellation note /
+// last-round error) — rendered as INERT React text, exactly as #466 did.
+const STATUS_TONE_STYLE: Record<
+  LoopStatusTone,
+  { card: string; icon: string; title: string; body: string; Icon: typeof Info }
+> = {
+  good: {
+    card: "border-green-600/50 bg-green-600/10",
+    icon: "text-green-600 dark:text-green-400",
+    title: "text-green-700 dark:text-green-300",
+    body: "text-green-700/90 dark:text-green-300/90",
+    Icon: CheckCircle2,
+  },
+  warning: {
+    card: "border-amber-500/50 bg-amber-500/10",
+    icon: "text-amber-600 dark:text-amber-400",
+    title: "text-amber-700 dark:text-amber-300",
+    body: "text-amber-700/90 dark:text-amber-300/90",
+    Icon: AlertTriangle,
+  },
+  bad: {
+    card: "border-red-600/50 bg-red-600/10",
+    icon: "text-red-600 dark:text-red-400",
+    title: "text-red-700 dark:text-red-300",
+    body: "text-red-700/90 dark:text-red-300/90",
+    Icon: AlertTriangle,
+  },
+  neutral: {
+    card: "border-border bg-muted/40",
+    icon: "text-muted-foreground",
+    title: "text-foreground",
+    body: "text-muted-foreground",
+    Icon: Info,
+  },
+};
+
+function LoopStatusCallout({ loop }: { loop: ConsiliumLoopDetailRow }) {
+  const { title, tone, detail } = explainLoopState(loop);
+  const s = STATUS_TONE_STYLE[tone];
+  const Icon = s.Icon;
+  return (
+    <div className={`flex items-start gap-2 rounded-md border p-3 text-sm ${s.card}`}>
+      <Icon className={`h-4 w-4 shrink-0 mt-0.5 ${s.icon}`} aria-hidden="true" />
+      <div className="min-w-0">
+        <p className={`font-medium ${s.title}`}>{title}</p>
+        {/* INERT loop/user-authored text (error/cancellation note) or a code template. */}
+        <p className={`break-words ${s.body}`}>{detail}</p>
+      </div>
+    </div>
+  );
+}
+
 // What did the latest SDLC round actually produce? The stepper shows WHERE the
 // loop is; this panel shows WHAT to decide on. It is rendered near the top so a
 // human arriving at `awaiting_merge` is never met with a blank gate. Every field
@@ -699,18 +768,17 @@ function ResultPanel({
         <CardTitle className="text-sm">Result</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Terminal explanation from `loop.error`. For a CANCELLED loop this is the
-            composed "Cancelled by <actor> at <ISO> — <reason>" note (who/when/why),
-            NOT a failure — so it reads as "Cancellation". For every other state it
-            is the last-round degradation signal. Same amber (neutral, not red)
-            treatment either way; the text is INERT loop/user-authored content. */}
-        {loop.error && (
+        {/* Last-round degradation signal from `loop.error`. The CANCELLED and
+            FAILED cases (where `error` IS the state explanation) are now owned by
+            the top-of-page LoopStatusCallout — rendering them here too would
+            duplicate. For every OTHER state (e.g. a stopped_cap/escalated round
+            that recorded an error) this remains the amber "Last round error"
+            note. INERT loop/user-authored content. */}
+        {loop.error && loop.state !== "cancelled" && loop.state !== "failed" && (
           <div className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
             <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
             <div className="min-w-0">
-              <p className="font-medium text-amber-700 dark:text-amber-300">
-                {loop.state === "cancelled" ? "Cancellation" : "Last round error"}
-              </p>
+              <p className="font-medium text-amber-700 dark:text-amber-300">Last round error</p>
               {/* INERT loop/user-authored text */}
               <p className="text-amber-700/90 dark:text-amber-300/90 break-words">{loop.error}</p>
             </div>
@@ -2081,6 +2149,10 @@ export default function ConsiliumLoopDetail() {
       </header>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
+        {/* Status — a plain-English "what this state means and why the loop is
+            here" for EVERY state (generalizes #466's cancel-reason callout). */}
+        <LoopStatusCallout loop={loop} />
+
         {/* Result — the outcome the human gate decides on (near the top). */}
         <ResultPanel loop={loop} terminal={terminal} />
 
