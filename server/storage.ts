@@ -1726,6 +1726,8 @@ export class MemStorage implements IStorage {
       repoPath: data.repoPath,
       lastReviewedCommit: data.lastReviewedCommit ?? null,
       reviewRef: data.reviewRef ?? null,
+      // Single-verifier re-review: per-loop mode (nullable; null ⇒ operator default).
+      reviewMode: data.reviewMode ?? null,
       // Stage 1: engineer instruction + archetype planner columns (all nullable).
       engineerInstruction: data.engineerInstruction ?? null,
       // Stage 2: applied-skill provenance (nullable jsonb).

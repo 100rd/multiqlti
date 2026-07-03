@@ -60,6 +60,13 @@ describe("classifyParticipantRole", () => {
     expect(r.label).toBe("judge");
   });
 
+  it("classifies the single-verifier seat (round > 1 confirmation)", () => {
+    const r = classifyParticipantRole("Verifier");
+    expect(r.kind).toBe("verifier");
+    expect(r.seat).toBeNull();
+    expect(r.label).toBe("confirming fixes");
+  });
+
   it("falls back to a generic participant for unknown names", () => {
     expect(classifyParticipantRole("something else").kind).toBe("participant");
     expect(classifyParticipantRole(null).kind).toBe("participant");
@@ -228,6 +235,29 @@ describe("computeReviewActivity — ordering + one-line summary", () => {
     expect(act.oneLine).toBe("Round 2 review — 2 debaters + judge · 2 running, 1 queued · elapsed 6m");
     expect(act.summary.debaterCount).toBe(2);
     expect(act.summary.hasJudge).toBe(true);
+  });
+
+  it("renders a single-verifier round cleanly (one participant, no crash)", () => {
+    const now = T0 + 2 * MIN;
+    const act = computeReviewActivity(
+      [
+        exec({
+          id: "v",
+          taskName: "Verifier",
+          modelSlug: "claude-opus",
+          status: "running",
+          startedAt: new Date(T0).toISOString(),
+        }),
+      ],
+      { now, roundLabel: 2, loopUpdatedAt: new Date(now - 10 * 1000).toISOString() },
+    );
+    expect(act.participants).toHaveLength(1);
+    expect(act.participants[0].role.kind).toBe("verifier");
+    expect(participantHeading(act.participants[0])).toBe("Verifier (claude-opus) — confirming fixes");
+    expect(act.summary.verifierCount).toBe(1);
+    expect(act.summary.debaterCount).toBe(0);
+    expect(act.summary.hasJudge).toBe(false);
+    expect(act.oneLine).toBe("Round 2 review — 1 verifier · 1 running · elapsed 2m");
   });
 
   it("surfaces a stalled count in the one-liner", () => {

@@ -17,7 +17,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { TriggerConfig, TriggerType, TriggerProvenance, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, ExecutionTrace } from "./types.js";
+import type { TriggerConfig, TriggerType, TriggerProvenance, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, ExecutionTrace, ReviewMode } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -2023,6 +2023,12 @@ export const consiliumLoops = pgTable(
     // tip + tree this review targets (content read AT THAT REF, no checkout).
     // null ⇒ working-tree HEAD (existing behavior; full back-compat).
     reviewRef: text("review_ref"),
+    // Single-verifier re-review (migration 0044): HOW rounds AFTER the first are
+    // run — 'full-dispute' (the default) or 'single-verifier'. NULLABLE; null ⇒
+    // resolve from the operator default (pipeline.consiliumLoop.verifyReview.enabled).
+    // An explicit per-loop value always wins. Additive text column (mirrors reviewRef);
+    // INERT audit/dispatch selector — never a shell/branch/PR sink.
+    reviewMode: text("review_mode").$type<ReviewMode>(),
     // Stage 1 (0031): OPTIONAL human "engineer instruction" — free-text steering
     // the dispute objective (factory objectiveExtra) AND the planner. UNTRUSTED:
     // fenced-as-data in prompts, inert in storage; never a shell/branch/PR sink.

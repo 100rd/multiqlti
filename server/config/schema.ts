@@ -480,6 +480,40 @@ export const ConfigSchema = z.object({
         model: z.string().min(1).default("claude-opus"),
       }).default({}),
       /**
+       * Single-verifier confirmation review (re-review rounds). Controls the
+       * OPERATOR-LEVEL default for `consilium_loops.review_mode`: when `enabled` is
+       * true, a loop created WITHOUT an explicit `reviewMode` runs its re-review
+       * rounds (round > 1) as ONE fresh, independent verifier that CONFIRMS whether
+       * the written code closed the prior findings — instead of re-running the full
+       * 2-debater+judge panel. Round 1 ALWAYS runs the full preset DAG. An EXPLICIT
+       * per-loop `reviewMode` always wins over this default. Default FALSE ⇒
+       * BYTE-IDENTICAL: with no explicit per-loop mode every round is the full
+       * dispute, exactly as before. Gated (like every enhancement here) under the
+       * parent `consiliumLoop.enabled`.
+       */
+      verifyReview: z.object({
+        /** Kill-switch: false (default) → the operator default stays 'full-dispute'
+         *  (byte-identical). An explicit per-loop reviewMode='single-verifier' still
+         *  works regardless of this switch. */
+        enabled: z.boolean().default(false),
+        /**
+         * The model the SINGLE verifier task runs on (a `direct_llm` task). Opus-tier
+         * by default — the confirmation is a low-volume, quality-sensitive one-shot.
+         * SECURITY (fail-closed at load): SAME safe-slug regex as `implement.coderModel`
+         * — alphanumeric FIRST char, then `[A-Za-z0-9._-]` — so a config value can never
+         * be flag-like or a shell metacharacter; it can ONLY ever be a model id. A value
+         * that fails ABORTS config load rather than silently defaulting. NEVER "mock".
+         */
+        model: z
+          .string()
+          .min(1)
+          .regex(
+            /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/,
+            "verifyReview.model must be a safe model slug (alphanumeric start; [A-Za-z0-9._-])",
+          )
+          .default("claude-opus"),
+      }).default({}),
+      /**
        * Stage 2a (design §3.C/§4): the SKILLED, archetype-branched implement
        * (develop) phase. When `enabled` is FALSE the loop runs TODAY'S single
        * unskilled coder per action point (byte-for-byte unchanged). When TRUE the
