@@ -17,6 +17,7 @@
 import { describe, it, expect } from "vitest";
 import {
   isPrBearingLoop,
+  isResolvedGithubStatus,
   clusterPrQueue,
   normalizeRepoPath,
   PR_BEARING_LOOP_STATES,
@@ -141,5 +142,50 @@ describe("clusterPrQueue", () => {
     ]);
     expect(clusters[0].items.map((i) => i.loopId)).toEqual(["aaa", "zzz"]);
     expect(clusters[0].currentLoopId).toBe("aaa");
+  });
+
+  it("elects the live-OPEN PR as current over a NEWER merged/closed run", () => {
+    const clusters = clusterPrQueue([
+      // Newer by time, but MERGED on GitHub — must not be current.
+      item({ loopId: "merged-new", createdAt: "2026-03-01T00:00:00.000Z", githubStatus: "MERGED" }),
+      // Older, but the live-OPEN PR — this is the real current review.
+      item({ loopId: "open-old", createdAt: "2026-01-01T00:00:00.000Z", githubStatus: "OPEN" }),
+    ]);
+    expect(clusters).toHaveLength(1);
+    const c = clusters[0];
+    expect(c.currentLoopId).toBe("open-old");
+    expect(c.items.map((i) => i.loopId)).toEqual(["open-old", "merged-new"]);
+    expect(c.supersededLoopIds).toEqual(["merged-new"]);
+  });
+
+  it("treats unknown/DRAFT as ACTIVE (not resolved) so a newer one stays current", () => {
+    const clusters = clusterPrQueue([
+      item({ loopId: "unknown-new", createdAt: "2026-03-01T00:00:00.000Z", githubStatus: "unknown" }),
+      item({ loopId: "draft-old", createdAt: "2026-01-01T00:00:00.000Z", githubStatus: "DRAFT" }),
+    ]);
+    // Both active → pure recency: the newer one is current.
+    expect(clusters[0].currentLoopId).toBe("unknown-new");
+  });
+
+  it("is backward compatible: no githubStatus reduces to newest-first", () => {
+    const clusters = clusterPrQueue([
+      item({ loopId: "old", createdAt: "2026-01-01T00:00:00.000Z" }),
+      item({ loopId: "new", createdAt: "2026-03-01T00:00:00.000Z" }),
+    ]);
+    expect(clusters[0].currentLoopId).toBe("new");
+  });
+});
+
+describe("isResolvedGithubStatus", () => {
+  it("is true only for MERGED/CLOSED", () => {
+    expect(isResolvedGithubStatus("MERGED")).toBe(true);
+    expect(isResolvedGithubStatus("CLOSED")).toBe(true);
+  });
+  it("is false for OPEN/DRAFT/unknown/null/undefined (active)", () => {
+    expect(isResolvedGithubStatus("OPEN")).toBe(false);
+    expect(isResolvedGithubStatus("DRAFT")).toBe(false);
+    expect(isResolvedGithubStatus("unknown")).toBe(false);
+    expect(isResolvedGithubStatus(null)).toBe(false);
+    expect(isResolvedGithubStatus(undefined)).toBe(false);
   });
 });

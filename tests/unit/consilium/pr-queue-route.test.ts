@@ -20,6 +20,15 @@ import request from "supertest";
 import type { AppConfig } from "../../../server/config/schema.js";
 import type { IStorage } from "../../../server/storage.js";
 import type { ConsiliumLoopController } from "../../../server/services/consilium/consilium-loop-controller.js";
+import type { GithubPrStatus } from "../../../shared/pr-queue.js";
+
+// Mock the LIVE-GitHub cache so the route never spawns a real `gh` — every case
+// controls the reconciled status (or its failure) via `getManyMock`.
+const { getManyMock } = vi.hoisted(() => ({ getManyMock: vi.fn() }));
+vi.mock("../../../server/services/github-status.js", () => ({
+  githubStatusCache: { getMany: getManyMock },
+}));
+
 import { registerConsiliumLoopRoutes } from "../../../server/routes/consilium-loops.js";
 import { clusterPrQueue, type PrQueueItem } from "../../../shared/pr-queue.js";
 
@@ -77,7 +86,13 @@ function makeApp(opts: {
 }
 
 describe("GET /api/pr-queue", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Default: reconciliation returns "unknown" for every ref (hermetic, no `gh`).
+    getManyMock.mockImplementation(async (refs: string[]) =>
+      new Map<string, GithubPrStatus>(refs.map((r) => [r, "unknown"])),
+    );
+  });
 
   it("401 when unauthenticated", async () => {
     const { app } = makeApp({ user: undefined as never });
@@ -176,5 +191,43 @@ describe("GET /api/pr-queue", () => {
     expect(widget?.currentLoopId).toBe("w2"); // newest
     expect(widget?.supersededLoopIds).toEqual(["w1"]);
     expect(other?.duplicate).toBe(false);
+  });
+
+  it("enriches each item with the reconciled live GitHub status", async () => {
+    const { app } = makeApp({
+      loops: [
+        loop({ id: "a", prRef: "https://github.com/o/widget/pull/1" }),
+        loop({ id: "b", prRef: "https://github.com/o/widget/pull/2", state: "stopped_cap" }),
+      ],
+    });
+    getManyMock.mockImplementation(async () =>
+      new Map<string, GithubPrStatus>([
+        ["https://github.com/o/widget/pull/1", "OPEN"],
+        ["https://github.com/o/widget/pull/2", "MERGED"],
+      ]),
+    );
+    const res = await request(app).get("/api/pr-queue");
+    const byId = Object.fromEntries((res.body as PrQueueItem[]).map((i) => [i.loopId, i.githubStatus]));
+    expect(byId).toEqual({ a: "OPEN", b: "MERGED" });
+    // Reconciliation is called with exactly the queued prRefs.
+    expect(getManyMock).toHaveBeenCalledWith([
+      "https://github.com/o/widget/pull/1",
+      "https://github.com/o/widget/pull/2",
+    ]);
+  });
+
+  it("degrades every item to 'unknown' when reconciliation REJECTS (GitHub down)", async () => {
+    const { app } = makeApp({ loops: [loop({ id: "a" }), loop({ id: "b", prRef: "https://github.com/o/widget/pull/2" })] });
+    getManyMock.mockRejectedValue(new Error("gh: API rate limit exceeded"));
+    const res = await request(app).get("/api/pr-queue");
+    expect(res.status).toBe(200); // the queue is NEVER taken down by GitHub
+    for (const it of res.body as PrQueueItem[]) expect(it.githubStatus).toBe("unknown");
+  });
+
+  it("defaults a ref missing from the reconciliation map to 'unknown'", async () => {
+    const { app } = makeApp({ loops: [loop({ id: "a" })] });
+    getManyMock.mockImplementation(async () => new Map<string, GithubPrStatus>()); // empty
+    const res = await request(app).get("/api/pr-queue");
+    expect((res.body as PrQueueItem[])[0].githubStatus).toBe("unknown");
   });
 });
