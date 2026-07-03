@@ -267,6 +267,9 @@ export async function registerRoutes(
       orchestrator: taskOrchestrator,
       controller: consiliumLoopController,
       config: () => appConfigLoader.get(),
+      // "Magic mode" reformulate endpoint uses the SAME gateway path (completeStreaming)
+      // direct_llm/planner use. Gated by consiliumLoop.reformulate.enabled in the route.
+      gateway,
     });
     // NOTE: the standalone POST /api/task-groups/:groupId/execute-sdlc surface was
     // REMOVED — "execute a verdict's action points" is now the consilium loop's own

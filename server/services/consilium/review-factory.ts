@@ -71,6 +71,7 @@ import type { InsertConsiliumLoop, ConsiliumLoopRow, Skill, AppliedSkillRef } fr
 import type { ConsiliumReviewPreset } from "@shared/types";
 import type { TaskOrchestrator, CreateTaskParam } from "../task-orchestrator.js";
 import type { ConsiliumLoopController } from "./consilium-loop-controller.js";
+import type { ReformulateGateway } from "./reformulate.js";
 import type { AppConfig } from "../../config/schema.js";
 import { assertAllowedRepoPath, isWithinRoot, realResolve } from "./repo-allowlist.js";
 import { JUDGE_CONVERGENCE_INSTRUCTIONS } from "../orchestrator/judge-prompt.js";
@@ -1101,6 +1102,13 @@ export interface CreateConsiliumReviewDeps {
    * already-allowlisted+workspace-gated canonical path.
    */
   gitClientFactory?: (repoPath: string) => SpecGitClient;
+  /**
+   * The model gateway, wired ONLY for the "magic mode" reformulate endpoint
+   * (POST /api/consilium-reviews/reformulate-instruction). Optional — absent ⇒
+   * the reformulate endpoint reports itself disabled (409); the create path never
+   * uses it. Structurally a `ReformulateGateway` (the real Gateway satisfies it).
+   */
+  gateway?: ReformulateGateway;
 }
 
 export interface CreateConsiliumReviewParams {

@@ -21,6 +21,10 @@ import {
   createConsiliumReview,
   type CreateConsiliumReviewDeps,
 } from "../services/consilium/review-factory.js";
+import {
+  reformulateInstruction,
+  MAX_RAW_WANT_LEN,
+} from "../services/consilium/reformulate.js";
 import { REVIEW_REF_RE, INVALID_REF_MESSAGE } from "../services/consilium/ref-validator.js";
 
 const SHA_RE = /^[0-9a-f]{7,64}$/;
@@ -49,7 +53,64 @@ const CreateReviewSchema = z.object({
   skillIds: z.array(z.string().min(1).max(200)).max(5).optional(),
 });
 
+/**
+ * "Magic mode" reformulation body. `rawWant` is the operator's rough request —
+ * UNTRUSTED free-text, fenced-as-data by the reformulate service before it reaches
+ * the model. `.min(1)` after trim rejects an empty/whitespace-only want with a
+ * clean 400 (no wasted model call). The `.trim()` transform means a whitespace-
+ * only body fails the min check. `preset` reuses the same enum as create so the
+ * reformulator can tailor the instruction to the chosen dispute.
+ */
+const ReformulateSchema = z.object({
+  rawWant: z.string().trim().min(1, "rawWant must not be empty").max(MAX_RAW_WANT_LEN),
+  repoPath: z.string().min(1).max(4096),
+  preset: z.enum(CONSILIUM_REVIEW_PRESETS),
+});
+
 export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliumReviewDeps): void {
+  // POST /api/consilium-reviews/reformulate-instruction — "magic mode": turn the
+  // operator's rough want into a PROPOSED engineer instruction they then review and
+  // edit. A single out-of-band gateway call; persists nothing, submits nothing. The
+  // whole router is already behind requireAuth + requireProject and the
+  // consiliumLoop.enabled kill-switch (registered only then). This endpoint is
+  // ADDITIVELY gated by consiliumLoop.reformulate.enabled AND a wired gateway.
+  app.post(
+    "/api/consilium-reviews/reformulate-instruction",
+    validateBody(ReformulateSchema),
+    async (req: Request, res: Response) => {
+      if (!req.user?.id) return res.status(401).json({ error: "Authentication required" });
+      if (!req.projectId) return res.status(400).json({ error: "x-project-id header is required" });
+
+      const cfg = deps.config().pipeline.consiliumLoop;
+      // Finer kill-switch: OFF (or no gateway wired) ⇒ magic mode is inert; the UI
+      // falls back to manual authoring. 409 so the client can distinguish "disabled"
+      // from a transient failure.
+      if (!cfg.reformulate?.enabled || !deps.gateway) {
+        return res.status(409).json({ error: "Magic-mode reformulation is disabled for this instance." });
+      }
+
+      const body = req.body as z.infer<typeof ReformulateSchema>;
+      try {
+        const { proposedInstruction } = await reformulateInstruction(
+          {
+            gateway: deps.gateway,
+            model: cfg.reformulate.model,
+            timeoutMs: deps.config().pipeline.taskGroups.taskTimeoutMs,
+          },
+          { rawWant: body.rawWant, repoPath: body.repoPath, preset: body.preset },
+        );
+        return res.status(200).json({ proposedInstruction });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // An empty model reply (or gateway failure) is a transient upstream problem,
+        // not the caller's fault — 502. The message is generic (no model internals).
+        // eslint-disable-next-line no-console
+        console.error("[consilium-reviews] reformulate failed:", message);
+        return res.status(502).json({ error: "Could not reformulate the instruction — try again or write it manually." });
+      }
+    },
+  );
+
   app.post(
     "/api/consilium-reviews",
     validateBody(CreateReviewSchema),
