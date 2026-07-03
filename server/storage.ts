@@ -524,6 +524,23 @@ export interface IStorage {
     expected: ConsiliumLoopState,
     graceMs: number,
   ): Promise<ConsiliumLoopRow | undefined>;
+  /**
+   * Bug #7 (stranded-REVIEW recovery) — atomically CLAIM a stalled review round's
+   * re-launch across instances. Unlike `claimRedrive` (which matches a NULL child
+   * ref = a crash BEFORE the iteration was written), this matches a review whose
+   * iteration IS set but has gone idle: a conditional UPDATE that bumps `updatedAt`
+   * ONLY when the row is still `reviewing`, still on the SAME stale iteration
+   * (`current_iteration_number = expectedIterationNumber`), AND untouched since
+   * `staleThreshold` (updatedAt < staleThreshold). The winner's UPDATE moves
+   * updatedAt to now, so a concurrent instance's predicate no longer matches → 0
+   * rows → `undefined` → it backs off. Exactly one instance re-launches; a loser
+   * (and a review that legitimately advanced its iteration in the meantime) no-op.
+   */
+  claimReviewRedrive(
+    id: string,
+    expectedIterationNumber: number,
+    staleThreshold: Date,
+  ): Promise<ConsiliumLoopRow | undefined>;
   /** Append one round (UNIQUE(loop, round) — idempotent re-append throws). */
   appendLoopRound(data: InsertConsiliumLoopRound): Promise<ConsiliumLoopRoundRow>;
   getLoopRounds(loopId: string): Promise<ConsiliumLoopRoundRow[]>;
@@ -1720,6 +1737,7 @@ export class MemStorage implements IStorage {
       archetypeParams: data.archetypeParams ?? null,
       archetypeDecidedAt: data.archetypeDecidedAt ?? null,
       currentIterationNumber: data.currentIterationNumber ?? null,
+      reviewRedrive: data.reviewRedrive ?? null,
       devGroupId: data.devGroupId ?? null,
       prRef: data.prRef ?? null,
       headCommitAtReview: data.headCommitAtReview ?? null,
@@ -1820,6 +1838,24 @@ export class MemStorage implements IStorage {
     // Past-grace predicate: updatedAt < now - graceMs.
     if (Date.now() - existing.updatedAt.getTime() < graceMs) return undefined;
     // Atomic claim: bump updatedAt to now so a concurrent claim's grace check fails.
+    const claimed: ConsiliumLoopRow = { ...existing, updatedAt: new Date() };
+    this.consiliumLoopsMap.set(id, claimed);
+    return claimed;
+  }
+
+  async claimReviewRedrive(
+    id: string,
+    expectedIterationNumber: number,
+    staleThreshold: Date,
+  ): Promise<ConsiliumLoopRow | undefined> {
+    const existing = this.consiliumLoopsMap.get(id);
+    if (!existing || existing.state !== "reviewing") return undefined;
+    // Same STALE iteration (a review that advanced its iteration since we read it
+    // no longer matches → the winner-of-a-just-finished-review race no-ops).
+    if (existing.currentIterationNumber !== expectedIterationNumber) return undefined;
+    // Untouched since the stall window opened (mirrors the Pg `updatedAt < threshold`).
+    if (existing.updatedAt.getTime() >= staleThreshold.getTime()) return undefined;
+    // Atomic claim: bump updatedAt so a concurrent instance's predicate fails.
     const claimed: ConsiliumLoopRow = { ...existing, updatedAt: new Date() };
     this.consiliumLoopsMap.set(id, claimed);
     return claimed;

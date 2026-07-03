@@ -1229,6 +1229,30 @@ export class PgStorage implements IStorage {
     return row;
   }
 
+  async claimReviewRedrive(
+    id: string,
+    expectedIterationNumber: number,
+    staleThreshold: Date,
+  ): Promise<ConsiliumLoopRow | undefined> {
+    // Bug #7: atomic cross-instance claim for a STALLED (not crash-null) review.
+    // The conditional UPDATE matches ONLY a row still `reviewing`, still on the
+    // SAME stale iteration, untouched since `staleThreshold`. It bumps updated_at to
+    // now — so a concurrent instance (or a tick that raced a just-advanced review)
+    // no longer matches → 0 rows → undefined → back off. Same discipline as
+    // casLoopState/claimRedrive; the re-launch side effect runs ONLY for the winner.
+    const [row] = await db
+      .update(consiliumLoops)
+      .set({ updatedAt: new Date() })
+      .where(withProject(consiliumLoops, and(
+          eq(consiliumLoops.id, id),
+          eq(consiliumLoops.state, "reviewing"),
+          eq(consiliumLoops.currentIterationNumber, expectedIterationNumber),
+          lt(consiliumLoops.updatedAt, staleThreshold),
+        ),))
+      .returning();
+    return row;
+  }
+
   async appendLoopRound(data: InsertConsiliumLoopRound): Promise<ConsiliumLoopRoundRow> {
     const [row] = await db.insert(consiliumLoopRounds).values(withProjectInsert(consiliumLoopRounds, data)).returning();
     return row;
