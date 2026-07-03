@@ -65,11 +65,11 @@ test.describe("Statistics", () => {
       totalRequests: number;
       totalTokens: { input: number; output: number; total: number };
       totalCostUsd: number;
-      totalRuns: number;
     };
     expect(typeof body.totalRequests).toBe("number");
     expect(typeof body.totalCostUsd).toBe("number");
-    expect(typeof body.totalRuns).toBe("number");
+    // Pipeline Runs was removed from the overview response.
+    expect(body).not.toHaveProperty("totalRuns");
     expect(typeof body.totalTokens.total).toBe("number");
   });
 
@@ -80,12 +80,10 @@ test.describe("Statistics", () => {
       totalRequests: number;
       totalTokens: { input: number; output: number; total: number };
       totalCostUsd: number;
-      totalRuns: number;
     };
 
     expect(body.totalRequests).toBeGreaterThanOrEqual(0);
     expect(body.totalCostUsd).toBeGreaterThanOrEqual(0);
-    expect(body.totalRuns).toBeGreaterThanOrEqual(0);
     expect(body.totalTokens.input).toBeGreaterThanOrEqual(0);
     expect(body.totalTokens.output).toBeGreaterThanOrEqual(0);
   });
@@ -157,6 +155,15 @@ test.describe("Statistics", () => {
   test("GET /api/stats/by-team returns array", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
     const res = await page.request.get(`${baseURL}/api/stats/by-team`);
+    expect(res.status()).toBe(200);
+
+    const body = await res.json() as unknown[];
+    expect(Array.isArray(body)).toBe(true);
+  });
+
+  test("GET /api/stats/by-workspace returns array", async ({ page }, testInfo) => {
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    const res = await page.request.get(`${baseURL}/api/stats/by-workspace`);
     expect(res.status()).toBe(200);
 
     const body = await res.json() as unknown[];

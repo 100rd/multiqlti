@@ -129,6 +129,15 @@ export interface LlmStatsByTeam {
   costUsd: number;
 }
 
+export interface LlmStatsByWorkspace {
+  workspaceId: string | null;
+  workspaceName: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
+
 export interface LlmTimelinePoint {
   date: string;
   requests: number;
@@ -305,6 +314,7 @@ export interface IStorage {
   getLlmStatsByModel(): Promise<LlmStatsByModel[]>;
   getLlmStatsByProvider(): Promise<LlmStatsByProvider[]>;
   getLlmStatsByTeam(): Promise<LlmStatsByTeam[]>;
+  getLlmStatsByWorkspace(): Promise<LlmStatsByWorkspace[]>;
   getLlmTimeline(from: Date, to: Date, granularity: 'day' | 'week'): Promise<LlmTimelinePoint[]>;
 
   // Memories
@@ -1185,6 +1195,61 @@ export class MemStorage implements IStorage {
       const key = r.teamId!;
       const existing = map.get(key) ?? {
         teamId: key,
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      };
+      existing.requests++;
+      existing.inputTokens += r.inputTokens ?? 0;
+      existing.outputTokens += r.outputTokens ?? 0;
+      existing.costUsd += r.estimatedCostUsd ?? 0;
+      map.set(key, existing);
+    }
+    return Array.from(map.values());
+  }
+
+  async getLlmStatsByWorkspace(): Promise<LlmStatsByWorkspace[]> {
+    // Attribution (read-side only): llm_requests.runId holds a task_groups.id in
+    // the consilium path (the gateway is called with runId = group.id). We resolve
+    // a group -> workspace via consilium_loops.groupId -> repoPath -> workspaces.path.
+    //
+    // Single-count guard: a group may own MANY consilium_loops rows (terminal loops
+    // accumulate across re-runs) and MANY tasks. We therefore build a runId ->
+    // single-workspace map FIRST (one deterministic workspace per group), then fold
+    // each request into exactly one bucket. There is no request-to-loop fan-out
+    // join, so a request's tokens/cost are summed exactly once.
+
+    // path -> workspace (deterministic: lowest id wins on a duplicate path).
+    const wsByPath = new Map<string, WorkspaceRow>();
+    for (const w of Array.from(this.workspacesMap.values()).sort((a, b) => a.id.localeCompare(b.id))) {
+      if (!wsByPath.has(w.path)) wsByPath.set(w.path, w);
+    }
+
+    // group -> one workspace: the newest loop (createdAt desc, id desc) whose
+    // repoPath resolves wins; older loops of the same group never override it.
+    const loops = Array.from(this.consiliumLoopsMap.values()).sort((a, b) => {
+      const ta = a.createdAt?.getTime() ?? 0;
+      const tb = b.createdAt?.getTime() ?? 0;
+      if (ta !== tb) return tb - ta;
+      return b.id.localeCompare(a.id);
+    });
+    const groupToWs = new Map<string, WorkspaceRow>();
+    for (const loop of loops) {
+      if (groupToWs.has(loop.groupId)) continue;
+      const w = wsByPath.get(loop.repoPath);
+      if (w) groupToWs.set(loop.groupId, w);
+    }
+
+    // Fold each request into exactly one workspace (or the Unattributed bucket).
+    const UNATTRIBUTED = "\u0000unattributed";
+    const map = new Map<string, LlmStatsByWorkspace>();
+    for (const r of this.llmRequestsMap.values()) {
+      const ws = r.runId ? groupToWs.get(r.runId) : undefined;
+      const key = ws ? ws.id : UNATTRIBUTED;
+      const existing = map.get(key) ?? {
+        workspaceId: ws ? ws.id : null,
+        workspaceName: ws ? ws.name : "Unattributed",
         requests: 0,
         inputTokens: 0,
         outputTokens: 0,

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -10,8 +10,25 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { Download, ChevronDown, ChevronRight } from "lucide-react";
+import {
+  Responsive,
+  WidthProvider,
+  type Layout,
+  type ResponsiveLayouts,
+} from "react-grid-layout/legacy";
+import { Download, ChevronDown, ChevronRight, GripVertical, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  loadLayout,
+  saveLayout,
+  resetLayout,
+} from "@/lib/dashboard-layout";
+
+// react-grid-layout ships its own scoped CSS (targets `.react-grid-item` /
+// `.react-resizable-handle` — it does NOT restyle our `.rounded-lg border ...`
+// cards). react-resizable provides the resize-handle styles.
+import "react-grid-layout/css/styles.css";
+import "react-resizable/css/styles.css";
 
 // ─── API types ───────────────────────────────────────────────────────────────
 
@@ -19,7 +36,6 @@ interface StatsOverview {
   totalRequests: number;
   totalTokens: { input: number; output: number; total: number };
   totalCostUsd: number;
-  totalRuns: number;
 }
 
 interface ModelStat {
@@ -31,6 +47,15 @@ interface ModelStat {
   costUsd: number;
   avgLatencyMs: number;
   errorRate: number;
+}
+
+interface WorkspaceStat {
+  workspaceId: string | null;
+  workspaceName: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
 }
 
 interface TimelinePoint {
@@ -98,28 +123,79 @@ function fmtDate(iso: string | null) {
   return d.toLocaleString();
 }
 
-// ─── Summary Cards ───────────────────────────────────────────────────────────
+// ─── Widget shell (drag handle lives on the header only) ───────────────────────
+//
+// The whole card is the react-grid-layout grid item, but ONLY the `.widget-drag-handle`
+// element (grip + title) initiates a drag — RGL's `draggableHandle` prop points at it.
+// Action controls (granularity/metric buttons, CSV/JSON export) are rendered as siblings
+// of the handle (never inside it), so they stay clickable. The body is independently
+// scrollable so inner tables / text selection / sorting keep working while the widget
+// has a fixed grid height.
 
-function SummaryCards({ overview }: { overview: StatsOverview }) {
+function WidgetShell({
+  title,
+  actions,
+  children,
+}: {
+  title: string;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="h-full flex flex-col rounded-lg border border-border bg-card overflow-hidden">
+      <div className="flex items-center justify-between gap-2 px-4 pt-3 pb-2 shrink-0 border-b border-border/50">
+        <div
+          className="widget-drag-handle flex items-center gap-1.5 cursor-move select-none min-w-0"
+          title="Drag to move"
+        >
+          <GripVertical className="h-4 w-4 text-muted-foreground shrink-0" />
+          <p className="text-sm font-medium truncate">{title}</p>
+        </div>
+        {actions ? <div className="flex gap-2 flex-wrap justify-end">{actions}</div> : null}
+      </div>
+      <div className="flex-1 min-h-0 overflow-auto p-4">{children}</div>
+    </div>
+  );
+}
+
+// ─── Totals widget (formerly SummaryCards) ─────────────────────────────────────
+
+function TotalsWidget({
+  overview,
+  loading,
+}: {
+  overview: StatsOverview | undefined;
+  loading: boolean;
+}) {
+  if (loading || !overview) {
+    return (
+      <WidgetShell title="Totals">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="rounded-lg border border-border bg-background/40 p-4 animate-pulse h-20" />
+          ))}
+        </div>
+      </WidgetShell>
+    );
+  }
+
   const cards = [
     { label: "Total Requests", value: fmt(overview.totalRequests) },
     { label: "Total Tokens", value: fmt(overview.totalTokens.total) },
-    { label: "Pipeline Runs", value: fmt(overview.totalRuns) },
     { label: "Estimated Cost", value: fmtCost(overview.totalCostUsd) },
   ];
 
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      {cards.map((c) => (
-        <div
-          key={c.label}
-          className="rounded-lg border border-border bg-card p-4"
-        >
-          <p className="text-xs text-muted-foreground">{c.label}</p>
-          <p className="text-2xl font-semibold mt-1">{c.value}</p>
-        </div>
-      ))}
-    </div>
+    <WidgetShell title="Totals">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {cards.map((c) => (
+          <div key={c.label} className="rounded-lg border border-border bg-background/40 p-4">
+            <p className="text-xs text-muted-foreground">{c.label}</p>
+            <p className="text-2xl font-semibold mt-1">{c.value}</p>
+          </div>
+        ))}
+      </div>
+    </WidgetShell>
   );
 }
 
@@ -143,56 +219,55 @@ function TimelineChart() {
     costUsd: "Cost ($)",
   };
 
-  return (
-    <div className="rounded-lg border border-border bg-card p-4 space-y-3">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <p className="text-sm font-medium">Timeline</p>
-        <div className="flex gap-2 flex-wrap">
-          <div className="flex gap-1">
-            {(["day", "week"] as Granularity[]).map((g) => (
-              <button
-                key={g}
-                onClick={() => setGranularity(g)}
-                className={cn(
-                  "text-xs px-2 py-1 rounded border transition-colors",
-                  granularity === g
-                    ? "bg-primary text-primary-foreground border-primary"
-                    : "border-border text-muted-foreground hover:border-primary/50",
-                )}
-              >
-                {g.charAt(0).toUpperCase() + g.slice(1)}
-              </button>
-            ))}
-          </div>
-          <div className="flex gap-1">
-            {(Object.keys(metricLabels) as ChartMetric[]).map((m) => (
-              <button
-                key={m}
-                onClick={() => setMetric(m)}
-                className={cn(
-                  "text-xs px-2 py-1 rounded border transition-colors",
-                  metric === m
-                    ? "bg-primary text-primary-foreground border-primary"
-                    : "border-border text-muted-foreground hover:border-primary/50",
-                )}
-              >
-                {metricLabels[m]}
-              </button>
-            ))}
-          </div>
-        </div>
+  const actions = (
+    <>
+      <div className="flex gap-1">
+        {(["day", "week"] as Granularity[]).map((g) => (
+          <button
+            key={g}
+            onClick={() => setGranularity(g)}
+            className={cn(
+              "text-xs px-2 py-1 rounded border transition-colors",
+              granularity === g
+                ? "bg-primary text-primary-foreground border-primary"
+                : "border-border text-muted-foreground hover:border-primary/50",
+            )}
+          >
+            {g.charAt(0).toUpperCase() + g.slice(1)}
+          </button>
+        ))}
       </div>
+      <div className="flex gap-1">
+        {(Object.keys(metricLabels) as ChartMetric[]).map((m) => (
+          <button
+            key={m}
+            onClick={() => setMetric(m)}
+            className={cn(
+              "text-xs px-2 py-1 rounded border transition-colors",
+              metric === m
+                ? "bg-primary text-primary-foreground border-primary"
+                : "border-border text-muted-foreground hover:border-primary/50",
+            )}
+          >
+            {metricLabels[m]}
+          </button>
+        ))}
+      </div>
+    </>
+  );
 
+  return (
+    <WidgetShell title="Timeline" actions={actions}>
       {isLoading ? (
-        <div className="h-48 flex items-center justify-center text-xs text-muted-foreground">
+        <div className="h-full min-h-40 flex items-center justify-center text-xs text-muted-foreground">
           Loading...
         </div>
       ) : !data || data.length === 0 ? (
-        <div className="h-48 flex items-center justify-center text-xs text-muted-foreground">
-          No data yet — run a pipeline to generate statistics.
+        <div className="h-full min-h-40 flex items-center justify-center text-xs text-muted-foreground">
+          No data yet.
         </div>
       ) : (
-        <ResponsiveContainer width="100%" height={200}>
+        <ResponsiveContainer width="100%" height="100%" minHeight={160}>
           <AreaChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
             <defs>
               <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
@@ -223,7 +298,7 @@ function TimelineChart() {
           </AreaChart>
         </ResponsiveContainer>
       )}
-    </div>
+    </WidgetShell>
   );
 }
 
@@ -261,19 +336,11 @@ function ModelTable() {
     { label: "Error Rate", key: "errorRate", fmt: (v) => `${(v * 100).toFixed(1)}%` },
   ];
 
-  if (isLoading) {
-    return (
-      <div className="rounded-lg border border-border bg-card p-4">
-        <p className="text-sm font-medium mb-3">Per-Model Breakdown</p>
-        <p className="text-xs text-muted-foreground">Loading...</p>
-      </div>
-    );
-  }
-
   return (
-    <div className="rounded-lg border border-border bg-card p-4 space-y-3">
-      <p className="text-sm font-medium">Per-Model Breakdown</p>
-      {sorted.length === 0 ? (
+    <WidgetShell title="Per-Model Breakdown">
+      {isLoading ? (
+        <p className="text-xs text-muted-foreground">Loading...</p>
+      ) : sorted.length === 0 ? (
         <p className="text-xs text-muted-foreground">No data yet.</p>
       ) : (
         <div className="overflow-x-auto">
@@ -307,7 +374,103 @@ function ModelTable() {
           </table>
         </div>
       )}
-    </div>
+    </WidgetShell>
+  );
+}
+
+// ─── Workspace Breakdown Table ─────────────────────────────────────────────────
+
+type WorkspaceSortKey = "requests" | "tokens" | "costUsd" | "workspaceName";
+
+function WorkspaceTable() {
+  const { data, isLoading } = useQuery<WorkspaceStat[]>({
+    queryKey: ["stats-by-workspace"],
+    queryFn: () => fetchJson("/api/stats/by-workspace"),
+  });
+
+  const [sortKey, setSortKey] = useState<WorkspaceSortKey>("requests");
+  const [sortAsc, setSortAsc] = useState(false);
+
+  const toggleSort = (key: WorkspaceSortKey) => {
+    if (sortKey === key) setSortAsc(!sortAsc);
+    else { setSortKey(key); setSortAsc(false); }
+  };
+
+  const valueFor = (row: WorkspaceStat, key: WorkspaceSortKey): number | string => {
+    switch (key) {
+      case "workspaceName":
+        return row.workspaceName;
+      case "tokens":
+        return row.inputTokens + row.outputTokens;
+      case "requests":
+        return row.requests;
+      case "costUsd":
+        return row.costUsd;
+    }
+  };
+
+  const sorted = [...(data ?? [])].sort((a, b) => {
+    const av = valueFor(a, sortKey);
+    const bv = valueFor(b, sortKey);
+    if (typeof av === "string" || typeof bv === "string") {
+      const cmp = String(av).localeCompare(String(bv));
+      return sortAsc ? cmp : -cmp;
+    }
+    return sortAsc ? av - bv : bv - av;
+  });
+
+  const cols: { label: string; key: WorkspaceSortKey }[] = [
+    { label: "Workspace", key: "workspaceName" },
+    { label: "Requests", key: "requests" },
+    { label: "Tokens", key: "tokens" },
+    { label: "Cost", key: "costUsd" },
+  ];
+
+  return (
+    <WidgetShell title="Per-Workspace Breakdown">
+      {isLoading ? (
+        <p className="text-xs text-muted-foreground">Loading...</p>
+      ) : sorted.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No data yet.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-border">
+                {cols.map((c) => (
+                  <th
+                    key={c.key}
+                    className="text-left pb-2 pr-4 text-muted-foreground font-medium cursor-pointer hover:text-foreground whitespace-nowrap"
+                    onClick={() => toggleSort(c.key)}
+                  >
+                    {c.label} {sortKey === c.key ? (sortAsc ? "▲" : "▼") : ""}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((row) => (
+                <tr
+                  key={row.workspaceId ?? "__unattributed__"}
+                  className="border-b border-border/50 hover:bg-muted/30"
+                >
+                  <td className="py-2 pr-4">
+                    {row.workspaceId === null ? (
+                      <span className="text-muted-foreground italic">{row.workspaceName}</span>
+                    ) : (
+                      row.workspaceName
+                    )}
+                  </td>
+                  <td className="py-2 pr-4">{fmt(row.requests)}</td>
+                  <td className="py-2 pr-4">{fmt(row.inputTokens + row.outputTokens)}</td>
+                  <td className="py-2 pr-4">{fmtCost(row.costUsd)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </WidgetShell>
   );
 }
 
@@ -368,161 +531,169 @@ function RequestLog() {
     URL.revokeObjectURL(url);
   }
 
+  const actions = (
+    <>
+      <button
+        onClick={() => handleExport("csv")}
+        className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-border hover:border-primary/50 text-muted-foreground"
+      >
+        <Download className="h-3 w-3" /> CSV
+      </button>
+      <button
+        onClick={() => handleExport("json")}
+        className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-border hover:border-primary/50 text-muted-foreground"
+      >
+        <Download className="h-3 w-3" /> JSON
+      </button>
+    </>
+  );
+
   return (
-    <div className="rounded-lg border border-border bg-card p-4 space-y-3">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <p className="text-sm font-medium">Request Log</p>
-        <div className="flex gap-2">
-          <button
-            onClick={() => handleExport("csv")}
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-border hover:border-primary/50 text-muted-foreground"
+    <WidgetShell title="Request Log" actions={actions}>
+      <div className="space-y-3">
+        {/* Filters */}
+        <div className="flex gap-2 flex-wrap">
+          <input
+            type="text"
+            placeholder="Filter by model..."
+            value={modelFilter}
+            onChange={(e) => { setModelFilter(e.target.value); setPage(1); }}
+            className="text-xs px-2 py-1 rounded border border-border bg-background text-foreground placeholder:text-muted-foreground"
+          />
+          <input
+            type="text"
+            placeholder="Filter by provider..."
+            value={providerFilter}
+            onChange={(e) => { setProviderFilter(e.target.value); setPage(1); }}
+            className="text-xs px-2 py-1 rounded border border-border bg-background text-foreground placeholder:text-muted-foreground"
+          />
+          <select
+            value={statusFilter}
+            onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+            className="text-xs px-2 py-1 rounded border border-border bg-background text-foreground"
           >
-            <Download className="h-3 w-3" /> CSV
-          </button>
-          <button
-            onClick={() => handleExport("json")}
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-border hover:border-primary/50 text-muted-foreground"
-          >
-            <Download className="h-3 w-3" /> JSON
-          </button>
+            <option value="">All statuses</option>
+            <option value="success">Success</option>
+            <option value="error">Error</option>
+          </select>
         </div>
-      </div>
 
-      {/* Filters */}
-      <div className="flex gap-2 flex-wrap">
-        <input
-          type="text"
-          placeholder="Filter by model..."
-          value={modelFilter}
-          onChange={(e) => { setModelFilter(e.target.value); setPage(1); }}
-          className="text-xs px-2 py-1 rounded border border-border bg-background text-foreground placeholder:text-muted-foreground"
-        />
-        <input
-          type="text"
-          placeholder="Filter by provider..."
-          value={providerFilter}
-          onChange={(e) => { setProviderFilter(e.target.value); setPage(1); }}
-          className="text-xs px-2 py-1 rounded border border-border bg-background text-foreground placeholder:text-muted-foreground"
-        />
-        <select
-          value={statusFilter}
-          onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
-          className="text-xs px-2 py-1 rounded border border-border bg-background text-foreground"
-        >
-          <option value="">All statuses</option>
-          <option value="success">Success</option>
-          <option value="error">Error</option>
-        </select>
-      </div>
-
-      {isLoading ? (
-        <p className="text-xs text-muted-foreground">Loading...</p>
-      ) : !data || data.rows.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No requests found.</p>
-      ) : (
-        <>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-border">
-                  {["Time", "Model", "Team", "In Tok", "Out Tok", "Cost", "Latency", "Status"].map((h) => (
-                    <th key={h} className="text-left pb-2 pr-3 text-muted-foreground font-medium whitespace-nowrap">
-                      {h}
-                    </th>
-                  ))}
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.rows.map((row) => (
-                  <>
-                    <tr
-                      key={row.id}
-                      className="border-b border-border/50 hover:bg-muted/30 cursor-pointer"
-                      onClick={() => setExpandedId(expandedId === row.id ? null : row.id)}
-                    >
-                      <td className="py-1.5 pr-3 text-muted-foreground whitespace-nowrap">
-                        {fmtDate(row.createdAt).slice(0, 16)}
-                      </td>
-                      <td className="py-1.5 pr-3 font-mono truncate max-w-[150px]">{row.modelSlug}</td>
-                      <td className="py-1.5 pr-3 text-muted-foreground">{row.teamId ?? "—"}</td>
-                      <td className="py-1.5 pr-3">{fmt(row.inputTokens)}</td>
-                      <td className="py-1.5 pr-3">{fmt(row.outputTokens)}</td>
-                      <td className="py-1.5 pr-3">{row.estimatedCostUsd ? fmtCost(row.estimatedCostUsd) : "—"}</td>
-                      <td className="py-1.5 pr-3">{row.latencyMs}ms</td>
-                      <td className="py-1.5 pr-3">
-                        <span className={cn(
-                          "px-1.5 py-0.5 rounded text-[10px] font-medium",
-                          row.status === "success"
-                            ? "bg-green-500/10 text-green-500"
-                            : "bg-red-500/10 text-red-500",
-                        )}>
-                          {row.status}
-                        </span>
-                      </td>
-                      <td className="py-1.5">
-                        {expandedId === row.id
-                          ? <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                          : <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                        }
-                      </td>
-                    </tr>
-                    {expandedId === row.id && detail && (
-                      <tr key={`${row.id}-detail`} className="border-b border-border/50">
-                        <td colSpan={9} className="pb-3 pr-3">
-                          <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2 text-xs">
-                            <div>
-                              <p className="text-muted-foreground font-medium mb-1">Messages</p>
-                              <pre className="text-[11px] whitespace-pre-wrap font-mono max-h-40 overflow-y-auto">
-                                {JSON.stringify(detail.messages, null, 2)}
-                              </pre>
-                            </div>
-                            {detail.responseContent && (
-                              <div>
-                                <p className="text-muted-foreground font-medium mb-1">Response</p>
-                                <pre className="text-[11px] whitespace-pre-wrap font-mono max-h-40 overflow-y-auto">
-                                  {detail.responseContent}
-                                </pre>
-                              </div>
-                            )}
-                          </div>
+        {isLoading ? (
+          <p className="text-xs text-muted-foreground">Loading...</p>
+        ) : !data || data.rows.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No requests found.</p>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border">
+                    {["Time", "Model", "Team", "In Tok", "Out Tok", "Cost", "Latency", "Status"].map((h) => (
+                      <th key={h} className="text-left pb-2 pr-3 text-muted-foreground font-medium whitespace-nowrap">
+                        {h}
+                      </th>
+                    ))}
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.rows.map((row) => (
+                    <>
+                      <tr
+                        key={row.id}
+                        className="border-b border-border/50 hover:bg-muted/30 cursor-pointer"
+                        onClick={() => setExpandedId(expandedId === row.id ? null : row.id)}
+                      >
+                        <td className="py-1.5 pr-3 text-muted-foreground whitespace-nowrap">
+                          {fmtDate(row.createdAt).slice(0, 16)}
+                        </td>
+                        <td className="py-1.5 pr-3 font-mono truncate max-w-[150px]">{row.modelSlug}</td>
+                        <td className="py-1.5 pr-3 text-muted-foreground">{row.teamId ?? "—"}</td>
+                        <td className="py-1.5 pr-3">{fmt(row.inputTokens)}</td>
+                        <td className="py-1.5 pr-3">{fmt(row.outputTokens)}</td>
+                        <td className="py-1.5 pr-3">{row.estimatedCostUsd ? fmtCost(row.estimatedCostUsd) : "—"}</td>
+                        <td className="py-1.5 pr-3">{row.latencyMs}ms</td>
+                        <td className="py-1.5 pr-3">
+                          <span className={cn(
+                            "px-1.5 py-0.5 rounded text-[10px] font-medium",
+                            row.status === "success"
+                              ? "bg-green-500/10 text-green-500"
+                              : "bg-red-500/10 text-red-500",
+                          )}>
+                            {row.status}
+                          </span>
+                        </td>
+                        <td className="py-1.5">
+                          {expandedId === row.id
+                            ? <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                            : <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                          }
                         </td>
                       </tr>
-                    )}
-                  </>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Pagination */}
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>{data.total} total</span>
-            <div className="flex gap-2 items-center">
-              <button
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={page <= 1}
-                className="px-2 py-1 rounded border border-border disabled:opacity-40 hover:border-primary/50"
-              >
-                Prev
-              </button>
-              <span>{page} / {totalPages}</span>
-              <button
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={page >= totalPages}
-                className="px-2 py-1 rounded border border-border disabled:opacity-40 hover:border-primary/50"
-              >
-                Next
-              </button>
+                      {expandedId === row.id && detail && (
+                        <tr key={`${row.id}-detail`} className="border-b border-border/50">
+                          <td colSpan={9} className="pb-3 pr-3">
+                            <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2 text-xs">
+                              <div>
+                                <p className="text-muted-foreground font-medium mb-1">Messages</p>
+                                <pre className="text-[11px] whitespace-pre-wrap font-mono max-h-40 overflow-y-auto">
+                                  {JSON.stringify(detail.messages, null, 2)}
+                                </pre>
+                              </div>
+                              {detail.responseContent && (
+                                <div>
+                                  <p className="text-muted-foreground font-medium mb-1">Response</p>
+                                  <pre className="text-[11px] whitespace-pre-wrap font-mono max-h-40 overflow-y-auto">
+                                    {detail.responseContent}
+                                  </pre>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          </div>
-        </>
-      )}
-    </div>
+
+            {/* Pagination */}
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>{data.total} total</span>
+              <div className="flex gap-2 items-center">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                  className="px-2 py-1 rounded border border-border disabled:opacity-40 hover:border-primary/50"
+                >
+                  Prev
+                </button>
+                <span>{page} / {totalPages}</span>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages}
+                  className="px-2 py-1 rounded border border-border disabled:opacity-40 hover:border-primary/50"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </WidgetShell>
   );
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
+
+// Classic WidthProvider(Responsive) composition from the `legacy` entry point:
+// auto-measures container width and supplies responsive breakpoints.
+const ResponsiveGridLayout = WidthProvider(Responsive);
+
+const BREAKPOINTS = { lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 };
+const COLS = { lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 };
 
 export default function Statistics() {
   const { data: overview, isLoading: overviewLoading } = useQuery<StatsOverview>({
@@ -530,26 +701,61 @@ export default function Statistics() {
     queryFn: () => fetchJson("/api/stats/overview"),
   });
 
+  const [layouts, setLayouts] = useState<ResponsiveLayouts>(() => loadLayout());
+
+  const handleLayoutChange = (_current: Layout, allLayouts: ResponsiveLayouts) => {
+    setLayouts(allLayouts);
+    saveLayout(allLayouts);
+  };
+
+  const handleReset = () => {
+    setLayouts(resetLayout());
+  };
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="h-16 border-b border-border flex items-center px-6 shrink-0">
+      <div className="h-16 border-b border-border flex items-center justify-between px-6 shrink-0">
         <h1 className="text-base font-semibold">Statistics</h1>
+        <button
+          onClick={handleReset}
+          className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded border border-border text-muted-foreground hover:border-primary/50 hover:text-foreground transition-colors"
+          title="Restore the default dashboard layout"
+        >
+          <RotateCcw className="h-3.5 w-3.5" /> Reset layout
+        </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-6">
-        {overviewLoading || !overview ? (
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="rounded-lg border border-border bg-card p-4 animate-pulse h-20" />
-            ))}
+      <div className="flex-1 overflow-y-auto p-6">
+        <ResponsiveGridLayout
+          className="stats-dashboard-grid"
+          layouts={layouts}
+          breakpoints={BREAKPOINTS}
+          cols={COLS}
+          rowHeight={40}
+          margin={[16, 16]}
+          containerPadding={[0, 0]}
+          draggableHandle=".widget-drag-handle"
+          isDraggable
+          isResizable
+          useCSSTransforms
+          onLayoutChange={handleLayoutChange}
+        >
+          <div key="totals">
+            <TotalsWidget overview={overview} loading={overviewLoading} />
           </div>
-        ) : (
-          <SummaryCards overview={overview} />
-        )}
-
-        <TimelineChart />
-        <ModelTable />
-        <RequestLog />
+          <div key="timeline">
+            <TimelineChart />
+          </div>
+          <div key="by-model">
+            <ModelTable />
+          </div>
+          <div key="by-workspace">
+            <WorkspaceTable />
+          </div>
+          <div key="request-log">
+            <RequestLog />
+          </div>
+        </ResponsiveGridLayout>
       </div>
     </div>
   );
