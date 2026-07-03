@@ -20,31 +20,46 @@ import {
 } from "@/components/ui/select";
 import { useCreateTrigger, useUpdateTrigger } from "@/hooks/use-triggers";
 import { WebhookDetails } from "./WebhookDetails";
-import type {
-  PipelineTrigger,
-  TriggerType,
-  InsertTrigger,
-  ScheduleTriggerConfig,
-  GitHubEventTriggerConfig,
-  FileChangeTriggerConfig,
+import {
+  LOOP_FIRING_TYPES,
+  isTriggerFormValid,
+  buildLoopTemplate,
+  type LoopTemplateState,
+} from "./trigger-form-logic";
+import {
+  CONSILIUM_REVIEW_PRESETS,
+  type PipelineTrigger,
+  type TriggerType,
+  type InsertTrigger,
+  type ConsiliumReviewPreset,
+  type ConsiliumReviewTriggerAction,
+  type ScheduleTriggerConfig,
+  type GitHubEventTriggerConfig,
+  type FileChangeTriggerConfig,
 } from "@shared/types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface Pipeline {
-  id: string;
+/** A repo the trigger's loop can target — one of the active project's workspaces. */
+export interface TriggerWorkspaceOption {
+  path: string;
   name: string;
 }
 
 interface TriggerFormProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  pipelines: Pipeline[];
+  /** The active project's allowlisted workspaces — the loop target picklist. */
+  workspaces: TriggerWorkspaceOption[];
   /** When provided, the form is in edit mode */
   trigger?: PipelineTrigger;
-  /** Pre-select a pipeline when creating */
-  defaultPipelineId?: string;
 }
+
+const PRESET_LABELS: Record<ConsiliumReviewPreset, string> = {
+  "sdlc-cross-review": "SDLC cross-review",
+  "diff-pr-review": "Diff / PR review",
+  "full-viability": "Full viability",
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -81,7 +96,108 @@ const GITHUB_EVENT_OPTIONS = [
   "delete",
 ] as const;
 
-// ─── Sub-forms ────────────────────────────────────────────────────────────────
+// ─── Loop-template sub-form (schedule + file_change) ────────────────────────────
+
+function LoopTemplateFields({
+  state,
+  workspaces,
+  repoRequired,
+  onChange,
+}: {
+  state: LoopTemplateState;
+  workspaces: TriggerWorkspaceOption[];
+  repoRequired: boolean;
+  onChange: (patch: Partial<LoopTemplateState>) => void;
+}) {
+  return (
+    <fieldset className="space-y-3 rounded-md border border-border p-3">
+      <legend className="px-1 text-xs font-medium">Consilium loop target</legend>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="loop-preset" className="text-xs">
+          Preset <span className="text-destructive">*</span>
+        </Label>
+        <Select
+          value={state.preset}
+          onValueChange={(v) => onChange({ preset: v as ConsiliumReviewPreset })}
+        >
+          <SelectTrigger id="loop-preset" className="h-8 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CONSILIUM_REVIEW_PRESETS.map((p) => (
+              <SelectItem key={p} value={p} className="text-xs">
+                {PRESET_LABELS[p]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="loop-repo" className="text-xs">
+          Repository{" "}
+          {repoRequired ? (
+            <span className="text-destructive">*</span>
+          ) : (
+            <span className="text-muted-foreground">(defaults to the watched repo)</span>
+          )}
+        </Label>
+        <Select value={state.repoPath} onValueChange={(v) => onChange({ repoPath: v })}>
+          <SelectTrigger id="loop-repo" className="h-8 text-xs">
+            <SelectValue placeholder="Select a workspace" />
+          </SelectTrigger>
+          <SelectContent>
+            {workspaces.map((w) => (
+              <SelectItem key={w.path} value={w.path} className="text-xs">
+                {w.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-[10px] text-muted-foreground">
+          Re-validated against the allowed repo paths when the trigger fires.
+        </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="loop-instruction" className="text-xs">
+          Instruction <span className="text-muted-foreground">(optional)</span>
+        </Label>
+        <Input
+          id="loop-instruction"
+          value={state.engineerInstruction}
+          onChange={(e) => onChange({ engineerInstruction: e.target.value })}
+          placeholder="Review the change: ${event}"
+          className="text-xs h-8"
+        />
+        <p className="text-[10px] text-muted-foreground">
+          Use <code className="font-mono">{"${event}"}</code> to insert a description of the firing event.
+        </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="loop-max-rounds" className="text-xs">
+          Max rounds <span className="text-muted-foreground">(1–6)</span>
+        </Label>
+        <Input
+          id="loop-max-rounds"
+          type="number"
+          min={1}
+          max={6}
+          value={state.maxRounds}
+          onChange={(e) => onChange({ maxRounds: e.target.value })}
+          className="text-xs h-8 w-24"
+        />
+        <p className="text-[10px] text-muted-foreground">
+          Automated fires run review-only (1 round) in this release.
+        </p>
+      </div>
+    </fieldset>
+  );
+}
+
+// ─── Other sub-forms ────────────────────────────────────────────────────────────
 
 function WebhookConfigFields({
   secret,
@@ -91,31 +207,37 @@ function WebhookConfigFields({
   onSecretChange: (v: string) => void;
 }) {
   return (
-    <div className="space-y-1.5">
-      <Label htmlFor="webhook-secret-input" className="text-xs">
-        HMAC Secret <span className="text-muted-foreground">(optional)</span>
-      </Label>
-      <div className="flex gap-2">
-        <Input
-          id="webhook-secret-input"
-          type="password"
-          value={secret}
-          onChange={(e) => onSecretChange(e.target.value)}
-          placeholder="Leave blank to skip signature verification"
-          className="font-mono text-xs h-8"
-          autoComplete="new-password"
-        />
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="h-8 px-3 shrink-0"
-          onClick={() => onSecretChange(generateSecret())}
-          aria-label="Generate random secret"
-        >
-          <RefreshCw className="h-3.5 w-3.5 mr-1" />
-          Generate
-        </Button>
+    <div className="space-y-3">
+      <p className="text-[11px] text-muted-foreground">
+        Webhook and GitHub-event receivers do not yet create loops — the HTTP receiver is
+        coming in a follow-up. The trigger persists so it is ready when the receiver ships.
+      </p>
+      <div className="space-y-1.5">
+        <Label htmlFor="webhook-secret-input" className="text-xs">
+          HMAC Secret <span className="text-muted-foreground">(optional)</span>
+        </Label>
+        <div className="flex gap-2">
+          <Input
+            id="webhook-secret-input"
+            type="password"
+            value={secret}
+            onChange={(e) => onSecretChange(e.target.value)}
+            placeholder="Leave blank to skip signature verification"
+            className="font-mono text-xs h-8"
+            autoComplete="new-password"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 px-3 shrink-0"
+            onClick={() => onSecretChange(generateSecret())}
+            aria-label="Generate random secret"
+          >
+            <RefreshCw className="h-3.5 w-3.5 mr-1" />
+            Generate
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -170,6 +292,10 @@ function GitHubConfigFields({
 
   return (
     <div className="space-y-3">
+      <p className="text-[11px] text-muted-foreground">
+        GitHub-event → loop mapping (the HMAC receiver + event fan-out) lands in a follow-up.
+        The trigger persists now so it is ready when the receiver ships.
+      </p>
       <div className="space-y-1.5">
         <Label htmlFor="gh-repo" className="text-xs">
           Repository <span className="text-destructive">*</span>
@@ -265,46 +391,28 @@ function FileChangeConfigFields({
 export function TriggerForm({
   open,
   onOpenChange,
-  pipelines,
+  workspaces,
   trigger,
-  defaultPipelineId,
 }: TriggerFormProps) {
   const isEdit = !!trigger;
   const createTrigger = useCreateTrigger();
   const updateTrigger = useUpdateTrigger();
 
   // ── State ──────────────────────────────────────────────────────────────────
-  const [pipelineId, setPipelineId] = useState(
-    trigger?.pipelineId ?? defaultPipelineId ?? pipelines[0]?.id ?? "",
-  );
-  const [type, setType] = useState<TriggerType>(trigger?.type ?? "webhook");
+  const [type, setType] = useState<TriggerType>(trigger?.type ?? "schedule");
   const [enabled, setEnabled] = useState(trigger?.enabled ?? true);
   const [webhookSecret, setWebhookSecret] = useState("");
-  const [cron, setCron] = useState(
-    type === "schedule"
-      ? (trigger?.config as ScheduleTriggerConfig)?.cron ?? ""
-      : "",
-  );
-  const [ghRepo, setGhRepo] = useState(
-    type === "github_event"
-      ? (trigger?.config as GitHubEventTriggerConfig)?.repository ?? ""
-      : "",
-  );
-  const [ghEvents, setGhEvents] = useState<string[]>(
-    type === "github_event"
-      ? (trigger?.config as GitHubEventTriggerConfig)?.events ?? []
-      : [],
-  );
-  const [watchPath, setWatchPath] = useState(
-    type === "file_change"
-      ? (trigger?.config as FileChangeTriggerConfig)?.watchPath ?? ""
-      : "",
-  );
-  const [filePatterns, setFilePatterns] = useState<string[]>(
-    type === "file_change"
-      ? (trigger?.config as FileChangeTriggerConfig)?.patterns ?? []
-      : [],
-  );
+  const [cron, setCron] = useState("");
+  const [ghRepo, setGhRepo] = useState("");
+  const [ghEvents, setGhEvents] = useState<string[]>([]);
+  const [watchPath, setWatchPath] = useState("");
+  const [filePatterns, setFilePatterns] = useState<string[]>([]);
+  const [template, setTemplate] = useState<LoopTemplateState>({
+    preset: "sdlc-cross-review",
+    repoPath: workspaces[0]?.path ?? "",
+    engineerInstruction: "",
+    maxRounds: "1",
+  });
 
   // Created webhook result (shown after creation)
   const [createdWebhook, setCreatedWebhook] = useState<{
@@ -312,20 +420,17 @@ export function TriggerForm({
     secret: string;
   } | null>(null);
 
-  // Reset when trigger prop changes
+  // Reset when the dialog opens / the edited trigger changes.
   useEffect(() => {
     if (!open) {
       setCreatedWebhook(null);
       return;
     }
-    setPipelineId(trigger?.pipelineId ?? defaultPipelineId ?? pipelines[0]?.id ?? "");
-    setType(trigger?.type ?? "webhook");
+    setType(trigger?.type ?? "schedule");
     setEnabled(trigger?.enabled ?? true);
     setWebhookSecret("");
     setCron(
-      trigger?.type === "schedule"
-        ? (trigger.config as ScheduleTriggerConfig).cron
-        : "",
+      trigger?.type === "schedule" ? (trigger.config as ScheduleTriggerConfig).cron : "",
     );
     setGhRepo(
       trigger?.type === "github_event"
@@ -344,54 +449,63 @@ export function TriggerForm({
     );
     setFilePatterns(
       trigger?.type === "file_change"
-        ? (trigger.config as FileChangeTriggerConfig).patterns
+        ? (trigger.config as FileChangeTriggerConfig).patterns ?? []
         : [],
     );
-  }, [open, trigger, defaultPipelineId, pipelines]);
+    const action =
+      trigger && (trigger.config as { action?: ConsiliumReviewTriggerAction }).action;
+    setTemplate({
+      preset: action?.preset ?? "sdlc-cross-review",
+      repoPath: action?.repoPath ?? workspaces[0]?.path ?? "",
+      engineerInstruction: action?.engineerInstruction ?? "",
+      maxRounds: action?.maxRounds ? String(action.maxRounds) : "1",
+    });
+  }, [open, trigger, workspaces]);
+
+  const showLoopTemplate = LOOP_FIRING_TYPES.has(type);
+  const repoRequired = type === "schedule";
 
   // ── Build config ────────────────────────────────────────────────────────────
-  function buildConfig():
-    | Record<string, never>
-    | ScheduleTriggerConfig
-    | GitHubEventTriggerConfig
-    | FileChangeTriggerConfig {
+  function buildConfig(): Record<string, unknown> {
     switch (type) {
       case "webhook":
         return {};
       case "schedule":
-        return { cron };
+        return { cron, action: buildLoopTemplate(template) };
       case "github_event":
         return { repository: ghRepo, events: ghEvents };
       case "file_change":
-        return { watchPath, patterns: filePatterns };
+        return { watchPath, patterns: filePatterns, action: buildLoopTemplate(template) };
     }
   }
 
   // ── Validation ──────────────────────────────────────────────────────────────
-  function isValid(): boolean {
-    if (!pipelineId) return false;
-    if (type === "schedule") return cron.trim().length > 0;
-    if (type === "github_event")
-      return ghRepo.trim().length > 0 && ghEvents.length > 0;
-    if (type === "file_change") return watchPath.trim().length > 0;
-    return true;
+  function valid(): boolean {
+    return isTriggerFormValid({
+      type,
+      cron,
+      ghRepo,
+      ghEvents,
+      watchPath,
+      preset: template.preset,
+      repoPath: template.repoPath,
+    });
   }
 
   // ── Submit ──────────────────────────────────────────────────────────────────
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!isValid()) return;
+    if (!valid()) return;
 
     if (isEdit && trigger) {
       updateTrigger.mutate(
-        { id: trigger.id, type, config: buildConfig(), enabled },
+        { id: trigger.id, type, config: buildConfig() as never, enabled },
         { onSuccess: () => onOpenChange(false) },
       );
     } else {
       const payload: InsertTrigger & { _plainSecret?: string } = {
-        pipelineId,
         type,
-        config: buildConfig(),
+        config: buildConfig() as never,
         enabled,
         _plainSecret: webhookSecret || undefined,
       };
@@ -438,29 +552,6 @@ export function TriggerForm({
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-          {/* Pipeline selector */}
-          <div className="space-y-1.5">
-            <Label htmlFor="pipeline-select" className="text-xs">
-              Pipeline <span className="text-destructive">*</span>
-            </Label>
-            <Select
-              value={pipelineId}
-              onValueChange={setPipelineId}
-              disabled={isEdit}
-            >
-              <SelectTrigger id="pipeline-select" className="h-8 text-xs">
-                <SelectValue placeholder="Select a pipeline" />
-              </SelectTrigger>
-              <SelectContent>
-                {pipelines.map((p) => (
-                  <SelectItem key={p.id} value={p.id} className="text-xs">
-                    {p.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
           {/* Type selector */}
           <div className="space-y-1.5">
             <Label htmlFor="type-select" className="text-xs">
@@ -475,10 +566,10 @@ export function TriggerForm({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="webhook" className="text-xs">Webhook</SelectItem>
                 <SelectItem value="schedule" className="text-xs">Schedule (Cron)</SelectItem>
-                <SelectItem value="github_event" className="text-xs">GitHub Event</SelectItem>
                 <SelectItem value="file_change" className="text-xs">File Change</SelectItem>
+                <SelectItem value="webhook" className="text-xs">Webhook</SelectItem>
+                <SelectItem value="github_event" className="text-xs">GitHub Event</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -514,6 +605,16 @@ export function TriggerForm({
             />
           )}
 
+          {/* Loop template (schedule + file_change) */}
+          {showLoopTemplate && (
+            <LoopTemplateFields
+              state={template}
+              workspaces={workspaces}
+              repoRequired={repoRequired}
+              onChange={(patch) => setTemplate((prev) => ({ ...prev, ...patch }))}
+            />
+          )}
+
           {/* Enabled checkbox */}
           <div className="flex items-center gap-2">
             <Checkbox
@@ -545,7 +646,7 @@ export function TriggerForm({
             <Button
               type="submit"
               size="sm"
-              disabled={isPending || !isValid()}
+              disabled={isPending || !valid()}
             >
               {isPending
                 ? "Saving…"

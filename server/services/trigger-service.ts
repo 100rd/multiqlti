@@ -42,6 +42,7 @@ export class TriggerService {
       hasSecret: row.secretEncrypted !== null && row.secretEncrypted !== undefined,
       enabled: row.enabled,
       lastTriggeredAt: row.lastTriggeredAt ?? null,
+      suppressedCount: row.suppressedCount ?? 0,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -60,6 +61,12 @@ export class TriggerService {
     return rows.map((r) => this.toPublic(r));
   }
 
+  /** T1: all triggers in the current project ALS (pipeline-based AND pipeline-less). */
+  async getProjectTriggers(): Promise<PipelineTrigger[]> {
+    const rows = await this.storage.getProjectTriggers();
+    return rows.map((r) => this.toPublic(r));
+  }
+
   async getTrigger(id: string): Promise<PipelineTrigger | null> {
     const row = await this.storage.getTrigger(id);
     return row ? this.toPublic(row) : null;
@@ -68,7 +75,8 @@ export class TriggerService {
   async createTrigger(data: InsertTrigger): Promise<PipelineTrigger> {
     const secretEncrypted = data.secret ? this.crypto.encrypt(data.secret) : undefined;
     const row = await this.storage.createTrigger({
-      pipelineId: data.pipelineId,
+      // T1: nullable — a loop-template trigger carries no pipeline.
+      pipelineId: data.pipelineId ?? null,
       type: data.type,
       config: data.config,
       secretEncrypted: secretEncrypted ?? null,

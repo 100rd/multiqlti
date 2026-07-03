@@ -7,6 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { useEnableTrigger, useDisableTrigger } from "@/hooks/use-triggers";
 import type { PipelineTrigger, TriggerType, ScheduleTriggerConfig, GitHubEventTriggerConfig, FileChangeTriggerConfig } from "@shared/types";
+import { loopTargetSummary } from "./trigger-form-logic";
 
 // ─── Type badge config ────────────────────────────────────────────────────────
 
@@ -60,18 +61,18 @@ function configSummary(trigger: PipelineTrigger): string {
 
 interface TriggerCardProps {
   trigger: PipelineTrigger;
-  pipelineName?: string;
   onEdit: (trigger: PipelineTrigger) => void;
   onDelete: (trigger: PipelineTrigger) => void;
 }
 
-export function TriggerCard({ trigger, pipelineName, onEdit, onDelete }: TriggerCardProps) {
+export function TriggerCard({ trigger, onEdit, onDelete }: TriggerCardProps) {
   const enable = useEnableTrigger();
   const disable = useDisableTrigger();
 
   const meta = TYPE_META[trigger.type];
   const Icon = meta.Icon;
   const isPending = enable.isPending || disable.isPending;
+  const loopTarget = loopTargetSummary(trigger);
 
   function handleToggle(checked: boolean) {
     if (checked) {
@@ -102,9 +103,9 @@ export function TriggerCard({ trigger, pipelineName, onEdit, onDelete }: Trigger
               >
                 {meta.label}
               </Badge>
-              {pipelineName && (
+              {loopTarget && (
                 <span className="text-[10px] text-muted-foreground font-medium truncate">
-                  {pipelineName}
+                  {loopTarget}
                 </span>
               )}
             </div>
@@ -115,6 +116,12 @@ export function TriggerCard({ trigger, pipelineName, onEdit, onDelete }: Trigger
 
             <p className="text-[10px] text-muted-foreground mt-1">
               Last triggered: <span className="font-medium">{lastTriggered}</span>
+              {trigger.suppressedCount > 0 && (
+                <>
+                  {" · "}
+                  <span className="font-medium">{trigger.suppressedCount}</span> suppressed
+                </>
+              )}
             </p>
           </div>
         </div>

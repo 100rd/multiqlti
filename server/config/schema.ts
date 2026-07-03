@@ -90,6 +90,21 @@ export const ConfigSchema = z.object({
       enabled: z.boolean().default(false),
       cronSchedule: z.string().default("0 2 * * *"),
     }).default({}),
+    /**
+     * T1 trigger retarget (loop-triggers.md §4.5): the kill-switch for a schedule
+     * trigger's NEW loop-firing behavior. Default FALSE ⇒ a scheduled fire records
+     * `lastTriggeredAt` but launches NO consilium loop — a running server never
+     * silently starts firing loops. Turn on explicitly to activate schedule→loop.
+     *
+     * This gate does NOT touch the pre-existing file_change → consilium-review
+     * binding (the "one live binding" prototype), which stays gated only by
+     * `pipeline.consiliumLoop.enabled`. It also does not affect trigger CRUD — the
+     * "Add Trigger" UI works regardless; only the automated FIRING of loops from a
+     * schedule is gated here.
+     */
+    triggers: z.object({
+      enabled: z.boolean().default(false),
+    }).default({}),
   }).default({}),
   federation: z.object({
     enabled: z.boolean().default(false),

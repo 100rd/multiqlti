@@ -31,7 +31,28 @@ const WebhookConfigSchema = z.object({
   // and the endpoint is auto-derived. Accept no unknown keys.
 }).strict();
 
+// T1 loop template (loop-triggers.md §2): the SHARED "target = a consilium loop"
+// shape carried in the trigger config JSONB. `repoPath` is re-validated against the
+// fail-closed allowlist INSIDE the factory (this schema only shape-checks it).
+// `engineerInstruction` is UNTRUSTED free-text (may embed `${event}`) — the factory
+// control-strips + byte-clamps + fences it (same seam as the human UI endpoint).
+const LoopTemplateActionSchema = z.object({
+  kind: z.literal("consilium_review"),
+  preset: z.enum(CONSILIUM_REVIEW_PRESETS),
+  maxRounds: z.number().int().min(1).max(6).optional(),
+  repoPath: z.string().min(1).max(4096).optional(),
+  engineerInstruction: z.string().max(8000).optional(),
+});
+
+// A SCHEDULE trigger has no watchPath, so its loop template MUST name an explicit
+// repoPath (still allowlist-re-validated in the factory).
+const ScheduleActionSchema = LoopTemplateActionSchema.extend({
+  repoPath: z.string().min(1).max(4096),
+});
+
 // VETO-2 fix: add IANA timezone validation via Intl.DateTimeFormat constructor.
+// T1 RETARGET: a schedule trigger now REQUIRES a loop template (`action`) — its
+// firing creates a consilium loop, not a (deleted) pipeline run.
 const ScheduleConfigSchema = z.object({
   cron: z.string().min(1).max(200),
   timezone: z.string().max(100).optional().refine(
@@ -47,6 +68,7 @@ const ScheduleConfigSchema = z.object({
     { message: "Invalid IANA timezone identifier" }
   ),
   input: z.string().max(100_000).optional(),
+  action: ScheduleActionSchema,
 });
 
 const GitHubConfigSchema = z.object({
@@ -55,26 +77,18 @@ const GitHubConfigSchema = z.object({
   refFilter: z.string().max(500).optional(),
 });
 
-// A file_change trigger MAY carry an embedded action (no schema migration — it
-// lives in the existing config JSONB). Today the only kind is `consilium_review`,
-// which `fireTrigger` dispatches to the review factory. The factory RE-VALIDATES
-// `repoPath` against the fail-closed allowlist, so this schema only shape-checks
-// it (1..4096 chars) — it is NOT the security boundary. Without this field the
-// strict z.object would SILENTLY STRIP `action`, turning the trigger into a
-// permanent no-op; declaring it here makes the action persist.
-const ConsiliumReviewActionSchema = z.object({
-  kind: z.literal("consilium_review"),
-  preset: z.enum(CONSILIUM_REVIEW_PRESETS),
-  maxRounds: z.number().int().min(1).max(6).optional(),
-  repoPath: z.string().min(1).max(4096).optional(),
-});
-
+// A file_change trigger MAY carry an embedded loop template (`action`). The factory
+// RE-VALIDATES `repoPath` against the fail-closed allowlist, so this schema only
+// shape-checks it — it is NOT the security boundary. Without this field the strict
+// z.object would SILENTLY STRIP `action`, turning the trigger into a permanent
+// no-op; declaring it here makes the action persist. Optional here (a file_change
+// trigger may derive repoPath from watchPath); required for schedule (above).
 const FileChangeConfigSchema = z.object({
   watchPath: z.string().min(1).max(4096),
   patterns: z.array(z.string().min(1).max(500)).optional(),
   debounceMs: z.number().int().min(0).max(30_000).optional(),
   input: z.string().max(100_000).optional(),
-  action: ConsiliumReviewActionSchema.optional(),
+  action: LoopTemplateActionSchema.optional(),
 });
 
 type TriggerTypeValue = "webhook" | "schedule" | "github_event" | "file_change";
@@ -151,6 +165,26 @@ async function assertPipelineOwnership(
   return passed && !res.headersSent;
 }
 
+/**
+ * T1: authorize a per-id trigger operation. A LEGACY pipeline trigger is gated on
+ * its pipeline's owner (unchanged). A pipeline-less loop-template trigger has no
+ * pipeline owner to check — but it was already fetched via a PROJECT-SCOPED
+ * `getTrigger` (so it belongs to req.projectId, which requireProject validated the
+ * caller is a member of), and the mutating routes additionally carry
+ * requireRole("maintainer","admin"). So project scope + role are the boundary here.
+ */
+async function assertTriggerAccess(
+  trigger: { pipelineId: string | null },
+  storage: IStorage,
+  req: Request,
+  res: Response,
+): Promise<boolean> {
+  if (trigger.pipelineId) {
+    return assertPipelineOwnership(trigger.pipelineId, storage, req, res);
+  }
+  return true;
+}
+
 // ─── Route registration ───────────────────────────────────────────────────────
 
 export function registerTriggerRoutes(app: Express, triggerService: TriggerService, storage: IStorage): void {
@@ -165,17 +199,63 @@ export function registerTriggerRoutes(app: Express, triggerService: TriggerServi
         return res.json(await triggerService.getTriggers(pipelineId));
       }
 
-      const pipelines = await storage.getPipelines();
-      const allTriggers = await Promise.all(
-        pipelines.map((p) => triggerService.getTriggers(p.id))
-      );
-      return res.json(allTriggers.flat());
+      // T1: return the PROJECT's triggers (project-scoped), including pipeline-less
+      // loop-template triggers. requireProject upstream validated membership and set
+      // the ALS project the query filters by. (The old pipeline-fan-out returned []
+      // once the pipeline entity left the product.)
+      return res.json(await triggerService.getProjectTriggers());
     } catch (e) {
       const cid = correlationId();
       console.error(`[triggers] GET /api/triggers error cid=${cid}`, e);
       return res.status(500).json({ error: "Internal server error", correlationId: cid });
     }
   });
+
+  // POST /api/triggers — PROJECT-SCOPED create (T1 retarget).
+  //
+  // The trigger entity was pipeline-shaped: created under /api/pipelines/:id/triggers
+  // and requiring a pipeline. The pipeline entity left the product, so there were
+  // ZERO pipelines and no trigger could be created (the "Add Trigger" button was
+  // permanently disabled). A trigger now targets a CONSILIUM LOOP (loop template in
+  // `config`) and is scoped to the request's PROJECT (x-project-id → req.projectId,
+  // set by requireProject upstream). `createTrigger` runs inside the request's
+  // project ALS, so `withProjectInsert` stamps projectId; pipelineId is null.
+  //
+  // The factory (invoked when the trigger later FIRES) re-validates repoPath against
+  // the fail-closed allowlist AND the project's own workspaces — this route only
+  // shape-validates. No secret path here (loop-template triggers use no HMAC secret;
+  // webhook/github secrets still flow through the legacy pipeline route).
+  app.post(
+    "/api/triggers",
+    requireRole("maintainer", "admin"),
+    async (req, res) => {
+      try {
+        if (!req.projectId) {
+          return res.status(400).json({ error: "x-project-id header is required" });
+        }
+
+        const body = CreateTriggerSchema.parse(req.body);
+        const validatedConfig = validateTriggerConfig(body.type, body.config);
+
+        const trigger = await triggerService.createTrigger({
+          // T1: no pipeline — projectId is stamped from the request ALS by storage.
+          type: body.type,
+          config: validatedConfig as never,
+          secret: body.secret,
+          enabled: body.enabled,
+        });
+
+        return res.status(201).json(trigger);
+      } catch (e) {
+        if (e instanceof ZodError) {
+          return res.status(400).json({ error: "Validation failed", issues: e.issues });
+        }
+        const cid = correlationId();
+        console.error(`[triggers] POST /api/triggers error cid=${cid}`, e);
+        return res.status(500).json({ error: "Internal server error", correlationId: cid });
+      }
+    },
+  );
 
   // GET /api/pipelines/:pipelineId/triggers
   // VETO-1: resolve pipeline and gate on ownership before returning triggers.
@@ -244,7 +324,7 @@ export function registerTriggerRoutes(app: Express, triggerService: TriggerServi
       const trigger = await triggerService.getTrigger(String(req.params.id));
       if (!trigger) return res.status(404).json({ error: "Trigger not found" });
 
-      const allowed = await assertPipelineOwnership(trigger.pipelineId, storage, req, res);
+      const allowed = await assertTriggerAccess(trigger, storage, req, res);
       if (!allowed) return;
 
       return res.json(trigger);
@@ -268,7 +348,7 @@ export function registerTriggerRoutes(app: Express, triggerService: TriggerServi
         const trigger = await triggerService.getTrigger(String(req.params.id));
         if (!trigger) return res.status(404).json({ error: "Trigger not found" });
 
-        const allowed = await assertPipelineOwnership(trigger.pipelineId, storage, req, res);
+        const allowed = await assertTriggerAccess(trigger, storage, req, res);
         if (!allowed) return;
 
         const body = UpdateTriggerSchema.parse(req.body);
@@ -308,7 +388,7 @@ export function registerTriggerRoutes(app: Express, triggerService: TriggerServi
         const trigger = await triggerService.getTrigger(String(req.params.id));
         if (!trigger) return res.status(404).json({ error: "Trigger not found" });
 
-        const allowed = await assertPipelineOwnership(trigger.pipelineId, storage, req, res);
+        const allowed = await assertTriggerAccess(trigger, storage, req, res);
         if (!allowed) return;
 
         const deleted = await triggerService.deleteTrigger(String(req.params.id));
@@ -335,7 +415,7 @@ export function registerTriggerRoutes(app: Express, triggerService: TriggerServi
         const trigger = await triggerService.getTrigger(String(req.params.id));
         if (!trigger) return res.status(404).json({ error: "Trigger not found" });
 
-        const allowed = await assertPipelineOwnership(trigger.pipelineId, storage, req, res);
+        const allowed = await assertTriggerAccess(trigger, storage, req, res);
         if (!allowed) return;
 
         const updated = await triggerService.enableTrigger(String(req.params.id));
@@ -359,7 +439,7 @@ export function registerTriggerRoutes(app: Express, triggerService: TriggerServi
         const trigger = await triggerService.getTrigger(String(req.params.id));
         if (!trigger) return res.status(404).json({ error: "Trigger not found" });
 
-        const allowed = await assertPipelineOwnership(trigger.pipelineId, storage, req, res);
+        const allowed = await assertTriggerAccess(trigger, storage, req, res);
         if (!allowed) return;
 
         const updated = await triggerService.disableTrigger(String(req.params.id));

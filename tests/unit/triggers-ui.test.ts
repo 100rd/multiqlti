@@ -12,6 +12,12 @@ import type {
   GitHubEventTriggerConfig,
   FileChangeTriggerConfig,
 } from "@shared/types";
+import {
+  isTriggerFormValid,
+  canAddTrigger,
+  buildLoopTemplate,
+  loopTargetSummary,
+} from "../../client/src/components/triggers/trigger-form-logic";
 
 // ─── Helpers duplicated from TriggerCard / TriggerForm ──────────────────────
 // (keeping them in test scope avoids re-exporting implementation details)
@@ -62,10 +68,11 @@ function generateSecret(): string {
 function buildTrigger(overrides: Partial<PipelineTrigger> & { type: TriggerType }): PipelineTrigger {
   return {
     id: "t-001",
-    pipelineId: "p-001",
+    pipelineId: null,
     hasSecret: false,
     enabled: true,
     lastTriggeredAt: null,
+    suppressedCount: 0,
     createdAt: new Date("2026-01-01"),
     updatedAt: new Date("2026-01-01"),
     config: {},
@@ -201,47 +208,110 @@ describe("TriggerCard display helpers", () => {
   });
 });
 
-// ─── TriggerForm validation logic ────────────────────────────────────────────
+// ─── TriggerForm validation logic (T1 retarget — no pipeline requirement) ─────
 
-describe("TriggerForm validation", () => {
-  function isValid(
-    type: TriggerType,
-    pipelineId: string,
-    cron: string,
-    ghRepo: string,
-    ghEvents: string[],
-    watchPath: string,
-  ): boolean {
-    if (!pipelineId) return false;
-    if (type === "schedule") return cron.trim().length > 0;
-    if (type === "github_event") return ghRepo.trim().length > 0 && ghEvents.length > 0;
-    if (type === "file_change") return watchPath.trim().length > 0;
-    return true;
-  }
+describe("isTriggerFormValid", () => {
+  const base = { cron: "", ghRepo: "", ghEvents: [] as string[], watchPath: "", preset: "sdlc-cross-review", repoPath: "" };
 
-  it("webhook type is always valid when pipelineId present", () => {
-    expect(isValid("webhook", "p-001", "", "", [], "")).toBe(true);
+  it("webhook is always valid (no pipeline requirement anymore)", () => {
+    expect(isTriggerFormValid({ ...base, type: "webhook" })).toBe(true);
   });
 
-  it("webhook type is invalid without pipelineId", () => {
-    expect(isValid("webhook", "", "", "", [], "")).toBe(false);
+  it("schedule requires cron AND a preset AND a repoPath (no watchPath to derive from)", () => {
+    expect(isTriggerFormValid({ ...base, type: "schedule", cron: "0 9 * * *", repoPath: "/allowed/omnius" })).toBe(true);
+    expect(isTriggerFormValid({ ...base, type: "schedule", cron: "0 9 * * *", repoPath: "" })).toBe(false); // no repo
+    expect(isTriggerFormValid({ ...base, type: "schedule", cron: "", repoPath: "/allowed/omnius" })).toBe(false); // no cron
+    expect(isTriggerFormValid({ ...base, type: "schedule", cron: "0 9 * * *", repoPath: "/x", preset: "" })).toBe(false); // no preset
   });
 
-  it("schedule type requires non-empty cron", () => {
-    expect(isValid("schedule", "p-001", "0 9 * * *", "", [], "")).toBe(true);
-    expect(isValid("schedule", "p-001", "", "", [], "")).toBe(false);
-    expect(isValid("schedule", "p-001", "   ", "", [], "")).toBe(false);
+  it("file_change requires watchPath AND a preset; repoPath is optional (derived)", () => {
+    expect(isTriggerFormValid({ ...base, type: "file_change", watchPath: "/workspace" })).toBe(true);
+    expect(isTriggerFormValid({ ...base, type: "file_change", watchPath: "" })).toBe(false);
+    expect(isTriggerFormValid({ ...base, type: "file_change", watchPath: "   " })).toBe(false);
   });
 
   it("github_event requires repository and at least one event", () => {
-    expect(isValid("github_event", "p-001", "", "owner/repo", ["push"], "")).toBe(true);
-    expect(isValid("github_event", "p-001", "", "", ["push"], "")).toBe(false);
-    expect(isValid("github_event", "p-001", "", "owner/repo", [], "")).toBe(false);
+    expect(isTriggerFormValid({ ...base, type: "github_event", ghRepo: "owner/repo", ghEvents: ["push"] })).toBe(true);
+    expect(isTriggerFormValid({ ...base, type: "github_event", ghRepo: "", ghEvents: ["push"] })).toBe(false);
+    expect(isTriggerFormValid({ ...base, type: "github_event", ghRepo: "owner/repo", ghEvents: [] })).toBe(false);
+  });
+});
+
+// ─── Add-Trigger button enablement (operator-reported bug) ───────────────────
+
+describe("canAddTrigger", () => {
+  it("enables with at least one workspace and a configured subsystem", () => {
+    expect(canAddTrigger(1, false)).toBe(true);
+    expect(canAddTrigger(3, false)).toBe(true);
   });
 
-  it("file_change requires watchPath", () => {
-    expect(isValid("file_change", "p-001", "", "", [], "/workspace")).toBe(true);
-    expect(isValid("file_change", "p-001", "", "", [], "")).toBe(false);
-    expect(isValid("file_change", "p-001", "", "", [], "   ")).toBe(false);
+  it("stays disabled with zero workspaces (the fix — no longer gated on pipelines)", () => {
+    expect(canAddTrigger(0, false)).toBe(false);
+  });
+
+  it("stays disabled when the subsystem is not configured, regardless of workspaces", () => {
+    expect(canAddTrigger(5, true)).toBe(false);
+  });
+});
+
+// ─── Loop-template construction ──────────────────────────────────────────────
+
+describe("buildLoopTemplate", () => {
+  it("builds a consilium_review action with only the set fields", () => {
+    const action = buildLoopTemplate({
+      preset: "diff-pr-review",
+      repoPath: "  /allowed/omnius  ",
+      engineerInstruction: "  Review ${event}  ",
+      maxRounds: "3",
+    });
+    expect(action).toEqual({
+      kind: "consilium_review",
+      preset: "diff-pr-review",
+      repoPath: "/allowed/omnius",
+      engineerInstruction: "Review ${event}",
+      maxRounds: 3,
+    });
+  });
+
+  it("omits empty repoPath / instruction and out-of-range rounds", () => {
+    const action = buildLoopTemplate({
+      preset: "sdlc-cross-review",
+      repoPath: "",
+      engineerInstruction: "   ",
+      maxRounds: "99",
+    });
+    expect(action).toEqual({ kind: "consilium_review", preset: "sdlc-cross-review" });
+  });
+});
+
+// ─── Loop-target summary (trigger card) ──────────────────────────────────────
+
+describe("loopTargetSummary", () => {
+  it("summarizes preset → repo basename for a loop-template trigger", () => {
+    const trigger = buildTrigger({
+      type: "schedule",
+      config: {
+        cron: "0 9 * * *",
+        action: { kind: "consilium_review", preset: "full-viability", repoPath: "/allowed/omnius" },
+      } as ScheduleTriggerConfig,
+    });
+    expect(loopTargetSummary(trigger)).toBe("full-viability → omnius");
+  });
+
+  it("returns just the preset when no repoPath is set", () => {
+    const trigger = buildTrigger({
+      type: "file_change",
+      config: {
+        watchPath: "/w",
+        patterns: ["**/*.md"],
+        action: { kind: "consilium_review", preset: "sdlc-cross-review" },
+      } as FileChangeTriggerConfig,
+    });
+    expect(loopTargetSummary(trigger)).toBe("sdlc-cross-review");
+  });
+
+  it("returns null for a trigger with no loop template (webhook)", () => {
+    const trigger = buildTrigger({ type: "webhook", config: {} });
+    expect(loopTargetSummary(trigger)).toBeNull();
   });
 });

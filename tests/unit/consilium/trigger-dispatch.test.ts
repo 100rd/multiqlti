@@ -19,6 +19,9 @@ import {
   maybeLaunchConsiliumReview,
   deriveRepoRoot,
   payloadString,
+  describeEvent,
+  eventDigest,
+  interpolateEvent,
   type ConsiliumTriggerDispatchDeps,
 } from "../../../server/services/consilium/trigger-dispatch.js";
 
@@ -31,7 +34,8 @@ function makeTrigger(
   return {
     id: "trig-1",
     projectId: "proj-1",
-    pipelineId: "pipe-1",
+    pipelineId: null, // T1: loop-template triggers carry no pipeline
+    type: "file_change",
     config,
     ...over,
   } as unknown as TriggerRow;
@@ -154,11 +158,15 @@ describe("maybeLaunchConsiliumReview", () => {
     expect(createReview.mock.calls[0][1].repoPath).toBe("/nonexistent/repo/specs");
   });
 
-  it("launches with NO objectiveExtra when the payload has no filePath", async () => {
+  it("carries a fallback event description as objectiveExtra when the payload has no filePath", async () => {
     const { deps, createReview } = makeDeps();
     const trigger = makeTrigger({ watchPath: "/allowed/omnius", patterns: ["**/*.md"], action: CONSILIUM_ACTION });
     await maybeLaunchConsiliumReview(deps, trigger, {});
-    expect(createReview.mock.calls[0][1].objectiveExtra).toBeUndefined();
+    // T1: every trigger fire now composes SOME event context (sanitized in the
+    // factory). With no filePath/scheduledAt the file_change fallback is used.
+    expect(createReview.mock.calls[0][1].objectiveExtra).toBe("file_change trigger fired");
+    // No operator instruction ⇒ engineerInstruction stays undefined (objectiveExtra wins).
+    expect(createReview.mock.calls[0][1].engineerInstruction).toBeUndefined();
   });
 
   it("subsystem disabled (reviewDeps null) → skipped, factory NOT called", async () => {
@@ -257,5 +265,102 @@ describe("maybeLaunchConsiliumReview", () => {
     await maybeLaunchConsiliumReview(deps, trigger, {});
     // ...but the dispatch clamps it to review-only so an fs event never reaches the coder.
     expect(createReview.mock.calls[0][1].maxRounds).toBe(1);
+  });
+
+  // ─── T1: SCHEDULE triggers fire loops (retarget off pipelines) ───────────────
+
+  it("a SCHEDULE trigger with a loop template launches a loop via the SAME factory", async () => {
+    const { deps, createReview, runInProject } = makeDeps();
+    const action: ConsiliumReviewTriggerAction = {
+      kind: "consilium_review",
+      preset: "full-viability",
+      repoPath: "/allowed/omnius",
+    };
+    const trigger = makeTrigger(
+      { cron: "0 9 * * *", action },
+      { type: "schedule" as TriggerRow["type"] },
+    );
+
+    const result = await maybeLaunchConsiliumReview(deps, trigger, {
+      scheduledAt: "2026-07-03T09:00:00.000Z",
+    });
+
+    expect(result).toBe("launched");
+    expect(runInProject).toHaveBeenCalledWith("proj-1", expect.any(Function));
+    const [, params] = createReview.mock.calls[0];
+    expect(params.repoPath).toBe("/allowed/omnius");
+    expect(params.preset).toBe("full-viability");
+    expect(params.maxRounds).toBe(1); // review-only enforced for automated fires
+    // The schedule event description rides the sanitized objective seam.
+    expect(params.objectiveExtra).toBe("scheduled run at 2026-07-03T09:00:00.000Z");
+  });
+
+  // ─── §6: provenance — every trigger-fired loop records its trigger + event ────
+
+  it("passes trigger provenance (id, type, event digest, firedAt) to the factory", async () => {
+    const { deps, createReview } = makeDeps();
+    const trigger = makeTrigger({ watchPath: "/allowed/omnius", patterns: ["**/*.md"], action: CONSILIUM_ACTION });
+    await maybeLaunchConsiliumReview(deps, trigger, { filePath: "/allowed/omnius/x.md", watchPath: "/allowed/omnius" });
+
+    const prov = createReview.mock.calls[0][1].triggerProvenance;
+    expect(prov.triggerId).toBe("trig-1");
+    expect(prov.triggerType).toBe("file_change");
+    expect(prov.eventDigest).toMatch(/^[0-9a-f]{16}$/);
+    expect(typeof prov.firedAt).toBe("string");
+    expect(Number.isNaN(Date.parse(prov.firedAt))).toBe(false);
+  });
+
+  // ─── T1: engineerInstruction with ${event} interpolation ─────────────────────
+
+  it("interpolates ${event} in the operator instruction and passes it as engineerInstruction", async () => {
+    const { deps, createReview } = makeDeps();
+    const action: ConsiliumReviewTriggerAction = {
+      kind: "consilium_review",
+      preset: "sdlc-cross-review",
+      repoPath: "/allowed/omnius",
+      engineerInstruction: "Review the change: ${event}",
+    };
+    const trigger = makeTrigger({ watchPath: "/allowed/omnius/specs", patterns: ["**/*.md"], action });
+
+    await maybeLaunchConsiliumReview(deps, trigger, {
+      filePath: "/allowed/omnius/specs/00-overview.md",
+      watchPath: "/allowed/omnius/specs",
+    });
+
+    const [, params] = createReview.mock.calls[0];
+    expect(params.engineerInstruction).toBe(
+      "Review the change: file change at /allowed/omnius/specs/00-overview.md",
+    );
+    // engineerInstruction wins in the factory ⇒ objectiveExtra is NOT also set.
+    expect(params.objectiveExtra).toBeUndefined();
+  });
+});
+
+// ─── Event helpers (pure) ──────────────────────────────────────────────────────
+
+describe("describeEvent / eventDigest / interpolateEvent", () => {
+  it("describeEvent prefers filePath, then scheduledAt, then event kind, then a fallback", () => {
+    const t = makeTrigger({}, { type: "file_change" as TriggerRow["type"] });
+    expect(describeEvent(t, { filePath: "/a/b.md" })).toBe("file change at /a/b.md");
+    expect(describeEvent(t, { scheduledAt: "2026-07-03T09:00:00Z" })).toBe("scheduled run at 2026-07-03T09:00:00Z");
+    expect(describeEvent(t, { event: "pull_request" })).toBe("file_change event: pull_request");
+    expect(describeEvent(t, {})).toBe("file_change trigger fired");
+  });
+
+  it("eventDigest is a stable 16-hex-char hash of the payload", () => {
+    const a = eventDigest({ filePath: "/a/b.md" });
+    const b = eventDigest({ filePath: "/a/b.md" });
+    const c = eventDigest({ filePath: "/a/c.md" });
+    expect(a).toMatch(/^[0-9a-f]{16}$/);
+    expect(a).toBe(b);
+    expect(a).not.toBe(c);
+  });
+
+  it("interpolateEvent replaces every ${event}; returns undefined for an empty instruction", () => {
+    expect(interpolateEvent("x ${event} y ${event}", "E")).toBe("x E y E");
+    expect(interpolateEvent(undefined, "E")).toBeUndefined();
+    expect(interpolateEvent("", "E")).toBeUndefined();
+    // No regex `$`-pattern semantics leak from the (untrusted) description.
+    expect(interpolateEvent("see ${event}", "$1 & $&")).toBe("see $1 & $&");
   });
 });

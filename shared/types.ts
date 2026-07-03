@@ -1321,7 +1321,15 @@ export interface WebhookTriggerConfig {
 export interface ScheduleTriggerConfig {
   cron: string;      // standard 5-field cron expression, e.g. "0 9 * * 1"
   timezone?: string; // IANA timezone string, defaults to "UTC"
-  input?: string;    // optional pipeline input override for this scheduled run
+  input?: string;    // legacy free-text input (unused by the loop-template retarget)
+  /**
+   * T1 RETARGET (loop-triggers.md §2): a schedule trigger's firing creates a
+   * CONSILIUM LOOP via the same factory the UI/API use — NOT a (deleted) pipeline
+   * run. The loop template is REQUIRED for a schedule trigger to do anything on
+   * fire; `repoPath` is REQUIRED here (there is no watchPath to derive it from) and
+   * is RE-VALIDATED against the fail-closed allowlist inside the factory.
+   */
+  action?: ConsiliumReviewTriggerAction;
 }
 
 export interface GitHubEventTriggerConfig {
@@ -1369,8 +1377,37 @@ export interface ConsiliumReviewTriggerAction {
   kind: "consilium_review";
   preset: ConsiliumReviewPreset;
   maxRounds?: number;
-  /** Target repo; defaults to the watchPath's repo root when omitted. */
+  /**
+   * Target repo (MUST resolve inside the project's allowlisted workspaces).
+   * Defaults to the watchPath's repo root for file_change when omitted; REQUIRED
+   * for schedule (no watchPath to derive from). Re-validated INSIDE the factory.
+   */
   repoPath?: string;
+  /**
+   * T1 (loop-triggers.md §2): OPTIONAL operator "engineer instruction" free-text
+   * steering the review objective. May contain the literal token `${event}`, which
+   * the runtime interpolates with a short, human description of the firing event
+   * (e.g. "file change at <path>" / "scheduled run at <iso>"). UNTRUSTED — the
+   * factory control-strips + byte-clamps + fences it (same seam as the human UI
+   * endpoint's engineerInstruction) before it enters any prompt. Never a shell/
+   * branch/PR sink.
+   */
+  engineerInstruction?: string;
+}
+
+/**
+ * T1 (loop-triggers.md §2, hard-rail §6): provenance recorded on EVERY
+ * trigger-fired consilium loop so the launch passport (#457) can show which
+ * trigger + which event started it. Persisted INERT as jsonb on the loop
+ * (`consilium_loops.trigger_provenance`); display/audit only, never a prompt or
+ * shell sink. `eventDigest` is a short hex hash of the firing payload — enough to
+ * correlate a loop to the event without storing the (untrusted) payload verbatim.
+ */
+export interface TriggerProvenance {
+  triggerId: string;
+  triggerType: TriggerType;
+  eventDigest: string;
+  firedAt: string; // ISO-8601
 }
 
 export type TriggerConfig =
@@ -1382,7 +1419,10 @@ export type TriggerConfig =
 // Public-facing Trigger shape returned from API (no secretEncrypted)
 export interface PipelineTrigger {
   id: string;
-  pipelineId: string;
+  // T1 RETARGET: a trigger now targets a CONSILIUM LOOP (loop template in config),
+  // not a pipeline. `pipelineId` is legacy/nullable — new project-scoped triggers
+  // carry no pipeline. Kept on the shape for back-compat with pre-existing rows.
+  pipelineId: string | null;
   type: TriggerType;
   config: TriggerConfig;
   // webhookUrl is synthesized by the server for webhook and github_event triggers
@@ -1391,12 +1431,16 @@ export interface PipelineTrigger {
   hasSecret: boolean;
   enabled: boolean;
   lastTriggeredAt: Date | null;
+  // T1 policy rail: count of fires suppressed by a policy (dedup/budget). Surfaced
+  // on the triggers page so silence is diagnosable (loop-triggers.md §6).
+  suppressedCount: number;
   createdAt: Date;
   updatedAt: Date;
 }
 
 export interface InsertTrigger {
-  pipelineId: string;
+  // Legacy/nullable — new loop-template triggers are project-scoped, no pipeline.
+  pipelineId?: string | null;
   type: TriggerType;
   config: TriggerConfig;
   // plaintext secret supplied at creation/update — immediately encrypted, never stored raw

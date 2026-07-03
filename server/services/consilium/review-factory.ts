@@ -68,7 +68,7 @@ import { basename, join } from "path";
 import simpleGit from "simple-git";
 import type { IStorage } from "../../storage.js";
 import type { InsertConsiliumLoop, ConsiliumLoopRow, Skill, AppliedSkillRef } from "@shared/schema";
-import type { ConsiliumReviewPreset } from "@shared/types";
+import type { ConsiliumReviewPreset, TriggerProvenance } from "@shared/types";
 import type { TaskOrchestrator, CreateTaskParam } from "../task-orchestrator.js";
 import type { ConsiliumLoopController } from "./consilium-loop-controller.js";
 import type { ReformulateGateway } from "./reformulate.js";
@@ -1151,6 +1151,13 @@ export interface CreateConsiliumReviewParams {
    * (full back-compat). SECURITY: only ever passed to git as an arg-array element.
    */
   ref?: string | null;
+  /**
+   * T1 trigger retarget (loop-triggers.md §6): OPTIONAL provenance of the trigger
+   * that fired this loop — `{ triggerId, triggerType, eventDigest, firedAt }`.
+   * Persisted INERT on the loop's `trigger_provenance` for the launch passport;
+   * never enters a prompt/shell. Absent (human/API launch) ⇒ column stays null.
+   */
+  triggerProvenance?: TriggerProvenance;
 }
 
 /** Clamp a caller-supplied round count into the schema's 1..6 window. */
@@ -1312,6 +1319,9 @@ export async function createConsiliumReview(
     engineerInstruction: params.engineerInstruction ?? null,
     // Stage 2: provenance of the applied (+ any dropped) skills; null ⇒ no skills.
     appliedSkills,
+    // T1 trigger retarget (§6): which trigger + event fired this loop (null ⇒ a
+    // human/API launch). INERT audit data for the launch passport.
+    triggerProvenance: params.triggerProvenance ?? null,
     createdBy: params.createdBy,
   } as InsertConsiliumLoop);
 

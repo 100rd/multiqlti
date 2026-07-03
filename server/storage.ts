@@ -368,14 +368,18 @@ export interface IStorage {
 
   // Triggers (Phase 6.3)
   getTriggers(pipelineId: string): Promise<TriggerRow[]>;
+  /** T1: all triggers in the current project ALS (pipeline-based AND pipeline-less). */
+  getProjectTriggers(): Promise<TriggerRow[]>;
   getTrigger(id: string): Promise<TriggerRow | undefined>;
   getEnabledTriggersByType(type: string): Promise<TriggerRow[]>;
   /** Cross-project query for system/background use: returns ALL enabled triggers of this type
    *  across every project. Must be called within runAsSystem(). See ADR-001 §3.1(d). */
   getAllEnabledTriggersByType(type: string): Promise<TriggerRow[]>;
-  createTrigger(data: Omit<TriggerRow, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt'> & { secretEncrypted?: string | null }): Promise<TriggerRow>;
+  createTrigger(data: Omit<TriggerRow, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt' | 'suppressedCount'> & { secretEncrypted?: string | null }): Promise<TriggerRow>;
   updateTrigger(id: string, updates: Partial<TriggerRow>): Promise<TriggerRow>;
   deleteTrigger(id: string): Promise<void>;
+  /** T1 policy rail: atomically bump a trigger's suppressed-fire counter (dedup/budget). */
+  incrementTriggerSuppressed(id: string): Promise<void>;
 
   // Practice Cards (Active Knowledge Base)
   createPracticeCard(data: InsertPracticeCard): Promise<PracticeCardRow>;
@@ -1709,6 +1713,7 @@ export class MemStorage implements IStorage {
       engineerInstruction: data.engineerInstruction ?? null,
       // Stage 2: applied-skill provenance (nullable jsonb).
       appliedSkills: data.appliedSkills ?? null,
+      triggerProvenance: data.triggerProvenance ?? null,
       archetype: data.archetype ?? null,
       archetypeSource: data.archetypeSource ?? null,
       archetypeRationale: data.archetypeRationale ?? null,
@@ -1896,6 +1901,11 @@ export class MemStorage implements IStorage {
     return Array.from(this.triggersMap.values()).filter((t) => t.pipelineId === pipelineId);
   }
 
+  async getProjectTriggers(): Promise<TriggerRow[]> {
+    // MemStorage has no project isolation — return all triggers.
+    return Array.from(this.triggersMap.values());
+  }
+
   async getTrigger(id: string): Promise<TriggerRow | undefined> {
     return this.triggersMap.get(id);
   }
@@ -1911,19 +1921,20 @@ export class MemStorage implements IStorage {
   }
 
   async createTrigger(
-    data: Omit<TriggerRow, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt'> & { secretEncrypted?: string | null },
+    data: Omit<TriggerRow, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt' | 'suppressedCount'> & { secretEncrypted?: string | null },
   ): Promise<TriggerRow> {
     const id = randomUUID();
     const now = new Date();
     const row: TriggerRow = {
       id,
       projectId: null, // MemStorage has no project context; projectId is null in-memory
-      pipelineId: data.pipelineId,
+      pipelineId: data.pipelineId ?? null, // T1: loop-template triggers carry no pipeline
       type: data.type as TriggerRow["type"],
       config: (data.config ?? {}) as TriggerRow["config"],
       secretEncrypted: data.secretEncrypted ?? null,
       enabled: data.enabled ?? true,
       lastTriggeredAt: null,
+      suppressedCount: 0,
       createdAt: now,
       updatedAt: now,
     };
@@ -1941,6 +1952,16 @@ export class MemStorage implements IStorage {
 
   async deleteTrigger(id: string): Promise<void> {
     this.triggersMap.delete(id);
+  }
+
+  async incrementTriggerSuppressed(id: string): Promise<void> {
+    const existing = this.triggersMap.get(id);
+    if (!existing) return;
+    this.triggersMap.set(id, {
+      ...existing,
+      suppressedCount: (existing.suppressedCount ?? 0) + 1,
+      updatedAt: new Date(),
+    });
   }
 
   // ─── Traces (Phase 6.5) ───────────────────────────────────────────────────
