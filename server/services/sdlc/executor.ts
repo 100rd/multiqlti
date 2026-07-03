@@ -438,10 +438,13 @@ export interface SdlcHandoffResult {
    */
   integrationBase?: string;
   /**
-   * §3E: set true when `req.integrateBase` was requested but the base→round merge
-   * CONFLICTED (the merge was aborted, nothing pushed). Pairs with `prRef: null` + an
-   * `error` describing the conflict, so the controller surfaces it at the human ship gate
-   * instead of running a confirmation on a broken merge.
+   * §3E: set true ONLY when `req.integrateBase` was requested and the base→round merge hit a
+   * real CONTENT conflict (overlapping edits ⇒ unmerged index entries; the merge was aborted,
+   * nothing pushed). A malformed-command / unresolvable-ref failure is NOT a conflict — it
+   * leaves this `false`/undefined and instead carries an "integration could not run …"
+   * `error`, so the human ship gate is not told there's a conflict when the merge command was
+   * simply wrong. Either way pairs with `prRef: null` (the controller runs no confirmation on
+   * a broken/absent merge).
    */
   integrationConflict?: boolean;
   /**
@@ -1070,7 +1073,16 @@ export async function runSdlcHandoff(
         const integ = await integrateBaseBranch(gitRaw, wt.worktreeDir, base);
         if (!integ.ok) {
           const head = await gitRaw(wt.worktreeDir, ["rev-parse", "HEAD"]).then((s) => s.trim()).catch(() => "");
-          return { prRef: null, headCommit: head, error: integ.error, integrationConflict: true };
+          // Only a REAL content conflict is flagged `integrationConflict`; a command / ref
+          // ERROR carries the distinct "could not run" wording (kind: "error") so the human
+          // ship gate is not told there's a conflict when the merge command was just wrong.
+          // Both paths abort the merge and fall back safely (prRef: null, nothing pushed).
+          return {
+            prRef: null,
+            headCommit: head,
+            error: integ.error,
+            integrationConflict: integ.kind === "conflict",
+          };
         }
         integrationBase = integ.integrationBase;
       }
@@ -2222,39 +2234,87 @@ async function pushAndOpenPr(
  * round worktree) so the branch becomes "base + our changes" — the realistic landing
  * state. Best-effort `git fetch origin <base>` first (a repo with no `origin` / offline
  * falls back to the LOCAL base ref); the resolved base sha is returned so the controller
- * can diff `base..roundBranch`. A merge CONFLICT (or any merge failure) is caught, the
- * merge is ABORTED so the worktree is left clean, and an error is returned — the caller
- * NEVER pushes a broken merge. `base` is server-derived (resolveDefaultBranch) and pinned
- * behind `--end-of-options`, so it can never inject a git flag.
+ * can diff `base..roundBranch`.
+ *
+ * ROOT CAUSE this locks down (the live incident): the base sha was resolved with
+ * `git rev-parse --end-of-options <ref>`, which — in rev-parse's DEFAULT (echo) mode —
+ * prints the literal `--end-of-options` token back on its OWN line BEFORE the sha
+ * (`--end-of-options\n<sha>`). `.trim()` only strips the OUTER whitespace, so `resolved`
+ * became the two-line string `"--end-of-options\n<sha>"`. That whole string was then handed
+ * to `git merge --no-edit --end-of-options <resolved>` as a SINGLE positional (the real
+ * `--end-of-options` before it having disabled option parsing) ⇒ git:
+ * `merge: --end-of-options <sha> - not something we can merge` (the `\n` renders as a space
+ * in single-line logs) — a false "integration conflict" when the command itself was
+ * malformed. FIX: resolve with rev-parse's SINGLE-object VERIFY mode
+ * (`--verify [--quiet] --end-of-options <ref>^{commit}`), which emits ONLY the sha and never
+ * echoes the flag. `base` stays server-derived (resolveDefaultBranch), gated `isSafeRef`,
+ * and pinned behind `--end-of-options`, so it can never inject a git flag.
+ *
+ * A merge failure leaves the worktree ABORTED (clean) and returns an error — the caller NEVER
+ * pushes a broken merge. IMPORTANT: the git runner (simple-git `.raw`) does NOT reject on a
+ * merge CONFLICT — it resolves with the "CONFLICT …" text and leaves an UNMERGED index — so we
+ * do NOT rely on the merge throwing; we inspect `git ls-files --unmerged` AFTER the merge and
+ * treat unmerged entries as a conflict. We DISTINGUISH a real content CONFLICT (overlapping
+ * edits ⇒ unmerged index entries ⇒ `kind: "conflict"`) from a command / unresolvable-ref ERROR
+ * (`kind: "error"`), so the operator is not told "conflict" when the command was simply wrong.
+ * Both abort and fall back safely (no PR).
  */
-async function integrateBaseBranch(
+export async function integrateBaseBranch(
   gitRaw: GitRunner,
   worktreeDir: string,
   base: string,
-): Promise<{ ok: true; integrationBase: string } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; integrationBase: string }
+  | { ok: false; kind: "conflict" | "error"; error: string }
+> {
   // Refresh the remote base (non-fatal — offline / no origin falls back to the local ref).
-  await gitRaw(worktreeDir, ["fetch", "origin", "--end-of-options", base]).catch(() => undefined);
-  // Prefer the freshly-fetched remote-tracking ref; fall back to the local base branch.
-  const remoteRef = `origin/${base}`;
-  const remoteSha = await gitRaw(worktreeDir, ["rev-parse", "--verify", "--quiet", `${remoteRef}^{commit}`])
-    .then((s) => s.trim())
-    .catch(() => "");
-  const target = remoteSha ? remoteRef : base;
-  const resolved = await gitRaw(worktreeDir, ["rev-parse", "--end-of-options", target])
-    .then((s) => s.trim())
-    .catch(() => "");
+  // On success both `origin/<base>` and FETCH_HEAD advance to the object we need to merge,
+  // so a round branch cut from a STALE base can still resolve the advanced base here.
+  const fetched = await gitRaw(worktreeDir, ["fetch", "origin", "--end-of-options", base])
+    .then(() => true)
+    .catch(() => false);
+  // Resolve to a CLEAN sha via rev-parse VERIFY mode (no flag echo — see the block comment).
+  // Candidate order: freshly-fetched remote-tracking ref → FETCH_HEAD (the just-fetched
+  // object, present even when the tracking ref was not updated) → the LOCAL base ref.
+  const candidates = [`origin/${base}`, ...(fetched ? ["FETCH_HEAD"] : []), base];
+  let resolved = "";
+  for (const target of candidates) {
+    resolved = await gitRaw(worktreeDir, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${target}^{commit}`])
+      .then((s) => s.trim())
+      .catch(() => "");
+    if (resolved) break;
+  }
   if (!resolved) {
-    return { ok: false, error: `integration: base ref '${base}' is unresolvable` };
+    // The base object is genuinely not present (and could not be fetched). This is a
+    // command/ref ERROR, NOT a content conflict — classify it distinctly.
+    return { ok: false, kind: "error", error: `integration could not run: base ref '${base}' is unresolvable` };
   }
   try {
     // --no-edit keeps a server-derived merge message (never model/AP text). If `base` is
     // already an ancestor this is a no-op ("Already up to date"); otherwise a merge commit.
     await gitRaw(worktreeDir, ["merge", "--no-edit", "--end-of-options", resolved]);
   } catch (err) {
+    // The runner threw — a command / ref failure (a clean sha reached merge, so this is not a
+    // normal content conflict). Classify by index state anyway (defensive): unmerged entries ⇒
+    // conflict, otherwise a command error. Abort AFTER inspecting (abort clears the index).
+    const unmerged = await gitRaw(worktreeDir, ["ls-files", "--unmerged"]).then((s) => s.trim()).catch(() => "");
+    await gitRaw(worktreeDir, ["merge", "--abort"]).catch(() => undefined);
+    const reason = err instanceof Error ? err.message : String(err);
+    return unmerged
+      ? { ok: false, kind: "conflict", error: scrub(`integration conflict merging ${base} into the round branch: ${reason}`) }
+      : { ok: false, kind: "error", error: scrub(`integration could not run merging ${base} into the round branch: ${reason}`) };
+  }
+  // CRITICAL: the git runner (simple-git `.raw`) does NOT reject on a merge-CONFLICT exit —
+  // it returns the "CONFLICT …" text as stdout and leaves an UNMERGED index. So a real content
+  // conflict does NOT throw above; we MUST detect the unmerged state explicitly, ABORT it, and
+  // report it — otherwise a broken half-merged tree would be treated as success and pushed.
+  const unmerged = await gitRaw(worktreeDir, ["ls-files", "--unmerged"]).then((s) => s.trim()).catch(() => "");
+  if (unmerged) {
     await gitRaw(worktreeDir, ["merge", "--abort"]).catch(() => undefined);
     return {
       ok: false,
-      error: scrub(`integration conflict merging ${base} into the round branch: ${err instanceof Error ? err.message : String(err)}`),
+      kind: "conflict",
+      error: scrub(`integration conflict merging ${base} into the round branch (overlapping edits)`),
     };
   }
   return { ok: true, integrationBase: resolved };

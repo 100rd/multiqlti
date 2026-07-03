@@ -455,20 +455,31 @@ describe("runSdlcHandoff — LIVE per-AP task list (progress.aps)", () => {
 
 // ─── §3E verify-before-merge — base→round integration merge ─────────────────────
 
-/** A git runner that discriminates the integration calls; `merge` conflicts when
- *  `conflict` is set. Records every call for assertion. */
-function makeIntegGitRaw(opts: { conflict?: boolean; remoteResolves?: boolean } = {}) {
+/** A git runner that discriminates the integration calls. A real content CONFLICT is modeled
+ *  the way the production runner (simple-git `.raw`) actually behaves: `merge` does NOT throw —
+ *  it returns the "CONFLICT …" text and leaves an UNMERGED index (`ls-files --unmerged`
+ *  non-empty). `commandError` models a merge that genuinely throws (malformed cmd / bad ref)
+ *  with NO unmerged entries. Records every call for assertion. */
+function makeIntegGitRaw(opts: { conflict?: boolean; commandError?: boolean; remoteResolves?: boolean } = {}) {
   return vi.fn(async (_repo: string, args: string[]) => {
     if (args[0] === "status") return " M server/x.ts\n"; // dirty → commits happen
     if (args[0] === "fetch") return "";
+    if (args[0] === "ls-files" && args.includes("--unmerged")) {
+      // Unmerged index entries exist ONLY for a real content conflict.
+      return opts.conflict ? "100644 aaa 1\tserver/x.ts\n100644 bbb 2\tserver/x.ts\n" : "";
+    }
     if (args[0] === "rev-parse") {
-      if (args.includes("HEAD")) return "headsha000\n";
-      if (args.includes("--verify")) return opts.remoteResolves === false ? "" : "originsha\n";
-      return "basesha111\n"; // resolved integration base (--end-of-options <target>)
+      // The caller's plain `rev-parse HEAD` (no --verify) → the round HEAD.
+      if (args.includes("HEAD") && !args.includes("--verify")) return "headsha000\n";
+      // The helper resolves the base via rev-parse VERIFY mode (single-object, no flag echo).
+      if (args.includes("--verify")) return opts.remoteResolves === false ? "" : "basesha111\n";
+      return "";
     }
     if (args[0] === "merge") {
       if (args[1] === "--abort") return "";
-      if (opts.conflict) throw new Error("merge conflict in server/x.ts");
+      if (opts.commandError) throw new Error("--end-of-options basesha111 - not something we can merge");
+      // simple-git `.raw` does NOT reject on a content conflict — it resolves with the text.
+      if (opts.conflict) return "CONFLICT (content): Merge conflict in server/x.ts\n";
       return "";
     }
     return "";
@@ -498,6 +509,22 @@ describe("runSdlcHandoff — §3E integration merge (integrateBase)", () => {
     expect(res.error).toContain("integration conflict");
     // The merge was aborted and NOTHING was pushed / PR'd (no silent broken-merge landing).
     expect(gitRaw.mock.calls.some((c) => (c[1] as string[])[0] === "merge" && (c[1] as string[])[1] === "--abort")).toBe(true);
+    expect(deps.push).not.toHaveBeenCalled();
+    expect(deps.openPr).not.toHaveBeenCalled();
+    expect(deps.removeWorktree).toHaveBeenCalledTimes(1); // cleanup still guaranteed
+  });
+
+  it("integrateBase=true, COMMAND ERROR: reported as 'could not run' NOT a conflict, never pushes", async () => {
+    // A merge that fails for a NON-content reason (malformed cmd / unresolvable ref) leaves no
+    // unmerged entries — it must be classified distinctly so the operator is not told there's a
+    // conflict when the command was simply wrong. Still aborts + falls back safely (no PR).
+    const gitRaw = makeIntegGitRaw({ commandError: true });
+    const deps = makeDeps({ gitRaw });
+    const res = await runSdlcHandoff(baseReq({ integrateBase: true }), deps as never);
+    expect(res.prRef).toBeNull();
+    expect(res.integrationConflict).toBeFalsy(); // NOT flagged a conflict
+    expect(res.error).toContain("integration could not run");
+    expect(res.error).not.toContain("integration conflict");
     expect(deps.push).not.toHaveBeenCalled();
     expect(deps.openPr).not.toHaveBeenCalled();
     expect(deps.removeWorktree).toHaveBeenCalledTimes(1); // cleanup still guaranteed
