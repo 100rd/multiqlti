@@ -144,6 +144,28 @@ describe("Stage 2b — command source is config, never AP text", () => {
     expect(arg.worktreeDir).toBe(WT);
     expect(arg.timeoutMs).toBe(300_000);
   });
+
+  it("the executor runs the RESOLVED per-repo command/timeout/lint carried in the request", async () => {
+    // Per-repo overrides are resolved by the controller and arrive on the request as
+    // verification.{testCommand,lintCommand,testRunTimeoutMs}. The executor must run
+    // EXACTLY those — proving a Python repo's `uv run pytest` (not the global `npm test`)
+    // is what actually executes. First runTests = tests, second (post-green) = lint.
+    const runTests = sequencedRunTests([pass, pass]);
+    const deps = makeDeps({ runTests });
+    await runSdlcHandoff(
+      baseReq({
+        verification: VCFG({ testCommand: "uv run pytest", lintCommand: "ruff check", testRunTimeoutMs: 600_000 }),
+      }),
+      deps as never,
+    );
+    expect(runTests).toHaveBeenCalledTimes(2);
+    const testArg = runTests.mock.calls[0][0] as { testCommand: string | null; timeoutMs: number };
+    const lintArg = runTests.mock.calls[1][0] as { testCommand: string | null; timeoutMs: number };
+    expect(testArg.testCommand).toBe("uv run pytest");
+    expect(testArg.timeoutMs).toBe(600_000);
+    expect(lintArg.testCommand).toBe("ruff check"); // lint reuses the runner with its own cmd
+    expect(lintArg.timeoutMs).toBe(600_000);
+  });
 });
 
 describe("Stage 2b — bounded code→test→fix loop", () => {

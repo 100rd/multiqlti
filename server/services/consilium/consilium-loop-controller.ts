@@ -56,7 +56,7 @@ import type { ActionPoint, ConvergenceVerdict } from "@shared/types";
 import { P0_PRIORITY } from "@shared/types";
 import type { TaskOrchestrator } from "../task-orchestrator.js";
 import type { AppConfig } from "../../config/schema.js";
-import { effectiveVerificationEnabled } from "../../config/schema.js";
+import { effectiveVerificationEnabled, resolveImplementForRepo } from "../../config/schema.js";
 import { readConvergence, extractActionPoints, normalizeActionPointMethods, applyCriteriaQa } from "../orchestrator/convergence.js";
 import { buildDiffContext } from "./diff-context.js";
 import { buildRepoMap, createDbRepoMapSource, listTouchedFiles, repoMapGit } from "./repo-map.js";
@@ -1446,6 +1446,13 @@ export class ConsiliumLoopController {
         "[consilium-loop] verification.enabled ignored: requires features.sandbox or implement.trustedRepoAck",
       );
     }
+    // PER-REPO command overrides: resolve the EFFECTIVE test/lint command, timeout, and
+    // coder model for THIS loop's repo BEFORE building the request — a per-repo override
+    // wins over the sibling global key, an absent field inherits the global, and NO
+    // matching entry ⇒ byte-for-byte today's global values (`resolveImplementForRepo`).
+    // Threading the RESOLVED values (not the raw `cfg.implement.*` keys) is what lets a
+    // Python repo run `uv run pytest` while a Node repo runs `npm test` under one config.
+    const impl = resolveImplementForRepo(loop.repoPath, cfg.implement);
     // REAL path: the SDLC executor cuts an ISOLATED worktree (NEVER the user's
     // checkout), runs the agentic coder to make REAL multi-file edits, then
     // commits + opens a Draft PR. baseRef defaults to the repo's default-branch
@@ -1461,9 +1468,9 @@ export class ConsiliumLoopController {
       // Per-action-point coder timeout (configurable). The executor runs the
       // coder once per action point sequentially; this bounds a SINGLE run.
       coderTimeoutMs: cfg.sdlcTimeoutMs,
-      // Operator-pinned coder model (optional). Absent ⇒ the CLI's default model.
-      // Threaded once at the executor's runCoder seam into every coder invocation.
-      coderModel: cfg.implement.coderModel,
+      // Operator-pinned coder model (optional, per-repo-resolved). Absent ⇒ the CLI's
+      // default model. Threaded once at the executor's runCoder seam into every coder.
+      coderModel: impl.coderModel,
       // Stage 2a archetype-branched skilled coder (null archetype ⇒ default step set).
       archetype: loop.archetype ?? null,
       archetypeParams: loop.archetypeParams ?? null,
@@ -1474,10 +1481,11 @@ export class ConsiliumLoopController {
         ? {
             enabled: true,
             maxFixIterations: cfg.implement.maxFixIterations,
-            testCommand: cfg.implement.testCommand,
-            testRunTimeoutMs: cfg.implement.testRunTimeoutMs,
+            // Per-repo-resolved test command + timeout (fall back to the global keys).
+            testCommand: impl.testCommand,
+            testRunTimeoutMs: impl.testRunTimeoutMs,
             // Stage B: lint-clean folded into the coder's green (null ⇒ no lint run).
-            lintCommand: cfg.implement.lintCommand ?? null,
+            lintCommand: impl.lintCommand,
           }
         : null,
       // Stage A: final-state re-verification config (null when the kill-switch is off OR
