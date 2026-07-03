@@ -181,6 +181,14 @@ export interface ApVerification {
    * stays true (the process DID run, unlike a launch failure). Absent on adjudicated runs.
    */
   timedOut?: boolean;
+  /**
+   * Additive: the test command RAN but reported ITS OWN TOOL missing (`uv run pytest`
+   * where uv spawned but pytest is absent) → an ENVIRONMENT gap classified `ran:false`
+   * (fix loop SKIPPED, like a launch failure) but surfaced as NOT-ADJUDICATED (tooling)
+   * so the operator configures the test command rather than expecting a code fix. Absent
+   * unless a tool-missing signature matched.
+   */
+  toolMissing?: boolean;
 }
 
 /**
@@ -208,6 +216,12 @@ export interface FinalVerification {
    * the final fix loop was SKIPPED. `ran` stays true (the process DID run). Absent otherwise.
    */
   timedOut?: boolean;
+  /**
+   * Additive: the FINAL whole-suite run RAN but reported ITS OWN TOOL missing → an
+   * ENVIRONMENT gap classified `ran:false` (final fix loop SKIPPED) and surfaced as
+   * NOT-ADJUDICATED (tooling). Absent unless a tool-missing signature matched.
+   */
+  toolMissing?: boolean;
 }
 
 /**
@@ -676,7 +690,7 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
     const verifyTag = v
       ? v.method === "manual-ops"
         ? " [manual op — needs human]"
-        : ` [${v.method === "judge" ? "judge: " : "verify: "}${!v.ran ? "not-run" : v.timedOut ? "not-adjudicated (timeout)" : v.passed ? "green" : "RED"}${v.fixIterations > 0 ? ` after ${v.fixIterations} fix` : ""}]`
+        : ` [${v.method === "judge" ? "judge: " : "verify: "}${!v.ran ? (v.toolMissing ? "not-adjudicated (tooling)" : "not-run") : v.timedOut ? "not-adjudicated (timeout)" : v.passed ? "green" : "RED"}${v.fixIterations > 0 ? ` after ${v.fixIterations} fix` : ""}]`
       : "";
     return `- [${o.status}] (${o.priority}) ${sanitizeLine(o.title, PR_BODY_TITLE_MAX)}${skillTag}${verifyTag}${tail}`;
   });
@@ -718,7 +732,9 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
           const v = o.verification;
           const reason =
             v && !v.ran
-              ? sanitizeLine(v.summary, 160)
+              ? v.toolMissing
+                ? `NOT-ADJUDICATED (tooling) — ${sanitizeLine(v.summary, 160)}`
+                : sanitizeLine(v.summary, 160)
               : v && v.timedOut
                 ? `NOT-ADJUDICATED (timeout) — ${sanitizeLine(v.summary, 160)}`
                 : "tests still failing";
@@ -759,7 +775,15 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
     // A TIMED-OUT final run is NOT-ADJUDICATED (timeout), never RED (checked before
     // `passed`) — the whole-suite run was killed before a verdict, so it is not a
     // confirmed regression.
-    const status = !fv.ran ? "NOT-RUN" : fv.timedOut ? "NOT-ADJUDICATED (timeout)" : fv.passed ? "GREEN" : "RED";
+    const status = !fv.ran
+      ? fv.toolMissing
+        ? "NOT-ADJUDICATED (tooling)"
+        : "NOT-RUN"
+      : fv.timedOut
+        ? "NOT-ADJUDICATED (timeout)"
+        : fv.passed
+          ? "GREEN"
+          : "RED";
     const fixTag = fv.fixIterations > 0 ? ` (after ${fv.fixIterations} final fix attempt(s))` : "";
     finalBlock.push(
       "",
@@ -769,9 +793,11 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
         ? "The full test suite passes against the FINAL combined worktree (all action points applied) — no cross-AP regression detected."
         : fv.timedOut
           ? "TIMED OUT — the full test suite was KILLED by the wall-clock cap before a verdict (the suite may exceed testRunTimeoutMs, or a change may have introduced a hang). NOT adjudicated; the final fix loop was skipped. This is NOT a confirmed regression — review before merging (raise the cap for a slow suite, or investigate a possible hang)."
-          : !fv.ran
-            ? "The full test suite could NOT be re-run against the final worktree (no test command resolved). The final combined state is UNVERIFIED — review before merging."
-            : "REGRESSION — the full test suite does NOT pass against the FINAL combined worktree. A later action point may have regressed an earlier one. This Draft PR still opens for human review; review before merging.",
+          : fv.toolMissing
+            ? `TOOL NOT AVAILABLE — the test command RAN but its own tool is missing (${sanitizeLine(fv.summary, 200)}). NOT adjudicated; the final fix loop was skipped. This is a config/environment gap, NOT a regression — configure implement.testCommand / perRepo for this repo, then re-run.`
+            : !fv.ran
+              ? "The full test suite could NOT be re-run against the final worktree (no test command resolved). The final combined state is UNVERIFIED — review before merging."
+              : "REGRESSION — the full test suite does NOT pass against the FINAL combined worktree. A later action point may have regressed an earlier one. This Draft PR still opens for human review; review before merging.",
     );
   }
 
@@ -1780,6 +1806,9 @@ async function runFinalVerification(
     fixIterations,
     // Additive: mark NOT-ADJUDICATED only when the final run timed out (legacy shape else).
     ...(result.timedOut ? { timedOut: true } : {}),
+    // Additive: a ran-but-tool-missing final run (ran:false) surfaces as NOT-ADJUDICATED
+    // (tooling) — an env gap, not a regression; the final fix loop was already skipped.
+    ...(result.toolMissing ? { toolMissing: true } : {}),
   };
 }
 
@@ -1902,6 +1931,9 @@ async function runVerifyFixLoop(
     criterion,
     // Additive: mark NOT-ADJUDICATED only when this AP's run timed out (legacy shape else).
     ...(result.timedOut ? { timedOut: true } : {}),
+    // Additive: a ran-but-tool-missing run (ran:false) surfaces as NOT-ADJUDICATED
+    // (tooling) — an env gap, not a red; the fix loop was already skipped on `!ran`.
+    ...(result.toolMissing ? { toolMissing: true } : {}),
   };
 }
 
@@ -1965,7 +1997,15 @@ function aggregateTestSummary(
       const v = o.verification as ApVerification;
       // A TIMED-OUT run is NOT-ADJUDICATED (ambiguous, fix loop skipped), never FAIL —
       // so the next review round grounds on "unadjudicated", not a confirmed red.
-      const status = !v.ran ? "NOT-RUN" : v.timedOut ? "NOT-ADJUDICATED (timeout)" : v.passed ? "PASS" : "FAIL";
+      const status = !v.ran
+        ? v.toolMissing
+          ? "NOT-ADJUDICATED (tooling)"
+          : "NOT-RUN"
+        : v.timedOut
+          ? "NOT-ADJUDICATED (timeout)"
+          : v.passed
+            ? "PASS"
+            : "FAIL";
       const fixes = v.fixIterations > 0 ? ` after ${v.fixIterations} fix attempt(s)` : "";
       const crit = v.criterion ? ` — criterion: ${v.criterion}` : "";
       const via = v.method === "judge" ? " [via judge]" : "";
@@ -2000,15 +2040,25 @@ function aggregateTestSummary(
 
 /** Stage A: the round `testSummary` block for the final whole-suite re-verification. */
 function buildFinalVerificationSummary(fv: FinalVerification): string {
-  const status = !fv.ran ? "NOT-RUN" : fv.timedOut ? "NOT-ADJUDICATED (timeout)" : fv.passed ? "PASS" : "FAIL";
+  const status = !fv.ran
+    ? fv.toolMissing
+      ? "NOT-ADJUDICATED (tooling)"
+      : "NOT-RUN"
+    : fv.timedOut
+      ? "NOT-ADJUDICATED (timeout)"
+      : fv.passed
+        ? "PASS"
+        : "FAIL";
   const fixes = fv.fixIterations > 0 ? ` after ${fv.fixIterations} final fix attempt(s)` : "";
   const verdict = fv.passed
     ? "The full test suite passes against the final combined worktree (no cross-AP regression)."
     : fv.timedOut
       ? "The full test suite TIMED OUT (killed by the wall-clock cap) before a verdict — NOT adjudicated (the suite may exceed testRunTimeoutMs, or a change may have introduced a hang); the final fix loop was skipped. Not a confirmed regression."
-      : !fv.ran
-        ? "The full test suite could not be re-run against the final worktree (no test command)."
-        : "REGRESSION: the full test suite does NOT pass against the final combined worktree.";
+      : fv.toolMissing
+        ? "The full test suite RAN but its own tool is missing — NOT adjudicated (a config/environment gap, not a regression); the final fix loop was skipped. Configure the repo's test command."
+        : !fv.ran
+          ? "The full test suite could not be re-run against the final worktree (no test command)."
+          : "REGRESSION: the full test suite does NOT pass against the final combined worktree.";
   return [`Final-state re-verification: [${status}]${fixes}.`, verdict, `    ${sanitizeLine(fv.summary, 280)}`].join("\n");
 }
 

@@ -2024,6 +2024,15 @@ export interface ExecutionCriterion {
    * adjudicated runs and on pre-timeout-policy snapshots (no schemaVersion bump).
    */
   timedOut?: boolean;
+  /**
+   * Additive: the test command RAN but reported ITS OWN TOOL missing (e.g. `uv run
+   * pytest` where uv launched but pytest is absent) — an ENVIRONMENT gap classified
+   * `ran:false` (fix loop SKIPPED, like a launch failure) but surfaced as NOT-ADJUDICATED
+   * (tooling). Distinct from a real red (`passed:false`), a timeout (`timedOut`), and a
+   * bare launch failure (`ran:false` with no `toolMissing`). OPTIONAL/ADDITIVE — absent
+   * unless a tool-missing signature matched (no schemaVersion bump).
+   */
+  toolMissing?: boolean;
 }
 
 /** A worker agent: one action point (coder) or one research step. */

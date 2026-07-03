@@ -110,6 +110,16 @@ export interface TestRunResult {
   /** True when a test command was resolved + actually spawned. False ⇒ no command
    *  (config unset and no usable package.json script) — nothing executed. */
   ran: boolean;
+  /**
+   * Additive: the command SPAWNED and ran, but its combined output reveals that ITS OWN
+   * TOOL is missing — e.g. `uv run pytest` where `uv` launches fine but `pytest` is not
+   * installed (uv exits non-zero with `Failed to spawn: pytest`). This is an ENVIRONMENT
+   * gap no code change can fix, so it is classified like a top-level spawn failure
+   * (`ran:false`) — but flagged here so the caller can surface it as NOT-ADJUDICATED
+   * (tooling) distinctly from a launch failure / "no command". OPTIONAL/ADDITIVE —
+   * absent unless a tool-missing signature matched the runner's OWN error framing.
+   */
+  toolMissing?: boolean;
 }
 
 /** A resolved, argv-shaped command — the ONLY shape the runner will execute. */
@@ -259,6 +269,150 @@ function launchFailureSummary(err: unknown): string {
  */
 function timeoutSummary(timeoutMs: number): string {
   return `TIMED OUT after ${timeoutMs}ms — suite may exceed testRunTimeoutMs (raise the cap for a slow suite) or the change introduced a hang; not adjudicated, fix loop skipped`.slice(
+    0,
+    SUMMARY_MAX,
+  );
+}
+
+/**
+ * Known TEST-RUNNER python modules. The `No module named X` signature is treated as a
+ * tool-not-found ENVIRONMENT error ONLY when X is one of these (i.e. `python -m pytest`
+ * ran but pytest is not installed). We do NOT generalize to ANY missing module: an
+ * arbitrary `No module named <app_dep>` is left as a REAL failure (conservative — a
+ * false-negative, never a false-positive that masks a genuine red). Kept TIGHT.
+ */
+const TEST_RUNNER_MODULES: ReadonlySet<string> = new Set([
+  "pytest",
+  "unittest",
+  "nose",
+  "nose2",
+  "tox",
+]);
+
+/** Strip decorating quotes/backticks/trailing punctuation off an extracted tool token. */
+function cleanTool(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const t = raw.replace(/^[`'"]+|[`'".,:;]+$/g, "").trim();
+  return t.length > 0 ? t : null;
+}
+
+/**
+ * Error/assertion FRAMING words that are NEVER an invoked tool name. Guards the shell
+ * `<tool>: command not found` / `<tool>: not found` patterns against a GENUINE failure
+ * line like `Error: command not found` (a thrown `Error("command not found")`) being
+ * misread as a shell tool-missing — the token before the colon would be `Error`, not a
+ * real command. If the captured "tool" is one of these, we do NOT classify (fall through
+ * ⇒ real failure ⇒ the fix loop still engages: the preferred false-negative direction).
+ */
+const NON_TOOL_TOKENS: ReadonlySet<string> = new Set([
+  "error",
+  "assertionerror",
+  "typeerror",
+  "rangeerror",
+  "referenceerror",
+  "syntaxerror",
+  "evalerror",
+  "urierror",
+  "expected",
+  "received",
+  "actual",
+  "warning",
+  "note",
+  "caused",
+  "at",
+]);
+
+/** cleanTool + reject error/assertion framing words (see {@link NON_TOOL_TOKENS}). */
+function plausibleTool(raw: string | null | undefined): string | null {
+  const t = cleanTool(raw);
+  if (t === null) return null;
+  return NON_TOOL_TOKENS.has(t.toLowerCase()) ? null : t;
+}
+
+/**
+ * TOOL-NOT-FOUND (ran-but-tool-missing) detection on the child's OWN combined output.
+ *
+ * The distinction from a top-level launch failure (ENOENT/EACCES on the spawn `error`
+ * event) is: HERE the command binary SPAWNED fine and RAN, then reported — via its own
+ * error framing on a NON-ZERO exit — that a tool IT needs is missing (`uv run pytest`
+ * where uv is present but pytest is not). Node sees a normal non-zero `close`, so without
+ * this the executor treats it as a REAL test failure and burns the whole fix budget on an
+ * environment gap no code edit can fix (the observed omnius bug: 3 APs × 3 iterations on
+ * `Failed to spawn: pytest`).
+ *
+ * FALSE-POSITIVE DEFENSE (the key risk — masking a real test failure): every signature is
+ * a LINE-ANCHORED (`^…` with the `m` flag), COLUMN-0 match of a TOOL's or SHELL's own
+ * error line — NOT an arbitrary substring. A genuine test failure that merely mentions
+ * "pytest" / "not found" / "command not found" does so INSIDE an assertion diff — indented
+ * and/or quoted (`  Expected: "command not found: pytest"`), never at column 0 ending its
+ * own line — so it does NOT match. We prefer a FALSE-NEGATIVE (treat as a real failure,
+ * enter the fix loop) over a FALSE-POSITIVE (skip the loop, mask a red). Detection runs on
+ * the RAW output (pre-scrub) so line structure is intact, and ONLY on a non-zero exit.
+ *
+ * Returns the matched tool name (best-effort, for the summary) or null when unmatched.
+ */
+function detectToolMissing(output: string): { tool: string | null } | null {
+  if (typeof output !== "string" || output.length === 0) return null;
+
+  // 1. uv / spawn-wrapper (col 0): `error: Failed to spawn: `pytest`` (+ `Caused by: No
+  //    such file or directory`). Keyed on the distinctive `Failed to spawn:` framing.
+  let m = /^(?:error:\s*)?Failed to spawn:\s*(?<tool>[`'"]?[\w.\-/]+)/im.exec(output);
+  if (m) return { tool: cleanTool(m.groups?.tool) };
+
+  // 3a. shell (col 0): `bash: pytest: command not found` / `pytest: command not found`.
+  //     Anchored to end-of-line ($) so a mid-line assertion mention cannot match; the tool
+  //     token is plausibility-checked so `Error: command not found` is NOT misread.
+  m = /^(?:[\w.\-/]+:[ \t]*)?(?<tool>[\w.\-/]+):[ \t]*command not found[ \t]*$/im.exec(output);
+  if (m) {
+    const tool = plausibleTool(m.groups?.tool);
+    if (tool) return { tool };
+  }
+
+  // 3b. zsh (col 0): `zsh: command not found: pytest`. End-anchored.
+  m = /^(?:[\w.\-/]+:[ \t]*)?command not found:[ \t]*(?<tool>[\w.\-/]+)[ \t]*$/im.exec(output);
+  if (m) {
+    const tool = plausibleTool(m.groups?.tool);
+    if (tool) return { tool };
+  }
+
+  // 4b. dash/busybox (col 0): `sh: 1: pytest: not found` / `sh: pytest: not found`. The
+  //     `sh:` prefix is required, so this is tightly the shell's own line.
+  m = /^sh:[ \t]*(?:\d+:[ \t]*)?(?<tool>[\w.\-/]+):[ \t]*not found[ \t]*$/im.exec(output);
+  if (m) {
+    const tool = plausibleTool(m.groups?.tool);
+    if (tool) return { tool };
+  }
+
+  // 4a. npm (col 0): `npm ERR! could not determine executable to run` — no tool name.
+  if (/^npm ERR!.*could not determine executable/im.test(output)) return { tool: null };
+
+  // 5. CLI wrapper (col 0, clap/cobra framing): `error: unrecognized subcommand 'foo'`.
+  m = /^error:[ \t]*unrecognized subcommand[ \t:'"`]*(?<tool>[\w.\-]+)?/im.exec(output);
+  if (m) return { tool: cleanTool(m.groups?.tool ?? null) };
+
+  // 2. python (col 0): `... : No module named pytest` / `ModuleNotFoundError: No module
+  //    named 'pytest'` — ONLY when the module is a known TEST RUNNER (see the set), so a
+  //    missing APP dependency is left as a real failure (conservative).
+  m = /^(?:.*?:[ \t]*)?(?:ModuleNotFoundError:[ \t]*)?No module named[ \t]*['"]?(?<mod>[\w.]+)/im.exec(
+    output,
+  );
+  if (m) {
+    const mod = (m.groups?.mod ?? "").split(".")[0];
+    if (mod.length > 0 && TEST_RUNNER_MODULES.has(mod)) return { tool: mod };
+  }
+
+  return null;
+}
+
+/**
+ * Build the summary for a ran-but-tool-missing result. Reads unambiguously as a config/
+ * environment gap (NOT a code failure), names the missing tool, and states the policy
+ * (not adjudicated; fix loop skipped) so the operator knows to configure the test command
+ * rather than expect a coder to "fix" it.
+ */
+function toolMissingSummary(tool: string | null): string {
+  const name = tool ? `'${tool}'` : "a required test tool";
+  return `Test tooling not available: ${name} not found (command ran but its tool is missing) — configure implement.testCommand / perRepo for this repo. Not adjudicated; fix loop skipped.`.slice(
     0,
     SUMMARY_MAX,
   );
@@ -453,15 +607,37 @@ export function runTests(opts: RunTestsOptions): Promise<TestRunResult> {
     // skipped" summary naming the configured cap. The caller SKIPS the fix loop on the
     // `timedOut` flag (see the executor's `!result.timedOut` gate). A NORMAL exit keeps
     // the pass/fail summary with the captured output tail.
-    child.on("close", (code: number | null) =>
+    //
+    // TOOL-NOT-FOUND (ran-but-tool-missing): on a NON-ZERO, non-timeout exit we inspect the
+    // child's OWN output for a tool-missing signature (`uv run pytest` → uv ran but pytest
+    // is absent). A match is an ENVIRONMENT gap no code edit can fix, so — exactly like the
+    // top-level ENOENT (#444) — we classify it `ran:false` (the caller's `result.ran` gate
+    // SKIPS the fix loop, saving the whole budget) and flag `toolMissing` so it surfaces as
+    // NOT-ADJUDICATED (tooling), distinct from a real red. Only checked on a non-zero exit,
+    // and only against the runner's own line-anchored error framing (no false positives).
+    child.on("close", (code: number | null) => {
+      if (!timedOut && code !== 0) {
+        const missing = detectToolMissing(output);
+        if (missing) {
+          finish({
+            passed: false,
+            summary: toolMissingSummary(missing.tool),
+            exitCode: code,
+            timedOut: false,
+            ran: false, // env gap — no code fix; caller SKIPS the fix loop (like ENOENT).
+            toolMissing: true,
+          });
+          return;
+        }
+      }
       finish({
         passed: !timedOut && code === 0,
         summary: timedOut ? timeoutSummary(timeoutMs) : buildSummary(output, code, timedOut, truncated),
         exitCode: code,
         timedOut,
         ran: true,
-      }),
-    );
+      });
+    });
   });
 }
 

@@ -81,6 +81,19 @@ const timedOut: TestRunResult = {
   exitCode: null,
   timedOut: true,
 };
+/** The tool-not-found bug shape (the omnius live run): the command SPAWNED and ran, then
+ *  exited non-zero because ITS OWN tool is missing (`uv run pytest`, pytest not installed).
+ *  ran:false ⇒ the fix loop must be SKIPPED (an env gap no code change fixes); toolMissing
+ *  ⇒ surfaced as NOT-ADJUDICATED (tooling), distinct from a launch failure or a real red. */
+const toolMissing: TestRunResult = {
+  passed: false,
+  ran: false,
+  toolMissing: true,
+  summary:
+    "Test tooling not available: 'pytest' not found (command ran but its tool is missing) — configure implement.testCommand / perRepo for this repo. Not adjudicated; fix loop skipped.",
+  exitCode: 2,
+  timedOut: false,
+};
 
 function makeGitRaw() {
   return vi.fn(async (_repo: string, args: string[]) => {
@@ -321,6 +334,84 @@ describe("Stage 2b — test-run TIMEOUT (ambiguous) SKIPS the fix loop, NOT-ADJU
 
   it("emits NO fix-coder progress beat for a timed-out run", async () => {
     const runTests = sequencedRunTests([timedOut]);
+    const deps = makeDeps({ runTests });
+    const events: SdlcProgress[] = [];
+    await runSdlcHandoff(
+      baseReq({ verification: VCFG({ maxFixIterations: 3 }) }),
+      deps as never,
+      (p) => events.push(JSON.parse(JSON.stringify(p)) as SdlcProgress),
+    );
+    expect(events.some((e) => e.step === "test-runner")).toBe(true);
+    expect(events.some((e) => e.step === "fix-coder")).toBe(false);
+  });
+});
+
+describe("Stage 2b — tool-not-found (ran but tool missing) SKIPS the fix loop, NOT-ADJUDICATED", () => {
+  it("a tool-not-found run burns ZERO fix iterations even with budget left (the omnius bug)", async () => {
+    // The live omnius bug: 3 APs each burned 3 fix iterations on `Failed to spawn: pytest`.
+    // The run exited non-zero, but ran:false (env gap) ⇒ the loop must skip entirely.
+    const runTests = sequencedRunTests([toolMissing]);
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(baseReq({ verification: VCFG({ maxFixIterations: 3 }) }), deps as never);
+
+    // Exactly ONE test run — the initial one — then the loop is skipped (no re-verify).
+    expect(runTests).toHaveBeenCalledTimes(1);
+    // Only the 2 skilled implement steps ran; ZERO fix-coder re-invocations (budget saved).
+    expect((deps.runCoder as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+    // The Draft PR still opens (never blocked).
+    expect(res.prRef).toBe("https://github.com/x/y/pull/9");
+  });
+
+  it("CONTRAST: a real red whose OUTPUT mentions the tool (ran:true) STILL enters the fix loop", async () => {
+    // The no-false-positive guarantee at the loop level: a genuinely-red run (ran:true) is a
+    // NORMAL signal — even if its summary text mentions pytest/not-found — and MUST engage
+    // the loop. Only the ran:false env gap is skipped.
+    const redMentioningTool: TestRunResult = {
+      passed: false,
+      ran: true,
+      summary: "FAILED (exit 1)\nAssertionError: expected 'command not found: pytest' in output",
+      exitCode: 1,
+      timedOut: false,
+    };
+    const runTests = sequencedRunTests([redMentioningTool, pass]); // red → fix → pass
+    const deps = makeDeps({ runTests });
+    await runSdlcHandoff(baseReq({ verification: VCFG({ maxFixIterations: 3 }) }), deps as never);
+    expect((deps.runCoder as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3); // 2 skilled + 1 fix
+    expect(runTests).toHaveBeenCalledTimes(2); // initial + one re-verify
+  });
+
+  it("classifies the criterion NOT-ADJUDICATED (tooling), never FAIL/RED, in the PR body + testSummary", async () => {
+    const runTests = sequencedRunTests([toolMissing]);
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(baseReq({ verification: VCFG({ maxFixIterations: 3 }) }), deps as never);
+
+    const prBody = (deps.openPr as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string;
+    // The per-AP verify tag reads not-adjudicated (tooling), never RED.
+    expect(prBody).toMatch(/not-adjudicated \(tooling\)/i);
+    expect(prBody).not.toMatch(/\bRED\b/);
+    // The gate flags it (unmet P0) and surfaces the actionable env-gap summary.
+    expect(prBody).toMatch(/FLAGGED/);
+    expect(prBody).toMatch(/NOT-ADJUDICATED \(tooling\)/);
+    expect(prBody).toMatch(/Test tooling not available/i);
+    expect(prBody).toMatch(/configure implement\.testCommand/);
+    // The round testSummary (convergence wire) grounds the next review on NOT-ADJUDICATED.
+    expect(res.testSummary).toMatch(/NOT-ADJUDICATED \(tooling\)/);
+    expect(res.testSummary).not.toMatch(/\[FAIL\]/);
+  });
+
+  it("stamps toolMissing:true on the trace criterion (ran:false, not a regression)", async () => {
+    const runTests = sequencedRunTests([toolMissing]);
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(baseReq({ verification: VCFG({ maxFixIterations: 3 }) }), deps as never);
+    const crit = res.executionTrace?.controller.workers[0].criteria[0];
+    expect(crit?.toolMissing).toBe(true);
+    expect(crit?.ran).toBe(false); // env gap — like a launch failure, unlike a timeout
+    expect(crit?.passed).toBe(false);
+    expect(crit?.timedOut).toBeUndefined(); // NOT conflated with the timeout policy
+  });
+
+  it("emits NO fix-coder progress beat for a tool-not-found run", async () => {
+    const runTests = sequencedRunTests([toolMissing]);
     const deps = makeDeps({ runTests });
     const events: SdlcProgress[] = [];
     await runSdlcHandoff(

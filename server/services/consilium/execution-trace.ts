@@ -99,6 +99,8 @@ function clampCriterion(c: ExecutionCriterion): ExecutionCriterion {
   if (typeof c.passedAtFinal === "boolean") out.passedAtFinal = c.passedAtFinal;
   // Timeout policy: additive NOT-ADJUDICATED flag — carried verbatim (boolean).
   if (typeof c.timedOut === "boolean") out.timedOut = c.timedOut;
+  // Tool-not-found policy: additive NOT-ADJUDICATED (tooling) flag — carried verbatim.
+  if (typeof c.toolMissing === "boolean") out.toolMissing = c.toolMissing;
   return out;
 }
 
@@ -160,6 +162,8 @@ export interface SdlcOutcomeLike {
     criterion: string;
     /** Timeout policy: this AP's own verification run was killed by the wall-clock cap. */
     timedOut?: boolean;
+    /** Tool-not-found policy: the command RAN but its own tool is missing (env gap). */
+    toolMissing?: boolean;
   };
 }
 
@@ -236,6 +240,10 @@ export function buildSdlcTrace(
             ...(o.verification.timedOut || (o.verification.method === "test-run" && finalTimedOut)
               ? { timedOut: true }
               : {}),
+            // Tool-not-found policy: NOT-ADJUDICATED (tooling) — the AP's command ran but
+            // its own tool is missing (env gap). Carried through so the trace distinguishes
+            // it from a bare not-run and from a regression (an env gap, never a red).
+            ...(o.verification.toolMissing ? { toolMissing: true } : {}),
           },
         ]
       : [];

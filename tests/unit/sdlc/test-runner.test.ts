@@ -365,3 +365,109 @@ describe("runTests / verifyInWorktree — degrade, never throw", () => {
     expect(calls[0].options.cwd).toBe(WT);
   });
 });
+
+// ─── TOOL-NOT-FOUND (ran-but-tool-missing) classification ───────────────────
+//
+// The command SPAWNED fine (unlike ENOENT) and ran, then exited NON-ZERO reporting that
+// ITS OWN tool is missing (`uv run pytest` → uv present, pytest absent). Without this it
+// looks like a real red and burns the fix budget on an env gap. It must classify like a
+// launch failure — ran:false (fix loop skipped) — but flagged `toolMissing:true` and with
+// an ENV-flavored, actionable summary. The KEY RISK is the inverse: a GENUINE test failure
+// that merely mentions these words in an assertion must STILL be ran:true (enters the loop).
+describe("runTests — tool-not-found (ran but its own tool missing) ⇒ ran:false, toolMissing", () => {
+  it("uv `Failed to spawn: pytest` (exit 2) ⇒ ran:false + toolMissing + env-flavored summary", async () => {
+    // The exact omnius live-bug output: uv launched, pytest was not installed.
+    const stderr = "error: Failed to spawn: `pytest`\n  Caused by: No such file or directory (os error 2)\n";
+    const { fn } = makeSpawn({ stderr, code: 2 });
+    const res = await runTests({ worktreeDir: WT, command: CMD, spawnFn: fn });
+    expect(res.ran).toBe(false); // ← env gap, NOT a test failure — caller SKIPS the fix loop
+    expect(res.toolMissing).toBe(true);
+    expect(res.passed).toBe(false);
+    expect(res.exitCode).toBe(2); // the child DID run + exit (unlike a spawn ENOENT → null)
+    expect(res.summary).toMatch(/Test tooling not available/i);
+    expect(res.summary).toMatch(/'pytest'/);
+    expect(res.summary).toMatch(/Not adjudicated; fix loop skipped/i);
+    expect(res.summary).toMatch(/configure implement\.testCommand/);
+  });
+
+  it.each([
+    ["shell bash: `bash: pytest: command not found`", "bash: pytest: command not found\n", "pytest"],
+    ["shell plain: `pytest: command not found`", "pytest: command not found\n", "pytest"],
+    ["zsh: `zsh: command not found: pytest`", "zsh: command not found: pytest\n", "pytest"],
+    ["dash: `sh: 1: pytest: not found`", "sh: 1: pytest: not found\n", "pytest"],
+    ["python module: `No module named pytest`", "/usr/bin/python: No module named pytest\n", "pytest"],
+    ["python ModuleNotFoundError: pytest", "ModuleNotFoundError: No module named 'pytest'\n", "pytest"],
+  ])("%s ⇒ ran:false + toolMissing", async (_label, stderr, tool) => {
+    const { fn } = makeSpawn({ stderr, code: 1 });
+    const res = await runTests({ worktreeDir: WT, command: CMD, spawnFn: fn });
+    expect(res.ran).toBe(false);
+    expect(res.toolMissing).toBe(true);
+    expect(res.summary).toMatch(new RegExp(`'${tool}'`));
+  });
+
+  it("npm `could not determine executable` (no tool name) ⇒ ran:false + toolMissing (generic)", async () => {
+    const { fn } = makeSpawn({ stderr: "npm ERR! could not determine executable to run\n", code: 1 });
+    const res = await runTests({ worktreeDir: WT, command: CMD, spawnFn: fn });
+    expect(res.ran).toBe(false);
+    expect(res.toolMissing).toBe(true);
+    expect(res.summary).toMatch(/a required test tool/i);
+  });
+
+  it("CLI wrapper `error: unrecognized subcommand` ⇒ ran:false + toolMissing", async () => {
+    const { fn } = makeSpawn({ stderr: "error: unrecognized subcommand 'run'\n", code: 2 });
+    const res = await runTests({ worktreeDir: WT, command: CMD, spawnFn: fn });
+    expect(res.ran).toBe(false);
+    expect(res.toolMissing).toBe(true);
+  });
+
+  // ── the CRITICAL no-false-positive guard ──────────────────────────────────
+  it("NO FALSE POSITIVE: a GENUINE test failure whose ASSERTION mentions 'pytest' / 'command not found' / 'not found' ⇒ STILL ran:true (enters the fix loop)", async () => {
+    // A real vitest red whose diff QUOTES these exact words — but indented + inside quotes,
+    // never at column 0 ending its own line. Line-anchored (col-0, `$`) signatures must NOT
+    // match this, or a real red would be masked as an env gap (the reviewer's key risk).
+    const stdout = [
+      "FAIL  src/spawn.test.ts > surfaces a helpful message when a binary is absent",
+      "AssertionError: expected error to contain the string",
+      `  Expected: "command not found: pytest"`,
+      `  Received: "No module named pytest was the wrong message"`,
+      "  the CLI should print 'pytest: command not found' but printed 'not found' alone",
+      " ❯ src/spawn.test.ts:12:34",
+      "",
+      "Test Files  1 failed (1)",
+      "     Tests  1 failed (1)",
+    ].join("\n");
+    const { fn } = makeSpawn({ stdout, code: 1 });
+    const res = await runTests({ worktreeDir: WT, command: CMD, spawnFn: fn });
+    expect(res.ran).toBe(true); // ← a REAL red — the fix loop MUST engage
+    expect(res.toolMissing).toBeUndefined();
+    expect(res.passed).toBe(false);
+    expect(res.summary).toMatch(/FAILED/);
+  });
+
+  it("NO FALSE POSITIVE: exit 0 with a tool-missing-looking string in output ⇒ passed:true, never toolMissing (detection is gated on non-zero exit)", async () => {
+    const { fn } = makeSpawn({ stdout: "pytest: command not found\n", code: 0 });
+    const res = await runTests({ worktreeDir: WT, command: CMD, spawnFn: fn });
+    expect(res.passed).toBe(true);
+    expect(res.toolMissing).toBeUndefined();
+  });
+
+  it("NO FALSE POSITIVE: a thrown `Error: command not found` at col 0 ⇒ ran:true (framing word rejected — not a shell tool)", async () => {
+    // A test throwing `new Error("command not found")` can print `Error: command not found`
+    // at column 0 (unhandled rejection). The token before the colon is a framing word
+    // (`Error`), NOT an invoked command — the plausibility guard must reject it so this
+    // stays a REAL failure that engages the fix loop.
+    const { fn } = makeSpawn({ stderr: "Error: command not found\n    at foo (x.ts:1:1)\n", code: 1 });
+    const res = await runTests({ worktreeDir: WT, command: CMD, spawnFn: fn });
+    expect(res.ran).toBe(true);
+    expect(res.toolMissing).toBeUndefined();
+  });
+
+  it("NON-runner missing module (`No module named requests`) is left as a REAL failure ⇒ ran:true (tight allowlist — no over-classification)", async () => {
+    // A missing APP dependency is NOT in the test-runner allowlist; conservatively treated
+    // as a real (adjudicated) failure so we never mask genuine reds behind an env label.
+    const { fn } = makeSpawn({ stderr: "ModuleNotFoundError: No module named 'requests'\n", code: 1 });
+    const res = await runTests({ worktreeDir: WT, command: CMD, spawnFn: fn });
+    expect(res.ran).toBe(true);
+    expect(res.toolMissing).toBeUndefined();
+  });
+});
