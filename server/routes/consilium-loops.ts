@@ -197,8 +197,11 @@ export function registerConsiliumLoopRoutes(
           updatedAt: loop.updatedAt ? new Date(loop.updatedAt).toISOString() : null,
           verdictSummary,
           openRemainder,
-          // No trigger→loop provenance link exists in the schema — left unset.
-          triggerProvenance: null,
+          // T1-full (#457): surface the loop's INERT trigger provenance as a short
+          // human passport string ("github trigger: PR #N: <title>"). The mapping
+          // already single-line control-stripped + clamped `eventSummary`; rendered
+          // as inert React text client-side. Null for human/API-launched loops.
+          triggerProvenance: formatTriggerProvenance(loop.triggerProvenance),
         } satisfies PrQueueItem;
       }),
     );
@@ -388,6 +391,28 @@ function clampSummary(summary: string | null | undefined): string | undefined {
   return trimmed.length > PR_QUEUE_SUMMARY_MAX
     ? `${trimmed.slice(0, PR_QUEUE_SUMMARY_MAX)}…`
     : trimmed;
+}
+
+/** Max length of the rendered passport provenance string (defence in depth). */
+const PROVENANCE_LABEL_MAX = 200;
+
+/**
+ * Format a loop's INERT {@link TriggerProvenance} into a short human passport
+ * string for the PR-queue card (#457) — e.g. `github trigger: PR #123: <title>`.
+ * The `eventSummary` was ALREADY single-line control-stripped + clamped at the
+ * mapping boundary; we re-clamp here as defence in depth. Returns null for a
+ * human/API-launched loop (no provenance) so the client omits the "via …" line.
+ * Rendered as INERT React text client-side — never a link/HTML sink.
+ */
+function formatTriggerProvenance(prov: unknown): string | null {
+  if (typeof prov !== "object" || prov === null) return null;
+  const p = prov as { triggerType?: unknown; eventSummary?: unknown };
+  const type = typeof p.triggerType === "string" ? p.triggerType : "";
+  // "github trigger" reads better than the raw "github_event trigger" enum value.
+  const label = type === "github_event" ? "github" : type || "unknown";
+  const summary = typeof p.eventSummary === "string" ? p.eventSummary.trim() : "";
+  const full = summary ? `${label} trigger: ${summary}` : `${label} trigger`;
+  return full.length > PROVENANCE_LABEL_MAX ? `${full.slice(0, PROVENANCE_LABEL_MAX)}…` : full;
 }
 
 /**

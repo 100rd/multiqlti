@@ -53,7 +53,7 @@ import { registerTaskGroupResolveRoute } from "./routes/task-group-resolve";
 import { registerConsiliumLoopRoutes } from "./routes/consilium-loops";
 import { registerConsiliumReviewRoutes } from "./routes/consilium-reviews";
 import { createConsiliumReview } from "./services/consilium/review-factory";
-import { maybeLaunchConsiliumReview } from "./services/consilium/trigger-dispatch";
+import { maybeLaunchConsiliumReview, maybeLaunchGitHubReview } from "./services/consilium/trigger-dispatch";
 import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consilium/consilium-loop-controller";
 import { registerModelSkillBindingRoutes } from "./routes/model-skill-bindings";
 import { registerTaskTraceRoutes } from "./routes/task-traces";
@@ -341,53 +341,60 @@ export async function registerRoutes(
         await storage.updateTrigger(trigger.id, { lastTriggeredAt: new Date() });
         log(`[triggers] Fired trigger ${trigger.id} (type ${trigger.type})`, "triggers");
 
-        // T1 KILL-SWITCH (loop-triggers.md §4.5): a SCHEDULE trigger only fires a
-        // loop when `features.triggers.enabled` is on — a running server never
-        // silently starts firing scheduled loops. The pre-existing file_change
-        // binding is NOT gated here (it stays under consiliumLoop.enabled), so the
-        // one live prototype binding is unchanged.
-        if (trigger.type === "schedule" && !appConfigLoader.get().features.triggers.enabled) {
-          log(`[triggers] schedule trigger ${trigger.id} not fired — features.triggers.enabled is off`, "triggers");
+        // T1 KILL-SWITCH (loop-triggers.md §4.5): a SCHEDULE or GITHUB_EVENT trigger
+        // only fires a loop when `features.triggers.enabled` is on — a running server
+        // never silently starts firing scheduled OR github-event loops (a github
+        // webhook could otherwise start disputing PRs the moment it is wired). The
+        // pre-existing file_change binding is NOT gated here (it stays under
+        // consiliumLoop.enabled), so the one live prototype binding is unchanged.
+        if (
+          (trigger.type === "schedule" || trigger.type === "github_event") &&
+          !appConfigLoader.get().features.triggers.enabled
+        ) {
+          log(`[triggers] ${trigger.type} trigger ${trigger.id} not fired — features.triggers.enabled is off`, "triggers");
           return;
         }
 
         // ── Loop-template dispatch ───────────────────────────────────────────────
-        // ABSENT action ⇒ record-only no-op (back-compat for webhook / github /
-        // action-less triggers). Present + consilium_review ⇒ launch via the SAME
-        // factory the HTTP route uses. Untrusted payload strings reach ONLY the
-        // factory's sanitized objective seam (engineerInstruction / objectiveExtra);
-        // repoPath is re-validated against the fail-closed allowlist + the project's
-        // workspaces INSIDE the factory. `reviewDeps: null` (kill-switch off) ⇒
-        // skipped. The launch runs under runAsProject so all rows stay project-scoped.
-        const result = await maybeLaunchConsiliumReview(
-          {
-            reviewDeps: consiliumLoopController
-              ? {
-                  storage,
-                  orchestrator: taskOrchestrator,
-                  controller: consiliumLoopController,
-                  config: () => appConfigLoader.get(),
-                }
-              : null,
-            createReview: createConsiliumReview,
-            runInProject: runAsProject,
-            // FK FIX: a trigger-launched review has no req.user; task_groups.created_by
-            // is an FK to users.id, so the old literal "system" violated the FK. Resolve
-            // the PROJECT OWNER (projects.ownerId, notNull). Run under runAsSystem so the
-            // lookup is NOT project-scoped away (fireTrigger is a cross-project system ctx).
-            resolveOwnerId: (projectId: string) =>
-              runAsSystem("resolve-trigger-owner", async () => {
-                const [row] = await db
-                  .select({ ownerId: projects.ownerId })
-                  .from(projects)
-                  .where(eq(projects.id, projectId));
-                return row?.ownerId ?? null;
-              }),
-            log: (m) => log(m, "triggers"),
-          },
-          trigger,
-          payload,
-        );
+        // github_event ⇒ event→review mapping (PR head diff / post-merge review) via
+        // maybeLaunchGitHubReview. Everything else: ABSENT action ⇒ record-only no-op
+        // (back-compat for webhook / action-less triggers); present + consilium_review
+        // ⇒ launch via the SAME factory the HTTP route uses. BOTH paths share the
+        // dedup/owner/factory core: untrusted payload strings reach ONLY the factory's
+        // sanitized objective seam (engineerInstruction / objectiveExtra); repoPath is
+        // re-validated against the fail-closed allowlist + the project's workspaces
+        // INSIDE the factory. `reviewDeps: null` (kill-switch off) ⇒ skipped. The launch
+        // runs under runAsProject so all rows stay project-scoped.
+        const dispatchDeps = {
+          reviewDeps: consiliumLoopController
+            ? {
+                storage,
+                orchestrator: taskOrchestrator,
+                controller: consiliumLoopController,
+                config: () => appConfigLoader.get(),
+              }
+            : null,
+          createReview: createConsiliumReview,
+          runInProject: runAsProject,
+          // FK FIX: a trigger-launched review has no req.user; task_groups.created_by
+          // is an FK to users.id, so the old literal "system" violated the FK. Resolve
+          // the PROJECT OWNER (projects.ownerId, notNull). Run under runAsSystem so the
+          // lookup is NOT project-scoped away (fireTrigger is a cross-project system ctx).
+          resolveOwnerId: (projectId: string) =>
+            runAsSystem("resolve-trigger-owner", async () => {
+              const [row] = await db
+                .select({ ownerId: projects.ownerId })
+                .from(projects)
+                .where(eq(projects.id, projectId));
+              return row?.ownerId ?? null;
+            }),
+          log: (m: string) => log(m, "triggers"),
+        };
+
+        const result =
+          trigger.type === "github_event"
+            ? await maybeLaunchGitHubReview(dispatchDeps, trigger, payload)
+            : await maybeLaunchConsiliumReview(dispatchDeps, trigger, payload);
 
         // T1 policy rail (§4): a fire suppressed by dedup bumps the trigger's
         // suppressed counter (surfaced on the triggers page) instead of blindly

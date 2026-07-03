@@ -1337,6 +1337,18 @@ export interface GitHubEventTriggerConfig {
   events: string[];     // ["push", "pull_request", "issues", "release"]
   refFilter?: string;   // optional, e.g. "refs/heads/main"
   // secret stored encrypted in secretEncrypted column — not in this object
+  /**
+   * T1-full (loop-triggers.md §3.1): the loop template a matching GitHub event
+   * fires. `repoPath` (REQUIRED for a github trigger to launch — there is no
+   * watchPath to derive it from) is re-validated against the fail-closed allowlist
+   * INSIDE the factory. `engineerInstruction` (may embed `${event}`) is UNTRUSTED —
+   * the factory control-strips + byte-clamps + fences it. The action's `preset` is a
+   * DEFAULT only: the per-event mapping OVERRIDES it (pull_request → `diff-pr-review`
+   * on the PR head; push to the default branch → post-merge review), so the operator
+   * only needs to pick a target repo + optional instruction. Absent ⇒ the trigger
+   * still receives + records events but launches nothing (record-only, back-compat).
+   */
+  action?: ConsiliumReviewTriggerAction;
 }
 
 export interface FileChangeTriggerConfig {
@@ -1408,6 +1420,15 @@ export interface TriggerProvenance {
   triggerType: TriggerType;
   eventDigest: string;
   firedAt: string; // ISO-8601
+  /**
+   * OPTIONAL short, human-readable description of the firing event for the launch
+   * passport (#457) — e.g. `PR #123: <title>` or `post-merge push to main (abc1234)`.
+   * UNTRUSTED (embeds a github PR title / branch): single-line control-stripped +
+   * clamped at the mapping boundary and rendered as INERT text only. Absent for
+   * file_change/schedule fires (the digest already correlates those). Never a
+   * prompt/shell sink.
+   */
+  eventSummary?: string;
 }
 
 export type TriggerConfig =

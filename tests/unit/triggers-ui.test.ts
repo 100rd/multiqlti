@@ -230,10 +230,13 @@ describe("isTriggerFormValid", () => {
     expect(isTriggerFormValid({ ...base, type: "file_change", watchPath: "   " })).toBe(false);
   });
 
-  it("github_event requires repository and at least one event", () => {
-    expect(isTriggerFormValid({ ...base, type: "github_event", ghRepo: "owner/repo", ghEvents: ["push"] })).toBe(true);
-    expect(isTriggerFormValid({ ...base, type: "github_event", ghRepo: "", ghEvents: ["push"] })).toBe(false);
-    expect(isTriggerFormValid({ ...base, type: "github_event", ghRepo: "owner/repo", ghEvents: [] })).toBe(false);
+  it("github_event requires repository, at least one event, AND a target repoPath", () => {
+    const gh = { ...base, type: "github_event" as const, ghRepo: "owner/repo", ghEvents: ["push"], repoPath: "/allowed/omnius" };
+    expect(isTriggerFormValid(gh)).toBe(true);
+    expect(isTriggerFormValid({ ...gh, ghRepo: "" })).toBe(false);
+    expect(isTriggerFormValid({ ...gh, ghEvents: [] })).toBe(false);
+    // T1-full: without a loop-target repoPath the events would be recorded but fire nothing.
+    expect(isTriggerFormValid({ ...gh, repoPath: "" })).toBe(false);
   });
 });
 

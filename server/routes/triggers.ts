@@ -71,10 +71,18 @@ const ScheduleConfigSchema = z.object({
   action: ScheduleActionSchema,
 });
 
+// A github_event trigger MAY carry an embedded loop template (`action`) — the
+// event→review mapping fires it (PR head diff / post-merge review). Without this
+// field the strict z.object would SILENTLY STRIP `action`, turning the trigger into
+// a permanent record-only no-op. The factory RE-VALIDATES `repoPath` against the
+// fail-closed allowlist, so this schema only shape-checks it. Optional here (a
+// github trigger may be configured record-only), but a repoPath is required at
+// FIRE time for a review to launch.
 const GitHubConfigSchema = z.object({
   repository: z.string().min(1).max(500).regex(/^[^/]+\/[^/]+$/, "Must be in owner/repo format"),
   events: z.array(z.string().min(1).max(100)).min(1).max(50),
   refFilter: z.string().max(500).optional(),
+  action: LoopTemplateActionSchema.optional(),
 });
 
 // A file_change trigger MAY carry an embedded loop template (`action`). The factory

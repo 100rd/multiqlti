@@ -22,6 +22,7 @@ import { useCreateTrigger, useUpdateTrigger } from "@/hooks/use-triggers";
 import { WebhookDetails } from "./WebhookDetails";
 import {
   LOOP_FIRING_TYPES,
+  GITHUB_EVENT_MAPPINGS,
   isTriggerFormValid,
   buildLoopTemplate,
   type LoopTemplateState,
@@ -102,37 +103,42 @@ function LoopTemplateFields({
   state,
   workspaces,
   repoRequired,
+  hidePreset,
   onChange,
 }: {
   state: LoopTemplateState;
   workspaces: TriggerWorkspaceOption[];
   repoRequired: boolean;
+  /** github triggers derive the preset per-event, so the picker is hidden there. */
+  hidePreset?: boolean;
   onChange: (patch: Partial<LoopTemplateState>) => void;
 }) {
   return (
     <fieldset className="space-y-3 rounded-md border border-border p-3">
       <legend className="px-1 text-xs font-medium">Consilium loop target</legend>
 
-      <div className="space-y-1.5">
-        <Label htmlFor="loop-preset" className="text-xs">
-          Preset <span className="text-destructive">*</span>
-        </Label>
-        <Select
-          value={state.preset}
-          onValueChange={(v) => onChange({ preset: v as ConsiliumReviewPreset })}
-        >
-          <SelectTrigger id="loop-preset" className="h-8 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {CONSILIUM_REVIEW_PRESETS.map((p) => (
-              <SelectItem key={p} value={p} className="text-xs">
-                {PRESET_LABELS[p]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      {!hidePreset && (
+        <div className="space-y-1.5">
+          <Label htmlFor="loop-preset" className="text-xs">
+            Preset <span className="text-destructive">*</span>
+          </Label>
+          <Select
+            value={state.preset}
+            onValueChange={(v) => onChange({ preset: v as ConsiliumReviewPreset })}
+          >
+            <SelectTrigger id="loop-preset" className="h-8 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {CONSILIUM_REVIEW_PRESETS.map((p) => (
+                <SelectItem key={p} value={p} className="text-xs">
+                  {PRESET_LABELS[p]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
 
       <div className="space-y-1.5">
         <Label htmlFor="loop-repo" className="text-xs">
@@ -277,10 +283,14 @@ function ScheduleConfigFields({
 function GitHubConfigFields({
   repository,
   events,
+  secret,
+  onSecretChange,
   onChange,
 }: {
   repository: string;
   events: string[];
+  secret: string;
+  onSecretChange: (v: string) => void;
   onChange: (patch: Partial<GitHubEventTriggerConfig>) => void;
 }) {
   function toggleEvent(ev: string) {
@@ -293,9 +303,12 @@ function GitHubConfigFields({
   return (
     <div className="space-y-3">
       <p className="text-[11px] text-muted-foreground">
-        GitHub-event → loop mapping (the HMAC receiver + event fan-out) lands in a follow-up.
-        The trigger persists now so it is ready when the receiver ships.
+        A matching GitHub event fires a consilium review. After you create the trigger you get
+        a webhook URL and secret to paste into the repository&apos;s{" "}
+        <span className="font-mono">Settings → Webhooks</span> (content type{" "}
+        <span className="font-mono">application/json</span>).
       </p>
+
       <div className="space-y-1.5">
         <Label htmlFor="gh-repo" className="text-xs">
           Repository <span className="text-destructive">*</span>
@@ -332,6 +345,53 @@ function GitHubConfigFields({
           ))}
         </div>
       </fieldset>
+
+      <div className="rounded-md border border-border p-2.5">
+        <p className="text-[11px] font-medium mb-1">What fires a review</p>
+        <ul className="space-y-0.5">
+          {GITHUB_EVENT_MAPPINGS.map((m) => (
+            <li key={m.event} className="text-[10px] text-muted-foreground">
+              <span className="font-mono">{m.event}</span> → {m.effect}
+            </li>
+          ))}
+        </ul>
+        <p className="text-[10px] text-muted-foreground mt-1">
+          Other events are received and acknowledged but launch nothing.
+        </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="gh-secret-input" className="text-xs">
+          HMAC Secret <span className="text-muted-foreground">(recommended)</span>
+        </Label>
+        <div className="flex gap-2">
+          <Input
+            id="gh-secret-input"
+            type="password"
+            value={secret}
+            onChange={(e) => onSecretChange(e.target.value)}
+            placeholder="Paste into GitHub → Webhooks → Secret"
+            className="font-mono text-xs h-8"
+            autoComplete="new-password"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 px-3 shrink-0"
+            onClick={() => onSecretChange(generateSecret())}
+            aria-label="Generate random secret"
+          >
+            <RefreshCw className="h-3.5 w-3.5 mr-1" />
+            Generate
+          </Button>
+        </div>
+        <p className="text-[10px] text-muted-foreground">
+          Signs the{" "}
+          <span className="font-mono font-semibold">X-Hub-Signature-256</span> header; the
+          receiver rejects any request whose signature does not match.
+        </p>
+      </div>
     </div>
   );
 }
@@ -462,8 +522,10 @@ export function TriggerForm({
     });
   }, [open, trigger, workspaces]);
 
-  const showLoopTemplate = LOOP_FIRING_TYPES.has(type);
-  const repoRequired = type === "schedule";
+  // github triggers also carry a loop template (the review's target repo), but the
+  // preset is derived per-event, so its picker is hidden and a repo IS required.
+  const showLoopTemplate = LOOP_FIRING_TYPES.has(type) || type === "github_event";
+  const repoRequired = type === "schedule" || type === "github_event";
 
   // ── Build config ────────────────────────────────────────────────────────────
   function buildConfig(): Record<string, unknown> {
@@ -473,7 +535,13 @@ export function TriggerForm({
       case "schedule":
         return { cron, action: buildLoopTemplate(template) };
       case "github_event":
-        return { repository: ghRepo, events: ghEvents };
+        // The event mapping overrides the preset at fire time; we persist a sensible
+        // default so the shape validates. repoPath + instruction ARE honoured.
+        return {
+          repository: ghRepo,
+          events: ghEvents,
+          action: buildLoopTemplate({ ...template, preset: "diff-pr-review" }),
+        };
       case "file_change":
         return { watchPath, patterns: filePatterns, action: buildLoopTemplate(template) };
     }
@@ -511,7 +579,13 @@ export function TriggerForm({
       };
       createTrigger.mutate(payload, {
         onSuccess: (created) => {
-          if (type === "webhook" && created.webhookUrl && webhookSecret) {
+          // Both webhook and github_event triggers get a synthesized URL; reveal it
+          // (+ the secret to paste into GitHub) when a secret was set.
+          if (
+            (type === "webhook" || type === "github_event") &&
+            created.webhookUrl &&
+            webhookSecret
+          ) {
             setCreatedWebhook({ url: created.webhookUrl, secret: webhookSecret });
           } else {
             onOpenChange(false);
@@ -588,6 +662,8 @@ export function TriggerForm({
             <GitHubConfigFields
               repository={ghRepo}
               events={ghEvents}
+              secret={webhookSecret}
+              onSecretChange={setWebhookSecret}
               onChange={(patch) => {
                 if (patch.repository !== undefined) setGhRepo(patch.repository);
                 if (patch.events !== undefined) setGhEvents(patch.events);
@@ -605,12 +681,13 @@ export function TriggerForm({
             />
           )}
 
-          {/* Loop template (schedule + file_change) */}
+          {/* Loop template (schedule + file_change + github_event) */}
           {showLoopTemplate && (
             <LoopTemplateFields
               state={template}
               workspaces={workspaces}
               repoRequired={repoRequired}
+              hidePreset={type === "github_event"}
               onChange={(patch) => setTemplate((prev) => ({ ...prev, ...patch }))}
             />
           )}

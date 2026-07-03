@@ -153,7 +153,14 @@ export async function handleWebhookRequest(
     return;
   }
 
-  // If a secret is configured, verify the HMAC signature
+  // If a secret is configured, verify the HMAC signature.
+  //
+  // GitHub signs the RAW request body with the trigger secret and sends the digest
+  // as `X-Hub-Signature-256: sha256=<hex>` (verifyHmacSignature accepts that exact
+  // scheme). The raw body (captured by express.json's `verify` into req.rawBody) is
+  // what GitHub hashed — we MUST NOT re-serialize req.body (key order / whitespace
+  // would differ and every signature would fail). A generic webhook may instead use
+  // `X-Webhook-Signature`. Unsigned/tampered request ⇒ 401, fireTrigger NOT called.
   const secret = await deps.getSecret(triggerId);
   if (secret) {
     const sig = req.headers["x-hub-signature-256"] ?? req.headers["x-webhook-signature"];
@@ -163,7 +170,19 @@ export async function handleWebhookRequest(
     }
   }
 
-  const payload = req.body as unknown;
+  // A github_event trigger fires off the GitHub event TYPE (from the X-GitHub-Event
+  // header), so wrap the body in the `{ event, delivery, payload }` envelope the
+  // github dispatch reads (mapping PR/push → a review). Every other trigger type
+  // keeps receiving the bare body. The header is only trusted to SELECT the mapping;
+  // no review fires without the HMAC check above having passed.
+  const payload: unknown =
+    trigger.type === "github_event"
+      ? {
+          event: String(req.headers["x-github-event"] ?? ""),
+          delivery: String(req.headers["x-github-delivery"] ?? "unknown"),
+          payload: req.body,
+        }
+      : (req.body as unknown);
   await deps.fireTrigger(trigger, payload);
   res.status(200).json({ ok: true });
 }
