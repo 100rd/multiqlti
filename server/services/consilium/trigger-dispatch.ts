@@ -78,8 +78,11 @@ import {
 } from "@shared/schema";
 import type {
   ConsiliumReviewTriggerAction,
+  ConsiliumReviewPreset,
+  GitHubEventTriggerConfig,
   TriggerProvenance,
 } from "@shared/types";
+import { mapGitHubEventToReview } from "./github-event-map.js";
 import type {
   CreateConsiliumReviewDeps,
   CreateConsiliumReviewParams,
@@ -190,6 +193,7 @@ export type ConsiliumDispatchResult =
   | "skipped"
   | "skipped-dedup"
   | "noop"
+  | "noop-event"
   | "failed";
 
 export interface ConsiliumTriggerDispatchDeps {
@@ -274,46 +278,94 @@ export async function maybeLaunchConsiliumReview(
   const engineerInstruction = interpolateEvent(action.engineerInstruction, eventDescription);
   const objectiveExtra = engineerInstruction ? undefined : eventDescription;
 
+  return launchReviewWithDedup(deps, trigger, {
+    projectId,
+    repoPath,
+    preset: action.preset,
+    engineerInstruction,
+    objectiveExtra,
+    payload,
+  });
+}
+
+/**
+ * The launch plan the shared core turns into a factory call. `preset`/`repoPath`
+ * are already chosen by the caller (the action's for file_change/schedule; the
+ * event mapping's for github). `ref`/`baselineCommit` target a specific commit
+ * (github PR head/base or push before/after); absent for the action path.
+ * `engineerInstruction`/`objectiveExtra` are the (mutually-exclusive) UNTRUSTED
+ * objective seams — the factory fences/clamps them. `eventSummary` is an OPTIONAL
+ * human passport label. `payload` feeds the provenance digest ONLY.
+ */
+export interface ReviewLaunchPlan {
+  projectId: string;
+  repoPath: string;
+  preset: ConsiliumReviewPreset;
+  ref?: string | null;
+  baselineCommit?: string;
+  engineerInstruction?: string;
+  objectiveExtra?: string;
+  eventSummary?: string;
+  payload: unknown;
+}
+
+/**
+ * The SHARED launch core: resolve the owner, dedup against in-flight loops for the
+ * same (project, repoPath), and call the factory review-only. Extracted so BOTH
+ * the action path (`maybeLaunchConsiliumReview`) and the github path
+ * (`maybeLaunchGitHubReview`) reuse the SAME dedup (T5), owner FK resolution, and
+ * T4 catch — the §4 rails cannot drift between trigger classes. Returns the same
+ * discriminant. The caller has ALREADY verified `deps.reviewDeps` + `projectId`.
+ */
+export async function launchReviewWithDedup(
+  deps: ConsiliumTriggerDispatchDeps,
+  trigger: TriggerRow,
+  plan: ReviewLaunchPlan,
+): Promise<ConsiliumDispatchResult> {
+  const reviewDeps = deps.reviewDeps;
+  if (!reviewDeps) {
+    deps.log(`review skipped for trigger ${trigger.id} — consilium loop disabled`);
+    return "skipped";
+  }
+
   // §6 provenance: which trigger + event fired the loop (short payload digest, not
-  // the untrusted payload verbatim). Persisted inert for the launch passport.
+  // the untrusted payload verbatim; + an OPTIONAL human summary). Persisted inert
+  // for the launch passport.
   const provenance: TriggerProvenance = {
     triggerId: trigger.id,
     triggerType: trigger.type,
-    eventDigest: eventDigest(payload),
+    eventDigest: eventDigest(plan.payload),
     firedAt: new Date().toISOString(),
+    ...(plan.eventSummary ? { eventSummary: plan.eventSummary } : {}),
   };
 
   // T5: dedup key — match against the CANONICAL path the factory persists.
-  const resolvedRepo = canonicalRepoPath(repoPath);
+  const resolvedRepo = canonicalRepoPath(plan.repoPath);
 
-  // FK FIX: a trigger-launched review has no `req.user`. `task_groups.created_by`
-  // is an FK to `users.id`, so the old literal `createdBy: "system"` violated
-  // `task_groups_created_by_users_id_fk` and every trigger review failed. Resolve
-  // the PROJECT OWNER (a real user id) instead. Inside the try so a lookup throw
-  // is caught (T4) rather than crashing the watcher loop.
-  const reviewDeps = deps.reviewDeps;
+  // FK FIX: a trigger-launched review has no `req.user`. Resolve the PROJECT OWNER
+  // (a real `users.id`). Inside the try so a lookup throw is caught (T4) rather
+  // than crashing the watcher/webhook loop.
   let dedupLoopId: string | undefined;
   try {
-    const createdBy = await deps.resolveOwnerId(projectId);
+    const createdBy = await deps.resolveOwnerId(plan.projectId);
     if (!createdBy) {
-      // No resolvable owner ⇒ no valid FK target ⇒ do NOT call the factory.
       deps.log(
-        `consilium_review skipped for trigger ${trigger.id} — no resolvable owner for project ${projectId}`,
+        `review skipped for trigger ${trigger.id} — no resolvable owner for project ${plan.projectId}`,
       );
       return "skipped";
     }
 
-    const loop = await deps.runInProject(projectId, async (): Promise<ConsiliumLoopRow | null> => {
+    const loop = await deps.runInProject(plan.projectId, async (): Promise<ConsiliumLoopRow | null> => {
       // T5 (FIX HIGH-1): active-loop DEDUP on the TRIGGER path. `getLoops()` is
-      // project-scoped by this ALS context, so we only see THIS project's loops.
-      // Skip if a NON-TERMINAL consilium loop already targets this repoPath — a
-      // burst of file events must not fan out into unbounded heavy-model disputes.
+      // project-scoped by this ALS context. Skip if a NON-TERMINAL consilium loop
+      // already targets this repoPath — a burst of events (a PR synchronize storm,
+      // a spec-write burst) must not fan out into unbounded heavy-model disputes.
       // (The explicit UI endpoint calls the factory directly and is NOT deduped.)
       const existing = await reviewDeps.storage.getLoops();
       const active = existing.find(
         (l) =>
           !TERMINAL_LOOP_STATES.has(l.state) &&
-          (l.repoPath === resolvedRepo || l.repoPath === repoPath),
+          (l.repoPath === resolvedRepo || l.repoPath === plan.repoPath),
       );
       if (active) {
         dedupLoopId = active.id;
@@ -321,21 +373,21 @@ export async function maybeLaunchConsiliumReview(
       }
 
       return deps.createReview(reviewDeps, {
-        projectId,
-        repoPath,
-        preset: action.preset,
+        projectId: plan.projectId,
+        repoPath: plan.repoPath,
+        preset: plan.preset,
         // FK FIX: real `users.id` (project owner), NOT the literal "system".
         createdBy,
-        // T6 (FIX MED-2): FORCE review-only on EVERY trigger path (file_change AND
-        // schedule). An unattended, automatically-fired run must NEVER reach
-        // DEVELOPING / the SDLC coder, so we IGNORE `action.maxRounds` here
-        // (server-side, not config-trusted). Multi-round (1..6) is reachable ONLY
-        // via the human UI endpoint. The operator's chosen maxRounds is persisted on
-        // the template for a future (T-full) attended path but is inert today.
+        // T6 (FIX MED-2): FORCE review-only on EVERY trigger path. An unattended,
+        // automatically-fired run must NEVER reach DEVELOPING / the SDLC coder.
         maxRounds: 1,
-        // T1: exactly one of these is set (engineerInstruction wins in the factory).
-        engineerInstruction,
-        objectiveExtra,
+        // github diff-pr-review targets the PR head vs the PR base; absent for the
+        // action path (working-tree HEAD). Both re-validated at the factory.
+        ref: plan.ref,
+        baselineCommit: plan.baselineCommit,
+        // Exactly one of these is set (engineerInstruction wins in the factory).
+        engineerInstruction: plan.engineerInstruction,
+        objectiveExtra: plan.objectiveExtra,
         // §6: record which trigger + event started the loop.
         triggerProvenance: provenance,
       });
@@ -343,18 +395,111 @@ export async function maybeLaunchConsiliumReview(
 
     if (loop === null) {
       deps.log(
-        `consilium_review skipped-dedup for trigger ${trigger.id} — active loop ${dedupLoopId} already running for ${resolvedRepo}`,
+        `review skipped-dedup for trigger ${trigger.id} — active loop ${dedupLoopId} already running for ${resolvedRepo}`,
       );
       return "skipped-dedup";
     }
 
     deps.log(
-      `consilium_review launched for trigger ${trigger.id} (preset ${action.preset}, loop ${loop.id})`,
+      `review launched for trigger ${trigger.id} (preset ${plan.preset}, loop ${loop.id})`,
     );
     return "launched";
   } catch (e) {
-    // T4: never throw out of the watcher loop on a poisoned config.
-    deps.log(`consilium_review for trigger ${trigger.id} rejected: ${(e as Error).message}`);
+    // T4: never throw out of the watcher/webhook loop on a poisoned config.
+    deps.log(`review for trigger ${trigger.id} rejected: ${(e as Error).message}`);
     return "failed";
   }
+}
+
+// ─── GitHub-event trigger → consilium review (T1-full, loop-triggers.md §3.1) ──
+//
+// The `payload` the github-event-handler hands to `fireTrigger` is the ENVELOPE
+// `{ event, delivery, payload }` — the raw GitHub JSON body is under `.payload`.
+// The HMAC signature has ALREADY been verified upstream (github-event-handler.ts /
+// webhook-handler.ts) — this seam NEVER runs before a good signature. The
+// event→(preset, ref, baseline, label) decision is the PURE `mapGitHubEventToReview`;
+// the launch itself reuses the SAME dedup/owner/factory core as every other trigger.
+
+/** Extract the raw GitHub JSON body from the `{ event, delivery, payload }` envelope. */
+function githubBody(payload: unknown): unknown {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  return (payload as Record<string, unknown>).payload;
+}
+
+/**
+ * Launch a consilium review for a matching GitHub webhook event.
+ *   - "noop-event"  → the event is not mapped to a review (other PR action, push to
+ *                     a non-default branch, issues/release/ping, …) — logged, NOT an
+ *                     error, NOT a review (a webhook subscribed to everything is safe).
+ *   - "skipped"     → subsystem off / no projectId / no repoPath in the loop template
+ *                     / no resolvable owner — logged.
+ *   - "skipped-dedup"→ a non-terminal loop already runs for this repo (T5 dedup).
+ *   - "launched"    → the factory was invoked (diff-pr-review on the PR head, or a
+ *                     post-merge review on the default branch).
+ *   - "failed"      → the factory threw (allowlist/workspace rejection, bad ref) —
+ *                     caught + logged (never crashes the receiver).
+ *
+ * The kill-switch (`features.triggers.enabled`) is enforced by the route BEFORE this
+ * is called, mirroring the schedule gate — a running server never silently starts
+ * firing github loops.
+ */
+export async function maybeLaunchGitHubReview(
+  deps: ConsiliumTriggerDispatchDeps,
+  trigger: TriggerRow,
+  payload: unknown,
+): Promise<ConsiliumDispatchResult> {
+  const eventType = payloadString(payload, "event") ?? "";
+  const body = githubBody(payload);
+
+  // PURE mapping: decide the review shape (or a no-op reason) from the event.
+  const mapped = mapGitHubEventToReview(eventType, body);
+  if (mapped.kind === "noop") {
+    deps.log(`github trigger ${trigger.id} — no-op for ${eventType || "?"}: ${mapped.reason}`);
+    return "noop-event";
+  }
+
+  if (!deps.reviewDeps) {
+    deps.log(`github trigger ${trigger.id} skipped — consilium loop disabled`);
+    return "skipped";
+  }
+
+  const projectId = trigger.projectId;
+  if (!projectId) {
+    deps.log(`github trigger ${trigger.id} skipped — trigger has no projectId`);
+    return "skipped";
+  }
+
+  // The loop template (embedded in the github config) supplies the TARGET repo. A
+  // github trigger has no watchPath to derive it from, so repoPath is REQUIRED; the
+  // factory re-validates it against the fail-closed allowlist + the project's
+  // workspaces. The action.preset is IGNORED — the event mapping chooses the preset.
+  const config = trigger.config as GitHubEventTriggerConfig;
+  const action = config.action;
+  const repoPath = action?.repoPath;
+  if (!repoPath) {
+    deps.log(`github trigger ${trigger.id} skipped — loop template has no repoPath`);
+    return "skipped";
+  }
+
+  const { preset, ref, baselineCommit, eventLabel } = mapped.mapping;
+
+  // T1/G1: the UNTRUSTED event label (PR #N: title) enters the objective ONLY via the
+  // sanitized engineerInstruction/objectiveExtra seam (interpolate `${event}` into the
+  // operator instruction when present, else pass the bare label). The factory
+  // control-strips + byte-clamps + fences it — same discipline as the file_change path.
+  const engineerInstruction = interpolateEvent(action?.engineerInstruction, eventLabel);
+  const objectiveExtra = engineerInstruction ? undefined : eventLabel;
+
+  return launchReviewWithDedup(deps, trigger, {
+    projectId,
+    repoPath,
+    preset: preset as ConsiliumReviewPreset,
+    ref,
+    baselineCommit,
+    engineerInstruction,
+    objectiveExtra,
+    // §6: a human passport label so #457 shows "fired by github trigger: PR #N".
+    eventSummary: eventLabel,
+    payload,
+  });
 }

@@ -46,10 +46,23 @@ export function isTriggerFormValid(input: {
     return watchPath.trim().length > 0 && preset.length > 0;
   }
   if (type === "github_event") {
-    return ghRepo.trim().length > 0 && ghEvents.length > 0;
+    // T1-full: a github trigger fires a consilium loop, so it needs a target repo
+    // (the loop template's repoPath) in ADDITION to the repo/events filter. Without
+    // a repoPath the received events would be recorded but never launch a review.
+    return ghRepo.trim().length > 0 && ghEvents.length > 0 && repoPath.trim().length > 0;
   }
   return true; // webhook
 }
+
+/**
+ * Human summary of which consilium loop each github event launches — shown in the
+ * form so the operator knows what a subscription actually does. Events not listed
+ * here are received + acknowledged (200) but launch nothing.
+ */
+export const GITHUB_EVENT_MAPPINGS: ReadonlyArray<{ event: string; effect: string }> = [
+  { event: "pull_request (opened / synchronize / reopened)", effect: "diff-PR review of the PR head vs its base" },
+  { event: "push to the default branch", effect: "post-merge review of the merged diff" },
+];
 
 /**
  * Whether the "Add Trigger" button should be enabled: the project must have at
