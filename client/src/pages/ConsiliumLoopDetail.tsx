@@ -43,6 +43,13 @@ import {
   ShieldAlert,
   BookOpen,
   Gavel,
+  Rocket,
+  Users,
+  Cpu,
+  Wrench,
+  FlaskConical,
+  GitBranch,
+  Radio,
 } from "lucide-react";
 import {
   useConsiliumLoop,
@@ -69,6 +76,8 @@ import {
   type ExecutionWorkerStatus,
   type ExecutionSkillCapability,
   type ExecutionCriterionMethod,
+  type LoopComposition,
+  type CompositionRole,
 } from "@/hooks/use-consilium-loops";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
@@ -1510,6 +1519,310 @@ function PlannedArchetypeCard({
 
 // ─── Page ───────────────────────────────────────────────────────────────────
 
+// ─── GAP 1: Launch passport ──────────────────────────────────────────────────
+//
+// HOW this loop was launched, consolidated into one card: the review preset
+// (server-recovered from the group name, via `composition`), createdAt/createdBy,
+// the target repoPath + reviewRef, the round budget, and the optional human
+// engineer instruction. Fields the loop already carried were scattered across
+// "Key facts"; this makes the launch context first-class + legible.
+//
+// SECURITY: `engineerInstruction` is UNTRUSTED human text — rendered as INERT
+// React text (never dangerouslySetInnerHTML). `createdBy` is server-masked for a
+// non-admin (absent ⇒ "hidden").
+
+function fmtRelative(raw: string | Date | null | undefined): { rel: string; abs: string } | null {
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return { rel: formatDistanceToNow(d, { addSuffix: true }), abs: d.toLocaleString() };
+}
+
+function LaunchPassportCard({ loop }: { loop: ConsiliumLoopDetailRow }) {
+  const created = fmtRelative(loop.createdAt);
+  const preset = loop.composition?.preset ?? null;
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Rocket className="h-4 w-4 text-primary" aria-hidden="true" />
+          Launch
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <dl className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+          <Fact label="Preset">
+            {preset ? (
+              <span className="font-mono text-xs">{preset}</span>
+            ) : (
+              <span className="text-muted-foreground">—</span>
+            )}
+          </Fact>
+          <Fact label="Max rounds">
+            <span className="tabular-nums">{loop.maxRounds}</span>
+          </Fact>
+          <Fact label="Created">
+            {created ? (
+              <span className="text-xs text-muted-foreground" title={created.abs}>
+                {created.rel}
+              </span>
+            ) : (
+              <span className="text-muted-foreground">—</span>
+            )}
+          </Fact>
+          <Fact label="Created by">
+            {loop.createdBy ? (
+              <span className="font-mono text-xs">{loop.createdBy}</span>
+            ) : (
+              <span className="text-xs text-muted-foreground">hidden</span>
+            )}
+          </Fact>
+          <Fact label="Review ref">
+            {loop.reviewRef ? (
+              <span className="inline-flex items-center gap-1 font-mono text-xs">
+                <GitBranch className="h-3 w-3 text-muted-foreground" aria-hidden="true" />
+                {loop.reviewRef}
+              </span>
+            ) : (
+              <span className="text-xs text-muted-foreground">working-tree HEAD</span>
+            )}
+          </Fact>
+          <Fact label="Repo">
+            <span className="font-mono text-xs break-all" title={loop.repoPath}>
+              {loop.repoPath}
+            </span>
+          </Fact>
+        </dl>
+        {/* Optional human steering captured at launch — INERT, fenced-as-text. */}
+        {loop.engineerInstruction ? (
+          <div className="space-y-1">
+            <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+              <FileText className="h-3 w-3" aria-hidden="true" />
+              Engineer instruction
+            </p>
+            <p className="whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+              {loop.engineerInstruction}
+            </p>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── GAP 2: Composition ──────────────────────────────────────────────────────
+//
+// WHICH model/tool fills each role of a round — the dispute debaters + judge, the
+// intent planner, the judge-timeout fallback, the SDLC coder, and the Stage-B
+// verifier — plus the active verification config. All server-DECLARED (from the
+// preset panel + config); the models that ACTUALLY ran surface per-participant in
+// each round's Dispute + the live "Current round" section (which read the real
+// execution rows), so this card is labelled to avoid preset-vs-actual drift.
+//
+// SECURITY: every value is a NAME or a BOOLEAN the server allowlisted — no secret
+// reaches the client. Rendered as INERT text; the card has no links.
+
+/** ms → a compact human duration (e.g. "20 min", "5 min", "45s"). */
+function msLabel(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  if (ms >= 60_000) {
+    const min = ms / 60_000;
+    return `${Number.isInteger(min) ? min : min.toFixed(1)} min`;
+  }
+  return `${Math.round(ms / 1000)}s`;
+}
+
+function EnabledPill({ on, label }: { on: boolean; label?: string }) {
+  return (
+    <Badge
+      className={
+        on
+          ? "bg-green-600 text-white gap-1"
+          : "bg-muted text-muted-foreground gap-1"
+      }
+    >
+      {on ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
+      {label ?? (on ? "on" : "off")}
+    </Badge>
+  );
+}
+
+function RoleRow({
+  icon,
+  role,
+  detail,
+}: {
+  icon: React.ReactNode;
+  role: CompositionRole;
+  detail?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2 border-b border-border/40 py-1.5 last:border-b-0">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="text-muted-foreground">{icon}</span>
+        <span className="truncate text-sm">{role.label}</span>
+        {role.enabled === false ? (
+          <Badge className="bg-muted text-muted-foreground text-[10px]">disabled</Badge>
+        ) : null}
+      </div>
+      <div className="flex shrink-0 items-center gap-2 text-right">
+        {detail}
+        {role.tool ? (
+          <span className="text-[11px] text-muted-foreground">{role.tool}</span>
+        ) : null}
+        {role.model ? (
+          <span className="font-mono text-xs">{role.model}</span>
+        ) : !role.tool ? (
+          <span className="text-xs text-muted-foreground">—</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function CompositionCard({ composition }: { composition: LoopComposition }) {
+  const v = composition.verification;
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Cpu className="h-4 w-4 text-primary" aria-hidden="true" />
+          Composition
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-[11px] text-muted-foreground/80">
+          Declared from the review preset + config. The models that actually ran
+          appear per-participant in each round&rsquo;s Dispute (and the live Current
+          round) below.
+        </p>
+
+        {/* Dispute panel + downstream roles → model/tool. */}
+        <div className="rounded-md border px-3">
+          {composition.debaters.map((d, i) => (
+            <RoleRow
+              key={`debater-${i}`}
+              icon={<Users className="h-3.5 w-3.5" />}
+              role={{ ...d, label: `Debater · ${d.label}` }}
+            />
+          ))}
+          <RoleRow icon={<Gavel className="h-3.5 w-3.5" />} role={composition.judge} />
+          <RoleRow
+            icon={<Sparkles className="h-3.5 w-3.5" />}
+            role={composition.planner}
+          />
+          <RoleRow icon={<Wrench className="h-3.5 w-3.5" />} role={composition.coder} />
+          <RoleRow
+            icon={<FlaskConical className="h-3.5 w-3.5" />}
+            role={composition.verifier}
+          />
+          {/* Judge-timeout resilience: a single bounded retry + optional fallback. */}
+          <div className="flex items-center justify-between gap-2 py-1.5">
+            <div className="flex items-center gap-2">
+              <RefreshCw className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className="text-sm">Judge retry</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <EnabledPill on={composition.judgeRetry.enabled} />
+              {composition.judgeRetry.fallbackModel ? (
+                <span className="font-mono text-xs">
+                  {composition.judgeRetry.fallbackModel}
+                </span>
+              ) : (
+                <span className="text-xs text-muted-foreground">same model</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Active verification config — flags + commands + timeouts (no secrets). */}
+        <div className="space-y-2">
+          <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+            <FlaskConical className="h-3 w-3" aria-hidden="true" />
+            Verification config
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <EnabledPill on={v.implementEnabled} label={`skilled implement ${v.implementEnabled ? "on" : "off"}`} />
+            <EnabledPill on={v.perCriterionMethodEnabled} label={`per-criterion ${v.perCriterionMethodEnabled ? "on" : "off"}`} />
+            <EnabledPill on={v.effectiveVerificationEnabled} label={`test-run ${v.effectiveVerificationEnabled ? "on" : "off"}`} />
+            <EnabledPill on={v.finalVerificationEnabled} label={`final verify ${v.finalVerificationEnabled ? "on" : "off"}`} />
+          </div>
+          {/* Surface intent-vs-effective when the operator asked for verification
+              but the sandbox/trusted-repo gate withheld it (degrades to Stage-2a). */}
+          {v.verificationEnabled && !v.effectiveVerificationEnabled ? (
+            <p className="inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400">
+              <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+              verification requested but gated off (no sandbox / trusted-repo ack) — no test runs
+            </p>
+          ) : null}
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
+            <div>
+              <dt className="text-muted-foreground">Test command</dt>
+              <dd className="font-mono break-all">{v.testCommand ?? "auto-detect"}</dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Lint command</dt>
+              <dd className="font-mono break-all">{v.lintCommand ?? "—"}</dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Test timeout</dt>
+              <dd className="tabular-nums">{msLabel(v.testRunTimeoutMs)}</dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">SDLC / AP timeout</dt>
+              <dd className="tabular-nums">{msLabel(v.sdlcTimeoutMs)}</dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Max fix iterations</dt>
+              <dd className="tabular-nums">{v.maxFixIterations}</dd>
+            </div>
+          </dl>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── GAP 3: live "Current round" (the REVIEWING phase is no longer a black box) ─
+//
+// consilium_loop_rounds rows are written at DECIDE time, so while round N is being
+// disputed there is NO round row yet → the per-round Dispute (below) can't render,
+// exactly when the operator is watching. The loop row DOES carry the in-flight
+// iteration (`currentIterationNumber`) the instant it enters REVIEWING, so we point
+// the SAME IterationDetailView (#451) at it: per-participant execution cards with
+// status / model / elapsed / expandable output as they land.
+//
+// Mounted ONLY while `reviewing`/`deciding` (so it unmounts — and stops polling —
+// the moment the round settles into a row); IterationDetailView fetches lazily and
+// polls on its own 3s cadence, so this adds no new polling machinery.
+const LIVE_ROUND_STATES: ReadonlySet<ConsiliumLoopState> = new Set<ConsiliumLoopState>([
+  "reviewing",
+  "deciding",
+]);
+
+function LiveCurrentRound({ loop }: { loop: ConsiliumLoopDetailRow }) {
+  if (!LIVE_ROUND_STATES.has(loop.state)) return null;
+  const iter = loop.currentIterationNumber;
+  if (iter == null || !loop.groupId) return null;
+  return (
+    <Card className="border-blue-500/40">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Radio className="h-4 w-4 animate-pulse text-blue-500" aria-hidden="true" />
+          Current round (live) — {loop.state === "reviewing" ? "reviewing" : "deciding"}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <p className="text-[11px] text-muted-foreground/80">
+          The dispute for round {loop.round || 1} is running (iteration #{iter}). Cards
+          update as each participant completes.
+        </p>
+        <IterationDetailView groupId={loop.groupId} iterationNumber={iter} />
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function ConsiliumLoopDetail() {
   const params = useParams<{ id: string }>();
   const id = params.id;
@@ -1752,6 +2065,9 @@ export default function ConsiliumLoopDetail() {
           />
         )}
 
+        {/* GAP 1 — Launch passport: HOW this loop was launched, consolidated. */}
+        <LaunchPassportCard loop={loop} />
+
         {/* FSM progress */}
         <Card>
           <CardHeader className="pb-3">
@@ -1767,6 +2083,11 @@ export default function ConsiliumLoopDetail() {
             )}
           </CardContent>
         </Card>
+
+        {/* GAP 3 — live "Current round": the in-flight dispute during
+            reviewing/deciding, before any round row exists. Self-gates (renders
+            nothing outside those states) and unmounts to stop polling. */}
+        <LiveCurrentRound loop={loop} />
 
         {/* Key facts */}
         <Card>
@@ -1825,6 +2146,11 @@ export default function ConsiliumLoopDetail() {
             </dl>
           </CardContent>
         </Card>
+
+        {/* GAP 2 — Composition: WHICH model/tool fills each role + the active
+            verification config. Server-derived, read-only, secret-free; absent on
+            a pre-composition backend or a degraded read, so render defensively. */}
+        {loop.composition ? <CompositionCard composition={loop.composition} /> : null}
 
         {/* Rounds */}
         <Card>
