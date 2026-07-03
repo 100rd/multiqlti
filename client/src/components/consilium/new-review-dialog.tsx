@@ -71,13 +71,41 @@ import { apiRequest } from "@/hooks/use-pipeline";
 import { useSkills } from "@/hooks/use-skills";
 import { useToast } from "@/hooks/use-toast";
 
-/** The presets the backend accepts, with human labels (default first). */
+/**
+ * The presets the backend accepts, with human labels + a one-line description of
+ * what each dispute actually reviews (default first). The descriptions mirror the
+ * server's objective headers in review-factory.ts (SDLC_HEADER / DIFF_HEADER /
+ * FULL_VIABILITY_HEADER) so the UI can't drift from what the debaters are told.
+ */
 const PRESETS = [
-  { value: "sdlc-cross-review", label: "SDLC cross-review" },
-  { value: "diff-pr-review", label: "Diff / PR review" },
-  { value: "full-viability", label: "Full viability assessment" },
+  {
+    value: "sdlc-cross-review",
+    label: "SDLC cross-review",
+    description:
+      "Reviews the repo's CURRENT state — correctness, security, design coherence, test coverage, operability.",
+  },
+  {
+    value: "diff-pr-review",
+    label: "Diff / PR review",
+    description:
+      "Reviews a change (baseline..HEAD) — what the diff does: regressions, security, missing tests, blast radius.",
+  },
+  {
+    value: "full-viability",
+    label: "Full viability assessment",
+    description:
+      "Assesses the whole system against its SPEC SET — does the implementation realise the specs, are they buildable.",
+  },
 ] as const;
 type Preset = (typeof PRESETS)[number]["value"];
+
+/** The description for the currently-selected preset (Part A: surface the choice). */
+function presetDescription(value: Preset): string {
+  return PRESETS.find((p) => p.value === value)?.description ?? "";
+}
+
+/** The instruction authoring modes (design: replicate task-groups' two modes). */
+type InstructionMode = "manual" | "magic";
 
 /**
  * Soft cap on the optional engineer instruction (mirrors the server bound). The
@@ -173,8 +201,17 @@ export function NewConsiliumReviewDialog({
   const [maxRounds, setMaxRounds] = useState("1");
   const [baselineCommit, setBaselineCommit] = useState("");
   // Optional free-text instruction (tone / requirements for the evaluation). Sent
-  // as `engineerInstruction` only when non-empty; the server fences it as data.
+  // as `engineerInstruction` only when non-empty; the server fences it as data. This
+  // is ALWAYS the canonical field that is submitted — in "magic" mode it is
+  // pre-filled by a reformulation the operator then reviews/edits (never hidden).
   const [engineerInstruction, setEngineerInstruction] = useState("");
+  // Instruction authoring mode. "manual" = write the instruction verbatim (today's
+  // behavior); "magic" = write a rough want and reformulate it into a proposal.
+  const [instructionMode, setInstructionMode] = useState<InstructionMode>("manual");
+  // Magic mode only: the operator's rough "what I want". UNTRUSTED; sent to the
+  // reformulate endpoint (which fences it as data) — never submitted directly.
+  const [rawWant, setRawWant] = useState("");
+  const [reformulating, setReformulating] = useState(false);
   // Optional operator-selected skills whose directives extend the instruction. Sent
   // as `skillIds` (order = priority) only when non-empty; capped at MAX_REVIEW_SKILLS.
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
@@ -287,6 +324,49 @@ export function NewConsiliumReviewDialog({
     if (!known) setRepoPath(wsList[0]?.path ?? "");
   };
 
+  // Magic mode: reformulate the rough want into a PROPOSED instruction. A manual
+  // action only (never fires on keystroke). The proposal lands in the editable
+  // engineerInstruction textarea for the operator to review + tweak; it is NOT
+  // auto-submitted. Transparency by design — magic is a pre-fill, not a hidden
+  // transform of what gets sent.
+  const handleReformulate = async () => {
+    const want = rawWant.trim();
+    if (!want) return;
+    const path = repoPath.trim();
+    if (!path) {
+      toast({ title: "Pick a repository first", variant: "destructive" });
+      return;
+    }
+    try {
+      setReformulating(true);
+      const res = await apiRequest(
+        "POST",
+        "/api/consilium-reviews/reformulate-instruction",
+        { rawWant: want, repoPath: path, preset },
+      );
+      const proposed =
+        res && typeof res === "object" && typeof (res as { proposedInstruction?: unknown }).proposedInstruction === "string"
+          ? (res as { proposedInstruction: string }).proposedInstruction
+          : "";
+      if (!proposed) {
+        toast({ title: "No proposal returned", description: "Try again or write the instruction manually.", variant: "destructive" });
+        return;
+      }
+      // Land the proposal in the editable instruction field. The operator reviews /
+      // edits it before submitting; the FINAL textarea value is what's sent.
+      setEngineerInstruction(proposed);
+      toast({ title: "Proposed instruction ready", description: "Review and edit it below before starting the review." });
+    } catch (e) {
+      toast({
+        title: "Reformulation failed",
+        description: e instanceof Error ? e.message : undefined,
+        variant: "destructive",
+      });
+    } finally {
+      setReformulating(false);
+    }
+  };
+
   const handleSubmit = async () => {
     const path = repoPath.trim();
     if (!path) return;
@@ -363,6 +443,9 @@ export function NewConsiliumReviewDialog({
           <DialogTitle>New consilium review</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 py-4">
+          {/* PRESET — the review "shape". Prominent, with a one-line description of
+              each option in the dropdown AND a live description of the current choice
+              below the control, so the operator always sees WHAT they picked. */}
           <div className="space-y-2">
             <Label>Preset</Label>
             <Select value={preset} onValueChange={(v) => setPreset(v as Preset)}>
@@ -372,11 +455,20 @@ export function NewConsiliumReviewDialog({
               <SelectContent>
                 {PRESETS.map((p) => (
                   <SelectItem key={p.value} value={p.value}>
-                    {p.label}
+                    <span className="flex flex-col">
+                      <span className="font-medium">{p.label}</span>
+                      <span className="text-xs text-muted-foreground">{p.description}</span>
+                    </span>
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="new-review-preset-description"
+            >
+              {presetDescription(preset)}
+            </p>
           </div>
 
           <div className="space-y-2">
@@ -506,12 +598,84 @@ export function NewConsiliumReviewDialog({
 
           {/* Optional free-text instruction for the evaluators — tone, emphasis,
               acceptance bar. Sent as `engineerInstruction`; the server fences it
-              as data and bounds the length. */}
+              as data and bounds the length. TWO authoring modes (mirrors the old
+              task-group flow): MANUAL writes it verbatim; MAGIC drafts a rough want
+              and reformulates it into a proposal the operator then reviews + edits.
+              The engineerInstruction textarea is ALWAYS the field that is submitted. */}
           <div className="space-y-2">
             <div className="flex items-baseline justify-between gap-2">
-              <Label htmlFor="new-review-engineer-instruction">
-                Instructions to the engineer{" "}
-                <span className="text-muted-foreground">(tone / requirements for the evaluation)</span>
+              <Label>Instructions to the engineer</Label>
+              {/* Mode toggle — a compact segmented control. Switching does NOT clear
+                  the instruction, so a magic proposal survives a flip to manual. */}
+              <div
+                className="inline-flex overflow-hidden rounded border text-xs"
+                role="tablist"
+                aria-label="Instruction authoring mode"
+                data-testid="new-review-instruction-mode"
+              >
+                {(["manual", "magic"] as InstructionMode[]).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    role="tab"
+                    aria-selected={instructionMode === m}
+                    onClick={() => setInstructionMode(m)}
+                    className={
+                      "px-2.5 py-1 capitalize transition-colors " +
+                      (instructionMode === m
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-muted/50")
+                    }
+                    data-testid={`new-review-instruction-mode-${m}`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* MAGIC mode: the rough want + a manual Reformulate action. No auto-calls
+                on keystroke; the button drives the single reformulation. The proposal
+                lands in the editable instruction textarea below (review + edit before
+                submit) — magic never silently changes what is sent. */}
+            {instructionMode === "magic" && (
+              <div className="space-y-2 rounded border border-dashed p-3">
+                <Label htmlFor="new-review-raw-want" className="text-xs">
+                  What I want{" "}
+                  <span className="text-muted-foreground">(rough — an agent will draft a precise instruction)</span>
+                </Label>
+                <Textarea
+                  id="new-review-raw-want"
+                  value={rawWant}
+                  onChange={(e) => setRawWant(e.target.value)}
+                  placeholder="E.g.: I mostly care that the new auth code is safe and actually tested — be tough on it."
+                  rows={2}
+                  data-testid="new-review-raw-want"
+                />
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs text-muted-foreground">
+                    You review and edit the proposal before it is used.
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={handleReformulate}
+                    disabled={!rawWant.trim() || reformulating}
+                    data-testid="new-review-reformulate"
+                  >
+                    {reformulating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Reformulate
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-baseline justify-between gap-2">
+              <Label htmlFor="new-review-engineer-instruction" className="text-xs text-muted-foreground">
+                {instructionMode === "magic"
+                  ? "Proposed instruction — review & edit before starting"
+                  : "Tone / requirements for the evaluation"}
               </Label>
               <span
                 className={
@@ -528,7 +692,11 @@ export function NewConsiliumReviewDialog({
               id="new-review-engineer-instruction"
               value={engineerInstruction}
               onChange={(e) => setEngineerInstruction(e.target.value)}
-              placeholder="E.g.: evaluate strictly on security; require tests for every P0; keep the tone concise."
+              placeholder={
+                instructionMode === "magic"
+                  ? "The reformulated instruction will appear here — you can edit it freely."
+                  : "E.g.: evaluate strictly on security; require tests for every P0; keep the tone concise."
+              }
               rows={3}
               data-testid="new-review-engineer-instruction"
             />

@@ -400,6 +400,26 @@ export const ConfigSchema = z.object({
         }).default({}),
       }).default({}),
       /**
+       * "Magic mode" instruction authoring (POST /api/consilium-reviews/reformulate-
+       * instruction): a single OUT-OF-BAND gateway call that turns an operator's rough
+       * "what I want" into a proposed engineer instruction, which the operator then
+       * REVIEWS and EDITS before it becomes the review's engineerInstruction. It is a
+       * pre-submit aid, never a hidden transform, and touches NO fs/git. The endpoint
+       * is registered only inside the parent `consiliumLoop.enabled` block; this is the
+       * finer toggle. Uses the SAME gateway path (completeStreaming) direct_llm/planner
+       * use, on an opus-tier model by default (the framing benefits from a capable model).
+       */
+      reformulate: z.object({
+        /** Finer kill-switch: false → the reformulate endpoint returns 409 (manual mode still works). */
+        enabled: z.boolean().default(true),
+        /**
+         * The model slug the reformulator calls. Defaults to an opus-tier slug — the
+         * instruction framing is a low-volume, quality-sensitive one-shot. Must be a
+         * REAL, active subscription-CLI slug (NEVER "mock").
+         */
+        model: z.string().min(1).default("claude-opus"),
+      }).default({}),
+      /**
        * Stage 2a (design §3.C/§4): the SKILLED, archetype-branched implement
        * (develop) phase. When `enabled` is FALSE the loop runs TODAY'S single
        * unskilled coder per action point (byte-for-byte unchanged). When TRUE the
