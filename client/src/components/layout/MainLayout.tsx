@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
+import { useQuery } from "@tanstack/react-query";
 import type { UserRole } from "@shared/types";
 import { PeerStatusBadge } from "@/components/config-sync/PeerStatusBadge";
 import { ProjectSelector } from "@/components/ProjectSelector";
@@ -37,6 +38,14 @@ const ROLE_BADGE: Record<UserRole, { label: string; className: string }> = {
 export default function MainLayout({ children }: MainLayoutProps) {
   const [location, navigate] = useLocation();
   const { user, logout } = useAuth();
+  // Build identity from /api/health (public): version = 1.0.<commit count>, plus short sha.
+  const { data: health } = useQuery<{ version?: string; commit?: string | null }>({
+    queryKey: ["/api/health"],
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+  const version = health?.version && health.version !== "unknown" ? health.version : null;
+  const commit = health?.commit ?? null;
 
   // Detect if we're inside a workspace so we can show the connections sub-item
   const workspaceMatch = location.match(/^\/workspaces\/([^/]+)/);
@@ -183,6 +192,12 @@ export default function MainLayout({ children }: MainLayoutProps) {
           </button>
           <div className="px-3 py-2 text-xs text-muted-foreground flex flex-col gap-1">
             <span className="font-mono text-[10px] uppercase tracking-wider">Status: Air-gapped</span>
+            {version && (
+              <span className="font-mono text-[10px] uppercase tracking-wider">
+                Build: v{version}
+                {commit ? ` · ${commit}` : ""}
+              </span>
+            )}
             <span className="font-mono text-[10px] uppercase tracking-wider text-emerald-500">
               Telemetry: Disabled
             </span>
