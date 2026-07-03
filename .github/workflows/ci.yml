@@ -6,8 +6,52 @@ on:
   pull_request:
     branches: [main]
 
+# Supersede in-progress runs: a newer push to the same PR (github.head_ref) or
+# the same branch/tag (github.ref for push events) cancels the older run, so only
+# the latest commit for a given head keeps running. De-duplication of the
+# push-vs-pull_request pair for one commit is handled by the `guard` job below,
+# not here (they resolve to different groups on purpose).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+# `gh pr list` in the guard job needs read access to pull requests.
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
+  # De-duplicate push + pull_request. The pull_request run is authoritative
+  # ("green CI = merge arbiter"), so a push run is skipped when the branch has an
+  # open PR. push on main always runs (post-merge validation + e2e); pushes to a
+  # branch with no PR still run so you get CI before opening the PR.
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"          # PR run is authoritative
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"          # main push: post-merge + e2e
+          else
+            open=$(gh pr list --repo "${{ github.repository }}" \
+              --head "${{ github.ref_name }}" --state open --json number --jq 'length')
+            if [ "$open" = "0" ]; then
+              echo "run=true" >> "$GITHUB_OUTPUT"         # no PR yet: run push CI
+            else
+              echo "run=false" >> "$GITHUB_OUTPUT"        # PR exists: PR run covers it
+              echo "Skipping push run: branch has an open PR (pull_request run is authoritative)."
+            fi
+          fi
+
   lint-typecheck:
+    needs: guard
+    if: needs.guard.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,6 +63,8 @@ jobs:
       - run: npm run check
 
   unit-integration:
+    needs: guard
+    if: needs.guard.outputs.run == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -35,6 +81,8 @@ jobs:
         continue-on-error: true
 
   helm-validate:
+    needs: guard
+    if: needs.guard.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,8 +108,9 @@ jobs:
         run: helm template multiqlti helm/multiqlti -f helm/multiqlti/values-prod.yaml --set image.repository=test/multiqlti > /dev/null
 
   e2e:
+    needs: guard
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: needs.guard.outputs.run == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     services:
       postgres:
         image: postgres:16

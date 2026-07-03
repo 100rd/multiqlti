@@ -5,6 +5,12 @@ on:
     - cron: "0 3 * * *"
   workflow_dispatch:
 
+# Serialize nightly runs — a manual dispatch won't stack on top of a scheduled
+# one. Don't cancel an in-flight nightly (the full suite/e2e is worth finishing).
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
 jobs:
   nightly-full:
     runs-on: ubuntu-latest
