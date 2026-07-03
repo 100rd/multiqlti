@@ -1605,6 +1605,41 @@ function LaunchPassportCard({ loop }: { loop: ConsiliumLoopDetailRow }) {
             </p>
           </div>
         ) : null}
+        {/* Stage 2 — the operator SKILLS whose directives extended the instruction.
+            Applied skills render as solid badges; any skill DROPPED WHOLE to fit the
+            byte budget renders muted with a note (it never truncated mid-skill). */}
+        {loop.appliedSkills && loop.appliedSkills.length > 0 ? (
+          <div className="space-y-1.5">
+            <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+              <Wrench className="h-3 w-3" aria-hidden="true" />
+              Applied skills
+            </p>
+            <div className="flex flex-wrap gap-1.5" data-testid="passport-applied-skills">
+              {loop.appliedSkills.map((s) =>
+                s.dropped ? (
+                  <Badge
+                    key={s.id}
+                    variant="outline"
+                    className="text-[11px] text-muted-foreground line-through"
+                    title="Dropped to fit the instruction size budget — not applied"
+                  >
+                    {s.name}
+                  </Badge>
+                ) : (
+                  <Badge key={s.id} variant="secondary" className="text-[11px]">
+                    {s.name}
+                  </Badge>
+                ),
+              )}
+            </div>
+            {loop.appliedSkills.some((s) => s.dropped) ? (
+              <p className="text-[11px] text-muted-foreground">
+                Struck-through skills were dropped whole to fit the instruction size
+                budget (never truncated mid-skill).
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );

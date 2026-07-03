@@ -42,6 +42,11 @@ const CreateReviewSchema = z.object({
   // factory's OBJECTIVE_EXTRA_MAX_BYTES (8000) so a too-long body is a clean 400
   // here rather than a silent truncation downstream.
   engineerInstruction: z.string().max(8000).optional(),
+  // Stage 2 (skills extend the instruction): OPTIONAL operator-selected skill ids
+  // whose directives are APPENDED to the engineerInstruction. Bounded to 5 (>5 is a
+  // clean 400 here) and each id length-clamped. The factory resolves them
+  // PROJECT-SCOPED — a foreign/unknown id is a 400 naming the offending id.
+  skillIds: z.array(z.string().min(1).max(200)).max(5).optional(),
 });
 
 export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliumReviewDeps): void {
@@ -64,6 +69,8 @@ export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliu
           ref: body.ref,
           // Stage 1 (§5): threads to the factory objectiveExtra (sanitized) + persists.
           engineerInstruction: body.engineerInstruction,
+          // Stage 2: operator skill ids — resolved + appended by the factory.
+          skillIds: body.skillIds,
         });
         return res.status(201).json(loop);
       } catch (err) {
@@ -73,6 +80,13 @@ export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliu
         // an opaque "invalid" (the path is the user's own input, not an fs leak).
         if (/baselineCommit/i.test(message)) {
           return res.status(400).json({ error: "baselineCommit must be a 7–64 char hex commit SHA" });
+        }
+        // Stage 2: an unknown/foreign skill id (the factory resolves skills
+        // PROJECT-SCOPED). Surface the factory message VERBATIM — it names the
+        // offending id (the caller's own input, not an fs leak) so the failure is
+        // actionable ("skill \"<id>\" was not found in this project").
+        if (message.includes("[skill-not-found]")) {
+          return res.status(400).json({ error: message.replace("[skill-not-found] ", "") });
         }
         // The factory STRICT-validates the optional branch/ref (ref-validator.ts)
         // and throws INVALID_REF_MESSAGE on a bad one — surface a clear 400 (the

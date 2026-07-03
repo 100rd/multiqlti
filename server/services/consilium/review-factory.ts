@@ -67,7 +67,7 @@ import { readdirSync, readFileSync, statSync, type Dirent } from "fs";
 import { basename, join } from "path";
 import simpleGit from "simple-git";
 import type { IStorage } from "../../storage.js";
-import type { InsertConsiliumLoop, ConsiliumLoopRow } from "@shared/schema";
+import type { InsertConsiliumLoop, ConsiliumLoopRow, Skill, AppliedSkillRef } from "@shared/schema";
 import type { ConsiliumReviewPreset } from "@shared/types";
 import type { TaskOrchestrator, CreateTaskParam } from "../task-orchestrator.js";
 import type { ConsiliumLoopController } from "./consilium-loop-controller.js";
@@ -82,6 +82,21 @@ import { validateReviewRef } from "./ref-validator.js";
 const INPUT_CAP_BYTES = 50_000;
 /** Hard byte cap on UNTRUSTED caller text (a changed-file path or a diff blob). */
 const OBJECTIVE_EXTRA_MAX_BYTES = 8_000;
+/**
+ * Byte cap on the COMBINED engineer-instruction + appended skill directives
+ * (Stage 2 — skills extend the loop's engineer instruction).
+ *
+ * DELIBERATELY tied to `OBJECTIVE_EXTRA_MAX_BYTES`: the combined text is fed to the
+ * dispute through the SAME `objectiveExtra` seam, which `untrustedExtraBlock`
+ * clamps to `OBJECTIVE_EXTRA_MAX_BYTES`. If the combined text exceeded that clamp,
+ * the downstream clamp would slice it — potentially MID-SKILL — with no record of
+ * what was lost. So we keep the combined budget == the downstream clamp and, when
+ * the budget is tight, drop WHOLE skills (lowest-priority-last) here instead, which
+ * is auditable (recorded on the loop) and never truncates a skill mid-block.
+ */
+const COMBINED_INSTRUCTION_MAX_BYTES = OBJECTIVE_EXTRA_MAX_BYTES;
+/** Max number of skills a single review may layer onto its engineer instruction. */
+export const MAX_REVIEW_SKILLS = 5;
 /** Single-line clamp for the (server-derived) repo basename in the group name. */
 const GROUP_NAME_BASENAME_MAX = 120;
 /** Review-only default: one round, no DEV handoff (overridable per call). */
@@ -307,6 +322,137 @@ function untrustedExtraBlock(objectiveExtra: string | undefined): string {
     fence +
     note
   );
+}
+
+// ─── Skill-directive composition (Stage 2 — skills extend the instruction) ───
+
+/** One resolved skill's contribution to the instruction extension. */
+export interface SkillDirective {
+  /** The skills-table row id (for provenance). */
+  id: string;
+  /** The skill name (rendered as the directive sub-heading + provenance label). */
+  name: string;
+  /** The directive body: the skill's systemPromptOverride, else its description. */
+  text: string;
+}
+
+/** The result of composing an engineer instruction with skill directives. */
+export interface ComposedInstruction {
+  /**
+   * The combined text (engineer instruction + appended skill directives), clamped
+   * to fit `COMBINED_INSTRUCTION_MAX_BYTES`. `undefined` ⇒ nothing to feed (no
+   * instruction and no applied skills). When `skills` was empty this is the
+   * ORIGINAL instruction, byte-for-byte (no-skill loops are unchanged).
+   */
+  combined: string | undefined;
+  /** Skills whose FULL directive block was included, in priority order. */
+  appliedSkills: AppliedSkillRef[];
+  /** Skills DROPPED WHOLE (lowest-priority-last) to fit the byte budget. */
+  droppedSkills: AppliedSkillRef[];
+}
+
+/** Header that separates the human instruction from the appended skill directives. */
+const SKILL_DIRECTIVES_HEADER = "## Skill directives";
+
+/**
+ * Append operator-selected SKILL directives to the (optional) human engineer
+ * instruction, under a hard byte budget. PURE (no I/O) so the byte-clamp / drop
+ * logic is unit-testable in isolation.
+ *
+ * Format (delimited so a reviewer/model sees exactly what each skill contributed):
+ *
+ *   <engineer instruction>
+ *
+ *   ## Skill directives
+ *
+ *   ### <skill name>
+ *   <skill text>
+ *
+ *   ### <next skill name>
+ *   <next skill text>
+ *
+ * Budget: the WHOLE combined string is kept <= `maxBytes`
+ * (`COMBINED_INSTRUCTION_MAX_BYTES`, itself == the downstream `untrustedExtraBlock`
+ * clamp) so nothing is truncated MID-SKILL further down the pipe. When the budget
+ * is tight we DROP WHOLE skills, lowest-priority-last: skills are processed in the
+ * given order (highest priority first) and, the moment one does not fit, it AND
+ * every skill after it are dropped — a strict prefix keeps, suffix drops. The
+ * instruction itself is always kept (it already passed the route's own length cap).
+ *
+ * Back-compat: an EMPTY `skills` list returns the original instruction unchanged
+ * (byte-identical), so loops launched WITHOUT skills produce the exact same
+ * objective as before. If skills were supplied but NONE fit (a maxed-out
+ * instruction), we return the instruction unchanged too (never a dangling header).
+ */
+export function composeInstructionWithSkills(
+  engineerInstruction: string | undefined,
+  skills: SkillDirective[],
+  maxBytes: number = COMBINED_INSTRUCTION_MAX_BYTES,
+): ComposedInstruction {
+  // No skills ⇒ byte-identical to the pre-skills behavior (critical for the
+  // no-regression guarantee on instruction-only loops).
+  if (skills.length === 0) {
+    return { combined: engineerInstruction, appliedSkills: [], droppedSkills: [] };
+  }
+
+  const base = engineerInstruction ?? "";
+  const headerPart = (base.length > 0 ? "\n\n" : "") + SKILL_DIRECTIVES_HEADER;
+  let used = Buffer.byteLength(base + headerPart, "utf8");
+
+  const appliedSkills: AppliedSkillRef[] = [];
+  const droppedSkills: AppliedSkillRef[] = [];
+  let blocks = "";
+  let stopped = false;
+
+  for (const skill of skills) {
+    const text = (skill.text ?? "").trim();
+    const block = `\n\n### ${skill.name}\n${text}`;
+    const blockBytes = Buffer.byteLength(block, "utf8");
+    // Strict priority: once a skill overflows the budget, it AND every lower-
+    // priority skill after it are dropped WHOLE (never partially embedded).
+    if (!stopped && used + blockBytes <= maxBytes) {
+      blocks += block;
+      used += blockBytes;
+      appliedSkills.push({ id: skill.id, name: skill.name });
+    } else {
+      stopped = true;
+      droppedSkills.push({ id: skill.id, name: skill.name, dropped: true });
+    }
+  }
+
+  // Nothing fit (e.g. a budget-filling instruction) ⇒ keep the instruction as-is
+  // rather than emitting a header with no directives under it.
+  if (appliedSkills.length === 0) {
+    return { combined: engineerInstruction, appliedSkills: [], droppedSkills };
+  }
+
+  return { combined: base + headerPart + blocks, appliedSkills, droppedSkills };
+}
+
+/**
+ * Resolve the caller-supplied `skillIds` into ordered {@link SkillDirective}s using
+ * the PROJECT-SCOPED storage (`storage.getSkill` filters by the caller's ALS
+ * project, so a skill id belonging to ANOTHER project resolves to `undefined` and
+ * is rejected — no cross-tenant leak). An unknown/foreign id THROWS with the
+ * offending id (the route maps it to a 400). Preserves the caller's order (== skill
+ * priority for the drop-whole-skill budgeting).
+ */
+async function resolveSkillDirectives(
+  storage: IStorage,
+  skillIds: readonly string[],
+): Promise<SkillDirective[]> {
+  const directives: SkillDirective[] = [];
+  for (const id of skillIds) {
+    const row: Skill | undefined = await storage.getSkill(id);
+    if (!row) {
+      // The id is the caller's own input (not an fs path) — safe to echo so the
+      // route can surface an actionable 400 naming the offending id.
+      throw new Error(`[skill-not-found] skill "${id}" was not found in this project`);
+    }
+    const text = (row.systemPromptOverride ?? "").trim() || (row.description ?? "").trim();
+    directives.push({ id: row.id, name: row.name, text });
+  }
+  return directives;
 }
 
 // ─── Spec-set embedding (full-viability) ────────────────────────────────────
@@ -981,6 +1127,16 @@ export interface CreateConsiliumReviewParams {
    */
   engineerInstruction?: string;
   /**
+   * Stage 2 (skills extend the instruction): OPTIONAL operator-selected skill ids
+   * (<= MAX_REVIEW_SKILLS). Each is resolved PROJECT-SCOPED (`storage.getSkill`
+   * under the caller's ALS — a foreign id throws, no cross-tenant leak) and its
+   * directive (systemPromptOverride, else description) is APPENDED to
+   * `engineerInstruction` under a byte budget (whole skills dropped, never
+   * truncated mid-skill). The applied/dropped provenance is persisted on the loop's
+   * `appliedSkills`. Absent/empty ⇒ objective is byte-identical to a no-skills loop.
+   */
+  skillIds?: string[];
+  /**
    * BRANCH-targeted review: an optional git ref (branch name / revision) the
    * review targets. STRICT-validated here (ref-validator.ts) before it reaches
    * git; persisted as the loop's `reviewRef`. Absent/null ⇒ working-tree HEAD
@@ -1087,11 +1243,28 @@ export async function createConsiliumReview(
   const reviewRef =
     params.ref === undefined || params.ref === null ? null : validateReviewRef(params.ref);
 
-  // Stage 1 (§5): the human "engineer instruction" feeds the dispute via the SAME
-  // sanitized `objectiveExtra` seam. Precedence: an explicit engineerInstruction
-  // (human route) wins over objectiveExtra (file-change trigger); only one is set in
-  // practice. Both untrusted ⇒ control-stripped + byte-clamped + fenced (S2).
-  const objectiveExtra = params.engineerInstruction ?? params.objectiveExtra;
+  // Stage 2 (skills extend the instruction): resolve the OPTIONAL operator skill
+  // ids PROJECT-SCOPED (a foreign/unknown id throws here → 400, before any
+  // persistence) and APPEND their directives to the engineer instruction under a
+  // byte budget (whole skills dropped lowest-priority-last; never truncated
+  // mid-skill). `appliedSkills` (applied + dropped provenance) is persisted on the
+  // loop; the COMBINED text rides the SAME untrusted `objectiveExtra` seam so it
+  // gets the identical control-strip + byte-clamp + fence the raw instruction gets.
+  // Empty/absent skillIds ⇒ composed === the original instruction (byte-identical).
+  const skillIds = params.skillIds ?? [];
+  const composed = composeInstructionWithSkills(
+    params.engineerInstruction,
+    skillIds.length > 0 ? await resolveSkillDirectives(storage, skillIds) : [],
+  );
+  const appliedSkills: AppliedSkillRef[] | null =
+    skillIds.length > 0 ? [...composed.appliedSkills, ...composed.droppedSkills] : null;
+
+  // The human "engineer instruction" (now possibly skill-extended) feeds the
+  // dispute via the SAME sanitized `objectiveExtra` seam. Precedence: an explicit
+  // (skill-extended) engineerInstruction (human route) wins over objectiveExtra
+  // (file-change trigger); only one is set in practice. Both untrusted ⇒
+  // control-stripped + byte-clamped + fenced (S2).
+  const objectiveExtra = composed.combined ?? params.objectiveExtra;
 
   // S2: WITH a ref, read repo content AT THE REF via git (no working tree);
   // otherwise the filesystem read. The diff side resolves the ref in diff-context.
@@ -1125,8 +1298,12 @@ export async function createConsiliumReview(
     lastReviewedCommit: baseline,
     // BRANCH-targeted review: the chosen ref (null ⇒ working-tree HEAD).
     reviewRef,
-    // Stage 1 (§5): persist the human engineer instruction INERT for the planner.
+    // Stage 1 (§5): persist the RAW human engineer instruction INERT for the
+    // planner (the skill-extended COMBINED text only feeds the objective — the
+    // planner reads the operator's own words, unmixed with skill directives).
     engineerInstruction: params.engineerInstruction ?? null,
+    // Stage 2: provenance of the applied (+ any dropped) skills; null ⇒ no skills.
+    appliedSkills,
     createdBy: params.createdBy,
   } as InsertConsiliumLoop);
 

@@ -1642,6 +1642,8 @@ export class MemStorage implements IStorage {
       reviewRef: data.reviewRef ?? null,
       // Stage 1: engineer instruction + archetype planner columns (all nullable).
       engineerInstruction: data.engineerInstruction ?? null,
+      // Stage 2: applied-skill provenance (nullable jsonb).
+      appliedSkills: data.appliedSkills ?? null,
       archetype: data.archetype ?? null,
       archetypeSource: data.archetypeSource ?? null,
       archetypeRationale: data.archetypeRationale ?? null,

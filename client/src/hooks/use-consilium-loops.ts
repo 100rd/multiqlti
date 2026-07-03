@@ -18,6 +18,7 @@ import type {
   ConsiliumLoopState,
   ConsiliumLoopRow,
   ConsiliumLoopRoundRow,
+  AppliedSkillRef,
 } from "@shared/schema";
 import type {
   Archetype,
@@ -227,6 +228,13 @@ export type ConsiliumLoopDetail = ConsiliumLoopListItem & {
   archetypeParams?: Record<string, string> | null;
   /** The optional human instruction captured at review creation (INERT text). */
   engineerInstruction?: string | null;
+  /**
+   * Stage 2 (skills extend the instruction): provenance of the operator skills whose
+   * directives extended the engineer instruction at launch. Each entry carries the
+   * skill `id` + `name`; a `dropped: true` entry was resolved but dropped WHOLE to
+   * fit the byte budget (never truncated mid-skill). Absent/null ⇒ no skills applied.
+   */
+  appliedSkills?: AppliedSkillRef[] | null;
   /**
    * Observability (GAP 2): the computed role→model/tool composition + verification
    * config. Server-derived, read-only, secret-free. Absent on a pre-composition

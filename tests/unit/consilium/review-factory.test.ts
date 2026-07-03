@@ -22,11 +22,13 @@ import {
   buildCrossReviewTasks,
   composeObjective,
   composeObjectiveAtRef,
+  composeInstructionWithSkills,
   createConsiliumReview,
   PRESET_PANELS,
   DEFAULT_REVIEW_MAX_ROUNDS,
   type CreateConsiliumReviewDeps,
   type SpecGitClient,
+  type SkillDirective,
 } from "../../../server/services/consilium/review-factory.js";
 
 // ─── 1. The 5-task DAG ────────────────────────────────────────────────────────
@@ -228,7 +230,14 @@ describe("createConsiliumReview — allowlist gate, baseline threading, rounds",
   // workspacePaths defaults to the allowlist roots so a repo that is globally
   // allowlisted is ALSO a project workspace unless a test deliberately diverges
   // them (MED-3 intersects the two boundaries).
-  function makeDeps(allowedRepoPaths: string[], workspacePaths: string[] = allowedRepoPaths) {
+  function makeDeps(
+    allowedRepoPaths: string[],
+    workspacePaths: string[] = allowedRepoPaths,
+    // Stage 2: the PROJECT-SCOPED skills the factory can resolve. `getSkill(id)`
+    // returns the matching row or undefined (a foreign/unknown id — the production
+    // withProject scoping makes a cross-project id resolve to undefined too).
+    skills: Array<{ id: string; name: string; systemPromptOverride?: string; description?: string }> = [],
+  ) {
     const createTaskGroup = vi.fn().mockResolvedValue({ group: { id: "g1" }, tasks: [] });
     const createLoop = vi
       .fn()
@@ -239,13 +248,15 @@ describe("createConsiliumReview — allowlist gate, baseline threading, rounds",
     const getWorkspaces = vi
       .fn()
       .mockResolvedValue(workspacePaths.map((p, i) => ({ id: `ws${i}`, name: `ws${i}`, path: p })));
+    const skillsById = new Map(skills.map((s) => [s.id, s]));
+    const getSkill = vi.fn(async (id: string) => skillsById.get(id));
     const deps = {
-      storage: { createLoop, getWorkspaces },
+      storage: { createLoop, getWorkspaces, getSkill },
       orchestrator: { createTaskGroup },
       controller: { start },
       config: () => ({ pipeline: { consiliumLoop: { allowedRepoPaths } } }),
     } as unknown as CreateConsiliumReviewDeps;
-    return { deps, createTaskGroup, createLoop, start, getWorkspaces };
+    return { deps, createTaskGroup, createLoop, start, getWorkspaces, getSkill };
   }
 
   it("REJECTS a repoPath outside the allowlist (S1, fail-closed, never trusts the caller)", async () => {
@@ -446,6 +457,96 @@ describe("createConsiliumReview — allowlist gate, baseline threading, rounds",
     expect(createLoop).toHaveBeenCalledTimes(2);
     // The factory deps don't even expose getLoops — proof the factory does no dedup read.
     expect((deps.storage as unknown as Record<string, unknown>).getLoops).toBeUndefined();
+  });
+
+  // ─── Stage 2: skills extend the engineer instruction ────────────────────────
+
+  it("resolves skillIds PROJECT-SCOPED, appends their directives to the objective (fenced), and persists provenance", async () => {
+    const { deps, createTaskGroup, createLoop, getSkill } = makeDeps([allowed], [allowed], [
+      { id: "sk-1", name: "security-first", systemPromptOverride: "Weight every auth boundary as P0." },
+      { id: "sk-2", name: "tests-required", description: "Require a failing test for each finding." },
+    ]);
+    await createConsiliumReview(deps, {
+      projectId: "p1",
+      repoPath: allowed,
+      preset: "sdlc-cross-review",
+      createdBy: "u1",
+      engineerInstruction: "Focus on the auth refactor.",
+      skillIds: ["sk-1", "sk-2"],
+    });
+    // Resolved via the project-scoped getSkill (not a global read).
+    expect(getSkill).toHaveBeenCalledWith("sk-1");
+    expect(getSkill).toHaveBeenCalledWith("sk-2");
+
+    // The combined text rides the UNTRUSTED-extra seam into the objective: the
+    // instruction, the delimiter, both skill names, and both directive bodies.
+    const objective = createTaskGroup.mock.calls[0][0].input as string;
+    expect(objective).toContain("UNTRUSTED");
+    expect(objective).toContain("Focus on the auth refactor.");
+    expect(objective).toContain("## Skill directives");
+    expect(objective).toContain("### security-first");
+    expect(objective).toContain("Weight every auth boundary as P0.");
+    expect(objective).toContain("### tests-required");
+    // sk-2 has no override → falls back to its description.
+    expect(objective).toContain("Require a failing test for each finding.");
+
+    // Provenance persisted on the loop (order preserved, none dropped).
+    const loopArg = createLoop.mock.calls[0][0];
+    expect(loopArg.appliedSkills).toEqual([
+      { id: "sk-1", name: "security-first" },
+      { id: "sk-2", name: "tests-required" },
+    ]);
+    // The RAW instruction (unmixed with skill directives) is what the planner reads.
+    expect(loopArg.engineerInstruction).toBe("Focus on the auth refactor.");
+  });
+
+  it("REJECTS an unknown/foreign skill id (naming it) BEFORE any persistence", async () => {
+    const { deps, createTaskGroup, createLoop } = makeDeps([allowed], [allowed], [
+      { id: "sk-1", name: "security-first", systemPromptOverride: "x" },
+    ]);
+    await expect(
+      createConsiliumReview(deps, {
+        projectId: "p1",
+        repoPath: allowed,
+        preset: "sdlc-cross-review",
+        createdBy: "u1",
+        skillIds: ["sk-1", "sk-FOREIGN"],
+      }),
+    ).rejects.toThrow(/\[skill-not-found\].*sk-FOREIGN/);
+    expect(createTaskGroup).not.toHaveBeenCalled();
+    expect(createLoop).not.toHaveBeenCalled();
+  });
+
+  it("no skillIds ⇒ appliedSkills null AND the objective is byte-identical to a no-skills loop (no regression)", async () => {
+    const instruction = "Focus on the auth refactor.";
+    // With skills available but NOT selected, and again with a plain instruction:
+    // both must produce the exact same objective bytes.
+    const a = makeDeps([allowed], [allowed], [
+      { id: "sk-1", name: "security-first", systemPromptOverride: "x" },
+    ]);
+    await createConsiliumReview(a.deps, {
+      projectId: "p1",
+      repoPath: allowed,
+      preset: "sdlc-cross-review",
+      createdBy: "u1",
+      engineerInstruction: instruction,
+    });
+    expect(a.createLoop.mock.calls[0][0].appliedSkills).toBeNull();
+    const withoutSkillsObjective = a.createTaskGroup.mock.calls[0][0].input as string;
+
+    const b = makeDeps([allowed], [allowed]);
+    await createConsiliumReview(b.deps, {
+      projectId: "p1",
+      repoPath: allowed,
+      preset: "sdlc-cross-review",
+      createdBy: "u1",
+      engineerInstruction: instruction,
+      skillIds: [],
+    });
+    const emptySkillIdsObjective = b.createTaskGroup.mock.calls[0][0].input as string;
+    // Byte-identical: an absent/empty skill list changes nothing.
+    expect(emptySkillIdsObjective).toBe(withoutSkillsObjective);
+    expect(b.createLoop.mock.calls[0][0].appliedSkills).toBeNull();
   });
 });
 
@@ -799,5 +900,86 @@ describe("composeObjectiveAtRef — sdlc-cross-review digest reads AT the ref (g
     expect(obj).toMatch(/Consilium diff \/ PR review/);
     expect(obj).not.toMatch(/Repository digest/);
     expect(raw).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Stage 2: composeInstructionWithSkills — pure composition + byte-budget ────
+
+describe("composeInstructionWithSkills — delimiter, byte clamp, drop-whole-skill", () => {
+  const sk = (id: string, name: string, text: string): SkillDirective => ({ id, name, text });
+
+  it("empty skills list returns the instruction UNCHANGED (byte-identical back-compat)", () => {
+    const r = composeInstructionWithSkills("do the thing", []);
+    expect(r.combined).toBe("do the thing");
+    expect(r.appliedSkills).toEqual([]);
+    expect(r.droppedSkills).toEqual([]);
+    // undefined instruction + no skills ⇒ undefined (nothing to feed).
+    expect(composeInstructionWithSkills(undefined, []).combined).toBeUndefined();
+  });
+
+  it("appends skill directives under a clear delimiter, in priority order", () => {
+    const r = composeInstructionWithSkills("base instruction", [
+      sk("a", "alpha", "alpha body"),
+      sk("b", "beta", "beta body"),
+    ]);
+    expect(r.combined).toBe(
+      "base instruction\n\n## Skill directives\n\n### alpha\nalpha body\n\n### beta\nbeta body",
+    );
+    expect(r.appliedSkills).toEqual([
+      { id: "a", name: "alpha" },
+      { id: "b", name: "beta" },
+    ]);
+    expect(r.droppedSkills).toEqual([]);
+  });
+
+  it("with no instruction, the header leads (no dangling blank line)", () => {
+    const r = composeInstructionWithSkills(undefined, [sk("a", "alpha", "alpha body")]);
+    expect(r.combined).toBe("## Skill directives\n\n### alpha\nalpha body");
+  });
+
+  it("DROPS WHOLE skills lowest-priority-last to fit the byte budget (never truncates mid-skill)", () => {
+    // A tiny budget that fits the instruction + header + the FIRST skill only.
+    const first = sk("a", "alpha", "A".repeat(40));
+    const second = sk("b", "beta", "B".repeat(40));
+    const third = sk("c", "gamma", "C".repeat(40));
+    const base = "base";
+    const headerBytes = Buffer.byteLength("base\n\n## Skill directives", "utf8");
+    const firstBlockBytes = Buffer.byteLength("\n\n### alpha\n" + "A".repeat(40), "utf8");
+    // Budget = exactly instruction + header + first skill (second/third can't fit).
+    const budget = headerBytes + firstBlockBytes;
+
+    const r = composeInstructionWithSkills(base, [first, second, third], budget);
+    expect(r.appliedSkills).toEqual([{ id: "a", name: "alpha" }]);
+    expect(r.droppedSkills).toEqual([
+      { id: "b", name: "beta", dropped: true },
+      { id: "c", name: "gamma", dropped: true },
+    ]);
+    // The combined never exceeds the budget and contains ONLY whole skills.
+    expect(Buffer.byteLength(r.combined ?? "", "utf8")).toBeLessThanOrEqual(budget);
+    expect(r.combined).toContain("### alpha");
+    expect(r.combined).not.toContain("### beta");
+    expect(r.combined).not.toContain("### gamma");
+    // The applied skill's body is present IN FULL (not sliced).
+    expect(r.combined).toContain("A".repeat(40));
+  });
+
+  it("strict priority: once a skill overflows, it AND all lower-priority skills drop (no greedy backfill)", () => {
+    // A HUGE second skill that cannot fit, then a tiny third that WOULD fit greedily
+    // — but strict priority drops both once the second overflows.
+    const first = sk("a", "alpha", "a");
+    const huge = sk("b", "beta", "B".repeat(10_000));
+    const tiny = sk("c", "gamma", "c");
+    const r = composeInstructionWithSkills("base", [first, huge, tiny], 200);
+    expect(r.appliedSkills.map((s) => s.id)).toEqual(["a"]);
+    expect(r.droppedSkills.map((s) => s.id)).toEqual(["b", "c"]);
+  });
+
+  it("a budget-filling instruction drops ALL skills and keeps the instruction unchanged (no dangling header)", () => {
+    const big = "X".repeat(300);
+    const r = composeInstructionWithSkills(big, [sk("a", "alpha", "alpha body")], 100);
+    expect(r.combined).toBe(big);
+    expect(r.appliedSkills).toEqual([]);
+    expect(r.droppedSkills).toEqual([{ id: "a", name: "alpha", dropped: true }]);
+    expect(r.combined).not.toContain("## Skill directives");
   });
 });

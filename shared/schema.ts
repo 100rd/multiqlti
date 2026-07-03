@@ -1977,6 +1977,25 @@ export const CONSILIUM_LOOP_TERMINAL_STATES = [
   "cancelled",
 ] as const satisfies readonly ConsiliumLoopState[];
 
+/**
+ * Provenance of ONE operator-selected skill whose directives extended a consilium
+ * loop's engineer instruction (Stage 2 — skills extend the loop's engineer
+ * instruction). Recorded on `consilium_loops.applied_skills` at launch so the
+ * launch passport can show exactly which skills shaped the dispute.
+ *
+ * `dropped: true` marks a skill that WAS resolved (a real, project-scoped row) but
+ * was DROPPED WHOLE — lowest-priority-last — to keep the combined instruction under
+ * the byte budget. It never means "truncated mid-skill" (that never happens): a
+ * skill is either applied in full or dropped in full.
+ */
+export interface AppliedSkillRef {
+  /** The skills-table row id that was selected. */
+  id: string;
+  /** The skill name captured at launch (for a stable label even if the row changes). */
+  name: string;
+  /** True when the skill was dropped WHOLE to fit the byte budget (not applied). */
+  dropped?: boolean;
+}
 
 export const consiliumLoops = pgTable(
   "consilium_loops",
@@ -2002,6 +2021,13 @@ export const consiliumLoops = pgTable(
     // the dispute objective (factory objectiveExtra) AND the planner. UNTRUSTED:
     // fenced-as-data in prompts, inert in storage; never a shell/branch/PR sink.
     engineerInstruction: text("engineer_instruction"),
+    // Stage 2 (0041): provenance of the operator-selected SKILLS whose directives
+    // extended `engineer_instruction` (see review-factory composeInstructionWithSkills).
+    // Nullable jsonb; null ⇒ no skills applied (the objective is byte-identical to the
+    // pre-skills behavior). Each entry carries the skill id + name at launch; a
+    // `dropped: true` entry was resolved but dropped WHOLE to fit the byte budget
+    // (never truncated mid-skill). INERT in storage — display/audit only.
+    appliedSkills: jsonb("applied_skills").$type<AppliedSkillRef[]>(),
     // Stage 1 (0032): intent→archetype planner output / human override. All
     // nullable; written by a PLAIN partial update (NOT casLoopState) so persisting
     // an archetype on a terminal loop never transitions it.
