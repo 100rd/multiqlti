@@ -10,9 +10,13 @@
  * LOCAL UI state (a dismissed set in this component); it hides an item from the
  * current view only and resets on reload — no persistence, no schema change.
  *
- * STATE-BASED, NOT GITHUB-LIVE: the queue reflects each loop's FSM state, not a
- * live GitHub PR fetch — a PR merged/closed directly on GitHub can linger here
- * until the loop's state advances. A one-line note on the page says so.
+ * GITHUB-RECONCILED: each item carries a server-fetched `githubStatus`
+ * (OPEN/DRAFT/MERGED/CLOSED/unknown). Items whose PR is MERGED or CLOSED are moved
+ * out of the active list into a collapsed "Resolved on GitHub — loop state stale"
+ * section (de-emphasized, never hidden — a non-terminal loop over a done PR is itself
+ * worth surfacing). Within a duplicate cluster the live-OPEN PR is elected current
+ * over a newer merged/closed one. `githubStatus:"unknown"` (no auth / GitHub
+ * unreachable) is treated as ACTIVE — we only demote a PR we positively know is done.
  *
  * SECURITY: every loop-derived string (repoPath, prRef, verdictSummary,
  * triggerProvenance) is rendered as INERT React text; the PR link uses
@@ -23,14 +27,22 @@ import { useLocation } from "wouter";
 import { formatDistanceToNow } from "date-fns";
 import {
   GitPullRequest,
+  GitMerge,
   ExternalLink,
   Loader2,
   Layers,
   Check,
   RotateCcw,
+  ChevronRight,
 } from "lucide-react";
 import { usePrQueue } from "@/hooks/use-pr-queue";
-import { clusterPrQueue, type PrQueueItem, type PrQueueCluster } from "@shared/pr-queue";
+import {
+  clusterPrQueue,
+  isResolvedGithubStatus,
+  type PrQueueItem,
+  type PrQueueCluster,
+  type GithubPrStatus,
+} from "@shared/pr-queue";
 import { LoopStateBadge } from "@/components/consilium/loop-state";
 
 /** Last path segment of a repo path, for a compact heading. */
@@ -47,6 +59,51 @@ function whenLabel(ts: string | null | undefined): string {
   } catch {
     return "";
   }
+}
+
+/** Visual style per live GitHub PR status. `unknown`/undefined renders nothing. */
+const GITHUB_STATUS_STYLE: Record<GithubPrStatus, { label: string; className: string; title: string }> = {
+  OPEN: {
+    label: "GitHub: open",
+    className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+    title: "The PR is open on GitHub — loop state is consistent.",
+  },
+  DRAFT: {
+    label: "GitHub: draft",
+    className: "border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400",
+    title: "The PR is still a Draft on GitHub.",
+  },
+  MERGED: {
+    label: "GitHub: merged",
+    className: "border-violet-500/40 bg-violet-500/10 text-violet-600 dark:text-violet-400",
+    title: "The PR is already MERGED on GitHub — this loop's non-terminal state is stale.",
+  },
+  CLOSED: {
+    label: "GitHub: closed",
+    className: "border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-400",
+    title: "The PR was CLOSED on GitHub without merging — this loop's state is stale.",
+  },
+  unknown: {
+    label: "GitHub: unknown",
+    className: "border-border bg-muted/40 text-muted-foreground",
+    title: "Live GitHub status could not be determined (no server-side auth or GitHub unreachable).",
+  },
+};
+
+/** Live GitHub PR status pill. Omitted entirely for a missing status (older wire). */
+function GithubStatusBadge({ status }: { status: GithubPrStatus | null | undefined }) {
+  if (!status) return null;
+  const s = GITHUB_STATUS_STYLE[status];
+  return (
+    <span
+      data-testid="pr-queue-github-status"
+      data-status={status}
+      className={`text-[11px] px-1.5 py-0.5 rounded border ${s.className}`}
+      title={s.title}
+    >
+      {s.label}
+    </span>
+  );
 }
 
 /** Compact "P1·1 P2·2" open-remainder summary; null when nothing is open. */
@@ -76,8 +133,9 @@ function PrCard({
       data-testid="pr-queue-card"
       className="rounded-md border bg-card px-3 py-2.5 space-y-2"
     >
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <LoopStateBadge state={item.state} />
+        <GithubStatusBadge status={item.githubStatus} />
 
         {/* Round n and archetype — quick disambiguators between same-repo runs. */}
         <span className="text-xs text-muted-foreground tabular-nums shrink-0">
@@ -161,13 +219,19 @@ function PrCard({
 function RepoCluster({
   cluster,
   onDismiss,
+  dimmed = false,
 }: {
   cluster: PrQueueCluster;
   onDismiss: (loopId: string) => void;
+  /** Resolved-on-GitHub section: de-emphasize the whole cluster (stale loop state). */
+  dimmed?: boolean;
 }) {
   const superseded = new Set(cluster.supersededLoopIds);
   return (
-    <section data-testid="pr-queue-cluster">
+    <section
+      data-testid="pr-queue-cluster"
+      className={dimmed ? "opacity-60" : undefined}
+    >
       <div className="flex items-baseline gap-2 mb-2 px-1">
         <h2 className="text-sm font-semibold truncate" title={cluster.repoPath}>
           {repoBasename(cluster.repoPath)}
@@ -209,7 +273,20 @@ export default function PrReviewQueue() {
 
   const items = (Array.isArray(data) ? data : []) as PrQueueItem[];
   const visible = items.filter((i) => !dismissed.has(i.loopId));
-  const clusters = useMemo(() => clusterPrQueue(visible), [visible]);
+
+  // Split on LIVE GitHub status: MERGED/CLOSED PRs are "resolved" — their loop is in a
+  // stale non-terminal state, so they leave the active list for a collapsed section.
+  // `unknown`/OPEN/DRAFT stay ACTIVE (we only demote a PR we positively know is done).
+  const { activeClusters, resolvedClusters, resolvedCount } = useMemo(() => {
+    const active = visible.filter((i) => !isResolvedGithubStatus(i.githubStatus));
+    const resolved = visible.filter((i) => isResolvedGithubStatus(i.githubStatus));
+    return {
+      activeClusters: clusterPrQueue(active),
+      resolvedClusters: clusterPrQueue(resolved),
+      resolvedCount: resolved.length,
+    };
+  }, [visible]);
+  const clusters = activeClusters;
   const duplicateCount = clusters.filter((c) => c.duplicate).length;
 
   function dismiss(loopId: string) {
@@ -251,10 +328,12 @@ export default function PrReviewQueue() {
       </header>
 
       <div className="flex-1 overflow-y-auto p-6">
-        {/* Honesty note: the queue reflects loop STATE, not live GitHub PR status. */}
+        {/* Honesty note: status is reconciled with GitHub, best-effort. */}
         <p className="text-[11px] text-muted-foreground/80 mb-4">
-          The queue reflects each loop&apos;s state, not live GitHub PR status. A PR
-          merged or closed directly on GitHub may linger here until its loop advances.
+          Each item is reconciled with its live GitHub PR status. Merged or closed PRs
+          move to the &ldquo;Resolved on GitHub&rdquo; section below (the loop state is
+          stale). When GitHub can&apos;t be reached the status reads
+          &ldquo;unknown&rdquo; and the item stays in the active list.
         </p>
 
         {isLoading && (
@@ -264,7 +343,7 @@ export default function PrReviewQueue() {
           </div>
         )}
 
-        {!isLoading && clusters.length === 0 && (
+        {!isLoading && clusters.length === 0 && resolvedCount === 0 && (
           <div className="rounded-lg border border-dashed border-border py-16 text-center">
             <GitPullRequest className="mx-auto h-8 w-8 text-muted-foreground/50" />
             <p className="mt-3 text-sm text-muted-foreground">No Draft PRs awaiting review</p>
@@ -280,6 +359,28 @@ export default function PrReviewQueue() {
               <RepoCluster key={cluster.repoPath} cluster={cluster} onDismiss={dismiss} />
             ))}
           </div>
+        )}
+
+        {/* Resolved on GitHub — merged/closed PRs whose loop is still non-terminal.
+            Collapsed by default, de-emphasized, but SURFACED (the stale state matters). */}
+        {!isLoading && resolvedCount > 0 && (
+          <details data-testid="pr-queue-resolved" className="mt-8 group">
+            <summary className="flex items-center gap-2 cursor-pointer select-none text-xs text-muted-foreground hover:text-foreground">
+              <ChevronRight className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
+              <GitMerge className="h-3.5 w-3.5" />
+              Already merged/closed on GitHub — loop state stale ({resolvedCount})
+            </summary>
+            <div className="mt-4 space-y-6">
+              {resolvedClusters.map((cluster) => (
+                <RepoCluster
+                  key={cluster.repoPath}
+                  cluster={cluster}
+                  onDismiss={dismiss}
+                  dimmed
+                />
+              ))}
+            </div>
+          </details>
         )}
       </div>
     </div>

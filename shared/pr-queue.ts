@@ -66,6 +66,32 @@ export function isPrBearingLoop(loop: PrBearingLoopLike): boolean {
 }
 
 /**
+ * LIVE GitHub PR status for a queued item's `prRef`, reconciled server-side against
+ * the actual PR (not the loop FSM). `unknown` is the fail-open value: no server-side
+ * GitHub auth, `gh` unreachable/rate-limited/timed-out, or a `prRef` that is not a
+ * recognizable GitHub PR URL. The route NEVER blocks on GitHub — it degrades to
+ * `unknown` rather than failing, so an outage can never take the queue down.
+ *
+ *   OPEN    — PR is open and ready (loop state is consistent).
+ *   DRAFT   — PR is open but still a Draft.
+ *   MERGED  — PR already merged on GitHub; a non-terminal loop state is now STALE.
+ *   CLOSED  — PR closed without merge; a non-terminal loop state is now STALE.
+ *   unknown — could not be determined (see above) — treated as ACTIVE, never resolved.
+ */
+export type GithubPrStatus = "OPEN" | "DRAFT" | "MERGED" | "CLOSED" | "unknown";
+
+/**
+ * A GitHub PR is "resolved" (merged or closed) — i.e. the loop's non-terminal state
+ * is stale relative to GitHub. `unknown`/`OPEN`/`DRAFT`/undefined are ACTIVE: we only
+ * de-emphasize a PR we positively know is done, never one we merely failed to fetch.
+ */
+export function isResolvedGithubStatus(
+  status: GithubPrStatus | null | undefined,
+): boolean {
+  return status === "MERGED" || status === "CLOSED";
+}
+
+/**
  * One PR-bearing loop, shaped for the queue wire (GET /api/pr-queue). A flat list
  * of these is returned by the server; the client clusters it with
  * {@link clusterPrQueue}. All timestamps are ISO strings on the wire.
@@ -92,6 +118,14 @@ export interface PrQueueItem {
    * field is part of the contract for forward-compat and the UI renders it only when present.
    */
   triggerProvenance?: string | null;
+  /**
+   * LIVE GitHub PR status reconciled server-side from `prRef` (see {@link GithubPrStatus}).
+   * `"unknown"` when GitHub could not be reached / no auth / unrecognized ref; the field
+   * may be absent on wires that predate reconciliation (older server) — the client treats
+   * a missing value the same as `"unknown"` (active). MERGED/CLOSED items move to the
+   * collapsed "resolved" section: the loop state is stale but still worth surfacing.
+   */
+  githubStatus?: GithubPrStatus | null;
 }
 
 /**
@@ -129,8 +163,25 @@ function recencyOf(item: PrQueueItem): number {
   return Number.isFinite(t) ? t : 0;
 }
 
-/** Newest first; deterministic loopId tie-break so equal timestamps sort stably. */
+/**
+ * Cluster sort rank: an ACTIVE PR (OPEN/DRAFT/unknown/unset) outranks a RESOLVED
+ * one (MERGED/CLOSED). Lower is "more current". This is what makes a duplicate
+ * cluster elect the live-OPEN PR as `currentLoopId` even when a merged/closed run
+ * is newer — a stale-but-recent merged PR must not shadow the actual open review.
+ */
+function livenessRank(item: PrQueueItem): number {
+  return isResolvedGithubStatus(item.githubStatus) ? 1 : 0;
+}
+
+/**
+ * Current-first ordering within a cluster: live/active before resolved, then newest
+ * first, then a deterministic loopId tie-break so equal timestamps sort stably.
+ * With no `githubStatus` populated every item ranks ACTIVE, so this reduces exactly
+ * to the prior newest-first behavior (backward compatible).
+ */
 function byNewest(a: PrQueueItem, b: PrQueueItem): number {
+  const rank = livenessRank(a) - livenessRank(b);
+  if (rank !== 0) return rank;
   const d = recencyOf(b) - recencyOf(a);
   if (d !== 0) return d;
   return a.loopId < b.loopId ? -1 : a.loopId > b.loopId ? 1 : 0;

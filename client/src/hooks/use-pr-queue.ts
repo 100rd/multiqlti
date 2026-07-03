@@ -3,9 +3,12 @@
  * server route in server/routes/consilium-loops.ts).
  *
  * The endpoint returns a FLAT, newest-first list of PR-bearing consilium loops
- * (loops carrying a Draft PR in a state where it's awaiting review). The page
- * clusters it by repo with the pure `clusterPrQueue` helper (@shared/pr-queue) to
- * surface DUPLICATE runs — several open Draft PRs against the same repo.
+ * (loops carrying a Draft PR in a state where it's awaiting review), each reconciled
+ * server-side with its LIVE GitHub PR status (`githubStatus`: OPEN/DRAFT/MERGED/
+ * CLOSED/unknown — best-effort, "unknown" when GitHub is unreachable/unauthed). The
+ * page clusters it by repo with the pure `clusterPrQueue` helper (@shared/pr-queue)
+ * to surface DUPLICATE runs, and moves MERGED/CLOSED items to a collapsed "resolved"
+ * section (the loop state is stale relative to GitHub).
  *
  * Light 5s poll so a freshly-developed loop appears without a manual refresh — the
  * loop FSM advances server-side via the background poller, there is no WS channel.
@@ -22,6 +25,7 @@ import type { PrQueueItem } from "@shared/pr-queue";
 export type { PrQueueItem };
 export type {
   PrQueueCluster,
+  GithubPrStatus,
 } from "@shared/pr-queue";
 
 const PR_QUEUE_KEY = "/api/pr-queue";

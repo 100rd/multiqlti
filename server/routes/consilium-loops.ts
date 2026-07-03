@@ -23,6 +23,7 @@ import { ARCHETYPES } from "@shared/types";
 import { CONSILIUM_LOOP_TERMINAL_STATES } from "@shared/schema";
 import { computeOpenRemainder } from "@shared/consilium-remainder";
 import { isPrBearingLoop, type PrQueueItem } from "@shared/pr-queue";
+import { githubStatusCache } from "../services/github-status.js";
 import type { AppConfig } from "../config/schema.js";
 import { requireRole } from "../auth/middleware.js";
 import { validateBody } from "../middleware/validate.js";
@@ -157,10 +158,14 @@ export function registerConsiliumLoopRoutes(
   // route's owner scoping, then enriches each PR-bearing loop with a compact
   // verdict summary + open-remainder read from that loop's LATEST round.
   //
-  // STATE-BASED, NOT GITHUB-LIVE: we do NOT fetch live GitHub PR status — the queue
-  // reflects loop FSM state (a PR merged/closed directly on GitHub can linger until
-  // the loop's state advances). `triggerProvenance` is unset (no trigger→loop link
-  // in the current schema); the field stays on the contract for forward-compat.
+  // GITHUB-RECONCILED (read-only): after building the state-based list, each item's
+  // `prRef` is reconciled against the LIVE GitHub PR (OPEN/DRAFT/MERGED/CLOSED) via a
+  // short-TTL cache over `gh` (server-side auth = GH_TOKEN/GITHUB_TOKEN, same path as
+  // pr-wrapper). This is BEST-EFFORT and BUDGETED: if GitHub is unreachable, rate-
+  // limited, unauthenticated, or slow, every item degrades to `githubStatus:"unknown"`
+  // and the route still returns promptly — GitHub can never take the queue down. No
+  // FSM transition happens here; MERGED/CLOSED merely SURFACE a stale loop state.
+  // `triggerProvenance` is unset (no trigger→loop link in the current schema).
   app.get("/api/pr-queue", async (req: Request, res: Response) => {
     if (!req.user?.id) return res.status(401).json({ error: "Authentication required" });
     const isAdmin = req.user.role === "admin";
@@ -207,6 +212,26 @@ export function registerConsiliumLoopRoutes(
     );
     // Newest first (createdAt desc). The client re-orders within clusters too.
     items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    // Reconcile with LIVE GitHub PR status — best-effort, hard-budgeted. The cache
+    // dedups by prRef (60s TTL) so N poll cycles + duplicate refs collapse to one
+    // `gh` call per ref. We race the whole batch against a wall-clock budget: if
+    // GitHub stalls past it, items keep `githubStatus:"unknown"` and we ship anyway.
+    // Any throw degrades identically — the route never fails on GitHub.
+    try {
+      const statuses = await withBudget(
+        githubStatusCache.getMany(items.map((i) => i.prRef)),
+        PR_QUEUE_GITHUB_BUDGET_MS,
+      );
+      if (statuses) {
+        for (const item of items) item.githubStatus = statuses.get(item.prRef) ?? "unknown";
+      } else {
+        for (const item of items) item.githubStatus = "unknown"; // budget elapsed.
+      }
+    } catch {
+      for (const item of items) item.githubStatus = "unknown";
+    }
+
     res.json(items);
   });
 
@@ -373,6 +398,35 @@ export function registerConsiliumLoopRoutes(
     const loop = await controller.cancel(auth.loop.id, { reason, actor });
     if (!loop) return res.status(409).json({ error: "loop is already terminal" });
     res.json(loop);
+  });
+}
+
+/**
+ * Wall-clock budget for the whole live-GitHub reconciliation of a /api/pr-queue
+ * response. Past it we ship the state-based list with `githubStatus:"unknown"` — the
+ * queue must never block on GitHub being reachable/fast (per-`gh`-call timeout is a
+ * separate, longer bound; this caps the batch as seen by the request).
+ */
+const PR_QUEUE_GITHUB_BUDGET_MS = 8_000;
+
+/**
+ * Resolve `p` within `ms`, or `null` if the budget elapses first (the pending work
+ * still settles in the background — its result lands in the cache for the next poll).
+ * Never rejects: a rejection of `p` also resolves to `null` so the caller degrades.
+ */
+function withBudget<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  return new Promise<T | null>((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(null);
+      },
+    );
   });
 }
 
