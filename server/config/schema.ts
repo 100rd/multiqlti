@@ -369,6 +369,30 @@ export const ConfigSchema = z.object({
        */
       sdlcTimeoutMs: z.coerce.number().int().min(60_000).max(1_800_000).default(1_200_000),
       /**
+       * Bug #7 — stranded-REVIEW recovery threshold. A review round runs in the
+       * in-process consilium workers; if they die (crash / server restart) the
+       * iteration's task_executions stay `running` forever and the loop sits in
+       * `reviewing` with zero LLM activity, with NO recovery (unlike develop's
+       * redriveStranded). When the current review iteration has made NO PROGRESS —
+       * no new llm_requests, no task-execution status change, iteration unsettled —
+       * for longer than this, the controller treats the review as stranded and
+       * re-launches it (see `reviewMaxRedrives`). Detection is NO-PROGRESS based
+       * (NOT wall-clock since start), so a slow-but-live review is never touched.
+       * 1min..24h; default 15min. Set very HIGH ⇒ recovery is effectively OFF
+       * (today's behavior — the loop waits forever, as before).
+       */
+      reviewStallTimeoutMs: z.coerce.number().int().min(60_000).max(86_400_000).default(900_000),
+      /**
+       * Bug #7 — bounded auto re-launches for a stranded review round before giving
+       * up. On a detected stall the round is re-launched with a FRESH iteration for
+       * the SAME round number (the loop stays `reviewing`, just gets a live worker
+       * again); only after this many exhausted re-launches does the loop fall back
+       * to `failed` via the existing `review_failed` event — failure is the last
+       * resort, not the first move. 0 ⇒ never re-launch (fail on first detected
+       * stall). 0..20; default 3.
+       */
+      reviewMaxRedrives: z.coerce.number().int().min(0).max(20).default(3),
+      /**
        * Judge timeout resilience (fix: bounded retry with model fallback for
        * judge timeouts). In a consilium dispute the JUDGE task receives the FULL
        * debate context — the largest-context call of the round — and can hit the

@@ -49,7 +49,7 @@
 import { z } from "zod";
 import type { IStorage } from "../../storage.js";
 import { runAsSystem, runAsProject } from "../../context.js";
-import type { ConsiliumLoopRow, ConsiliumLoopRoundRow, ConsiliumLoopState } from "@shared/schema";
+import type { ConsiliumLoopRow, ConsiliumLoopRoundRow, ConsiliumLoopState, TaskGroupIterationRow } from "@shared/schema";
 import { ARCHETYPES } from "@shared/types";
 import type { Archetype } from "@shared/types";
 import type { ActionPoint, ConvergenceVerdict } from "@shared/types";
@@ -653,6 +653,26 @@ export class ConsiliumLoopController {
     return this.deps.config().pipeline.consiliumLoop;
   }
 
+  /** Bug #7: no-progress threshold before a `reviewing` round is treated as
+   *  stranded. Very high ⇒ recovery effectively OFF (today's wait-forever). */
+  private reviewStallTimeoutMs(): number {
+    return this.loopConfig().reviewStallTimeoutMs ?? 900_000;
+  }
+
+  /** Bug #7: bounded auto re-launches for a stranded review before failing it. */
+  private reviewMaxRedrives(): number {
+    const n = this.loopConfig().reviewMaxRedrives;
+    return typeof n === "number" ? n : 3;
+  }
+
+  /** Bug #7: auto re-launches ALREADY spent on the loop's CURRENT review round.
+   *  `round`-scoped so the counter auto-resets when a fresh round starts (a stored
+   *  value from an earlier round reads as 0). */
+  private reviewRedriveCount(loop: ConsiliumLoopRow): number {
+    const rr = loop.reviewRedrive;
+    return rr && rr.round === loop.round ? rr.count : 0;
+  }
+
   /**
    * Stage 3 research kill-switch: TRUE only when the parent loop, the skilled
    * implement path, AND research are all enabled. The single gate for both the
@@ -1084,6 +1104,13 @@ export class ConsiliumLoopController {
 
     const event = await this.deriveEvent(loop);
     if (!event) {
+      // Bug #7: no event means the review iteration is genuinely still `running`
+      // (a settled one would have produced review_completed/failed above). If it
+      // has gone idle past the stall window, RE-LAUNCH the round (bounded) or fail.
+      // Running this AFTER deriveEvent closes the TOCTOU: a review that just settled
+      // is advanced normally, never mistaken for stalled.
+      const recovered = await this.recoverStalledReview(loop);
+      if (recovered) return recovered;
       this.log(loopId, `no-op in state=${loop.state} (no event)`);
       return null;
     }
@@ -1197,6 +1224,166 @@ export class ConsiliumLoopController {
     }
     const extra = await this.startDevHandoff(claimed, verdict);
     return Object.keys(extra).length === 0 ? claimed : this.storage.updateLoop(claimed.id, extra);
+  }
+
+  /**
+   * Bug #7 — stranded-REVIEW recovery (the review-phase peer of `redriveStranded`).
+   *
+   * A review round runs in the IN-PROCESS consilium workers. If they die (a crash
+   * or, most commonly, a server restart) the round's task_executions stay `running`
+   * forever, `deriveReviewEvent` never settles, and the loop sits in `reviewing`
+   * with zero LLM activity and no recovery. `redriveStranded` does NOT catch this:
+   * it only matches a NULL child ref (a crash BEFORE the iteration row was written);
+   * here the iteration IS set — it's simply orphaned mid-run.
+   *
+   * This runs ONLY when `deriveEvent` found nothing to do, so the iteration is
+   * genuinely still `running` (a settled iteration would already have advanced the
+   * loop). Detection is NO-PROGRESS based: the max of the iteration's lifecycle
+   * timestamps, its task-executions' timestamps, and the latest llm_request for the
+   * group's run. Past `reviewStallTimeoutMs` of silence the review is stranded.
+   *
+   * Recovery is AUTONOMOUS re-launch, not cancellation: the stranded iteration is
+   * superseded and the SAME round is re-run fresh (the loop stays `reviewing`, just
+   * gets a live worker again), bounded by `reviewMaxRedrives`. Only once the budget
+   * is exhausted does it fall back to `failed` via the EXISTING `review_failed`
+   * event — NO new FSM state. Single-flight: the in-process lock (tick) plus an
+   * atomic `claimReviewRedrive` (state=reviewing AND same stale iteration AND
+   * updatedAt < window) make exactly ONE instance act; a loser and a review that
+   * just finished both no-op (the latter re-checked after the claim, below).
+   */
+  private async recoverStalledReview(loop: ConsiliumLoopRow): Promise<ConsiliumLoopRow | null> {
+    // FSM constraint: only `reviewing` has a `review_failed` edge, and only the
+    // review phase runs the in-process workers that can die mid-run. `deciding`
+    // does no background work (it resolves the settled verdict synchronously), so
+    // it is not subject to this worker-death stall.
+    if (loop.state !== "reviewing") return null;
+    const n = loop.currentIterationNumber;
+    if (n == null) return null; // null child ref → redriveStranded's job, not ours.
+
+    const timeoutMs = this.reviewStallTimeoutMs();
+    const iteration = await this.storage.getIteration(loop.groupId, n);
+    // Absent, or already settled (completed/failed/cancelled) → not a live stall;
+    // deriveReviewEvent settles a completed/failed one on this very tick.
+    if (!iteration || iteration.status !== "running") return null;
+
+    const lastActivityMs = await this.reviewLastActivityMs(loop, iteration);
+    const idleMs = Date.now() - lastActivityMs;
+    if (idleMs < timeoutMs) return null; // recent/live activity → never touch it.
+
+    // Cross-instance single-flight: only the winner (still reviewing, still on THIS
+    // stale iteration, untouched past the window) proceeds. Bumps updatedAt so a
+    // racing instance backs off. Same discipline as claimRedrive.
+    const staleThreshold = new Date(Date.now() - timeoutMs);
+    const claimed = await this.storage.claimReviewRedrive(loop.id, n, staleThreshold);
+    if (!claimed) {
+      this.log(loop.id, `review stall claim lost for iter #${n} (another instance recovering) — no-op`);
+      return null;
+    }
+
+    // TOCTOU guard: re-read the iteration AFTER winning the claim. A worker that
+    // finished between the idle read and the claim leaves a settled iteration →
+    // abort so the NEXT tick emits review_completed (never fail/re-run a done review).
+    const fresh = await this.storage.getIteration(loop.groupId, n);
+    if (!fresh || fresh.status !== "running") {
+      this.log(loop.id, `review iter #${n} settled (${fresh?.status ?? "gone"}) after claim — abort recovery`);
+      return claimed; // updatedAt bumped; the settle advances on the next tick.
+    }
+
+    const idleMin = Math.max(1, Math.round(idleMs / 60_000));
+    const used = this.reviewRedriveCount(claimed);
+    const max = this.reviewMaxRedrives();
+
+    if (used >= max) {
+      // Last resort: bounded re-launches exhausted → fail via the EXISTING event.
+      const error =
+        `Review stalled: no activity for ${idleMin}m and re-launched ${used} time(s) ` +
+        `without progress (in-process review workers likely died repeatedly — e.g. a ` +
+        `restart); marked failed for re-run.`;
+      this.log(loop.id, `review stall — redrives exhausted (${used}/${max}) → failing loop`);
+      const transition = reduce("reviewing", { kind: "review_failed", error });
+      if (!transition) return null;
+      return this.commit(claimed, transition);
+    }
+
+    // RE-LAUNCH the SAME round. Two ordering hazards to close:
+    //   (a) `startGroupAsync` refuses to start while an iteration is `running`
+    //       (RunActiveError) — so the orphan MUST be superseded first;
+    //   (b) but a `cancelled` orphan STILL reachable as `currentIterationNumber`
+    //       would make a CONCURRENT (cross-instance) tick derive `review_failed`
+    //       and fail the loop mid-re-launch.
+    // Close both by NULLing the child ref FIRST (the proven null-ref redrive
+    // invariant): a concurrent tick then sees currentIterationNumber == null →
+    // deriveReviewEvent returns null (never fails the orphan), and redriveStranded
+    // holds off because the claim just bumped updatedAt (within grace). Only then
+    // cancel the orphan and re-run; startReviewRound repopulates the child ref.
+    const attempt = used + 1;
+    await this.storage.updateLoop(claimed.id, { currentIterationNumber: null });
+    await this.storage.updateIteration(fresh.id, { status: "cancelled", completedAt: new Date() });
+    this.log(
+      loop.id,
+      `review stall — re-launching round ${claimed.round} (attempt ${attempt}/${max}) after ${idleMin}m idle`,
+    );
+    const extra = await this.startReviewRound(claimed, { relaunch: true });
+    if (extra.error) {
+      // The re-launch itself failed to build (e.g. git) — record it and leave the
+      // loop reviewing with a null child ref; the null-ref redrive re-attempts it
+      // after the grace window (bounded overall by maxRounds).
+      return this.storage.updateLoop(claimed.id, extra);
+    }
+    return this.storage.updateLoop(claimed.id, {
+      ...extra,
+      reviewRedrive: { round: claimed.round, count: attempt },
+    });
+  }
+
+  /**
+   * Bug #7 — the review round's "last progress" wall-clock (ms since epoch). The
+   * max of everything that moves while a review is genuinely alive: the iteration's
+   * own lifecycle timestamps, each task-execution's status-change timestamps, and —
+   * the true heartbeat — the latest llm_request for this group's run (runId =
+   * groupId). Falls back to the loop's `updatedAt` (round-start) so a review that
+   * has emitted nothing yet is measured from when it began, never flagged instantly.
+   * Optional/newer reads are feature-detected + fail-soft so a partial test double
+   * (or a transient storage error) can never crash a poller tick.
+   */
+  private async reviewLastActivityMs(
+    loop: ConsiliumLoopRow,
+    iteration: TaskGroupIterationRow,
+  ): Promise<number> {
+    const times: number[] = [];
+    const push = (d?: Date | string | null) => {
+      if (!d) return;
+      const t = new Date(d).getTime();
+      if (!Number.isNaN(t)) times.push(t);
+    };
+
+    // Round-start / iteration lifecycle floor.
+    push(loop.updatedAt);
+    push(iteration.startedAt);
+    push(iteration.completedAt);
+    push(iteration.createdAt);
+
+    // Task-execution status changes for THIS iteration (started/completed bumps).
+    if (typeof this.storage.getExecutionsByIteration === "function") {
+      const execs = await this.storage
+        .getExecutionsByIteration(loop.groupId, iteration.id)
+        .catch(() => [] as Awaited<ReturnType<IStorage["getExecutionsByIteration"]>>);
+      for (const e of execs) {
+        push(e.startedAt);
+        push(e.completedAt);
+        push(e.createdAt);
+      }
+    }
+
+    // The real heartbeat: the newest LLM request for the group's run.
+    if (typeof this.storage.getLlmRequests === "function") {
+      const llm = await this.storage
+        .getLlmRequests({ runId: loop.groupId, page: 1, limit: 1 })
+        .catch(() => ({ rows: [], total: 0 }));
+      push(llm.rows[0]?.createdAt ?? null);
+    }
+
+    return times.length ? Math.max(...times) : Date.now();
   }
 
   /**
@@ -1511,7 +1698,10 @@ export class ConsiliumLoopController {
    * KICKOFF (milliseconds) — `deriveReviewEvent` then polls the settle (§14.5).
    * `round` only ever increments here (M-2).
    */
-  private async startReviewRound(loop: ConsiliumLoopRow): Promise<Record<string, unknown>> {
+  private async startReviewRound(
+    loop: ConsiliumLoopRow,
+    opts?: { relaunch?: boolean },
+  ): Promise<Record<string, unknown>> {
     const cfg = this.loopConfig();
     const group = await this.storage.getTaskGroup(loop.groupId);
     const objective = group?.input ?? "";
@@ -1556,7 +1746,14 @@ export class ConsiliumLoopController {
       return { error: ctx.message };
     }
     await this.storage.updateTaskGroup(loop.groupId, { input: ctx.input });
-    this.log(loop.id, `startReviewRound -> startGroupAsync(group=${loop.groupId}) round ${loop.round + 1}`);
+    // Bug #7: a RE-LAUNCH re-runs the SAME round (round is unchanged — M-2 still
+    // holds: `round` only ever increments on a genuine new round). A normal entry
+    // advances to round+1. Both mint a fresh iteration via startGroupAsync.
+    const nextRound = opts?.relaunch ? loop.round : loop.round + 1;
+    this.log(
+      loop.id,
+      `startReviewRound${opts?.relaunch ? " (relaunch)" : ""} -> startGroupAsync(group=${loop.groupId}) round ${nextRound}`,
+    );
     // §14.5: NON-BLOCKING — returns the instant the iteration row is created, NOT
     // after the consilium round completes. The child runs in the background and
     // settles the iteration; `deriveReviewEvent` polls that settle.
@@ -1565,7 +1762,7 @@ export class ConsiliumLoopController {
     });
     this.log(loop.id, `startReviewRound done -> iteration #${iteration.iterationNumber} (dispatched)`);
     return {
-      round: loop.round + 1,
+      round: nextRound,
       currentIterationNumber: iteration.iterationNumber,
       openP0: null,
     };
@@ -2016,6 +2213,13 @@ export class ConsiliumLoopPoller {
     if (this.timer) return;
     this.timer = setInterval(() => void this.sweep(), this.intervalMs);
     if (typeof this.timer.unref === "function") this.timer.unref();
+    // Bug #7 (startup orphan sweep): tick every non-terminal loop ONCE at boot,
+    // without waiting a full interval, so a review left `reviewing` by a PRIOR
+    // process (its in-process workers died on the restart) is re-evaluated — and,
+    // if stalled past the window, re-launched — immediately. Mirrors how develop's
+    // redriveStranded runs inside the same tick path; a healthy loop is a harmless
+    // single-flight no-op. Fire-and-forget: start() must not block boot.
+    void this.sweep();
   }
 
   stop(): void {
@@ -2023,8 +2227,9 @@ export class ConsiliumLoopPoller {
     this.timer = null;
   }
 
-  /** One sweep: tick every non-terminal loop. Errors are swallowed per-loop. */
-  private async sweep(): Promise<void> {
+  /** One sweep: tick every non-terminal loop. Errors are swallowed per-loop.
+   *  Public so a boot sequence / test can drive an explicit orphan sweep. */
+  async sweep(): Promise<void> {
     if (this.sweeping) return; // never overlap sweeps
     this.sweeping = true;
     try {

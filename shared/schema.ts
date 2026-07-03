@@ -2049,6 +2049,16 @@ export const consiliumLoops = pgTable(
     archetypeParams: jsonb("archetype_params").$type<Record<string, string>>(),
     archetypeDecidedAt: timestamp("archetype_decided_at"),
     currentIterationNumber: integer("current_iteration_number"),
+    // Bug #7 (stranded-review recovery): per-round auto re-launch bookkeeping. A
+    // review round runs in the in-process consilium workers; if they die (crash /
+    // restart) the iteration is orphaned `running` and the loop sits in `reviewing`
+    // forever. The controller RE-LAUNCHES the round on a no-progress stall, bounded
+    // by `reviewMaxRedrives`; this column records `{ round, count }` so the bound
+    // survives a restart (a process-local counter would reset → redrive storm) and
+    // the passport can surface "re-launched attempt k/N". `round`-scoped: a read
+    // whose `round` != the loop's current round counts as 0 (auto-resets each round,
+    // no explicit clear). INERT display/audit — never a prompt/shell/branch sink.
+    reviewRedrive: jsonb("review_redrive").$type<{ round: number; count: number }>(),
     devGroupId: varchar("dev_group_id"),
     prRef: text("pr_ref"),
     // M-3 (TOCTOU): HEAD captured when entering AWAITING_MERGE; merge-approved
