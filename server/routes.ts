@@ -150,6 +150,7 @@ export async function registerRoutes(
   app.use("/api/traces", requireAuth, requireProject);         // UNCERTAIN — see note above
   app.use("/api/task-groups", requireAuth, requireProject);
   app.use("/api/consilium-loops", requireAuth, requireProject);
+  app.use("/api/pr-queue", requireAuth, requireProject);
   app.use("/api/consilium-reviews", requireAuth, requireProject);
   app.use("/api/lmstudio", requireAuth, requireProject);       // UNCERTAIN — see note above
   app.use("/api/tracker-connections", requireAuth, requireProject);
