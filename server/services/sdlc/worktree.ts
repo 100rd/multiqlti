@@ -122,8 +122,10 @@ export async function createSdlcWorktree(opts: CreateWorktreeOptions): Promise<C
   const repo = assertAllowedRepoPath(opts.repoPath, opts.allowedRepoPaths);
 
   // B-3: the branch must be an EXACT server-derived shape — the round branch
-  // (`round-<n>`) OR, for parallel-develop, a per-AP branch (`round-<n>/ap-<k>`).
-  // Reject anything else (incl. a leading-dash branch) before git runs.
+  // (`round-<n>`) OR, for parallel-develop, a per-AP branch (`round-<n>-ap-<k>`, a
+  // SIBLING of the round branch — a child `round-<n>/ap-<k>` would be a git ref D/F
+  // conflict with the round branch's loose ref file). Reject anything else (incl. a
+  // leading-dash branch) before git runs.
   if (opts.branch.startsWith("-") || !isValidLoopWorktreeBranch(opts.branch)) {
     throw new Error(`createSdlcWorktree: rejected branch name (B-3): ${opts.branch}`);
   }

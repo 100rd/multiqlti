@@ -95,12 +95,20 @@ const execFileAsync: ExecFileFn = promisify(execFile);
 const BRANCH_RE = /^consilium\/loop-[0-9a-f-]{36}\/round-[0-9]+$/;
 /**
  * Parallel-develop: the PER-ACTION-POINT worktree branch shape,
- * `consilium/loop-<uuid>/round-<n>/ap-<k>`. Server-derived (loopId + round + 1-based AP
+ * `consilium/loop-<uuid>/round-<n>-ap-<k>`. Server-derived (loopId + round + 1-based AP
  * index) — NEVER model text. A DEDICATED shape (not the round branch) so a per-AP branch
  * can NEVER be mistaken for a PR head: `isValidLoopBranch` (the PR-head gate) stays strict,
  * while `isValidLoopWorktreeBranch` (worktree creation only) accepts EITHER shape.
+ *
+ * BUG-FIX (worktree fan-out produced 0 commits): the AP segment is a SIBLING of the round
+ * branch (`round-<n>-ap-<k>`), NOT a child (`round-<n>/ap-<k>`). git stores each branch as a
+ * loose ref FILE, so once the round branch `…/round-<n>` exists, a child ref `…/round-<n>/ap-<k>`
+ * is a directory/file (D/F) conflict — `git worktree add` fails with "cannot lock ref … exists;
+ * cannot create …". That made EVERY per-AP worktree creation throw ⇒ every AP failed ⇒ no
+ * branches, no commits. The sibling shape shares only the `round-<n>` PREFIX (not the ref path),
+ * so `…/round-<n>` and `…/round-<n>-ap-<k>` coexist as distinct loose refs.
  */
-const AP_BRANCH_RE = /^consilium\/loop-[0-9a-f-]{36}\/round-[0-9]+\/ap-[0-9]+$/;
+const AP_BRANCH_RE = /^consilium\/loop-[0-9a-f-]{36}\/round-[0-9]+-ap-[0-9]+$/;
 /** Well-formed `owner/repo` (GitHub slug chars only) — H-7 origin validation. */
 const OWNER_REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
@@ -140,7 +148,7 @@ export function isValidLoopBranch(branch: string): boolean {
 }
 
 /** Parallel-develop: true iff `branch` is a server-derived per-ACTION-POINT branch
- *  (`consilium/loop-<uuid>/round-<n>/ap-<k>`). */
+ *  (`consilium/loop-<uuid>/round-<n>-ap-<k>`). */
 export function isValidLoopApBranch(branch: string): boolean {
   return AP_BRANCH_RE.test(branch);
 }
@@ -154,12 +162,16 @@ export function isValidLoopWorktreeBranch(branch: string): boolean {
 
 /**
  * Parallel-develop: build the per-ACTION-POINT worktree branch
- * (`consilium/loop-<uuid>/round-<n>/ap-<k>`) from SERVER-controlled inputs (loopId + round +
+ * (`consilium/loop-<uuid>/round-<n>-ap-<k>`) from SERVER-controlled inputs (loopId + round +
  * 1-based AP index) — NEVER model/action-point text. Gated through `isValidLoopApBranch`
  * before it reaches git, exactly like `buildBranchName`/`isValidLoopBranch` for the round.
+ *
+ * The `-ap-<k>` segment is a SIBLING of the round branch, not a child path (`/ap-<k>`): a child
+ * ref collides with the round branch's loose ref FILE (git D/F conflict) and makes every
+ * `git worktree add` throw. See `AP_BRANCH_RE` for the full incident note.
  */
 export function buildApBranchName(loopId: string, round: number, apIndex: number): string {
-  return `consilium/loop-${loopId}/round-${round}/ap-${apIndex}`;
+  return `consilium/loop-${loopId}/round-${round}-ap-${apIndex}`;
 }
 
 /**
