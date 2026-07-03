@@ -40,10 +40,10 @@ export function registerStatsRoutes(app: Express, storage: IStorage): void {
   // GET /api/stats/overview
   app.get("/api/stats/overview", async (_req, res) => {
     try {
-      const [llmStats, allRuns] = await Promise.all([
-        storage.getLlmRequestStats(),
-        storage.getPipelineRuns(),
-      ]);
+      // Pipeline runs were removed from the overview: pipeline_runs is 0 all-time
+      // on this platform and the entity left the primary UI, so we no longer scan
+      // that table here (it was a wasted full-table read). Only LLM aggregates.
+      const llmStats = await storage.getLlmRequestStats();
       res.json({
         totalRequests: llmStats.totalRequests,
         totalTokens: {
@@ -52,7 +52,6 @@ export function registerStatsRoutes(app: Express, storage: IStorage): void {
           total: llmStats.totalInputTokens + llmStats.totalOutputTokens,
         },
         totalCostUsd: llmStats.totalCostUsd,
-        totalRuns: allRuns.length,
       });
     } catch (err) {
       console.error("/api/stats/overview error:", err);
@@ -89,6 +88,17 @@ export function registerStatsRoutes(app: Express, storage: IStorage): void {
       res.json(stats);
     } catch (err) {
       console.error("/api/stats/by-team error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // GET /api/stats/by-workspace — tokens/cost/requests attributed per workspace
+  app.get("/api/stats/by-workspace", async (_req, res) => {
+    try {
+      const stats = await storage.getLlmStatsByWorkspace();
+      res.json(stats);
+    } catch (err) {
+      console.error("/api/stats/by-workspace error:", err);
       res.status(500).json({ error: "Internal server error" });
     }
   });

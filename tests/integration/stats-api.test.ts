@@ -98,6 +98,8 @@ describe("Stats API", () => {
           total: 230,
         }),
       });
+      // Pipeline Runs was removed from the overview response shape.
+      expect(res.body).not.toHaveProperty("totalRuns");
     });
   });
 
@@ -127,6 +129,20 @@ describe("Stats API", () => {
       expect(Array.isArray(res.body)).toBe(true);
       const teams = res.body.map((r: { teamId: string }) => r.teamId);
       expect(teams).toContain("planning");
+    });
+  });
+
+  describe("GET /api/stats/by-workspace", () => {
+    it("returns an array (unattributed bucket for un-linked requests)", async () => {
+      // The two seeded requests (run-1, run-2) map to no consilium loop, so they
+      // fall into the explicit Unattributed bucket rather than being dropped.
+      const res = await request(app).get("/api/stats/by-workspace");
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body)).toBe(true);
+      const unattr = res.body.find((r: { workspaceId: string | null }) => r.workspaceId === null);
+      expect(unattr).toBeDefined();
+      expect(unattr.workspaceName).toBe("Unattributed");
+      expect(unattr.requests).toBe(2);
     });
   });
 

@@ -2,7 +2,7 @@ import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, inArray, sql a
 import type { SQL } from "drizzle-orm";
 import { db, withProject, withProjectList, withProjectInsert, withProjectOrGlobal } from "./db";
 import { unscopedSystemQuery, getProjectId } from "./context";
-import type { IStorage, PracticeCardFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmTimelinePoint, RunHistoryQuery, PipelineRunHistoryRow, TaskGroupHistoryRow } from "./storage";
+import type { IStorage, PracticeCardFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmStatsByWorkspace, LlmTimelinePoint, RunHistoryQuery, PipelineRunHistoryRow, TaskGroupHistoryRow } from "./storage";
 import {
   TASK_GROUP_V2_MAX_LIMIT,
   IterationConflictError,
@@ -608,6 +608,76 @@ export class PgStorage implements IStorage {
         outputTokens: r.outputTokens,
         costUsd: r.costUsd,
       }));
+  }
+
+  async getLlmStatsByWorkspace(): Promise<LlmStatsByWorkspace[]> {
+    // Read-side workspace attribution. See MemStorage.getLlmStatsByWorkspace for the
+    // full rationale. Chosen join: llm_requests.runId (= task_groups.id in the
+    // consilium path) -> consilium_loops.groupId -> repoPath -> workspaces.path.
+    //
+    // Single-count guard: rather than JOIN requests to the (potentially many)
+    // consilium_loops / tasks rows of a group -- which fans out and double-counts
+    // tokens/cost -- we (1) aggregate requests grouped by runId (each request lands
+    // in exactly ONE runId bucket, project-scoped), then (2) resolve each runId to a
+    // SINGLE workspace and fold. No request-to-loop join exists, so no fan-out.
+
+    // 1. Per-runId aggregation, project-scoped exactly like every other stat.
+    const reqRows = await db
+      .select({
+        runId: llmRequests.runId,
+        requests: drizzleSql<number>`count(*)::int`,
+        inputTokens: drizzleSql<number>`coalesce(sum(input_tokens), 0)::int`,
+        outputTokens: drizzleSql<number>`coalesce(sum(output_tokens), 0)::int`,
+        costUsd: drizzleSql<number>`coalesce(sum(estimated_cost_usd), 0)::float`,
+      })
+      .from(llmRequests)
+      .where(withProject(llmRequests))
+      .groupBy(llmRequests.runId);
+
+    // 2a. path -> workspace (deterministic: lowest id wins on a duplicate path).
+    const wsRows = await db
+      .select({ id: workspaces.id, name: workspaces.name, path: workspaces.path })
+      .from(workspaces)
+      .where(withProject(workspaces));
+    const wsByPath = new Map<string, { id: string; name: string }>();
+    for (const w of [...wsRows].sort((a, b) => a.id.localeCompare(b.id))) {
+      if (!wsByPath.has(w.path)) wsByPath.set(w.path, w);
+    }
+
+    // 2b. group -> one workspace: the newest resolving loop wins.
+    const loopRows = await db
+      .select({ groupId: consiliumLoops.groupId, repoPath: consiliumLoops.repoPath })
+      .from(consiliumLoops)
+      .where(withProject(consiliumLoops))
+      .orderBy(desc(consiliumLoops.createdAt), desc(consiliumLoops.id));
+    const groupToWs = new Map<string, { id: string; name: string }>();
+    for (const loop of loopRows) {
+      if (groupToWs.has(loop.groupId)) continue;
+      const w = wsByPath.get(loop.repoPath);
+      if (w) groupToWs.set(loop.groupId, w);
+    }
+
+    // 3. Fold each runId bucket into its single workspace (or Unattributed).
+    const UNATTRIBUTED = "\u0000unattributed";
+    const out = new Map<string, LlmStatsByWorkspace>();
+    for (const r of reqRows) {
+      const ws = r.runId ? groupToWs.get(r.runId) : undefined;
+      const key = ws ? ws.id : UNATTRIBUTED;
+      const existing = out.get(key) ?? {
+        workspaceId: ws ? ws.id : null,
+        workspaceName: ws ? ws.name : "Unattributed",
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      };
+      existing.requests += r.requests;
+      existing.inputTokens += r.inputTokens;
+      existing.outputTokens += r.outputTokens;
+      existing.costUsd += r.costUsd;
+      out.set(key, existing);
+    }
+    return Array.from(out.values());
   }
 
   async getLlmTimeline(from: Date, to: Date, granularity: 'day' | 'week'): Promise<LlmTimelinePoint[]> {
