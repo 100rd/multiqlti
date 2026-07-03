@@ -340,6 +340,27 @@ export const ConfigSchema = z.object({
        */
       allowedRepoPaths: z.array(z.string()).default([]),
       /**
+       * OPTION A (codegraph research): a scoped, READ-ONLY "repository map" preamble
+       * injected into the REVIEW input. For the files each round's diff TOUCHES, a
+       * compact `file → exported symbols + 1-hop importers` map is built from the
+       * EXISTING workspace symbol index (`workspace_symbols`) — never a new
+       * dependency, never a write. It improves debater/judge comprehension of
+       * structural claims (fewer rounds). Hard byte-bounded + secret-redacted.
+       * Default OFF ⇒ BYTE-IDENTICAL: no map section is emitted and the review input
+       * is unchanged. Also gated (like every enhancement here) under the parent
+       * `consiliumLoop.enabled`.
+       */
+      repoMap: z.object({
+        /** Kill-switch: false (default) → no map section (byte-identical off). */
+        enabled: z.boolean().default(false),
+        /**
+         * Hard byte cap on the assembled map body (~4 bytes/token ⇒ ≈1500 tokens at
+         * the 6KiB default). Entries are ranked by importer count and the least-
+         * referenced files are dropped FIRST to fit. 512B..200KB.
+         */
+        maxRepoMapBytes: z.coerce.number().int().min(512).max(200_000).default(6_000),
+      }).default({}),
+      /**
        * Hard wall-clock timeout PER action-point SDLC coder run (ms). The SDLC
        * executor runs the agentic coder once per action point sequentially in one
        * worktree, so this bounds a SINGLE action point, not the whole round.

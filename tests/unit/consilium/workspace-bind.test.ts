@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import { realpathSync } from "fs";
-import { resolveLoopWorkspace, type WorkspaceBindStorage } from "../../../server/services/consilium/workspace-bind.js";
+import { resolveLoopWorkspace, findLoopWorkspace, type WorkspaceBindStorage } from "../../../server/services/consilium/workspace-bind.js";
 import type { InsertWorkspace, WorkspaceRow } from "@shared/schema";
 
 const REPO = process.cwd();
@@ -95,5 +95,33 @@ describe("resolveLoopWorkspace", () => {
     expect(ws.id).not.toBe("ws-poisoned");
     expect(createWorkspace).toHaveBeenCalledTimes(1);
     expect((createWorkspace.mock.calls[0][0] as InsertWorkspace).path).toBe(RESOLVED);
+  });
+});
+
+describe("findLoopWorkspace (read-only — never creates)", () => {
+  it("returns an existing matching local workspace WITHOUT creating", async () => {
+    const { storage, createWorkspace } = fakeStorage([row({ id: "ws-existing" })]);
+    const ws = await findLoopWorkspace(storage, REPO, ALLOW);
+    expect(ws?.id).toBe("ws-existing");
+    expect(createWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("returns undefined when no workspace is bound (never creates)", async () => {
+    const { storage, createWorkspace } = fakeStorage([]);
+    const ws = await findLoopWorkspace(storage, REPO, ALLOW);
+    expect(ws).toBeUndefined();
+    expect(createWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("returns undefined for a non-allowlisted repoPath (never throws)", async () => {
+    const { storage } = fakeStorage([row({ id: "ws-existing" })]);
+    const ws = await findLoopWorkspace(storage, "/tmp/not-allowed", ALLOW);
+    expect(ws).toBeUndefined();
+  });
+
+  it("skips a poisoned-path row and returns undefined", async () => {
+    const { storage } = fakeStorage([row({ id: "ws-poisoned", path: "/etc/passwd" })]);
+    const ws = await findLoopWorkspace(storage, REPO, ALLOW);
+    expect(ws).toBeUndefined();
   });
 });
