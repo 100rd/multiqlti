@@ -47,7 +47,7 @@ export interface ReviewExecutionInput {
 }
 
 /** The role a participant execution plays in the cross-review dispute. */
-export type ParticipantRoleKind = "primary" | "rebuttal" | "judge" | "participant";
+export type ParticipantRoleKind = "primary" | "rebuttal" | "judge" | "verifier" | "participant";
 
 /** A classified participant role: its kind, a human label, and the seat (model name). */
 export interface ParticipantRole {
@@ -111,6 +111,8 @@ export interface ReviewActivitySummary {
   cancelled: number;
   /** Number of primary debater seats (rebuttals belong to the same debaters). */
   debaterCount: number;
+  /** Number of single-verifier seats (a `single-verifier` re-review round has one). */
+  verifierCount: number;
   hasJudge: boolean;
   /** Round elapsed: earliest start → now (or → latest completion when none run), ms. */
   elapsedMs: number | null;
@@ -169,6 +171,11 @@ export function classifyParticipantRole(
   const name = (taskName ?? "").trim();
   if (!name) return { kind: "participant", label: "participant", seat: null };
 
+  // Single-verifier re-review: the lone "Verifier" seat that CONFIRMS fixes (round > 1).
+  if (/\bverifier\b/i.test(name)) {
+    return { kind: "verifier", label: "confirming fixes", seat: null };
+  }
+
   if (/\bjudge\b/i.test(name)) {
     return { kind: "judge", label: "judge", seat: null };
   }
@@ -201,6 +208,9 @@ export function classifyParticipantRole(
 export function participantHeading(p: ReviewParticipant): string {
   const { role } = p;
   if (role.kind === "judge") return "Judge";
+  if (role.kind === "verifier") {
+    return `Verifier${p.modelSlug ? ` (${p.modelSlug})` : ""} — ${role.label}`;
+  }
   const seat = role.seat ?? p.modelSlug ?? p.taskName ?? "Participant";
   if (role.kind === "participant") return p.taskName?.trim() || seat;
   return `${seat} — ${role.label}`;
@@ -349,6 +359,7 @@ function summarize(
   let failed = 0;
   let cancelled = 0;
   let debaterCount = 0;
+  let verifierCount = 0;
   let hasJudge = false;
   const starts: number[] = [];
   const ends: number[] = [];
@@ -375,6 +386,7 @@ function summarize(
         break;
     }
     if (p.role.kind === "primary") debaterCount += 1;
+    if (p.role.kind === "verifier") verifierCount += 1;
     if (p.role.kind === "judge") hasJudge = true;
     const s = toEpoch(p.startedAt);
     const c = toEpoch(p.completedAt);
@@ -401,6 +413,7 @@ function summarize(
     failed,
     cancelled,
     debaterCount,
+    verifierCount,
     hasJudge,
     elapsedMs,
     lastProgressMs: null, // filled by caller context if needed; not used in one-liner
@@ -418,9 +431,11 @@ function buildOneLine(
       ? `${summary.debaterCount} debater${summary.debaterCount === 1 ? "" : "s"}${
           summary.hasJudge ? " + judge" : ""
         }`
-      : summary.hasJudge
-        ? "judge"
-        : `${summary.total} participant${summary.total === 1 ? "" : "s"}`;
+      : summary.verifierCount > 0
+        ? `${summary.verifierCount} verifier${summary.verifierCount === 1 ? "" : "s"}`
+        : summary.hasJudge
+          ? "judge"
+          : `${summary.total} participant${summary.total === 1 ? "" : "s"}`;
 
   const parts: string[] = [];
   if (summary.running) parts.push(`${summary.running} running`);

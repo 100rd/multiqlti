@@ -15,7 +15,7 @@
  */
 import type { Express, Request, Response } from "express";
 import { z } from "zod";
-import { CONSILIUM_REVIEW_PRESETS } from "@shared/types";
+import { CONSILIUM_REVIEW_PRESETS, REVIEW_MODES } from "@shared/types";
 import { validateBody } from "../middleware/validate.js";
 import {
   createConsiliumReview,
@@ -51,6 +51,10 @@ const CreateReviewSchema = z.object({
   // clean 400 here) and each id length-clamped. The factory resolves them
   // PROJECT-SCOPED — a foreign/unknown id is a 400 naming the offending id.
   skillIds: z.array(z.string().min(1).max(200)).max(5).optional(),
+  // Single-verifier re-review: OPTIONAL per-loop review mode. Absent ⇒ null ⇒ the
+  // server resolves it from the operator default (verifyReview.enabled). A server
+  // enum (z.enum) so only the two known values pass; anything else is a clean 400.
+  reviewMode: z.enum(REVIEW_MODES).optional(),
 });
 
 /**
@@ -132,6 +136,8 @@ export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliu
           engineerInstruction: body.engineerInstruction,
           // Stage 2: operator skill ids — resolved + appended by the factory.
           skillIds: body.skillIds,
+          // Single-verifier re-review: OPTIONAL per-loop mode (persisted on the loop).
+          reviewMode: body.reviewMode,
         });
         return res.status(201).json(loop);
       } catch (err) {

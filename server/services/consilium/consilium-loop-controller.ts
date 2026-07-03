@@ -49,10 +49,10 @@
 import { z } from "zod";
 import type { IStorage } from "../../storage.js";
 import { runAsSystem, runAsProject } from "../../context.js";
-import type { ConsiliumLoopRow, ConsiliumLoopRoundRow, ConsiliumLoopState, TaskGroupIterationRow } from "@shared/schema";
+import type { ConsiliumLoopRow, ConsiliumLoopRoundRow, ConsiliumLoopState, TaskGroupIterationRow, InsertTask } from "@shared/schema";
 import { ARCHETYPES } from "@shared/types";
 import type { Archetype } from "@shared/types";
-import type { ActionPoint, ConvergenceVerdict } from "@shared/types";
+import type { ActionPoint, ConvergenceVerdict, ReviewMode } from "@shared/types";
 import { P0_PRIORITY } from "@shared/types";
 import type { TaskOrchestrator } from "../task-orchestrator.js";
 import type { AppConfig } from "../../config/schema.js";
@@ -65,7 +65,7 @@ import type { DevCloseoutResult } from "./dev-closeout.js";
 import { runSdlcHandoff, type SdlcProgress, type JudgeVerifyFn, type JudgeVerifyInput } from "../sdlc/executor.js";
 import { runResearchHandoff, type ResearchGateway } from "../research/research-runner.js";
 import { assertAllowedRepoPath } from "./repo-allowlist.js";
-import { assertRepoIsProjectWorkspace, backtickFence, stripControlMultiline } from "./review-factory.js";
+import { assertRepoIsProjectWorkspace, backtickFence, stripControlMultiline, buildSingleVerifierTask, VERIFIER_TASK_NAME } from "./review-factory.js";
 
 // ─── FSM events (design §3 "Event / guard" column) ──────────────────────────
 
@@ -425,6 +425,27 @@ export function isAntiStall(series: number[], round: number): boolean {
   if (round < ANTI_STALL_MIN_ROUND || series.length < 3) return false;
   const [a, b, c] = series.slice(-3);
   return c >= b && b >= a;
+}
+
+/**
+ * Resolve a loop's EFFECTIVE review mode for re-review rounds. An EXPLICIT per-loop
+ * `reviewMode` (persisted on `consilium_loops.review_mode`) always wins; a null/absent
+ * value falls back to the OPERATOR default — `single-verifier` when
+ * `verifyReview.enabled` is true, else `full-dispute`. Pure; never throws.
+ *
+ * This ONLY decides the mode. The single-verifier branch is ADDITIONALLY hard-guarded
+ * to `nextRound > 1` at the swap site (see `startReviewRound`), so round 1 is ALWAYS
+ * the full preset DAG. When the result is `full-dispute` NOTHING is swapped, so the
+ * default loop is byte-identical to the pre-feature behavior.
+ */
+export function resolveReviewMode(
+  loopReviewMode: ReviewMode | null | undefined,
+  verifyReviewEnabled: boolean,
+): ReviewMode {
+  if (loopReviewMode === "single-verifier" || loopReviewMode === "full-dispute") {
+    return loopReviewMode;
+  }
+  return verifyReviewEnabled ? "single-verifier" : "full-dispute";
 }
 
 /**
@@ -1705,6 +1726,53 @@ export class ConsiliumLoopController {
   }
 
   /**
+   * Single-verifier re-review: REPLACE the group's full debate DAG with ONE fresh
+   * `Verifier` task BEFORE the round dispatches. Called from `startReviewRound` ONLY
+   * when the loop's effective reviewMode is `single-verifier` AND `nextRound > 1`
+   * (round 1 is ALWAYS the full DAG). Clears ALL existing group tasks then creates the
+   * single verifier. IDEMPOTENT / double-swap-safe: a relaunch that finds the group
+   * already holding exactly the one Verifier task is a NO-OP (never errors, never
+   * double-swaps — `opts.relaunch` keeps the round the same).
+   *
+   * SECURITY: the verifier prompt fences the UNTRUSTED prior-findings blob as data
+   * (`buildSingleVerifierTask` → backtickFence + stripControlMultiline); the model,
+   * name, and structure are server constants (no shell/branch/PR sink). deleteTask /
+   * createTask run inside the tick's project ALS (withProject scoping), so the new
+   * task is scoped to the loop's project exactly like the original DAG.
+   */
+  private async swapToSingleVerifier(
+    loop: ConsiliumLoopRow,
+    model: string,
+    priorFindings: string | undefined,
+  ): Promise<void> {
+    const existing = await this.storage.getTasksByGroup(loop.groupId);
+    // Double-swap / relaunch guard: the group already holds exactly the Verifier task.
+    if (existing.length === 1 && existing[0].name === VERIFIER_TASK_NAME) {
+      this.log(loop.id, "single-verifier: group already holds the Verifier task — no re-swap");
+      return;
+    }
+    const task = buildSingleVerifierTask({ model, priorFindings });
+    // Clear ALL existing group tasks (robust — not just the known 5), then create one.
+    for (const t of existing) await this.storage.deleteTask(t.id);
+    await this.storage.createTask({
+      groupId: loop.groupId,
+      name: task.name,
+      description: task.description,
+      executionMode: "direct_llm",
+      dependsOn: [],
+      modelSlug: task.modelSlug ?? model,
+      input: {},
+      labels: [],
+      sortOrder: 0,
+      status: "ready",
+    } as InsertTask);
+    this.log(
+      loop.id,
+      `single-verifier: swapped ${existing.length} debate task(s) -> 1 Verifier task (model=${model})`,
+    );
+  }
+
+  /**
    * BUILDING_CONTEXT → REVIEWING: build A2 diff-context, seed the group input,
    * start the consilium round NON-BLOCKINGLY (D.1 `startGroupAsync`), record the
    * new iteration number + incremented round. The child ref is persisted on
@@ -1767,6 +1835,21 @@ export class ConsiliumLoopController {
       loop.id,
       `startReviewRound${opts?.relaunch ? " (relaunch)" : ""} -> startGroupAsync(group=${loop.groupId}) round ${nextRound}`,
     );
+    // Single-verifier re-review (round > 1 ONLY): before dispatch, swap the full
+    // debate DAG for ONE fresh, independent verifier that CONFIRMS closure of the
+    // prior findings. Round 1 (nextRound === 1) is ALWAYS the full preset DAG — the
+    // `nextRound > 1` guard is HARD. Effective mode: an explicit per-loop reviewMode
+    // wins; else the operator default (verifyReview.enabled). full-dispute ⇒ NO swap ⇒
+    // byte-identical to today. The verifier reads the diff (already in the group input
+    // via updateTaskGroup above) + the prior findings (fenced as data in its prompt).
+    const reviewMode = resolveReviewMode(loop.reviewMode, cfg.verifyReview?.enabled ?? false);
+    if (nextRound > 1 && reviewMode === "single-verifier") {
+      await this.swapToSingleVerifier(
+        loop,
+        cfg.verifyReview?.model ?? "claude-opus",
+        priorFindings,
+      );
+    }
     // §14.5: NON-BLOCKING — returns the instant the iteration row is created, NOT
     // after the consilium round completes. The child runs in the background and
     // settles the iteration; `deriveReviewEvent` polls that settle.

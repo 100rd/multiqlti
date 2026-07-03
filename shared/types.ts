@@ -1380,6 +1380,26 @@ export const CONSILIUM_REVIEW_PRESETS = [
 export type ConsiliumReviewPreset = (typeof CONSILIUM_REVIEW_PRESETS)[number];
 
 /**
+ * Consilium re-review MODE — HOW rounds AFTER the first (round > 1) are run.
+ *
+ *   - `full-dispute`    — the DEFAULT + historical behavior: EVERY round re-runs the
+ *                         full cross-review debate panel (N debaters + rebuttals +
+ *                         judge). A loop with this mode (or an UNSET/`null` mode when
+ *                         the operator default is off) is BYTE-IDENTICAL to the
+ *                         pre-feature loop.
+ *   - `single-verifier` — re-review rounds (nextRound > 1) run ONE fresh, independent
+ *                         verifier (1 model, 1 level) that only CONFIRMS whether the
+ *                         written code closed the prior findings. Round 1 ALWAYS runs
+ *                         the full preset DAG regardless of this mode.
+ *
+ * Persisted (nullable) on `consilium_loops.review_mode`; `null` ⇒ resolve from the
+ * operator default (`pipeline.consiliumLoop.verifyReview.enabled`). An EXPLICIT
+ * per-loop value always wins over the operator default.
+ */
+export const REVIEW_MODES = ["full-dispute", "single-verifier"] as const;
+export type ReviewMode = (typeof REVIEW_MODES)[number];
+
+/**
  * A file-change trigger ACTION that launches a consilium review. Embedded in the
  * trigger's `config` JSONB. `repoPath`, when present, MUST resolve inside the
  * consilium-loop allowlist (re-validated INSIDE the factory — never trusted from

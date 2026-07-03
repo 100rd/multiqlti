@@ -199,6 +199,10 @@ export function NewConsiliumReviewDialog({
   const [customMode, setCustomMode] = useState(false);
   const [branch, setBranch] = useState("");
   const [maxRounds, setMaxRounds] = useState("1");
+  // Single-verifier re-review: OPTIONAL per-loop review mode. "" = use the instance
+  // default (verifyReview.enabled); otherwise pin the mode for this loop. Sent as
+  // `reviewMode` only when a non-empty explicit choice is made (additive/back-compat).
+  const [reviewMode, setReviewMode] = useState<"" | "full-dispute" | "single-verifier">("");
   const [baselineCommit, setBaselineCommit] = useState("");
   // Optional free-text instruction (tone / requirements for the evaluation). Sent
   // as `engineerInstruction` only when non-empty; the server fences it as data. This
@@ -379,6 +383,7 @@ export function NewConsiliumReviewDialog({
       ref?: string;
       engineerInstruction?: string;
       skillIds?: string[];
+      reviewMode?: "full-dispute" | "single-verifier";
     } = { repoPath: path, preset };
 
     const rounds = Number(maxRounds);
@@ -406,6 +411,9 @@ export function NewConsiliumReviewDialog({
     // server resolves them project-scoped and appends their directives to the
     // instruction under a byte budget (dropping whole skills if it must).
     if (selectedSkillIds.length > 0) body.skillIds = selectedSkillIds;
+    // Review mode → `reviewMode` only when an EXPLICIT choice is made; "" leaves it
+    // to the server's operator default (verifyReview.enabled), preserving today's flow.
+    if (reviewMode) body.reviewMode = reviewMode;
 
     try {
       setSubmitting(true);
@@ -579,6 +587,52 @@ export function NewConsiliumReviewDialog({
               onChange={(e) => setMaxRounds(e.target.value)}
               data-testid="new-review-max-rounds"
             />
+          </div>
+
+          {/* Re-review mode — HOW rounds AFTER the first are run. Optional: the
+              instance default (server) is used unless pinned here. Round 1 is always
+              the full debate regardless of this choice. */}
+          <div className="space-y-2">
+            <Label>
+              Re-review mode <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Select
+              value={reviewMode || "default"}
+              onValueChange={(v) =>
+                setReviewMode(v === "default" ? "" : (v as "full-dispute" | "single-verifier"))
+              }
+            >
+              <SelectTrigger data-testid="new-review-mode">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">
+                  <span className="flex flex-col">
+                    <span className="font-medium">Instance default</span>
+                    <span className="text-xs text-muted-foreground">
+                      Use the server's configured default for re-review rounds.
+                    </span>
+                  </span>
+                </SelectItem>
+                <SelectItem value="full-dispute">
+                  <span className="flex flex-col">
+                    <span className="font-medium">Full dispute (every round)</span>
+                    <span className="text-xs text-muted-foreground">
+                      Re-run the full debate panel (debaters + judge) every round.
+                    </span>
+                  </span>
+                </SelectItem>
+                <SelectItem value="single-verifier">
+                  <span className="flex flex-col">
+                    <span className="font-medium">Single verifier (confirm fixes)</span>
+                    <span className="text-xs text-muted-foreground">
+                      Re-review rounds run ONE fresh, independent verifier that confirms
+                      the prior findings were closed. Round 1 stays the full debate.
+                    </span>
+                  </span>
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           {preset === "diff-pr-review" && (
