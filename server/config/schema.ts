@@ -584,6 +584,53 @@ export const ConfigSchema = z.object({
          */
         lintCommand: z.string().nullable().default(null),
         /**
+         * PER-REPO command overrides. A map keyed by the loop's `repoPath` (the SAME
+         * absolute path strings operators put in `allowedRepoPaths`). The GLOBAL
+         * `testCommand` / `lintCommand` / `testRunTimeoutMs` / `coderModel` above run the
+         * same command for EVERY repo — wrong when a loop targets repos with different
+         * toolchains (a Python repo needs `uv run pytest`, a Node repo `npm test`). At
+         * DISPATCH the controller resolves the EFFECTIVE command set for the loop's repo
+         * (`resolveImplementForRepo`): a per-repo field OVERRIDES the sibling global key;
+         * an ABSENT field falls back to the global key; NO entry at all ⇒ byte-for-byte
+         * today's global behavior. Additive + backward-compatible — the global keys stay
+         * the default/fallback and are NEVER removed.
+         *
+         * MATCHING (`selectPerRepoOverride`, pure/lexical — no fs): EXACT repoPath key
+         * first, else the LONGEST configured key that is a path-boundary prefix of the
+         * loop's repoPath (a parent-dir entry can cover a whole tree). Keys are NOT
+         * required to be in `allowedRepoPaths` — an entry for a non-allowlisted repo is
+         * harmless dead config: the allowlist is still enforced INDEPENDENTLY at dispatch
+         * (`assertAllowedRepoPath`), so a per-repo override can never widen repo access.
+         *
+         * SECURITY: identical trust to the global keys — config-sourced ONLY (never
+         * action-point/criterion text), each field re-validated with the SAME schema
+         * (coderModel safe-slug with an alphanumeric first char so it can never look like
+         * a flag; timeout clamped 10s..30min), and run downstream via no-shell argv. An
+         * unknown field on an entry is stripped by zod. Absent (default {}) ⇒ ZERO change.
+         */
+        perRepo: z
+          .record(
+            z.string(),
+            z.object({
+              /** Per-repo test command; null ⇒ auto-detect from package.json. Absent ⇒ inherit global `testCommand`. */
+              testCommand: z.string().nullable().optional(),
+              /** Per-repo lint/format command; null ⇒ no lint run. Absent ⇒ inherit global `lintCommand`. */
+              lintCommand: z.string().nullable().optional(),
+              /** Per-repo single-test-run timeout (ms), same clamp as the global. Absent ⇒ inherit global `testRunTimeoutMs`. */
+              testRunTimeoutMs: z.coerce.number().int().min(10_000).max(1_800_000).optional(),
+              /** Per-repo coder model slug (same safe-slug guard as the global). Absent ⇒ inherit global `coderModel`. */
+              coderModel: z
+                .string()
+                .min(1)
+                .regex(
+                  /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/,
+                  "perRepo.coderModel must be a safe model slug (alphanumeric start; [A-Za-z0-9._-])",
+                )
+                .optional(),
+            }),
+          )
+          .default({}),
+        /**
          * Stage 3 (design §3.C/§6): the RESEARCH archetype implement path — deep web
          * research → synthesize → a structured, web-evidence-verified REPORT (NOT code,
          * NOT a Draft PR). When `enabled` is FALSE (default) a `research` loop's close-out
@@ -665,4 +712,89 @@ export function effectiveVerificationEnabled(config: AppConfig): boolean {
   const impl = config.pipeline.consiliumLoop.implement;
   if (!impl.verification.enabled) return false; // short-circuit: never reads features.
   return config.features?.sandbox?.enabled === true || impl.trustedRepoAck === true;
+}
+
+/** The `consiliumLoop.implement` config block (source of the global keys + `perRepo`). */
+type ImplementConfig = AppConfig["pipeline"]["consiliumLoop"]["implement"];
+
+/**
+ * The EFFECTIVE implement command set for a SINGLE loop's repo, after folding any
+ * per-repo override over the global implement keys. Shape mirrors exactly the four
+ * fields the controller threads into the SDLC request, keeping their existing types
+ * so a threaded value is byte-identical to reading the global key directly.
+ */
+export interface EffectiveImplementCommands {
+  /** Operator test-command override; null ⇒ the executor auto-detects from package.json. */
+  testCommand: string | null;
+  /** Optional lint/format command; null ⇒ no lint run. */
+  lintCommand: string | null;
+  /** Hard per-run test timeout (ms), already clamped by the schema. */
+  testRunTimeoutMs: number;
+  /** Operator-pinned coder model slug; undefined ⇒ the coder CLI's own default model. */
+  coderModel: string | undefined;
+}
+
+/** Strip trailing slashes for path-boundary comparison (never touches a bare "/"). */
+function stripTrailingSlash(p: string): string {
+  return p.length > 1 ? p.replace(/\/+$/, "") : p;
+}
+
+/**
+ * Select the per-repo override entry that applies to `repoPath`: EXACT key match
+ * first, else the LONGEST configured key that is a path-boundary prefix of `repoPath`
+ * (so a parent-dir entry covers a whole tree, and the more specific key wins on ties).
+ * Pure + lexical — no fs, no realpath — because operators key `perRepo` with the SAME
+ * absolute path strings they use for `allowedRepoPaths`. Returns undefined when no key
+ * matches ⇒ the caller falls back to the global keys (today's behavior).
+ */
+export function selectPerRepoOverride(
+  repoPath: string,
+  perRepo: ImplementConfig["perRepo"] | undefined,
+): ImplementConfig["perRepo"][string] | undefined {
+  if (!perRepo) return undefined;
+  // Exact key match (raw first, then trailing-slash-normalized) wins outright.
+  if (Object.prototype.hasOwnProperty.call(perRepo, repoPath)) return perRepo[repoPath];
+  const target = stripTrailingSlash(repoPath);
+  let best: string | undefined;
+  let bestLen = -1;
+  for (const key of Object.keys(perRepo)) {
+    const k = stripTrailingSlash(key);
+    if (k === target) return perRepo[key]; // exact after normalization
+    // Path-boundary prefix: target is strictly nested under k (never a substring match).
+    if (target.startsWith(k + "/") && k.length > bestLen) {
+      best = key;
+      bestLen = k.length;
+    }
+  }
+  return best !== undefined ? perRepo[best] : undefined;
+}
+
+/**
+ * Resolve the EFFECTIVE implement command set for a loop's `repoPath`. Precedence per
+ * field: the matched per-repo override value → else the global implement key → else
+ * today's default. `undefined` on an override field means "inherit the global"; an
+ * explicit `null` (testCommand/lintCommand) means "no command" and DOES override.
+ *
+ * BACKWARD-COMPAT CONTRACT: when no per-repo entry matches (or `perRepo` is empty),
+ * the result is byte-identical to reading the global keys directly — so a config with
+ * no `perRepo` produces exactly today's SDLC request.
+ */
+export function resolveImplementForRepo(
+  repoPath: string,
+  implement: ImplementConfig,
+): EffectiveImplementCommands {
+  const base: EffectiveImplementCommands = {
+    testCommand: implement.testCommand,
+    lintCommand: implement.lintCommand ?? null,
+    testRunTimeoutMs: implement.testRunTimeoutMs,
+    coderModel: implement.coderModel,
+  };
+  const o = selectPerRepoOverride(repoPath, implement.perRepo);
+  if (!o) return base;
+  return {
+    testCommand: o.testCommand !== undefined ? o.testCommand : base.testCommand,
+    lintCommand: o.lintCommand !== undefined ? o.lintCommand : base.lintCommand,
+    testRunTimeoutMs: o.testRunTimeoutMs !== undefined ? o.testRunTimeoutMs : base.testRunTimeoutMs,
+    coderModel: o.coderModel !== undefined ? o.coderModel : base.coderModel,
+  };
 }
