@@ -22,6 +22,7 @@ import type {
 import { ARCHETYPES } from "@shared/types";
 import { CONSILIUM_LOOP_TERMINAL_STATES } from "@shared/schema";
 import { computeOpenRemainder } from "@shared/consilium-remainder";
+import { isPrBearingLoop, type PrQueueItem } from "@shared/pr-queue";
 import type { AppConfig } from "../config/schema.js";
 import { requireRole } from "../auth/middleware.js";
 import { validateBody } from "../middleware/validate.js";
@@ -117,6 +118,64 @@ export function registerConsiliumLoopRoutes(
     const isAdmin = req.user.role === "admin";
     const loops = isAdmin ? await storage.getLoops() : await storage.getLoopsByOwner(req.user.id);
     res.json(loops.map((l) => maskLoop({ ...l }, isAdmin)));
+  });
+
+  // ── PR review queue (owner-scoped, read-only) ───────────────────────────────
+  // Returns the caller's PR-BEARING loops — those carrying a `prRef` in a state
+  // where that Draft PR is genuinely un-merged/awaiting review (see isPrBearingLoop).
+  // FLAT list, newest first; the client clusters by repoPath into duplicate-run
+  // groups (clusterPrQueue). Read-only, no schema change: it mirrors the list
+  // route's owner scoping, then enriches each PR-bearing loop with a compact
+  // verdict summary + open-remainder read from that loop's LATEST round.
+  //
+  // STATE-BASED, NOT GITHUB-LIVE: we do NOT fetch live GitHub PR status — the queue
+  // reflects loop FSM state (a PR merged/closed directly on GitHub can linger until
+  // the loop's state advances). `triggerProvenance` is unset (no trigger→loop link
+  // in the current schema); the field stays on the contract for forward-compat.
+  app.get("/api/pr-queue", async (req: Request, res: Response) => {
+    if (!req.user?.id) return res.status(401).json({ error: "Authentication required" });
+    const isAdmin = req.user.role === "admin";
+    const loops = isAdmin ? await storage.getLoops() : await storage.getLoopsByOwner(req.user.id);
+    // Filter to the small PR-bearing set BEFORE fetching rounds (bounds the N+1).
+    const bearing = loops.filter((l) => isPrBearingLoop(l));
+    const items: PrQueueItem[] = await Promise.all(
+      bearing.map(async (loop) => {
+        // Enrich from the loop's latest round: verdict/test summary + open remainder.
+        // Best-effort — any read failure degrades to the bare loop fields.
+        let verdictSummary: string | null | undefined;
+        let openRemainder: PrQueueItem["openRemainder"];
+        try {
+          const rounds = await storage.getLoopRounds(loop.id);
+          openRemainder = computeOpenRemainder(rounds) ?? null;
+          const latest = rounds.reduce<(typeof rounds)[number] | undefined>(
+            (best, r) => (best && best.round >= r.round ? best : r),
+            undefined,
+          );
+          verdictSummary = clampSummary(latest?.testSummary);
+        } catch {
+          verdictSummary = undefined;
+          openRemainder = undefined;
+        }
+        return {
+          loopId: loop.id,
+          // isPrBearingLoop guarantees a non-empty prRef; assert for the wire type.
+          prRef: loop.prRef as string,
+          repoPath: loop.repoPath,
+          state: loop.state,
+          round: loop.round,
+          archetype: loop.archetype ?? null,
+          createdAt: new Date(loop.createdAt).toISOString(),
+          updatedAt: loop.updatedAt ? new Date(loop.updatedAt).toISOString() : null,
+          verdictSummary,
+          openRemainder,
+          // No trigger→loop provenance link exists in the schema — left unset.
+          triggerProvenance: null,
+        } satisfies PrQueueItem;
+      }),
+    );
+    // Newest first (createdAt desc). The client re-orders within clusters too.
+    items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    res.json(items);
   });
 
   // ── Detail (+ rounds) ───────────────────────────────────────────────────────
@@ -268,6 +327,23 @@ export function registerConsiliumLoopRoutes(
     if (!loop) return res.status(409).json({ error: "loop is already terminal" });
     res.json(loop);
   });
+}
+
+/** Max chars of a round's testSummary surfaced on the PR queue card (bounds payload). */
+const PR_QUEUE_SUMMARY_MAX = 500;
+
+/**
+ * Clamp a round's `testSummary` for the compact PR-queue card: trims, drops empty
+ * to `undefined` (omitted from the wire), and caps length with an ellipsis. The
+ * value is INERT model/human text — rendered as inert React text by the client.
+ */
+function clampSummary(summary: string | null | undefined): string | undefined {
+  if (typeof summary !== "string") return undefined;
+  const trimmed = summary.trim();
+  if (trimmed.length === 0) return undefined;
+  return trimmed.length > PR_QUEUE_SUMMARY_MAX
+    ? `${trimmed.slice(0, PR_QUEUE_SUMMARY_MAX)}…`
+    : trimmed;
 }
 
 /**
