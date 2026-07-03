@@ -779,15 +779,39 @@ export default function Statistics() {
     queryFn: () => fetchJson("/api/stats/overview"),
   });
 
+  // ─── Controlled-layout contract (ROOT CAUSE of "widgets won't drag") ────────────
+  //
+  // The grid is seeded from the persisted layout ONCE and then OWNS its interaction
+  // state. We deliberately do NOT re-feed `onLayoutChange` back into the `layouts`
+  // prop.
+  //
+  // Why this matters (the real drag bug): react-grid-layout 2.2.3's
+  // `ResponsiveReactGridLayout` (what `WidthProvider(Responsive)` renders) re-seeds
+  // its internal layout from the `layouts` prop through a prop-sync effect that —
+  // unlike the single-grid `ReactGridLayout`, which bails out with
+  // `if (isDraggingRef.current) return` — has NO "is dragging" guard. `onLayoutChange`
+  // fires mid-gesture (every time the dragged widget crosses into a new grid cell), so
+  // a fully-controlled `layouts={state}` that we `setState` on every change re-enters
+  // that un-guarded effect DURING the drag and overwrites the grid's in-progress
+  // layout with the prop value. The widget stops tracking the cursor and snaps back —
+  // exactly the reported "handle is visible but dragging does not move widgets". This
+  // only manifests under real pointer interaction, so the SSR/jsdom oracles used in
+  // PR #470 could not surface it, and the earlier `touch-action` fix is mouse-inert.
+  //
+  // Persisting only (no setState from the drag) lets the grid complete the gesture
+  // uninterrupted; `loadLayout()`/`saveLayout()` keep the versioned round-trip intact.
+  // Reset bumps `gridKey` to remount the grid so it re-seeds from the fresh defaults.
   const [layouts, setLayouts] = useState<ResponsiveLayouts>(() => loadLayout());
+  const [gridKey, setGridKey] = useState(0);
 
   const handleLayoutChange = (_current: Layout, allLayouts: ResponsiveLayouts) => {
-    setLayouts(allLayouts);
+    // Persist only — never re-feed the controlled prop mid-gesture (see note above).
     saveLayout(allLayouts);
   };
 
   const handleReset = () => {
     setLayouts(resetLayout());
+    setGridKey((k) => k + 1);
   };
 
   return (
@@ -814,6 +838,7 @@ export default function Statistics() {
           Drag widget headers to rearrange · drag corners to resize · use “Reset layout” to restore defaults.
         </p>
         <ResponsiveGridLayout
+          key={gridKey}
           className="stats-dashboard-grid w-full min-w-0"
           layouts={layouts}
           breakpoints={BREAKPOINTS}
