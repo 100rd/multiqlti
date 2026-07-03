@@ -10,6 +10,7 @@ import {
   reduce,
   isAntiStall,
   pickJudgeOutput,
+  composeCancelExplanation,
   ConsiliumLoopController,
   MAX_CONCURRENT_DEV_HANDOFFS,
   SDLC_DEV_REDRIVE_GRACE_MS,
@@ -78,6 +79,60 @@ describe("reduce — design §3 transition table", () => {
   it("DECIDING: decreasing open_p0 does NOT escalate", () => {
     const t = reduce("deciding", { kind: "decided", verdict: verdict(false, 1), priorOpenP0: [3, 2, 1] });
     expect(t?.to).toBe("developing");
+  });
+});
+
+// ─── Cancel explanation: reason + actor carried into the `error` column ───────
+
+describe("reduce — cancel carries reason + actor into error", () => {
+  const ISO_RE = /^Cancelled by .+ at \d{4}-\d{2}-\d{2}T[\d:.]+Z/;
+
+  it("cancel with reason + actor → composed `error` (who/when — why) + completedAt", () => {
+    const t = reduce("reviewing", { kind: "cancel", actor: "Ada Lovelace", reason: "superseded by #42" });
+    expect(t?.to).toBe("cancelled");
+    const err = t?.extra?.error as string;
+    expect(err).toMatch(ISO_RE);
+    expect(err).toContain("Cancelled by Ada Lovelace at ");
+    expect(err).toContain(" — superseded by #42");
+    // completedAt and the error timestamp are the SAME instant.
+    expect(t?.extra?.completedAt).toBeInstanceOf(Date);
+    expect(err).toContain((t?.extra?.completedAt as Date).toISOString());
+  });
+
+  it("cancel WITHOUT reason → still records actor + timestamp (never blank, no trailing dash)", () => {
+    const t = reduce("developing", { kind: "cancel", actor: "ops@team" });
+    const err = t?.extra?.error as string;
+    expect(err).toBe(`Cancelled by ops@team at ${(t?.extra?.completedAt as Date).toISOString()}`);
+    expect(err).not.toContain("—");
+  });
+
+  it("cancel with NEITHER reason NOR actor (auto-cancel) → 'Cancelled by system at <ISO>'", () => {
+    const t = reduce("awaiting_merge", { kind: "cancel" });
+    const err = t?.extra?.error as string;
+    expect(err).toMatch(/^Cancelled by system at /);
+    expect(err).toContain((t?.extra?.completedAt as Date).toISOString());
+  });
+
+  it("blank/whitespace actor or reason falls back cleanly (never blank actor, no empty reason tail)", () => {
+    const t = reduce("reviewing", { kind: "cancel", actor: "   ", reason: "   " });
+    const err = t?.extra?.error as string;
+    expect(err).toMatch(/^Cancelled by system at /);
+    expect(err).not.toContain("—");
+  });
+});
+
+describe("composeCancelExplanation — pure formatter", () => {
+  const at = new Date("2026-07-03T12:00:00.000Z");
+  it("actor + reason", () => {
+    expect(composeCancelExplanation(at, "Grace", "dup")).toBe(
+      "Cancelled by Grace at 2026-07-03T12:00:00.000Z — dup",
+    );
+  });
+  it("actor only", () => {
+    expect(composeCancelExplanation(at, "Grace")).toBe("Cancelled by Grace at 2026-07-03T12:00:00.000Z");
+  });
+  it("neither → system, never blank", () => {
+    expect(composeCancelExplanation(at)).toBe("Cancelled by system at 2026-07-03T12:00:00.000Z");
   });
 });
 
@@ -986,5 +1041,62 @@ describe("controller.develop — R1 cap atomicity under a concurrent burst", () 
     const retry = await controller.develop(busyId!);
     expect(retry.ok).toBe(true); // a freed slot is immediately reusable
     expect(runSdlc).toHaveBeenCalledTimes(MAX_CONCURRENT_DEV_HANDOFFS + 1);
+  });
+});
+
+// ─── controller.cancel — reason + actor persisted to `error` via the CAS ──────
+
+describe("controller.cancel — records terminal explanation", () => {
+  const mkController = (
+    storage: ReturnType<typeof makeFakeStorage>["storage"],
+    cancelGroup = vi.fn(async () => undefined),
+  ) =>
+    new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup } as never,
+      config: fakeConfig,
+    });
+
+  it("cancel(loopId, { reason, actor }) writes composed `error` + cascades group cancel", async () => {
+    const loop = makeLoop({ state: "reviewing", currentIterationNumber: 1 });
+    const { storage, cas, get } = makeFakeStorage(loop);
+    const cancelGroup = vi.fn(async () => undefined);
+    const res = await mkController(storage, cancelGroup).cancel(loop.id, {
+      reason: "superseded by newer loop",
+      actor: "Ada",
+    });
+    expect(res?.state).toBe("cancelled");
+    expect(cancelGroup).toHaveBeenCalledWith(loop.groupId);
+    // The CAS carried the error + completedAt in its extra.
+    const casExtra = cas.mock.calls.at(-1)?.[3] as { error?: string; completedAt?: Date };
+    expect(casExtra.error).toContain("Cancelled by Ada at ");
+    expect(casExtra.error).toContain(" — superseded by newer loop");
+    expect(get().error).toBe(casExtra.error);
+    expect(get().completedAt).toBeInstanceOf(Date);
+  });
+
+  it("cancel WITHOUT reason still records actor + timestamp — `error` is never blank", async () => {
+    const loop = makeLoop({ state: "developing", devGroupId: "dg1" });
+    const { storage, get } = makeFakeStorage(loop);
+    const res = await mkController(storage).cancel(loop.id, { actor: "ops@team" });
+    expect(res?.state).toBe("cancelled");
+    expect(get().error).toBe(`Cancelled by ops@team at ${(get().completedAt as Date).toISOString()}`);
+    expect(get().error).toBeTruthy();
+  });
+
+  it("cancel with no opts (auto-cancel) → 'Cancelled by system at <ISO>', never blank", async () => {
+    const loop = makeLoop({ state: "awaiting_merge" });
+    const { storage, get } = makeFakeStorage(loop);
+    const res = await mkController(storage).cancel(loop.id);
+    expect(res?.state).toBe("cancelled");
+    expect(get().error).toMatch(/^Cancelled by system at /);
+  });
+
+  it("cancel on an already-terminal loop is a no-op (no error overwrite)", async () => {
+    const loop = makeLoop({ state: "converged", error: null, completedAt: new Date() });
+    const { storage, cas } = makeFakeStorage(loop);
+    const res = await mkController(storage).cancel(loop.id, { actor: "Ada", reason: "late" });
+    expect(res).toBeNull();
+    expect(cas).not.toHaveBeenCalled();
   });
 });
