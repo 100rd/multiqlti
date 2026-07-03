@@ -3,6 +3,7 @@ import { pool } from "../db";
 import { configLoader } from "../config/loader";
 import { authService } from "../auth/service";
 import { getFederationManager } from "../federation/manager-state";
+import { getBuildInfo } from "../build-info";
 
 /**
  * GET /api/health
@@ -113,10 +114,13 @@ export function registerHealthRoutes(app: Express): void {
       peerCount: fm ? fm.getPeers().length : 0,
     };
 
+    const build = await getBuildInfo();
+
     // Full response for authenticated users
     const body = {
       status: overallStatus,
-      version: process.env.npm_package_version ?? "unknown",
+      version: build.version ?? process.env.npm_package_version ?? "unknown",
+      commit: build.commit,
       uptime: Math.floor(process.uptime()),
       db: dbStatus,
       providers: {
