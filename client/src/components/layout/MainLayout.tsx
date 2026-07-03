@@ -1,10 +1,8 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "wouter";
 import {
-  LayoutDashboard,
   Settings,
   ShieldAlert,
-  MessageCircleQuestion,
   BarChart3,
   FolderGit2,
   LogOut,
@@ -20,7 +18,6 @@ import {
   KeyRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { usePendingQuestions } from "@/hooks/use-pipeline";
 import { useAuth } from "@/hooks/use-auth";
 import type { UserRole } from "@shared/types";
 import { PeerStatusBadge } from "@/components/config-sync/PeerStatusBadge";
@@ -39,18 +36,6 @@ const ROLE_BADGE: Record<UserRole, { label: string; className: string }> = {
 
 export default function MainLayout({ children }: MainLayoutProps) {
   const [location, navigate] = useLocation();
-  const { data: pendingQuestions } = usePendingQuestions();
-  const pendingList = Array.isArray(pendingQuestions)
-    ? (pendingQuestions as Array<{ runId?: string; pipelineName?: string | null }>)
-    : [];
-  const pendingCount = pendingList.length;
-  // Group pending questions by the pipeline they belong to, so the sidebar can
-  // show WHICH pipeline(s) are waiting — not just a bare count.
-  const pendingByPipeline = pendingList.reduce<Record<string, number>>((acc, q) => {
-    const key = q.pipelineName || "Unknown pipeline";
-    acc[key] = (acc[key] ?? 0) + 1;
-    return acc;
-  }, {});
   const { user, logout } = useAuth();
 
   // Detect if we're inside a workspace so we can show the connections sub-item
@@ -58,7 +43,6 @@ export default function MainLayout({ children }: MainLayoutProps) {
   const currentWorkspaceId = workspaceMatch ? workspaceMatch[1] : null;
 
   const navItems = [
-    { icon: LayoutDashboard, label: "Dashboard", href: "/" },
     { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: Repeat, label: "Consilium Loops", href: "/consilium-loops" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },
@@ -98,7 +82,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
           },
         ]
       : []),
-    { icon: BarChart3, label: "Statistics", href: "/stats" },
+    { icon: BarChart3, label: "Statistics", href: "/" },
     { icon: KeyRound, label: "Credential Access", href: "/credentials" },
     { icon: Settings, label: "Settings", href: "/settings" },
     { icon: Radio, label: "Config Sync", href: "/settings/peers" },
@@ -166,25 +150,6 @@ export default function MainLayout({ children }: MainLayoutProps) {
             })}
           </nav>
 
-          {/* Pending Questions Quick Access */}
-          {pendingCount > 0 && (
-            <div className="mx-4 p-3 rounded-lg border border-amber-500/30 bg-amber-500/5">
-              <div className="flex items-center gap-2 text-xs text-amber-600">
-                <MessageCircleQuestion className="h-3.5 w-3.5" />
-                <span className="font-medium">
-                  {pendingCount} pending question{pendingCount !== 1 ? "s" : ""}
-                </span>
-              </div>
-              <ul className="mt-1 space-y-0.5">
-                {Object.entries(pendingByPipeline).map(([name, count]) => (
-                  <li key={name} className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-                    <span className="truncate">{name}</span>
-                    <span className="shrink-0 tabular-nums font-medium text-amber-600">{count}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
         </div>
 
         <div className="p-4 border-t border-border space-y-2">
