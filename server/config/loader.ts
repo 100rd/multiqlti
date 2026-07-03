@@ -194,6 +194,9 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { envKey: "MULTI_PIPELINE_CONSILIUM_LOOP_MAX_ROUNDS",       configPath: ["pipeline", "consiliumLoop", "maxRounds"],      kind: "number"  },
   { envKey: "MULTI_PIPELINE_CONSILIUM_LOOP_POLL_INTERVAL_MS", configPath: ["pipeline", "consiliumLoop", "pollIntervalMs"], kind: "number"  },
   { envKey: "MULTI_PIPELINE_CONSILIUM_LOOP_MAX_DIFF_BYTES",   configPath: ["pipeline", "consiliumLoop", "maxDiffBytes"],   kind: "number"  },
+
+  // T1 trigger retarget (loop-triggers.md §4.5): schedule→loop firing kill-switch.
+  { envKey: "TRIGGERS_ENABLED",       configPath: ["features", "triggers", "enabled"], kind: "boolean" },
 ];
 
 /**

@@ -17,7 +17,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { TriggerConfig, TriggerType, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, ExecutionTrace } from "./types.js";
+import type { TriggerConfig, TriggerType, TriggerProvenance, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, ExecutionTrace } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -643,14 +643,19 @@ export const triggers = pgTable(
       .default(sql`gen_random_uuid()`),
     // Denormalized from pipelines.projectId for direct query scoping: ADR-001 PR-0c §3.1(e)
     projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    // T1 RETARGET (loop-triggers.md): a trigger fires a CONSILIUM LOOP, not a
+    // (deleted) pipeline run. `pipeline_id` is now NULLABLE — new project-scoped
+    // triggers carry no pipeline. Kept (nullable FK) for pre-existing rows.
     pipelineId: varchar("pipeline_id")
-      .notNull()
       .references(() => pipelines.id, { onDelete: "cascade" }),
     type: text("type").notNull().$type<TriggerType>(),
     config: jsonb("config").notNull().default(sql`'{}'::jsonb`).$type<TriggerConfig>(),
     secretEncrypted: text("secret_encrypted"),
     enabled: boolean("enabled").notNull().default(true),
     lastTriggeredAt: timestamp("last_triggered_at"),
+    // T1 policy rail: monotonically-incremented count of fires suppressed by a
+    // policy (dedup today; budget/debounce later). Surfaced on the triggers page.
+    suppressedCount: integer("suppressed_count").notNull().default(0),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
@@ -668,6 +673,7 @@ export const insertTriggerSchema = createInsertSchema(triggers).omit({
   updatedAt: true,
   lastTriggeredAt: true,
   secretEncrypted: true,
+  suppressedCount: true,
 });
 
 export type TriggerRow = typeof triggers.$inferSelect;
@@ -2028,6 +2034,12 @@ export const consiliumLoops = pgTable(
     // `dropped: true` entry was resolved but dropped WHOLE to fit the byte budget
     // (never truncated mid-skill). INERT in storage — display/audit only.
     appliedSkills: jsonb("applied_skills").$type<AppliedSkillRef[]>(),
+    // T1 (loop-triggers.md §6, migration 0042): provenance of the TRIGGER that
+    // fired this loop — `{ triggerId, triggerType, eventDigest, firedAt }`. Null ⇒
+    // a human/API-initiated loop (no trigger). DEDICATED column (not archetype_params,
+    // which the planner's partial updates own — same reasoning as applied_skills).
+    // INERT display/audit data for the launch passport; never a prompt/shell sink.
+    triggerProvenance: jsonb("trigger_provenance").$type<TriggerProvenance>(),
     // Stage 1 (0032): intent→archetype planner output / human override. All
     // nullable; written by a PLAIN partial update (NOT casLoopState) so persisting
     // an archetype on a terminal loop never transitions it.

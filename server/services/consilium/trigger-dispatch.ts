@@ -35,6 +35,19 @@
  *       for the same (projectId, resolved repoPath). This guard is TRIGGER-PATH
  *       ONLY — the explicit UI endpoint (POST /api/consilium-reviews) is
  *       human-initiated and intentionally NOT deduped this way.
+ *
+ *       BOUND (T1, accepted): the dedup is a read-then-create check, not a
+ *       transaction/lock, so two TRULY-CONCURRENT fires for the same
+ *       (project, repoPath) that interleave between `getLoops()` and
+ *       `createReview()` can both pass — creating AT MOST 2 active loops (each
+ *       review-only, `maxRounds=1`), never a storm. It is not made race-safe by a
+ *       partial unique index on non-terminal loops per (project, repoPath) BECAUSE
+ *       that would ALSO block the human UI endpoint (intentionally un-deduped) from
+ *       re-reviewing a repo with a review already in flight. The sequential burst
+ *       vector (many spec writes to ONE watched repo, processed serially by the
+ *       debounced watcher) IS caught. Making the concurrent case airtight —
+ *       trigger-path-only advisory lock keyed on repoPath, or the §4 budget/debounce
+ *       rails — is deferred to T1-full (loop-triggers.md §4.2–4.3).
  *   T6. (FIX MED-2 — autonomous coder from fs events) The trigger path FORCES
  *       maxRounds=1 (review-only) regardless of `action.maxRounds`, so an
  *       unattended file-system event can NEVER reach DEVELOPING / the SDLC coder.
@@ -56,17 +69,77 @@
  *     is a CONFIG discipline, accepted as documented.
  */
 import { existsSync, realpathSync } from "fs";
+import { createHash } from "crypto";
 import { dirname, join } from "path";
 import {
   CONSILIUM_LOOP_TERMINAL_STATES,
   type TriggerRow,
   type ConsiliumLoopRow,
 } from "@shared/schema";
-import type { FileChangeTriggerConfig } from "@shared/types";
+import type {
+  ConsiliumReviewTriggerAction,
+  TriggerProvenance,
+} from "@shared/types";
 import type {
   CreateConsiliumReviewDeps,
   CreateConsiliumReviewParams,
 } from "./review-factory.js";
+
+/**
+ * A trigger's loop-template config, narrowed to the two fields the dispatch reads.
+ * Both file_change (has `watchPath`) and schedule (has neither, so `repoPath` on the
+ * action is required) carry an optional `action`. Kept structural (not a specific
+ * config type) so the seam stays type-agnostic across trigger classes.
+ */
+type LoopTemplateConfig = { watchPath?: string; action?: ConsiliumReviewTriggerAction } | null;
+
+/** The literal token operators may embed in an engineerInstruction (§2). */
+const EVENT_TOKEN = "${event}";
+
+/**
+ * A short, human description of the firing event, folded into the review objective
+ * (via engineerInstruction ${event} interpolation OR objectiveExtra). UNTRUSTED
+ * (it embeds fs paths / payload strings) → the factory control-strips + clamps +
+ * fences it, so it is safe to compose here. Never a shell/branch/PR sink.
+ */
+export function describeEvent(trigger: TriggerRow, payload: unknown): string {
+  const filePath = payloadString(payload, "filePath");
+  if (filePath) return `file change at ${filePath}`;
+  const scheduledAt = payloadString(payload, "scheduledAt");
+  if (scheduledAt) return `scheduled run at ${scheduledAt}`;
+  const event = payloadString(payload, "event");
+  if (event) return `${trigger.type} event: ${event}`;
+  return `${trigger.type} trigger fired`;
+}
+
+/**
+ * A stable, short hex digest of the firing payload for provenance (§6). Enough to
+ * correlate a loop to its event without persisting the (untrusted) payload verbatim.
+ * A non-serialisable payload degrades to a digest of the string form.
+ */
+export function eventDigest(payload: unknown): string {
+  let material: string;
+  try {
+    material = JSON.stringify(payload ?? null) ?? String(payload);
+  } catch {
+    material = String(payload);
+  }
+  return createHash("sha256").update(material).digest("hex").slice(0, 16);
+}
+
+/**
+ * Interpolate the `${event}` token in an operator instruction with the event
+ * description. Returns undefined when there is no instruction (so the caller falls
+ * back to objectiveExtra). Split/join replaces EVERY occurrence without invoking
+ * regex-replacement's `$`-pattern semantics on the (untrusted) description.
+ */
+export function interpolateEvent(
+  instruction: string | undefined,
+  eventDescription: string,
+): string | undefined {
+  if (instruction === undefined || instruction.length === 0) return undefined;
+  return instruction.split(EVENT_TOKEN).join(eventDescription);
+}
 
 /** A loop in one of these states never ticks again → does NOT block a new fire. */
 const TERMINAL_LOOP_STATES: ReadonlySet<string> = new Set(CONSILIUM_LOOP_TERMINAL_STATES);
@@ -166,7 +239,7 @@ export async function maybeLaunchConsiliumReview(
   trigger: TriggerRow,
   payload: unknown,
 ): Promise<ConsiliumDispatchResult> {
-  const config = trigger.config as Partial<FileChangeTriggerConfig> | null;
+  const config = trigger.config as LoopTemplateConfig;
   const action = config?.action;
   if (action?.kind !== "consilium_review") return "noop";
 
@@ -189,9 +262,26 @@ export async function maybeLaunchConsiliumReview(
     return "skipped";
   }
 
-  // T1: the UNTRUSTED changed-file path → objectiveExtra only (clamped in factory).
-  const changedFile = payloadString(payload, "filePath");
-  const objectiveExtra = changedFile ? `Trigger: file change at ${changedFile}` : undefined;
+  // T1: the UNTRUSTED event description (embeds fs paths / payload strings) →
+  // fed to the factory ONLY through its sanitized objective seam (control-strip +
+  // byte-clamp + fence). Two mutually-exclusive sinks, in precedence order:
+  //   1. If the operator wrote an engineerInstruction, INTERPOLATE `${event}` into
+  //      it and pass it as `engineerInstruction` (persisted inert + feeds objective).
+  //   2. Otherwise pass the bare description as `objectiveExtra` (legacy file_change
+  //      behavior). The factory prefers engineerInstruction when BOTH are set, so we
+  //      only ever populate one to keep the objective deterministic.
+  const eventDescription = describeEvent(trigger, payload);
+  const engineerInstruction = interpolateEvent(action.engineerInstruction, eventDescription);
+  const objectiveExtra = engineerInstruction ? undefined : eventDescription;
+
+  // §6 provenance: which trigger + event fired the loop (short payload digest, not
+  // the untrusted payload verbatim). Persisted inert for the launch passport.
+  const provenance: TriggerProvenance = {
+    triggerId: trigger.id,
+    triggerType: trigger.type,
+    eventDigest: eventDigest(payload),
+    firedAt: new Date().toISOString(),
+  };
 
   // T5: dedup key — match against the CANONICAL path the factory persists.
   const resolvedRepo = canonicalRepoPath(repoPath);
@@ -236,12 +326,18 @@ export async function maybeLaunchConsiliumReview(
         preset: action.preset,
         // FK FIX: real `users.id` (project owner), NOT the literal "system".
         createdBy,
-        // T6 (FIX MED-2): FORCE review-only on the trigger path. An autonomous
-        // file-event-driven run must NEVER reach DEVELOPING / the SDLC coder, so
-        // we IGNORE `action.maxRounds` here (server-side, not config-trusted).
-        // Multi-round (1..6) reviews are reachable ONLY via the human UI endpoint.
+        // T6 (FIX MED-2): FORCE review-only on EVERY trigger path (file_change AND
+        // schedule). An unattended, automatically-fired run must NEVER reach
+        // DEVELOPING / the SDLC coder, so we IGNORE `action.maxRounds` here
+        // (server-side, not config-trusted). Multi-round (1..6) is reachable ONLY
+        // via the human UI endpoint. The operator's chosen maxRounds is persisted on
+        // the template for a future (T-full) attended path but is inert today.
         maxRounds: 1,
+        // T1: exactly one of these is set (engineerInstruction wins in the factory).
+        engineerInstruction,
         objectiveExtra,
+        // §6: record which trigger + event started the loop.
+        triggerProvenance: provenance,
       });
     });
 

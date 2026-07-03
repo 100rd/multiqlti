@@ -328,27 +328,34 @@ export async function registerRoutes(
     // the last-fired timestamp. Both operate cross-project in system context.
     const fireTrigger = async (trigger: import("@shared/schema").TriggerRow, payload: unknown): Promise<void> => {
       await runAsSystem("fire-trigger", async () => {
-        const pipeline = await storage.getPipeline(trigger.pipelineId);
-        if (!pipeline) {
-          // pipelineId is NOT NULL in the schema; a consilium_review action does
-          // not USE the pipeline, but a dangling pipelineId still means a broken
-          // trigger config — keep the historical record-only no-op (no fire).
-          log(`[triggers] Pipeline not found for trigger ${trigger.id}`, "triggers");
+        // T1 RETARGET: a trigger fires a CONSILIUM LOOP (loop template in config),
+        // not a (deleted) pipeline run. pipelineId is now NULLABLE — a loop-template
+        // trigger has none. We NO LONGER gate on a pipeline lookup (that made every
+        // pipeline-less trigger a permanent no-op). ALWAYS record lastTriggeredAt
+        // first — for EVERY trigger type, action or not — so a fire is diagnosable
+        // even when the dispatch below suppresses/skips.
+        await storage.updateTrigger(trigger.id, { lastTriggeredAt: new Date() });
+        log(`[triggers] Fired trigger ${trigger.id} (type ${trigger.type})`, "triggers");
+
+        // T1 KILL-SWITCH (loop-triggers.md §4.5): a SCHEDULE trigger only fires a
+        // loop when `features.triggers.enabled` is on — a running server never
+        // silently starts firing scheduled loops. The pre-existing file_change
+        // binding is NOT gated here (it stays under consiliumLoop.enabled), so the
+        // one live prototype binding is unchanged.
+        if (trigger.type === "schedule" && !appConfigLoader.get().features.triggers.enabled) {
+          log(`[triggers] schedule trigger ${trigger.id} not fired — features.triggers.enabled is off`, "triggers");
           return;
         }
-        // ALWAYS record lastTriggeredAt — for EVERY trigger type, action or not.
-        await storage.updateTrigger(trigger.id, { lastTriggeredAt: new Date() });
-        log(`[triggers] Fired trigger ${trigger.id} for pipeline ${pipeline.id}`, "triggers");
 
-        // ── Action dispatch (file_change triggers only) ─────────────────────────
-        // ABSENT action ⇒ the record-only no-op above (back-compat for webhook /
-        // schedule / github / plain file_change triggers). Present + consilium_review
-        // ⇒ launch via the SAME factory the HTTP route uses. The changed-file path +
-        // watchPath are UNTRUSTED → they reach ONLY objectiveExtra, which the factory
-        // control-strips + clamps. repoPath is re-validated against the fail-closed
-        // allowlist INSIDE the factory. The launch runs under runAsProject so all
-        // rows stay project-scoped. `reviewDeps: null` (kill-switch off) ⇒ skipped.
-        await maybeLaunchConsiliumReview(
+        // ── Loop-template dispatch ───────────────────────────────────────────────
+        // ABSENT action ⇒ record-only no-op (back-compat for webhook / github /
+        // action-less triggers). Present + consilium_review ⇒ launch via the SAME
+        // factory the HTTP route uses. Untrusted payload strings reach ONLY the
+        // factory's sanitized objective seam (engineerInstruction / objectiveExtra);
+        // repoPath is re-validated against the fail-closed allowlist + the project's
+        // workspaces INSIDE the factory. `reviewDeps: null` (kill-switch off) ⇒
+        // skipped. The launch runs under runAsProject so all rows stay project-scoped.
+        const result = await maybeLaunchConsiliumReview(
           {
             reviewDeps: consiliumLoopController
               ? {
@@ -377,6 +384,13 @@ export async function registerRoutes(
           trigger,
           payload,
         );
+
+        // T1 policy rail (§4): a fire suppressed by dedup bumps the trigger's
+        // suppressed counter (surfaced on the triggers page) instead of blindly
+        // creating a second active loop for the same repo.
+        if (result === "skipped-dedup") {
+          await storage.incrementTriggerSuppressed(trigger.id);
+        }
       });
     };
 

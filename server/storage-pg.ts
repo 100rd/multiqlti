@@ -1301,6 +1301,12 @@ export class PgStorage implements IStorage {
     return db.select().from(triggers).where(withProject(triggers, eq(triggers.pipelineId, pipelineId))).orderBy(triggers.createdAt);
   }
 
+  async getProjectTriggers(): Promise<TriggerRow[]> {
+    // T1: project-scoped list (the ALS project filter only) so pipeline-less,
+    // loop-template triggers are returned alongside any legacy pipeline triggers.
+    return db.select().from(triggers).where(withProject(triggers)).orderBy(triggers.createdAt);
+  }
+
   async getTrigger(id: string): Promise<TriggerRow | undefined> {
     const [row] = await db.select().from(triggers).where(withProject(triggers, eq(triggers.id, id)));
     return row;
@@ -1328,12 +1334,13 @@ export class PgStorage implements IStorage {
   }
 
   async createTrigger(
-    data: Omit<TriggerRow, "id" | "projectId" | "createdAt" | "updatedAt" | "lastTriggeredAt"> & { secretEncrypted?: string | null },
+    data: Omit<TriggerRow, "id" | "projectId" | "createdAt" | "updatedAt" | "lastTriggeredAt" | "suppressedCount"> & { secretEncrypted?: string | null },
   ): Promise<TriggerRow> {
     const [row] = await db
       .insert(triggers)
       .values(withProjectInsert(triggers, {
-        pipelineId: data.pipelineId,
+        // T1: nullable — a loop-template trigger carries no pipeline.
+        pipelineId: data.pipelineId ?? null,
         type: data.type as TriggerRow["type"],
         config: data.config,
         secretEncrypted: data.secretEncrypted ?? null,
@@ -1355,6 +1362,22 @@ export class PgStorage implements IStorage {
 
   async deleteTrigger(id: string): Promise<void> {
     await db.delete(triggers).where(withProject(triggers, eq(triggers.id, id)));
+  }
+
+  /**
+   * T1 policy rail: atomically bump the suppressed-fire counter. Called from
+   * `fireTrigger` (background/system context) when a fire is suppressed by dedup.
+   * The `+ 1` is computed in SQL (no read-modify-write race). Scoped like every
+   * other trigger write; in the system context `withProject` applies no filter.
+   */
+  async incrementTriggerSuppressed(id: string): Promise<void> {
+    await db
+      .update(triggers)
+      .set({
+        suppressedCount: drizzleSql`${triggers.suppressedCount} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(withProject(triggers, eq(triggers.id, id)));
   }
 
   // ─── Traces (Phase 6.5) ────────────────────────────────────────────────────

@@ -1,20 +1,30 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Zap, Plus, Loader2, ZapOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TriggerCard } from "@/components/triggers/TriggerCard";
-import { TriggerForm } from "@/components/triggers/TriggerForm";
+import { TriggerForm, type TriggerWorkspaceOption } from "@/components/triggers/TriggerForm";
 import { useTriggers, useDeleteTrigger } from "@/hooks/use-triggers";
-import { usePipelines } from "@/hooks/use-pipeline";
+import { apiRequest } from "@/hooks/use-pipeline";
 import type { PipelineTrigger } from "@shared/types";
+import type { WorkspaceRow } from "@shared/schema";
 
-interface Pipeline {
-  id: string;
-  name: string;
+/**
+ * Workspaces for the active project — the loop-target picklist for new triggers,
+ * and the gate for enabling the "Add Trigger" button (a trigger now fires a
+ * consilium loop against one of the project's allowlisted repos, not a pipeline).
+ * Uses the shared apiRequest transport so `x-project-id` is attached.
+ */
+function useWorkspaces() {
+  return useQuery<WorkspaceRow[]>({
+    queryKey: ["/api/workspaces"],
+    queryFn: () => apiRequest("GET", "/api/workspaces") as Promise<WorkspaceRow[]>,
+  });
 }
 
 export default function TriggersPage() {
   const { data: triggers, isLoading: triggersLoading, error } = useTriggers();
-  const { data: pipelinesData } = usePipelines();
+  const { data: workspaceData } = useWorkspaces();
   const deleteTrigger = useDeleteTrigger();
 
   const [formOpen, setFormOpen] = useState(false);
@@ -22,11 +32,10 @@ export default function TriggersPage() {
 
   const subsystemDisabled = (error as (Error & { disabled?: boolean }) | null)?.disabled === true || (error as (Error & { status?: number }) | null)?.status === 503;
   const triggerList: PipelineTrigger[] = Array.isArray(triggers) ? triggers : [];
-  const pipelines: Pipeline[] = Array.isArray(pipelinesData) ? pipelinesData : [];
-
-  function pipelineName(id: string): string {
-    return pipelines.find((p) => p.id === id)?.name ?? id.slice(0, 8);
-  }
+  const workspaces: TriggerWorkspaceOption[] = Array.isArray(workspaceData)
+    ? workspaceData.map((w) => ({ path: w.path, name: w.name }))
+    : [];
+  const hasWorkspaces = workspaces.length > 0;
 
   function handleAdd() {
     setEditingTrigger(undefined);
@@ -50,14 +59,14 @@ export default function TriggersPage() {
         <div>
           <h2 className="text-sm font-semibold">Triggers</h2>
           <p className="text-xs text-muted-foreground">
-            Automate pipeline runs with webhooks, schedules, and events
+            Start consilium loops automatically from schedules and file changes
           </p>
         </div>
         <Button
           size="sm"
           className="h-8 text-xs"
           onClick={handleAdd}
-          disabled={pipelines.length === 0 || subsystemDisabled}
+          disabled={!hasWorkspaces || subsystemDisabled}
         >
           <Plus className="h-3 w-3 mr-2" />
           Add Trigger
@@ -126,14 +135,14 @@ export default function TriggersPage() {
             <Zap className="h-10 w-10 text-muted-foreground/40 mb-4" />
             <p className="text-sm font-medium text-muted-foreground">No triggers yet</p>
             <p className="text-xs text-muted-foreground mt-1 mb-6">
-              Add one to automate your pipeline runs.
+              Add one to start consilium loops automatically.
             </p>
-            <Button size="sm" onClick={handleAdd} disabled={pipelines.length === 0}>
+            <Button size="sm" onClick={handleAdd} disabled={!hasWorkspaces}>
               <Plus className="h-3 w-3 mr-2" /> Add Trigger
             </Button>
-            {pipelines.length === 0 && (
+            {!hasWorkspaces && (
               <p className="text-xs text-muted-foreground mt-3">
-                Create a pipeline first before adding triggers.
+                Register a workspace for this project before adding triggers.
               </p>
             )}
           </div>
@@ -144,7 +153,6 @@ export default function TriggersPage() {
             <TriggerCard
               key={trigger.id}
               trigger={trigger}
-              pipelineName={pipelineName(trigger.pipelineId)}
               onEdit={handleEdit}
               onDelete={handleDelete}
             />
@@ -155,7 +163,7 @@ export default function TriggersPage() {
       <TriggerForm
         open={formOpen}
         onOpenChange={setFormOpen}
-        pipelines={pipelines}
+        workspaces={workspaces}
         trigger={editingTrigger}
       />
     </div>
