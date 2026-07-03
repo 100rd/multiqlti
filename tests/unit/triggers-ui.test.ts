@@ -17,6 +17,9 @@ import {
   canAddTrigger,
   buildLoopTemplate,
   loopTargetSummary,
+  isGitHubRepoValid,
+  formatValidationIssues,
+  GITHUB_DEFAULT_EVENTS,
 } from "../../client/src/components/triggers/trigger-form-logic";
 
 // ─── Helpers duplicated from TriggerCard / TriggerForm ──────────────────────
@@ -237,6 +240,94 @@ describe("isTriggerFormValid", () => {
     expect(isTriggerFormValid({ ...gh, ghEvents: [] })).toBe(false);
     // T1-full: without a loop-target repoPath the events would be recorded but fire nothing.
     expect(isTriggerFormValid({ ...gh, repoPath: "" })).toBe(false);
+  });
+
+  it("github_event rejects a malformed repository slug (mirrors the server regex)", () => {
+    const gh = { ...base, type: "github_event" as const, ghEvents: ["pull_request"], repoPath: "/allowed/omnius" };
+    // Missing the owner/repo slash → server would 400; caught client-side now.
+    expect(isTriggerFormValid({ ...gh, ghRepo: "justrepo" })).toBe(false);
+    // Extra path segment is also rejected.
+    expect(isTriggerFormValid({ ...gh, ghRepo: "owner/repo/extra" })).toBe(false);
+    // Whitespace-only is not a repo.
+    expect(isTriggerFormValid({ ...gh, ghRepo: "   " })).toBe(false);
+    // Well-formed passes.
+    expect(isTriggerFormValid({ ...gh, ghRepo: "100rd/multiqlti" })).toBe(true);
+  });
+});
+
+// ─── GitHub repo slug validation ─────────────────────────────────────────────
+
+describe("isGitHubRepoValid", () => {
+  it("accepts a well-formed owner/repo slug (trimmed)", () => {
+    expect(isGitHubRepoValid("100rd/multiqlti")).toBe(true);
+    expect(isGitHubRepoValid("  owner/repo  ")).toBe(true);
+  });
+
+  it("rejects missing slash, extra segments, empty, and spaces", () => {
+    expect(isGitHubRepoValid("justrepo")).toBe(false);
+    expect(isGitHubRepoValid("owner/repo/sub")).toBe(false);
+    expect(isGitHubRepoValid("")).toBe(false);
+    expect(isGitHubRepoValid("/repo")).toBe(false);
+    expect(isGitHubRepoValid("owner/")).toBe(false);
+  });
+});
+
+// ─── Default github events ───────────────────────────────────────────────────
+
+describe("GITHUB_DEFAULT_EVENTS", () => {
+  it("pre-selects the mapped review-firing events (non-empty, so a fresh form validates)", () => {
+    expect([...GITHUB_DEFAULT_EVENTS]).toEqual(["pull_request", "push"]);
+    expect(GITHUB_DEFAULT_EVENTS.length).toBeGreaterThan(0);
+  });
+});
+
+// ─── Server validation-issue formatting ──────────────────────────────────────
+
+describe("formatValidationIssues", () => {
+  it("formats a flat field issue as 'field: message'", () => {
+    expect(
+      formatValidationIssues([{ path: ["repository"], message: "Must be in owner/repo format" }]),
+    ).toEqual(["repository: Must be in owner/repo format"]);
+  });
+
+  it("joins nested paths (and array indices) with an arrow", () => {
+    expect(
+      formatValidationIssues([
+        { path: ["action", "repoPath"], message: "Required" },
+        { path: ["events", 0], message: "Too small" },
+      ]),
+    ).toEqual(["action → repoPath: Required", "events → 0: Too small"]);
+  });
+
+  it("renders a root-level issue (empty path) as the message alone", () => {
+    expect(formatValidationIssues([{ path: [], message: "Invalid input" }])).toEqual([
+      "Invalid input",
+    ]);
+  });
+
+  it("surfaces ALL issues, not just the first", () => {
+    const lines = formatValidationIssues([
+      { path: ["repository"], message: "Must be in owner/repo format" },
+      { path: ["events"], message: "Array must contain at least 1 element(s)" },
+    ]);
+    expect(lines).toHaveLength(2);
+  });
+
+  it("falls back to a generic message when zod omits one", () => {
+    expect(formatValidationIssues([{ path: ["cron"] }])).toEqual(["cron: Invalid value"]);
+  });
+
+  it("returns [] for undefined / non-array input (no issues present)", () => {
+    expect(formatValidationIssues(undefined)).toEqual([]);
+  });
+
+  it("does not echo received values — only path + generic message (no secret leak)", () => {
+    // A rejected secret produces a length message; its bytes must never appear.
+    const lines = formatValidationIssues([
+      { path: ["secret"], message: "String must contain at most 1000 character(s)" },
+    ]);
+    expect(lines).toEqual(["secret: String must contain at most 1000 character(s)"]);
+    expect(lines.join(" ")).not.toContain("hunter2");
   });
 });
 

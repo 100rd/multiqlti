@@ -16,6 +16,58 @@ import type {
 /** Trigger types whose firing creates a consilium loop (carry a loop template). */
 export const LOOP_FIRING_TYPES: ReadonlySet<TriggerType> = new Set(["schedule", "file_change"]);
 
+/**
+ * owner/repo format — MIRRORS `GitHubConfigSchema.repository` on the server
+ * (`server/routes/triggers.ts`). Kept in sync so the form rejects a malformed repo
+ * BEFORE it hits the API (and the submit button reflects it), instead of relying on
+ * a round-trip 400.
+ */
+export const GITHUB_REPO_REGEX = /^[^/]+\/[^/]+$/;
+
+/** Whether `repo` is a valid `owner/repo` slug (trimmed). */
+export function isGitHubRepoValid(repo: string): boolean {
+  return GITHUB_REPO_REGEX.test(repo.trim());
+}
+
+/**
+ * Events pre-selected for a NEW github_event trigger. The server schema requires
+ * `events.min(1)`, so a fresh form MUST NOT start empty — it would fail validation
+ * with nothing selected. These two cover the mapped review-firing events.
+ */
+export const GITHUB_DEFAULT_EVENTS: readonly string[] = ["pull_request", "push"];
+
+/** A server-side zod issue, as surfaced in the 400 body's `issues[]`. */
+export interface TriggerValidationIssue {
+  /** Field path (may nest, may include array indices). */
+  path?: ReadonlyArray<string | number>;
+  message?: string;
+}
+
+/**
+ * Format server validation `issues[]` into human-readable "field path: message"
+ * lines. Nested paths join with " → " (e.g. `action → repoPath`); a root-level issue
+ * (empty path) renders the message alone.
+ *
+ * SECURITY: only the field PATH and zod's generic message are shown — the rejected
+ * VALUE is never echoed, so an over-long `secret` (or any other input) cannot leak
+ * its bytes into the UI.
+ */
+export function formatValidationIssues(
+  issues: ReadonlyArray<TriggerValidationIssue> | undefined,
+): string[] {
+  if (!Array.isArray(issues)) return [];
+  return issues.map((iss) => {
+    const segments = Array.isArray(iss.path)
+      ? iss.path
+          .filter((p: string | number) => p !== "" && p !== null && p !== undefined)
+          .map(String)
+      : [];
+    const label = segments.join(" → ");
+    const msg = iss.message && iss.message.trim().length > 0 ? iss.message : "Invalid value";
+    return label ? `${label}: ${msg}` : msg;
+  });
+}
+
 export interface LoopTemplateState {
   preset: ConsiliumReviewPreset;
   repoPath: string;
@@ -49,7 +101,9 @@ export function isTriggerFormValid(input: {
     // T1-full: a github trigger fires a consilium loop, so it needs a target repo
     // (the loop template's repoPath) in ADDITION to the repo/events filter. Without
     // a repoPath the received events would be recorded but never launch a review.
-    return ghRepo.trim().length > 0 && ghEvents.length > 0 && repoPath.trim().length > 0;
+    // The repo must be a well-formed owner/repo slug (server enforces the same regex),
+    // so a malformed value is caught here instead of via a round-trip 400.
+    return isGitHubRepoValid(ghRepo) && ghEvents.length > 0 && repoPath.trim().length > 0;
   }
   return true; // webhook
 }
