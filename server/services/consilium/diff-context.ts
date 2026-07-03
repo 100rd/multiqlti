@@ -73,6 +73,17 @@ export interface DiffContextRequest {
    * findings list oldest-first to stay within budget.
    */
   priorFindings?: string;
+  /**
+   * OPTION A (codegraph research): a scoped, READ-ONLY "repository map" preamble —
+   * for the files this round's diff TOUCHES, a compact `file → exported symbols +
+   * 1-hop importers` map (built by `repo-map.ts` from the EXISTING workspace symbol
+   * index). Placed BETWEEN the objective and the diff so debaters/judge read the
+   * structural context first. Already hard byte-bounded + secret-redacted by the
+   * builder; assembly re-runs `redactSecrets` (H-4 parity — signatures can embed
+   * literals) and applies a DEFENSIVE `maxDiffBytes` clamp. Absent/blank ⇒ NO
+   * section (byte-identical to today). Never executed, never logged.
+   */
+  repoMap?: string;
   /** Injected git client (tests pass a fake); defaults to simple-git(repoPath). */
   gitClient?: GitDiffClient;
 }
@@ -227,10 +238,26 @@ function assembleInput(
   testSummary: string | undefined,
   priorFindings: string | undefined,
   maxDiffBytes: number,
+  repoMap: string | undefined,
 ): { input: string; truncated: boolean } {
   const obj = objective.trim();
   const sections = [obj.length > 0 ? obj : "_No objective supplied; review the changes below._"];
   let truncated = parts?.truncated ?? false;
+  // OPTION A: the scoped repository map goes BETWEEN the objective and the diff so
+  // the model reads structural context (touched files → symbols + importers) before
+  // the changes. The builder already redacted + byte-bounded it; we re-run
+  // redactSecrets (H-4 parity — signatures can carry literals) and apply a DEFENSIVE
+  // maxDiffBytes clamp. Its own internal drop-note carries any map truncation, so we
+  // deliberately do NOT fold it into the shared `truncated` flag (which tracks the
+  // diff/testSummary). Absent/blank ⇒ no section (byte-identical to before).
+  if (repoMap && repoMap.trim().length > 0) {
+    const redacted = redactSecrets(repoMap.trim());
+    const overflow = Buffer.byteLength(redacted, "utf8") > maxDiffBytes;
+    const text = overflow
+      ? Buffer.from(redacted, "utf8").subarray(0, maxDiffBytes).toString("utf8")
+      : redacted;
+    sections.push(`## Repository map (files touched by this diff + their importers)\n\n${text}`);
+  }
   if (parts) {
     const note = parts.truncated ? "\n\n_(diff truncated to the configured byte limit)_" : "";
     // MED-1: collectDiff returns an empty body WITH truncated=true when it refused
@@ -319,7 +346,8 @@ export async function buildDiffContext(
     if (req.objective.trim().length === 0) {
       return fail("unknown", "objective is empty and there is no diff (round 1); refusing to emit a blank review input");
     }
-    const built = assembleInput(req.objective, null, req.testSummary, undefined, req.maxDiffBytes);
+    // Round 1 has no diff, so there are no "touched files" to map ⇒ no repoMap.
+    const built = assembleInput(req.objective, null, req.testSummary, undefined, req.maxDiffBytes, undefined);
     return { ok: true, input: built.input, headCommit: head, baselineCommit: null, truncated: built.truncated };
   }
 
@@ -329,7 +357,7 @@ export async function buildDiffContext(
   const parts = await collectDiff(git, baseline, head, req.maxDiffBytes);
   if (!("stat" in parts)) return parts;
 
-  const built = assembleInput(req.objective, parts, req.testSummary, req.priorFindings, req.maxDiffBytes);
+  const built = assembleInput(req.objective, parts, req.testSummary, req.priorFindings, req.maxDiffBytes, req.repoMap);
   return {
     ok: true,
     input: built.input,

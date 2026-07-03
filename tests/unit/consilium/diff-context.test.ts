@@ -311,3 +311,54 @@ describe("buildDiffContext — LOW-1 re-validates the stored reviewRef", () => {
     expect(git.revparse).toHaveBeenCalled();
   });
 });
+
+describe("buildDiffContext — Option A repository-map section", () => {
+  const MAP = "- `server/a.ts`: `foo` [function]\n  imported by: `server/b.ts`";
+
+  it("injects the map BETWEEN the objective and the diff, under a header", async () => {
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, repoMap: MAP, gitClient: fakeGit() });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.input).toContain("## Repository map (files touched by this diff + their importers)");
+    expect(res.input).toContain("`server/a.ts`");
+    // ordering: objective < repo map < changes
+    const iObj = res.input.indexOf("Obj");
+    const iMap = res.input.indexOf("## Repository map");
+    const iDiff = res.input.indexOf("## Changes since last review");
+    expect(iObj).toBeGreaterThanOrEqual(0);
+    expect(iMap).toBeGreaterThan(iObj);
+    expect(iDiff).toBeGreaterThan(iMap);
+  });
+
+  it("absent repoMap ⇒ NO map section (byte-identical to before)", async () => {
+    const withArg = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, repoMap: undefined, gitClient: fakeGit() });
+    const without = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, gitClient: fakeGit() });
+    expect(withArg.ok && without.ok).toBe(true);
+    if (!withArg.ok || !without.ok) return;
+    expect(withArg.input).toBe(without.input);
+    expect(withArg.input).not.toContain("## Repository map");
+  });
+
+  it("a blank repoMap emits NO section", async () => {
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, repoMap: "   \n  ", gitClient: fakeGit() });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.input).not.toContain("## Repository map");
+  });
+
+  it("defensively redacts a secret that reaches assembly in the map text", async () => {
+    const secret = "AKIAIOSFODNN7EXAMPLEKEYDATA1234567890";
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, repoMap: `- \`c.ts\`: AWS_SECRET_ACCESS_KEY=${secret}`, gitClient: fakeGit() });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.input).not.toContain(secret);
+    expect(res.input).toContain("<REDACTED:");
+  });
+
+  it("round 1 (null baseline) never emits a map even if one is passed", async () => {
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: null, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, repoMap: MAP, gitClient: fakeGit() });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.input).not.toContain("## Repository map");
+  });
+});

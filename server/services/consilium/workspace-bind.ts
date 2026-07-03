@@ -89,3 +89,25 @@ export async function resolveLoopWorkspace(
     ownerId,
   });
 }
+
+/**
+ * READ-ONLY companion to `resolveLoopWorkspace`: find the `local` workspace bound
+ * to `repoPath` WITHOUT ever creating one. Used by the review-side repository-map
+ * preamble, which is a pure read over the symbol index and must never mutate the
+ * workspace table. Same fail-closed allowlist + realpath discipline; ANY failure
+ * (non-allowlisted path, non-existent path, no match) yields `undefined` so the
+ * caller simply omits the map. Never throws.
+ */
+export async function findLoopWorkspace(
+  storage: Pick<WorkspaceBindStorage, "getWorkspaces">,
+  repoPath: string,
+  allowedRoots: readonly string[],
+): Promise<WorkspaceRow | undefined> {
+  try {
+    assertAllowedRepoPath(repoPath, allowedRoots);
+    const resolvedTarget = realResolve(repoPath);
+    return findBoundWorkspace(await storage.getWorkspaces(), resolvedTarget, allowedRoots);
+  } catch {
+    return undefined;
+  }
+}

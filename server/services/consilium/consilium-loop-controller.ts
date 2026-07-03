@@ -59,6 +59,8 @@ import type { AppConfig } from "../../config/schema.js";
 import { effectiveVerificationEnabled } from "../../config/schema.js";
 import { readConvergence, extractActionPoints, normalizeActionPointMethods, applyCriteriaQa } from "../orchestrator/convergence.js";
 import { buildDiffContext } from "./diff-context.js";
+import { buildRepoMap, createDbRepoMapSource, listTouchedFiles, repoMapGit } from "./repo-map.js";
+import { findLoopWorkspace } from "./workspace-bind.js";
 import type { DevCloseoutResult } from "./dev-closeout.js";
 import { runSdlcHandoff, type SdlcProgress, type JudgeVerifyFn, type JudgeVerifyInput } from "../sdlc/executor.js";
 import { runResearchHandoff, type ResearchGateway } from "../research/research-runner.js";
@@ -1523,6 +1525,10 @@ export class ConsiliumLoopController {
       effectiveVerificationEnabled(this.deps.config()) || this.researchImplementEnabled()
         ? await this.latestRoundTestSummary(loop)
         : undefined;
+    // Option A: scoped repository-map preamble (files touched by this round's diff →
+    // exported symbols + 1-hop importers), read-only over the workspace symbol index.
+    // Kill-switched (default OFF ⇒ undefined ⇒ byte-identical review input).
+    const repoMap = await this.buildReviewRepoMap(loop, cfg);
     const ctx = await buildDiffContext({
       repoPath: loop.repoPath,
       baselineCommit: loop.lastReviewedCommit,
@@ -1534,6 +1540,7 @@ export class ConsiliumLoopController {
       maxDiffBytes: cfg.maxDiffBytes,
       priorFindings,
       testSummary,
+      repoMap,
     });
     if (!ctx.ok) {
       // Surface the (scrubbed) git failure as a loop error; the next tick from
@@ -1554,6 +1561,49 @@ export class ConsiliumLoopController {
       currentIterationNumber: iteration.iterationNumber,
       openP0: null,
     };
+  }
+
+  /**
+   * Option A (codegraph research): build the scoped repository-map preamble for the
+   * REVIEW input. READ-ONLY over the existing workspace symbol index — for the files
+   * this round's diff touches, `file → exported symbols + 1-hop importers`, compact,
+   * secret-redacted and byte-bounded. BEST-EFFORT by design: kill-switch OFF, round 1
+   * (no diff), an unindexed repo, or ANY failure ⇒ `undefined` and the section is
+   * simply omitted (byte-identical review input). NEVER throws — a map problem must
+   * never fail a review round. Kept entirely on the REVIEW side (no develop-side edit).
+   */
+  private async buildReviewRepoMap(
+    loop: ConsiliumLoopRow,
+    cfg: AppConfig["pipeline"]["consiliumLoop"],
+  ): Promise<string | undefined> {
+    const rm = cfg.repoMap;
+    // OFF by default, and round 1 has no baseline ⇒ no diff ⇒ nothing to map.
+    if (!rm?.enabled || loop.lastReviewedCommit === null) return undefined;
+    try {
+      // H-1 parity: re-validate the persisted repoPath ourselves before touching git.
+      const resolvedRepo = assertAllowedRepoPath(loop.repoPath, cfg.allowedRepoPaths);
+      const touched = await listTouchedFiles(
+        repoMapGit(resolvedRepo),
+        loop.lastReviewedCommit,
+        loop.reviewRef,
+      );
+      if (touched.length === 0) return undefined;
+      // READ-ONLY workspace resolve (never creates) — absent ⇒ repo isn't indexed.
+      const workspace = await findLoopWorkspace(this.storage, resolvedRepo, cfg.allowedRepoPaths);
+      if (!workspace) return undefined;
+      const map = await buildRepoMap({
+        touchedFiles: touched,
+        source: createDbRepoMapSource(workspace.id),
+        maxRepoMapBytes: rm.maxRepoMapBytes,
+      });
+      return map ?? undefined;
+    } catch (err) {
+      this.log(
+        loop.id,
+        `repoMap skipped (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
   }
 
   /**
