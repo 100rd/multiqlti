@@ -710,6 +710,33 @@ export const ConfigSchema = z.object({
            */
           maxFinalFixIterations: z.coerce.number().int().min(0).max(3).default(1),
         }).default({}),
+        /**
+         * Parallel-develop (design §4 "development = controller + N coders for N features"):
+         * run a round's action points CONCURRENTLY in DEPENDENCY-AWARE WAVES instead of
+         * sequentially in one shared worktree. The JUDGE declares the dependency edges
+         * (`ap.dependsOn`, from the dispute); the planner (`buildWaveSchedule`) validates them,
+         * breaks cycles, and topologically sorts the round into waves. Each wave's APs run in
+         * their OWN isolated worktree branched off the ROUND's integration branch (the merged
+         * result of all prior waves), bounded by `maxConcurrency`; after a wave, each AP's
+         * branch is merged back SEQUENTIALLY (clean merge → proceed; conflict → the AP is
+         * re-run on the integrated tree). The final PR opens from the integration branch and
+         * the SAME Stage-A final verification runs on the merged tree (the cross-AP safety net).
+         *
+         * Kill-switch DEFAULT FALSE ⇒ BYTE-IDENTICAL off: the executor takes today's sequential
+         * single-worktree path and never reads any `ap.dependsOn`. Gated by the parent
+         * `consiliumLoop.enabled` AND `implement.enabled`. Independent of verification — it
+         * changes only HOW the round's coders are fanned out, not WHAT each AP does.
+         */
+        parallel: z.object({
+          /** Kill-switch: false (default) → today's sequential develop (byte-identical). */
+          enabled: z.boolean().default(false),
+          /**
+           * Max action points executing CONCURRENTLY within one wave (worktree fan-out
+           * ceiling — adversarial risk e: bounds disk + CPU + coder processes). 1..8;
+           * default 3. 1 ⇒ still wave-ordered but one-at-a-time. NaN/out-of-range fails load.
+           */
+          maxConcurrency: z.coerce.number().int().min(1).max(8).default(3),
+        }).default({}),
       }).default({}),
     }).default({}),
   }).default({}),

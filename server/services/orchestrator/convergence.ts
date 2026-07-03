@@ -36,6 +36,12 @@ const actionPointSchema = z.object({
   // WHOLE action point parse — a prompt-injected method can never smuggle a value past
   // the enum or drop a legitimate action point. Absent ⇒ back-compat.
   verificationMethod: z.enum(JUDGE_PROPOSABLE_METHODS).optional().catch(undefined),
+  // Parallel-develop: the judge-declared dependency edges (design §4). Each entry is
+  // another AP's 1-based ORDINAL (number or numeric string) or an exact title (string).
+  // `.catch(undefined)` DROPS a malformed value to absent rather than failing the whole
+  // action-point parse — a prompt-injected shape can never smuggle past the union or drop
+  // a legitimate AP. Absent ⇒ no dependency (back-compat). Bounded on persist below.
+  dependsOn: z.array(z.union([z.number(), z.string()])).optional().catch(undefined),
 });
 
 /** The trusted `output.convergence` object, when the judge emits one. */
@@ -69,6 +75,12 @@ const MAX_FIELD_LEN = 1000;
 // Stage 1: the per-AP acceptance criterion is UNTRUSTED model text — clamp it the
 // same way as the other free-text fields so a huge criterion can't bloat the row.
 const MAX_CRITERION_LEN = 1000;
+// Parallel-develop: cap the judge-declared dependency list per AP (bounded with the same
+// defensive spirit as MAX_ACTION_POINTS) and clamp each string entry — a malicious judge
+// must not bloat the row or the wave graph. A ref beyond these caps is simply dropped; the
+// wave planner drops nonexistent refs anyway, so over-bounding is safe.
+const MAX_DEPENDS_ON = 50;
+const MAX_DEPENDS_REF_LEN = 500;
 
 /** Truncate a string to `max` chars; pass through `undefined`. */
 function clampStr(v: string | undefined, max: number): string | undefined {
@@ -92,7 +104,18 @@ function boundActionPoint(p: ActionPoint): ActionPoint {
     // it survives the verdict round-trip + DEV handoff. Already bounded to the fixed
     // union by the schema; a `undefined` is simply absent (planner default fills it).
     ...(p.verificationMethod !== undefined ? { verificationMethod: p.verificationMethod } : {}),
+    // Parallel-develop: carry the (bounded) dependency edges through the same rebuild so
+    // they survive the verdict round-trip + DEV handoff. Length-capped; each string entry
+    // clamped. Absent ⇒ the field is simply omitted (back-compat / no dependency).
+    ...(p.dependsOn !== undefined ? { dependsOn: boundDependsOn(p.dependsOn) } : {}),
   };
+}
+
+/** Cap the dependency list length and clamp each string entry (numbers pass through). */
+function boundDependsOn(refs: ReadonlyArray<number | string>): Array<number | string> {
+  return refs
+    .slice(0, MAX_DEPENDS_ON)
+    .map((r) => (typeof r === "string" ? (clampStr(r, MAX_DEPENDS_REF_LEN) ?? "") : r));
 }
 
 /** Cap the list length and truncate each entry's fields. */
@@ -306,4 +329,139 @@ export function applyCriteriaQa(actionPoints: readonly ActionPoint[]): ActionPoi
       ap.verificationMethod === "manual-ops" ? "manual-ops" : "judge";
     return { ...ap, weakCriterion: true, verificationMethod: method };
   });
+}
+
+// ─── Parallel-develop (design §4) — the WAVE SCHEDULE from the dispute ────────
+// The judge declares dependency edges on each action point (`ap.dependsOn`); this PURE
+// planner step validates them and topologically sorts the round into WAVES (levels): wave
+// 0 = APs with no (surviving) dependency, wave N = APs whose every dependency lands in a
+// wave < N. Every AP appears EXACTLY ONCE; within a wave the ORIGINAL order is preserved
+// (deterministic). Called ONLY when `implement.parallel.enabled`; when the switch is off
+// the executor never invokes this and the develop path is byte-for-byte the sequential one.
+//
+// Adversarial hardening (the whole point of validating BEFORE scheduling):
+//   - a ref to a NONEXISTENT AP (out-of-range index / unknown title) is DROPPED (+ warn) —
+//     never a dangling edge that could wedge the topo sort.
+//   - a SELF dependency is dropped (a trivial 1-cycle).
+//   - a genuine CYCLE (A→B→A) would leave nodes unschedulable forever (deadlock / infinite
+//     wait — adversarial risk b). We DETECT the residue Kahn's algorithm cannot drain and
+//     BREAK it: the still-blocked APs are treated as INDEPENDENT and appended as one final
+//     wave (+ warn), so the round always makes progress and no AP is ever lost.
+
+/** Optional structured warning sink (default: console.warn). Kept injectable so the pure
+ *  scheduler is unit-testable by CAPTURING warnings instead of asserting on stderr. */
+export type WaveWarnFn = (message: string) => void;
+
+const defaultWaveWarn: WaveWarnFn = (m) => {
+  // eslint-disable-next-line no-console
+  console.warn(`[parallel-develop] ${m}`);
+};
+
+/**
+ * Resolve ONE `dependsOn` entry to a 0-based index into `aps`, or `null` when it names no
+ * existing AP. A number (or numeric string) is a 1-based ORDINAL; any other string is
+ * matched against an AP `title` (trimmed, case-insensitive, FIRST match). Pure.
+ */
+function resolveDepRef(
+  ref: number | string,
+  aps: readonly ActionPoint[],
+  titleIndex: ReadonlyMap<string, number>,
+): number | null {
+  // Numeric (number, or a string that is purely an integer) ⇒ 1-based ordinal.
+  const asNum =
+    typeof ref === "number"
+      ? ref
+      : /^\s*-?\d+\s*$/.test(ref)
+        ? Number.parseInt(ref, 10)
+        : NaN;
+  if (Number.isFinite(asNum)) {
+    const idx0 = asNum - 1;
+    return idx0 >= 0 && idx0 < aps.length ? idx0 : null;
+  }
+  // Otherwise a title reference (case-insensitive, trimmed).
+  const key = String(ref).trim().toLowerCase();
+  const hit = titleIndex.get(key);
+  return hit === undefined ? null : hit;
+}
+
+/**
+ * Build the dependency-aware WAVE SCHEDULE for a round's action points. Returns an array of
+ * waves (each an array of {@link ActionPoint}); flattening it yields every input AP exactly
+ * once. PURE — no I/O, no mutation of the inputs; the only side effect is the (injectable,
+ * default console.warn) `onWarn` for dropped refs + broken cycles.
+ *
+ * @param actionPoints the round's APs, in the order the executor will index/commit them
+ *                     (1-based ordinal = position, matching `ap.dependsOn` numeric refs).
+ * @param onWarn       structured warning sink (tests capture; prod logs).
+ */
+export function buildWaveSchedule(
+  actionPoints: readonly ActionPoint[],
+  onWarn: WaveWarnFn = defaultWaveWarn,
+): ActionPoint[][] {
+  const n = actionPoints.length;
+  if (n === 0) return [];
+  if (n === 1) return [[actionPoints[0]]];
+
+  // Title → FIRST index (case-insensitive) for title-based dependency refs.
+  const titleIndex = new Map<string, number>();
+  actionPoints.forEach((ap, i) => {
+    const key = (ap.title ?? "").trim().toLowerCase();
+    if (key.length > 0 && !titleIndex.has(key)) titleIndex.set(key, i);
+  });
+
+  // Adjacency: for each AP index, the SET of prerequisite indices (validated, de-duped, no
+  // self-edge). in[i] = number of surviving prerequisites (Kahn in-degree).
+  const prereqs: Set<number>[] = actionPoints.map(() => new Set<number>());
+  for (let i = 0; i < n; i++) {
+    const refs = actionPoints[i].dependsOn;
+    if (!refs || refs.length === 0) continue;
+    for (const ref of refs) {
+      const dep = resolveDepRef(ref, actionPoints, titleIndex);
+      if (dep === null) {
+        onWarn(`AP #${i + 1} depends on nonexistent "${String(ref)}" — dropped`);
+        continue;
+      }
+      if (dep === i) {
+        onWarn(`AP #${i + 1} depends on itself — dropped`);
+        continue;
+      }
+      prereqs[i].add(dep);
+    }
+  }
+
+  // Kahn's algorithm, LEVEL by LEVEL (each level = one wave). Ready = every prereq already
+  // scheduled. Deterministic: scan indices ascending, so within a wave original order holds.
+  const scheduled = new Array<boolean>(n).fill(false);
+  const waves: ActionPoint[][] = [];
+  let remaining = n;
+  while (remaining > 0) {
+    const wave: number[] = [];
+    for (let i = 0; i < n; i++) {
+      if (scheduled[i]) continue;
+      let ready = true;
+      for (const dep of prereqs[i]) {
+        if (!scheduled[dep]) {
+          ready = false;
+          break;
+        }
+      }
+      if (ready) wave.push(i);
+    }
+    if (wave.length === 0) {
+      // No node became ready but some remain ⇒ a CYCLE (or a chain into one). Break it:
+      // schedule ALL remaining APs as one independent final wave so the round completes.
+      const stuck: number[] = [];
+      for (let i = 0; i < n; i++) if (!scheduled[i]) stuck.push(i);
+      onWarn(
+        `dependency cycle detected among AP(s) ${stuck.map((i) => `#${i + 1}`).join(", ")} — ` +
+          `treating them as independent (final wave)`,
+      );
+      waves.push(stuck.map((i) => actionPoints[i]));
+      break;
+    }
+    for (const i of wave) scheduled[i] = true;
+    remaining -= wave.length;
+    waves.push(wave.map((i) => actionPoints[i]));
+  }
+  return waves;
 }

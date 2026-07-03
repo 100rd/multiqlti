@@ -117,6 +117,66 @@ criterion**. This is exactly the existing *agent-team* pattern (lead + workers).
 The loop is therefore **fractal and observable**: `loop → phase → controller-agent → N
 skill-agents`, each with a skill, a green/red, and the permissions it used (§8).
 
+### 4a. Parallel, dependency-aware develop (implemented — kill-switched)
+
+The develop phase's "controller + N coders for N features" is realized as **wave-scheduled,
+dependency-aware parallel execution**. It is gated by
+`pipeline.consiliumLoop.implement.parallel.enabled` (**default false** → today's sequential
+single-worktree loop runs byte-for-byte unchanged; `ap.dependsOn` is never read).
+
+**Dependencies come from the dispute (the judge, not a config).** The graph is *discovered*,
+not declared by an operator. Each `action_point` **may** carry an additive
+`dependsOn: (number | string)[]` — the *other* action points that must complete before it
+(1-based ordinal, numeric string, or exact title). The judge is instructed to declare a
+dependency **only when a later fix genuinely requires an earlier one's result** (e.g. "confirm
+CI green" depends on the fixes it verifies); the default is **no dependency → independent →
+parallelizable**. The field rides the existing `verdict/openActionPoints` jsonb — **no
+migration** — and is bounded/clamped alongside the other untrusted judge fields.
+
+**The planner builds the wave schedule** (`buildWaveSchedule`, pure + unit-tested, sibling to
+`normalizeActionPointMethods`). It validates the edges, then topologically sorts into **waves**
+(levels): wave 0 = APs with no surviving dependency; wave *N* = APs whose deps all land in
+waves `< N`. Adversarial guarantees baked into the planner, not left to the executor:
+
+- a ref to a **nonexistent** AP (out-of-range index / unknown title) is **dropped** (+ warn);
+- a **self**-dependency is dropped;
+- a **cycle** (A→B→A) is **detected and broken** — the residue Kahn's algorithm cannot drain is
+  scheduled as one final independent wave (+ warn), so a cyclic `dependsOn` can never deadlock
+  or infinitely wait. Every AP appears exactly once; within a wave the original order holds.
+
+**The executor fans out per wave, merges after** (`runWaveScheduledImplement`). The round's
+existing round branch is the **integration branch**. For each wave: every AP runs
+**concurrently** — bounded by `maxConcurrency` (1..8, default 3) — in its **own isolated git
+worktree** on a dedicated `consilium/loop-<uuid>/round-<n>/ap-<k>` branch cut off the
+**current integration HEAD** (the merged result of all prior waves), doing its full skilled
+run (test-author → coder → per-criterion verification) exactly as the sequential path does.
+After the wave, each AP's branch is **merged back into the integration branch sequentially in
+deterministic ordinal order**:
+
+- a **clean** merge (independent APs touching different files) → proceed;
+- a **conflict** → the merge is **aborted** (integration tree restored) and the AP's coder is
+  **re-run sequentially on the integrated tree** (the simpler, more robust of the two options —
+  it reuses the exact per-AP machinery and cannot silently drop work). The conflict is
+  **surfaced** on that AP's outcome/PR note, never hidden.
+
+A per-AP failure, a create-worktree failure, a merge conflict, or the whole-run wall-clock
+deadline degrades **that AP** to partial/failed and is surfaced — the round does **not** halt
+(same partial-success contract as today: completed/partial/failed per AP, one PR if anything
+committed). The PR opens from the final integration branch, and the existing **Stage-A final
+verification runs the whole suite against the merged tree** — the safety net for two APs that
+were each green in isolation but conflict when combined.
+
+**Worktree lifecycle is unconditional.** Every per-AP worktree is removed in a `finally`
+(mirroring the single-worktree cleanup) so a crash mid-wave leaks nothing; a git-admin mutex
+serializes the fast `worktree add/remove` calls (the coder runs stay concurrent) so N workers
+never race on `.git/worktrees`; and the whole-run wall-clock deadline stops new work so a
+wedged run cannot leak forever.
+
+**Config:** `implement.parallel: { enabled: bool = false, maxConcurrency: int 1..8 = 3 }`.
+Independent of verification — it changes only *how* the round's coders are fanned out, not
+*what* each AP does; the live per-AP status list (§8, #435/#480) already renders **multiple
+concurrent `active`** rows (one per in-flight AP in a wave).
+
 ## 5. Acceptance criteria + verification methods
 
 Two distinct levels of "green" — keep them separate:

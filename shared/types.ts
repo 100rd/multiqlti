@@ -1806,6 +1806,23 @@ export interface ActionPoint {
    * the criterion passed the lint.
    */
   weakCriterion?: boolean;
+  /**
+   * Parallel-develop (design §4 "development = controller + N coders for N features"):
+   * the OTHER action points that MUST complete before this one — the dependency edges the
+   * JUDGE declares from the dispute. Each entry references another action point by its
+   * 1-based ORDINAL in this list (a number, or a numeric string) OR by an exact `title`
+   * match (a string). The planner's {@link buildWaveSchedule} validates these (drops refs
+   * to nonexistent APs, BREAKS cycles) and topologically sorts the round into WAVES that
+   * run concurrently. DEFAULT = NO dependency (absent/empty ⇒ independent ⇒ wave 0,
+   * parallelizable) — a judge only declares one when a later fix genuinely requires an
+   * earlier one's result (e.g. "confirm CI green" depends on the fixes it verifies).
+   *
+   * Absent on every pre-parallel verdict and on judges that don't follow the prompt, and
+   * IGNORED entirely unless `implement.parallel.enabled` ⇒ fully back-compat. UNTRUSTED
+   * model input: treated as DATA only (index/title lookup), never a shell/branch/PR sink;
+   * bounded + validated by the planner before it can influence scheduling.
+   */
+  dependsOn?: Array<number | string>;
 }
 
 /**

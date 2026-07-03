@@ -30,7 +30,7 @@ import { mkdtemp, rm } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import simpleGit from "simple-git";
-import { isValidLoopBranch } from "../consilium/pr-wrapper.js";
+import { isValidLoopWorktreeBranch } from "../consilium/pr-wrapper.js";
 import { assertAllowedRepoPath } from "../consilium/repo-allowlist.js";
 
 /** Arg-array git runner seam: `(repoPath, args) => stdout`. Never a shell string. */
@@ -121,9 +121,10 @@ export async function createSdlcWorktree(opts: CreateWorktreeOptions): Promise<C
   // traversal + denylist). Throws when the path escapes confinement.
   const repo = assertAllowedRepoPath(opts.repoPath, opts.allowedRepoPaths);
 
-  // B-3: the branch must be the EXACT server-derived shape. Reject anything else
-  // (incl. a leading-dash branch) before git runs.
-  if (opts.branch.startsWith("-") || !isValidLoopBranch(opts.branch)) {
+  // B-3: the branch must be an EXACT server-derived shape — the round branch
+  // (`round-<n>`) OR, for parallel-develop, a per-AP branch (`round-<n>/ap-<k>`).
+  // Reject anything else (incl. a leading-dash branch) before git runs.
+  if (opts.branch.startsWith("-") || !isValidLoopWorktreeBranch(opts.branch)) {
     throw new Error(`createSdlcWorktree: rejected branch name (B-3): ${opts.branch}`);
   }
 

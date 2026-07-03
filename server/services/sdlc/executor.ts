@@ -58,7 +58,15 @@ import type { ActionPoint, Archetype, ExecutionTrace } from "@shared/types";
 import type { Skill } from "@shared/schema";
 import { selectSkillSet, bindSkillStep, type BoundSkillStep } from "../consilium/skills/catalog.js";
 import { buildSdlcTrace } from "../consilium/execution-trace.js";
-import { buildBranchName, isValidLoopBranch, pushBranch, openDraftPr } from "../consilium/pr-wrapper.js";
+import {
+  buildBranchName,
+  buildApBranchName,
+  isValidLoopBranch,
+  isValidLoopApBranch,
+  pushBranch,
+  openDraftPr,
+} from "../consilium/pr-wrapper.js";
+import { buildWaveSchedule } from "../orchestrator/convergence.js";
 import {
   createSdlcWorktree,
   removeSdlcWorktree,
@@ -334,6 +342,23 @@ export interface SdlcHandoffRequest {
    * runs it only when a `verification` context (test runner + fixer step) exists.
    */
   finalVerification?: FinalVerificationConfig | null;
+  /**
+   * Parallel-develop (design §4): run the round's action points in DEPENDENCY-AWARE WAVES,
+   * each AP in its own worktree branched off the round's integration branch, bounded by
+   * `maxConcurrency`, merged back sequentially after each wave. ABSENT or `{ enabled: false }`
+   * ⇒ today's SEQUENTIAL single-worktree loop (byte-for-byte unchanged; `ap.dependsOn` is
+   * never read). Threaded by the controller ONLY when `implement.parallel.enabled` is true.
+   * A single-AP round always takes the sequential path (nothing to parallelize).
+   */
+  parallel?: ParallelConfig | null;
+}
+
+/** Parallel-develop config threaded into {@link runSdlcHandoff} (mirror of
+ *  `pipeline.consiliumLoop.implement.parallel`). */
+export interface ParallelConfig {
+  enabled: boolean;
+  /** Max APs executing concurrently within a wave (worktree fan-out ceiling). 1..8. */
+  maxConcurrency: number;
 }
 
 /**
@@ -911,29 +936,61 @@ export async function runSdlcHandoff(
             }
           : null;
 
-      // SEQUENTIAL per-action-point runs in the ONE shared worktree (avoid edit
-      // conflicts). Each `runActionPoint` NEVER throws — a coder timeout/error is
-      // caught, its work committed `[partial]`, and the loop continues.
       const total = req.actionPoints.length;
-      const outcomes: ApOutcome[] = [];
-      let committedCount = 0;
+      let outcomes: ApOutcome[];
+      let committedCount: number;
       // Stage B: per-criterion method routing context (INERT unless perCriterionMethod on).
       const routing = { enabled: req.perCriterionMethod ?? false, judgeVerify: deps.judgeVerify };
-      for (let i = 0; i < total; i++) {
-        const outcome = await runActionPoint(
-          { gitRaw, runCoder, progress, completedBefore: committedCount, skilledSteps, verify: verifyCtx, routing },
-          wt,
+
+      // Parallel-develop (design §4): when the switch is on AND there is >1 AP to fan out,
+      // run the round in DEPENDENCY-AWARE WAVES — each AP in its OWN worktree branched off
+      // the integration branch (`wt`), bounded by `maxConcurrency`, merged back after each
+      // wave. Otherwise (default) take today's SEQUENTIAL single-worktree loop, BYTE-FOR-BYTE
+      // unchanged — `ap.dependsOn` is never read and no extra worktree is ever cut.
+      if ((req.parallel?.enabled ?? false) && total > 1) {
+        const waveResult = await runWaveScheduledImplement(
+          {
+            gitRaw,
+            runCoder,
+            progress,
+            skilledSteps,
+            verify: verifyCtx,
+            routing,
+            createWorktree,
+            removeWorktree,
+            maxConcurrency: req.parallel!.maxConcurrency,
+            // Reuse the SAME whole-run wall-clock budget as verification (adversarial risk a
+            // + b): no wave/AP is started once it elapses, so a wedged run can't leak forever.
+            deadline: now() + WHOLE_RUN_BUDGET_MS,
+            now,
+          },
           req,
-          req.actionPoints[i],
-          i + 1,
-          total,
+          wt,
         );
-        outcomes.push(outcome);
-        if (outcome.committed) committedCount += 1;
-        // AP end: fold the settled status into the shared live snapshot. It surfaces
-        // on the very next beat (the next AP's start, or the push/done beat below) —
-        // the poll-based UI reads the latest snapshot, so no separate end beat.
-        progress.setStatus(i + 1, outcome.status);
+        outcomes = waveResult.outcomes;
+        committedCount = waveResult.committedCount;
+      } else {
+        // SEQUENTIAL per-action-point runs in the ONE shared worktree (avoid edit
+        // conflicts). Each `runActionPoint` NEVER throws — a coder timeout/error is
+        // caught, its work committed `[partial]`, and the loop continues.
+        outcomes = [];
+        committedCount = 0;
+        for (let i = 0; i < total; i++) {
+          const outcome = await runActionPoint(
+            { gitRaw, runCoder, progress, completedBefore: committedCount, skilledSteps, verify: verifyCtx, routing },
+            wt,
+            req,
+            req.actionPoints[i],
+            i + 1,
+            total,
+          );
+          outcomes.push(outcome);
+          if (outcome.committed) committedCount += 1;
+          // AP end: fold the settled status into the shared live snapshot. It surfaces
+          // on the very next beat (the next AP's start, or the push/done beat below) —
+          // the poll-based UI reads the latest snapshot, so no separate end beat.
+          progress.setStatus(i + 1, outcome.status);
+        }
       }
 
       // Stage A: FINAL-STATE re-verification. After every action point has been applied
@@ -1223,6 +1280,285 @@ async function runActionPoint(
     committed: true,
     note,
   };
+}
+
+// ─── Parallel-develop (design §4) — wave-scheduled fan-out + merge ───────────
+//
+// The per-AP IO the wave executor threads into `runActionPoint` (same shape the sequential
+// loop builds inline; `completedBefore` is added per call). Extracted so both the isolated
+// per-AP worktree run and the conflict-fallback run on the integration tree reuse it.
+interface ApImplementIo {
+  gitRaw: GitRunner;
+  runCoder: NonNullable<SdlcExecutorDeps["runCoder"]>;
+  progress: ProgressTracker;
+  skilledSteps: readonly BoundSkillStep[];
+  verify: VerifyContext | null;
+  routing: { enabled: boolean; judgeVerify?: JudgeVerifyFn };
+}
+
+/** Context for the wave executor — the per-AP IO plus the worktree fan-out machinery. */
+interface WaveImplementCtx extends ApImplementIo {
+  createWorktree: NonNullable<SdlcExecutorDeps["createWorktree"]>;
+  removeWorktree: NonNullable<SdlcExecutorDeps["removeWorktree"]>;
+  /** Max APs run CONCURRENTLY within a wave (adversarial risk e — fan-out ceiling). */
+  maxConcurrency: number;
+  /** Whole-run wall-clock deadline (epoch ms) — no wave/AP starts once it elapses. */
+  deadline: number;
+  now: () => number;
+}
+
+/** A wave worker's captured result: its outcome + the branch to merge (if it committed). */
+interface WaveApResult {
+  index: number; // 1-based original ordinal
+  ap: ActionPoint;
+  apBranch: string;
+  outcome: ApOutcome;
+}
+
+/**
+ * A minimal FIFO async mutex: serializes the git-ADMIN-mutating calls (`worktree add` /
+ * `remove` / `prune`) so N concurrent wave workers never race on the repo's
+ * `.git/worktrees` lock. The CODER runs (the expensive part) stay fully concurrent — only
+ * the fast create/remove bookends are serialized. Never throws on its own.
+ */
+function createGitAdminMutex(): <T>(fn: () => Promise<T>) => Promise<T> {
+  let tail: Promise<unknown> = Promise.resolve();
+  return <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = tail.then(fn, fn); // run after the prior op, regardless of its outcome
+    // Keep the chain alive but swallow errors so one failure can't poison the queue.
+    tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
+}
+
+/**
+ * Run `worker` over `items` with at most `limit` in flight. `worker` must NEVER throw (the
+ * wave worker catches internally); results land at their input index. Order of completion is
+ * irrelevant — the caller re-sorts by original ordinal before merging (determinism).
+ */
+async function runBounded<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const lanes = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await worker(items[i]);
+    }
+  });
+  await Promise.all(lanes);
+  return results;
+}
+
+/** Build the sanitized (priority,title) pair the way `runActionPoint` does — for the
+ *  outcomes the wave executor synthesizes without entering `runActionPoint` (deadline /
+ *  create-worktree failure). Keeps those rows consistent with the coder-produced ones. */
+function apLabels(ap: ActionPoint): { priority: string; title: string } {
+  return {
+    priority: sanitizeLine(ap.priority ?? "-", PRIORITY_MAX) || "-",
+    title: sanitizeLine(ap.title ?? "", PR_BODY_TITLE_MAX),
+  };
+}
+
+/**
+ * Merge one AP's branch into the integration worktree. `--no-ff --no-edit` so every AP is a
+ * distinct merge commit (auditable) with no editor. Returns `{ ok:true }` on a clean merge;
+ * on ANY failure (the common case: a CONFLICT) it ABORTS the merge so the integration tree
+ * is left clean for the caller's sequential fallback, and reports `{ ok:false }`. NEVER
+ * throws. `apBranch` is server-derived (`buildApBranchName`) + re-gated here, so it can
+ * never be a git flag.
+ */
+async function mergeApBranch(
+  gitRaw: GitRunner,
+  integrationDir: string,
+  apBranch: string,
+): Promise<{ ok: boolean; message?: string }> {
+  if (apBranch.startsWith("-") || !isValidLoopApBranch(apBranch)) {
+    return { ok: false, message: "rejected ap branch name" };
+  }
+  try {
+    await gitRaw(integrationDir, ["merge", "--no-ff", "--no-edit", apBranch]);
+    return { ok: true };
+  } catch (err) {
+    // Conflict (or any merge error): restore the integration tree to pre-merge state so the
+    // fallback re-run starts clean. `--abort` is best-effort (a no-op if nothing to abort).
+    await gitRaw(integrationDir, ["merge", "--abort"]).catch(() => undefined);
+    return { ok: false, message: scrub(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+/**
+ * Parallel-develop CONTROLLER (design §4). Fan the round's action points out into
+ * DEPENDENCY-AWARE WAVES (`buildWaveSchedule` from the judge-declared `dependsOn`), run each
+ * wave's APs CONCURRENTLY — each in its OWN isolated worktree branched off the round's
+ * INTEGRATION branch (`integrationWt`, the merged result of all prior waves) — then MERGE
+ * each AP's branch back into the integration branch SEQUENTIALLY in deterministic ordinal
+ * order. NEVER throws (same partial-success contract as the sequential path): a per-AP
+ * failure, a create-worktree failure, a merge conflict, or the wall-clock deadline degrades
+ * that AP to partial/failed and is SURFACED — never silently dropped (adversarial risks
+ * a/b/c). Worktree cleanup is UNCONDITIONAL (a `finally` per worker + the git-admin mutex),
+ * so a crash mid-run leaks no per-AP worktree.
+ *
+ * @returns the per-AP outcomes (in ORIGINAL ordinal order) + how many landed a commit ON THE
+ *   INTEGRATION BRANCH (a committed-but-unmerged AP does NOT count until its merge/fallback
+ *   lands — the PR reflects the integration tree, not the isolated branches).
+ */
+async function runWaveScheduledImplement(
+  ctx: WaveImplementCtx,
+  req: SdlcHandoffRequest,
+  integrationWt: CreateWorktreeResult,
+): Promise<{ outcomes: ApOutcome[]; committedCount: number; waveCount: number; mergeConflicts: number }> {
+  const total = req.actionPoints.length;
+  // Original 1-based ordinal per AP (identity map — the schedule reorders but never clones).
+  const ordinalOf = new Map<ActionPoint, number>();
+  req.actionPoints.forEach((ap, i) => ordinalOf.set(ap, i + 1));
+
+  const waves = buildWaveSchedule(req.actionPoints, (m) => {
+    // eslint-disable-next-line no-console
+    console.warn(`[parallel-develop] loop=${req.loopId} round=${req.round}: ${m}`);
+  });
+
+  const outcomes = new Array<ApOutcome | undefined>(total);
+  let committedCount = 0;
+  let mergeConflicts = 0;
+  const gitAdmin = createGitAdminMutex();
+
+  for (const wave of waves) {
+    // Wall-clock backstop (risk a/b): once the whole-run budget elapses, do NOT start more
+    // work. Remaining APs are settled as failed below so none is silently lost.
+    if (ctx.now() >= ctx.deadline) break;
+
+    // The integration branch HEAD after all prior waves — the base every AP in THIS wave
+    // branches off, so each worker sees the merged result of everything before it.
+    const integrationHead = (await ctx.gitRaw(integrationWt.worktreeDir, ["rev-parse", "HEAD"])).trim();
+
+    // Run the wave's APs concurrently (bounded). Each worker is FULLY self-contained: cut a
+    // worktree, run the AP, and ALWAYS remove the worktree in a `finally`.
+    const waveResults = await runBounded<ActionPoint, WaveApResult>(
+      wave,
+      ctx.maxConcurrency,
+      async (ap) => {
+        const index = ordinalOf.get(ap)!;
+        const apBranch = buildApBranchName(req.loopId, req.round, index);
+        // Deadline re-check at worker start (a long earlier wave may have consumed the budget).
+        if (ctx.now() >= ctx.deadline) {
+          const { priority, title } = apLabels(ap);
+          ctx.progress.setStatus(index, "failed");
+          return {
+            index,
+            ap,
+            apBranch,
+            outcome: { index, priority, title, status: "failed", committed: false, note: "round wall-clock deadline exceeded before start" },
+          };
+        }
+        let apWt: CreateWorktreeResult | null = null;
+        try {
+          // Serialize the git-admin call; the coder run below stays concurrent.
+          apWt = await gitAdmin(() =>
+            ctx.createWorktree({
+              repoPath: req.repoPath,
+              branch: apBranch,
+              baseRef: integrationHead, // off the CURRENT integration state.
+              allowedRepoPaths: req.allowedRepoPaths,
+              gitRaw: ctx.gitRaw,
+            }),
+          );
+          const outcome = await runActionPoint(
+            { ...ctx, completedBefore: committedCount },
+            apWt,
+            req,
+            ap,
+            index,
+            total,
+          );
+          return { index, ap, apBranch, outcome };
+        } catch (err) {
+          // Create-worktree (or an unexpected throw) failed for THIS AP — surface it as a
+          // failed outcome (never silent) and let the round continue.
+          const { priority, title } = apLabels(ap);
+          ctx.progress.setStatus(index, "failed");
+          return {
+            index,
+            ap,
+            apBranch,
+            outcome: { index, priority, title, status: "failed", committed: false, note: scrub(err instanceof Error ? err.message : String(err)) },
+          };
+        } finally {
+          // UNCONDITIONAL cleanup (risk a): remove the worktree even on a throw. The branch
+          // ref persists in the object store, so the sequential merge below still sees the
+          // AP's commits. Serialized through the same git-admin mutex.
+          if (apWt) {
+            const dir = apWt.worktreeDir;
+            const baseDir = apWt.baseDir;
+            await gitAdmin(() => ctx.removeWorktree(req.repoPath, dir, { baseDir, gitRaw: ctx.gitRaw }));
+          }
+        }
+      },
+    );
+
+    // MERGE back into the integration branch SEQUENTIALLY in deterministic ordinal order
+    // (risk d: independent-in-isolation APs are combined here; the final Stage-A verification
+    // then runs the whole suite on THIS merged tree — the cross-AP regression safety net).
+    const ordered = waveResults.slice().sort((a, b) => a.index - b.index);
+    for (const r of ordered) {
+      // An AP that produced NO commit (failed / no changes) has nothing to merge — record it.
+      if (!r.outcome.committed) {
+        outcomes[r.index - 1] = r.outcome;
+        continue;
+      }
+      const merged = await mergeApBranch(ctx.gitRaw, integrationWt.worktreeDir, r.apBranch);
+      if (merged.ok) {
+        // Clean merge — the AP's work is now ON the integration branch.
+        outcomes[r.index - 1] = r.outcome;
+        committedCount += 1;
+        continue;
+      }
+      // CONFLICT (risk c): the merge was aborted (tree restored). FALL BACK — re-run the AP's
+      // coder SEQUENTIALLY on the INTEGRATED tree (the simpler, more robust of the two options
+      // in the design: it reuses the exact per-AP machinery and cannot silently drop work).
+      mergeConflicts += 1;
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[parallel-develop] loop=${req.loopId} round=${req.round}: AP #${r.index} merge conflict — ` +
+          `re-running on the integrated tree`,
+      );
+      ctx.progress.setStatus(r.index, "active");
+      const fallback = await runActionPoint(
+        { ...ctx, completedBefore: committedCount },
+        integrationWt, // run DIRECTLY on the integration worktree.
+        req,
+        r.ap,
+        r.index,
+        total,
+      );
+      // Surface that this AP went through conflict resolution (never hide it — risk c).
+      const note = fallback.note
+        ? `merge conflict — re-run on integrated tree: ${fallback.note}`
+        : "merge conflict — re-run on integrated tree";
+      outcomes[r.index - 1] = { ...fallback, note };
+      if (fallback.committed) committedCount += 1;
+      ctx.progress.setStatus(r.index, fallback.status);
+    }
+  }
+
+  // Settle any AP that never got an outcome (deadline cut the schedule short) as failed —
+  // so the count/contract holds and nothing is silently lost.
+  for (let i = 0; i < total; i++) {
+    if (outcomes[i] !== undefined) continue;
+    const ap = req.actionPoints[i];
+    const { priority, title } = apLabels(ap);
+    ctx.progress.setStatus(i + 1, "failed");
+    outcomes[i] = { index: i + 1, priority, title, status: "failed", committed: false, note: "round wall-clock deadline exceeded" };
+  }
+
+  return { outcomes: outcomes as ApOutcome[], committedCount, waveCount: waves.length, mergeConflicts };
 }
 
 /**
