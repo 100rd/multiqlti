@@ -93,6 +93,14 @@ const execFileAsync: ExecFileFn = promisify(execFile);
  * rejects anything that is not the exact server-built form before git/gh runs.
  */
 const BRANCH_RE = /^consilium\/loop-[0-9a-f-]{36}\/round-[0-9]+$/;
+/**
+ * Parallel-develop: the PER-ACTION-POINT worktree branch shape,
+ * `consilium/loop-<uuid>/round-<n>/ap-<k>`. Server-derived (loopId + round + 1-based AP
+ * index) — NEVER model text. A DEDICATED shape (not the round branch) so a per-AP branch
+ * can NEVER be mistaken for a PR head: `isValidLoopBranch` (the PR-head gate) stays strict,
+ * while `isValidLoopWorktreeBranch` (worktree creation only) accepts EITHER shape.
+ */
+const AP_BRANCH_RE = /^consilium\/loop-[0-9a-f-]{36}\/round-[0-9]+\/ap-[0-9]+$/;
 /** Well-formed `owner/repo` (GitHub slug chars only) — H-7 origin validation. */
 const OWNER_REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
@@ -125,9 +133,33 @@ export const SDLC_PR_LABEL_SPECS: readonly LabelSpec[] = [
 /** Just the label NAMES, in apply order (server constants). */
 export const SDLC_PR_LABELS: readonly string[] = SDLC_PR_LABEL_SPECS.map((l) => l.name);
 
-/** True iff `branch` is a server-derived consilium branch (B-3). */
+/** True iff `branch` is a server-derived consilium ROUND branch (B-3). This is the PR-HEAD
+ *  gate — it stays STRICT (a per-AP `ap-<k>` branch must NEVER be a PR head). */
 export function isValidLoopBranch(branch: string): boolean {
   return BRANCH_RE.test(branch);
+}
+
+/** Parallel-develop: true iff `branch` is a server-derived per-ACTION-POINT branch
+ *  (`consilium/loop-<uuid>/round-<n>/ap-<k>`). */
+export function isValidLoopApBranch(branch: string): boolean {
+  return AP_BRANCH_RE.test(branch);
+}
+
+/** Parallel-develop: the branch gate for WORKTREE CREATION — a round branch (the
+ *  integration worktree / PR head) OR a per-AP branch (a wave worker's worktree). Used only
+ *  by `createSdlcWorktree`; the PR-head path keeps calling the strict `isValidLoopBranch`. */
+export function isValidLoopWorktreeBranch(branch: string): boolean {
+  return isValidLoopBranch(branch) || isValidLoopApBranch(branch);
+}
+
+/**
+ * Parallel-develop: build the per-ACTION-POINT worktree branch
+ * (`consilium/loop-<uuid>/round-<n>/ap-<k>`) from SERVER-controlled inputs (loopId + round +
+ * 1-based AP index) — NEVER model/action-point text. Gated through `isValidLoopApBranch`
+ * before it reaches git, exactly like `buildBranchName`/`isValidLoopBranch` for the round.
+ */
+export function buildApBranchName(loopId: string, round: number, apIndex: number): string {
+  return `consilium/loop-${loopId}/round-${round}/ap-${apIndex}`;
 }
 
 /**

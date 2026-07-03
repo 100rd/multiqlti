@@ -1622,6 +1622,10 @@ export class ConsiliumLoopController {
     // test-run harness as green. Default OFF ⇒ byte-identical (no lint, no demotion).
     // Optional-chain `planner` — a hand-built test config may omit the whole block (→ off).
     const criteriaQaOn = cfg.planner?.criteriaQa?.enabled ?? false;
+    // Parallel-develop (design §4): dependency-aware wave scheduling + worktree-per-AP
+    // fan-out. Default OFF ⇒ the executor takes today's sequential single-worktree path.
+    // Optional-chained so a hand-built test config that omits the block degrades to OFF.
+    const parallelOn = cfg.implement.parallel?.enabled ?? false;
     let routedActionPoints = perCriterionOn
       ? normalizeActionPointMethods(verdict.openActionPoints, loop.archetype ?? null)
       : verdict.openActionPoints;
@@ -1682,6 +1686,15 @@ export class ConsiliumLoopController {
             enabled: true,
             maxFinalFixIterations: cfg.implement.finalVerification.maxFinalFixIterations,
           }
+        : null,
+      // Parallel-develop (design §4): run the round's action points in dependency-aware
+      // waves (worktree-per-AP fan-out + merge). Gated by its OWN kill-switch on TOP of the
+      // parent consiliumLoop.enabled + implement.enabled. null when off ⇒ the executor takes
+      // today's SEQUENTIAL single-worktree path, byte-for-byte unchanged (no dependsOn read).
+      // Independent of verification — it only changes HOW coders are fanned out, and the SAME
+      // Stage-A final verification runs on the merged tree as the cross-AP safety net.
+      parallel: parallelOn
+        ? { enabled: true, maxConcurrency: cfg.implement.parallel.maxConcurrency }
         : null,
     }, {
       getSkills: () => this.storage.getSkills(),

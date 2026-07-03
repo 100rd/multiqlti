@@ -60,4 +60,14 @@ Rules:
       cloud setting). The pipeline can only SURFACE these for a human; it can
       NEVER close them. Use this whenever the action is not a source change.
   Omit the field when unsure (the planner assigns a default from the task type).
+- OPTIONALLY, for each action point add a \`dependsOn\` field (exactly this
+  camelCase key): an array naming the OTHER action points that must be COMPLETED
+  before this one can be worked. Reference each by its 1-based position in the
+  \`open_action_points\` list (a number, e.g. \`[1, 3]\`) or by its exact
+  \`title\`. Declare a dependency ONLY when a later fix GENUINELY requires an
+  earlier one's result — e.g. an action point that "confirms CI is green" depends
+  on the fixes it verifies. The DEFAULT is NO dependency: independent action
+  points (which is most of them) are run in PARALLEL, so leave \`dependsOn\` absent
+  unless the ordering is real. Do NOT invent ordering to be safe — a false
+  dependency needlessly serializes the work.
 `.trim();
