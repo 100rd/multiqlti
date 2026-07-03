@@ -3,9 +3,11 @@
  * for ConsiliumLoopList. Mirrors ProjectSelector's create-dialog pattern (the
  * shared Dialog primitive + a controlled form + a toast on settle).
  *
- * It POSTs `{ repoPath, preset, maxRounds?, baselineCommit?, ref?, engineerInstruction? }` to
- * `/api/consilium-reviews` via the shared apiRequest transport (carries auth +
- * `x-project-id`, same as every project-scoped call).
+ * It POSTs `{ repoPath, preset, maxRounds?, baselineCommit?, ref?, engineerInstruction?,
+ * skillIds? }` to `/api/consilium-reviews` via the shared apiRequest transport
+ * (carries auth + `x-project-id`, same as every project-scoped call). The optional
+ * `skillIds` are operator-selected skills whose directives the server appends to the
+ * engineer instruction (fenced-as-data, byte-budgeted).
  *
  * REPO SELECTION: instead of free-typing a path that may not be allowlisted, the
  * user PICKS from the active project's workspaces (passed in by the page, which
@@ -64,7 +66,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { apiRequest } from "@/hooks/use-pipeline";
+import { useSkills } from "@/hooks/use-skills";
 import { useToast } from "@/hooks/use-toast";
 
 /** The presets the backend accepts, with human labels (default first). */
@@ -81,6 +85,15 @@ type Preset = (typeof PRESETS)[number]["value"];
  * `error` text verbatim).
  */
 const MAX_INSTRUCTION_LEN = 8000;
+
+/** Max skills that may extend one review's instruction (mirrors the server bound). */
+const MAX_REVIEW_SKILLS = 5;
+
+/** The first line of a skill's description — a compact one-line hint in the picker. */
+function firstLine(text: string | null | undefined): string {
+  const line = (text ?? "").split("\n")[0]?.trim() ?? "";
+  return line;
+}
 
 /**
  * The slice of a workspace this dialog needs — a human `name`, a repo `path`, the
@@ -162,10 +175,30 @@ export function NewConsiliumReviewDialog({
   // Optional free-text instruction (tone / requirements for the evaluation). Sent
   // as `engineerInstruction` only when non-empty; the server fences it as data.
   const [engineerInstruction, setEngineerInstruction] = useState("");
+  // Optional operator-selected skills whose directives extend the instruction. Sent
+  // as `skillIds` (order = priority) only when non-empty; capped at MAX_REVIEW_SKILLS.
+  const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [, navigate] = useLocation();
   const qc = useQueryClient();
   const { toast } = useToast();
+
+  // The active project's non-builtin skills (project-scoped via apiRequest's
+  // x-project-id). Powers the optional multi-select below; absent/empty ⇒ the
+  // section is hidden entirely (never a dead control).
+  const skillsQuery = useSkills({ isBuiltin: false });
+  const availableSkills = skillsQuery.data ?? [];
+  const atSkillCap = selectedSkillIds.length >= MAX_REVIEW_SKILLS;
+
+  // Toggle a skill in/out of the selection, enforcing the cap on add. Selection
+  // order is preserved (it is the priority order the server drops from, last-first).
+  const toggleSkill = (id: string) => {
+    setSelectedSkillIds((cur) => {
+      if (cur.includes(id)) return cur.filter((s) => s !== id);
+      if (cur.length >= MAX_REVIEW_SKILLS) return cur;
+      return [...cur, id];
+    });
+  };
 
   // Whether to show the free-text REPO input: no workspaces to pick from, or the
   // user explicitly opted into a custom path.
@@ -265,6 +298,7 @@ export function NewConsiliumReviewDialog({
       baselineCommit?: string;
       ref?: string;
       engineerInstruction?: string;
+      skillIds?: string[];
     } = { repoPath: path, preset };
 
     const rounds = Number(maxRounds);
@@ -288,6 +322,10 @@ export function NewConsiliumReviewDialog({
     // the soft counter, not silent loss, signals an over-limit value.
     const instruction = engineerInstruction.trim();
     if (instruction) body.engineerInstruction = instruction;
+    // Skills → `skillIds` (order = priority). Send only when some are selected; the
+    // server resolves them project-scoped and appends their directives to the
+    // instruction under a byte budget (dropping whole skills if it must).
+    if (selectedSkillIds.length > 0) body.skillIds = selectedSkillIds;
 
     try {
       setSubmitting(true);
@@ -500,6 +538,67 @@ export function NewConsiliumReviewDialog({
               </p>
             )}
           </div>
+
+          {/* Optional SKILLS — each selected skill's directive is appended to the
+              engineer instruction (server-side, fenced-as-data, byte-budgeted). Hidden
+              when the project has no skills, so it is never an empty dead control. */}
+          {availableSkills.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-baseline justify-between gap-2">
+                <Label>
+                  Skills{" "}
+                  <span className="text-muted-foreground">(extend the instruction)</span>
+                </Label>
+                <span
+                  className="text-xs tabular-nums text-muted-foreground"
+                  data-testid="new-review-skills-counter"
+                >
+                  {selectedSkillIds.length}/{MAX_REVIEW_SKILLS}
+                </span>
+              </div>
+              <div
+                className="max-h-40 space-y-1 overflow-y-auto rounded border p-2"
+                data-testid="new-review-skills"
+              >
+                {availableSkills.map((skill) => {
+                  const checked = selectedSkillIds.includes(skill.id);
+                  const disabled = !checked && atSkillCap;
+                  const hint = firstLine(skill.description);
+                  return (
+                    <label
+                      key={skill.id}
+                      className={
+                        "flex items-start gap-2 rounded p-1.5 text-sm " +
+                        (disabled
+                          ? "cursor-not-allowed opacity-50"
+                          : "cursor-pointer hover:bg-muted/50")
+                      }
+                    >
+                      <Checkbox
+                        checked={checked}
+                        disabled={disabled}
+                        onCheckedChange={() => toggleSkill(skill.id)}
+                        data-testid={`new-review-skill-${skill.id}`}
+                        className="mt-0.5"
+                      />
+                      <span className="min-w-0">
+                        <span className="font-medium">{skill.name}</span>
+                        {hint && (
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {hint}
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Each selected skill's directive is appended to the instruction above,
+                in the order picked. At most {MAX_REVIEW_SKILLS}.
+              </p>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>

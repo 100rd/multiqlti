@@ -122,3 +122,46 @@ describe("POST /api/consilium-reviews — BRANCH-targeted ref wiring", () => {
     expect((mockedCreate.mock.calls[0][1] as { ref?: string }).ref).toBeUndefined();
   });
 });
+
+
+describe("POST /api/consilium-reviews — Stage 2 skillIds wiring", () => {
+  beforeEach(() => mockedCreate.mockReset());
+
+  it("passes VALID skillIds through to the factory (order preserved) and returns 201", async () => {
+    mockedCreate.mockResolvedValueOnce({ id: "loop-sk", status: "PENDING" } as never);
+    const res = await request(makeApp())
+      .post("/api/consilium-reviews")
+      .send({ ...VALID_BODY, skillIds: ["sk-1", "sk-2"] });
+    expect(res.status).toBe(201);
+    expect(mockedCreate.mock.calls[0][1]).toMatchObject({ skillIds: ["sk-1", "sk-2"] });
+  });
+
+  it("REJECTS more than 5 skillIds with 400 BEFORE the factory is called (zod .max(5))", async () => {
+    const res = await request(makeApp())
+      .post("/api/consilium-reviews")
+      .send({ ...VALID_BODY, skillIds: ["a", "b", "c", "d", "e", "f"] });
+    expect(res.status).toBe(400);
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  it("maps an unknown/foreign skill id to a 400 naming the offending id", async () => {
+    mockedCreate.mockRejectedValueOnce(
+      new Error('[skill-not-found] skill "sk-FOREIGN" was not found in this project'),
+    );
+    const res = await request(makeApp())
+      .post("/api/consilium-reviews")
+      .send({ ...VALID_BODY, skillIds: ["sk-FOREIGN"] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/sk-FOREIGN/);
+    expect(res.body.error).toMatch(/was not found in this project/);
+    // The internal tag prefix is stripped from the surfaced message.
+    expect(res.body.error).not.toMatch(/\[skill-not-found\]/);
+  });
+
+  it("absent skillIds is back-compat (factory called with skillIds === undefined)", async () => {
+    mockedCreate.mockResolvedValueOnce({ id: "loop-1", status: "PENDING" } as never);
+    const res = await request(makeApp()).post("/api/consilium-reviews").send(VALID_BODY);
+    expect(res.status).toBe(201);
+    expect((mockedCreate.mock.calls[0][1] as { skillIds?: string[] }).skillIds).toBeUndefined();
+  });
+});
