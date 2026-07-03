@@ -225,3 +225,46 @@ describe("runSdlcHandoff — archetype → SKILLED steps wiring", () => {
     expect(res.prRef).toBe("https://github.com/x/y/pull/9");
   });
 });
+
+describe("runSdlcHandoff — operator-pinned coderModel threaded ONCE at the seam", () => {
+  it("threads req.coderModel into EVERY coder invocation of the UNSKILLED path", async () => {
+    const deps = makeDeps({ getSkills: vi.fn(async () => [] as Skill[]) });
+    await runSdlcHandoff(
+      baseReq({ archetype: null, coderTimeoutMs: 999, coderModel: "sonnet" }),
+      deps as never,
+    );
+    const calls = (deps.runCoder as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(APS.length); // one coder per AP — UNCHANGED count
+    for (const call of calls) {
+      // Every call carries the model AND preserves the existing opts (timeoutMs).
+      expect(call[2]).toEqual({ timeoutMs: 999, model: "sonnet" });
+    }
+  });
+
+  it("threads req.coderModel into ALL of the SKILLED multi-step invocations (shared seam)", async () => {
+    const deps = makeDeps({ getSkills: vi.fn(async () => [] as Skill[]) });
+    await runSdlcHandoff(
+      baseReq({ archetype: "repo-assessment", coderModel: "gemini-pro" }),
+      deps as never,
+    );
+    const calls = (deps.runCoder as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(2 * APS.length); // test-author → coder, per AP
+    // Every invocation — test-author AND implementer, every AP — carries the model,
+    // while the per-step allowedTools/systemPrompt are still set as before.
+    for (const call of calls) {
+      expect(call[2].model).toBe("gemini-pro");
+      expect(call[2].allowedTools).toEqual([...ALLOWED_TOOLS]);
+      expect(typeof call[2].systemPrompt).toBe("string");
+    }
+  });
+
+  it("ABSENT coderModel ⇒ opts carry NO model key (byte-for-byte today's invocation)", async () => {
+    const deps = makeDeps({ getSkills: vi.fn(async () => [] as Skill[]) });
+    await runSdlcHandoff(baseReq({ archetype: null, coderTimeoutMs: 999 }), deps as never);
+    const calls = (deps.runCoder as ReturnType<typeof vi.fn>).mock.calls;
+    for (const call of calls) {
+      expect(call[2]).toEqual({ timeoutMs: 999 });
+      expect("model" in call[2]).toBe(false); // no model key was folded in
+    }
+  });
+});

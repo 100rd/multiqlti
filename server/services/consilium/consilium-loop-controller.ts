@@ -1418,6 +1418,9 @@ export class ConsiliumLoopController {
       // Per-action-point coder timeout (configurable). The executor runs the
       // coder once per action point sequentially; this bounds a SINGLE run.
       coderTimeoutMs: cfg.sdlcTimeoutMs,
+      // Operator-pinned coder model (optional). Absent ⇒ the CLI's default model.
+      // Threaded once at the executor's runCoder seam into every coder invocation.
+      coderModel: cfg.implement.coderModel,
       // Stage 2a archetype-branched skilled coder (null archetype ⇒ default step set).
       archetype: loop.archetype ?? null,
       archetypeParams: loop.archetypeParams ?? null,

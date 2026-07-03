@@ -72,6 +72,30 @@ const ERROR_MAX = 300;
 export const ALLOWED_TOOLS = ["Edit", "Write", "Read"] as const;
 
 /**
+ * Safe shape for the OPTIONAL operator-pinned coder model slug (config
+ * `pipeline.consiliumLoop.implement.coderModel`). A pinned model reaches the
+ * `claude` CLI as a SEPARATE argv element (`--model <slug>`, arg-array, no shell),
+ * so it can never be word-split into extra flags — but we STILL constrain it so a
+ * config value can never carry whitespace or a shell metacharacter: it can ONLY
+ * ever be a model id.
+ *
+ * The task specified `^[a-zA-Z0-9._-]+$`; we TIGHTEN it to the strict subset below
+ * — the FIRST character must be alphanumeric, so a value can never even LOOK like a
+ * flag (`-p`, `--dangerously-skip-permissions`) regardless of how the CLI's arg
+ * parser treats a leading-dash option value. Every value this accepts the specified
+ * regex also accepts (strict subset), so it stays within the required slug shape
+ * while closing the leading-`-` flag-injection vector the adversarial review flags.
+ * Enforced at BOTH the config schema (fail-closed at load) AND here at the argv seam
+ * (defense-in-depth — an invalid value is dropped, degrading to the CLI default).
+ */
+export const CODER_MODEL_SLUG_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
+/** True iff `model` is a safe model slug (see {@link CODER_MODEL_SLUG_RE}). */
+export function isValidCoderModel(model: string): boolean {
+  return CODER_MODEL_SLUG_RE.test(model);
+}
+
+/**
  * H-1 — the coder spawns under a COMPLETE, ALLOWLISTED env (not the inherited
  * `process.env`). Only these keys are forwarded: PATH/HOME + locale so the OS can
  * resolve + run the `claude` binary, and the claude CLI's OWN auth/config vars so
@@ -151,6 +175,14 @@ export interface CoderOptions {
    * ⇒ the legacy prompt verbatim (no regression).
    */
   systemPrompt?: string;
+  /**
+   * OPTIONAL operator-pinned model slug for the coder's `claude` CLI invocation
+   * (config `pipeline.consiliumLoop.implement.coderModel`). When set AND a safe
+   * slug, `buildCoderArgs` adds `--model <slug>`; absent (or invalid) ⇒ the CLI's
+   * OWN default model — byte-for-byte today's invocation. Validated against
+   * {@link CODER_MODEL_SLUG_RE} at the argv seam so config can never inject a flag.
+   */
+  model?: string;
 }
 
 function clamp(value: string, max: number): string {
@@ -213,18 +245,29 @@ export function buildCoderPrompt(
  * NARROW the surface — a value outside the baseline (e.g. `Bash`) is dropped, and a
  * wholly-empty result degrades to the baseline (fail-safe; never a widening). A
  * strict subset (read-only ⇒ ["Read"]) is honored exactly.
+ *
+ * `model` is the OPTIONAL operator-pinned coder model (config
+ * `implement.coderModel`). When present AND a safe slug it is emitted as
+ * `--model <slug>` (a SEPARATE argv element — no shell); absent OR invalid ⇒ NO
+ * `--model` flag, so the CLI uses its own default and the arg array is BYTE-FOR-BYTE
+ * the legacy invocation (no regression). The slug filter is the argv-seam half of
+ * the two-layer guard (the config schema rejects a bad slug at load) — a config
+ * value can NEVER inject an extra flag.
  */
 export function buildCoderArgs(
   worktreeDir: string,
   allowedTools: readonly string[] = ALLOWED_TOOLS,
+  model?: string,
 ): string[] {
   const ceiling = ALLOWED_TOOLS as readonly string[];
   const scoped = allowedTools.filter((t) => ceiling.includes(t));
   const tools = scoped.length > 0 ? scoped : [...ALLOWED_TOOLS];
+  const modelArgs = model && isValidCoderModel(model) ? ["--model", model] : [];
   return [
     "-p",
     "--output-format",
     "json",
+    ...modelArgs,
     "--permission-mode",
     "acceptEdits",
     "--allowedTools",
@@ -263,7 +306,7 @@ export class SdlcCoder {
     // Stage 2a: a SkilledStep MAY scope the tool surface (NARROW only) + prepend a
     // role prompt. Both default to the legacy values ⇒ the unskilled path is byte-
     // for-byte identical.
-    const args = buildCoderArgs(worktreeDir, options.allowedTools);
+    const args = buildCoderArgs(worktreeDir, options.allowedTools, options.model);
     const prompt = buildCoderPrompt(actionPoints, { systemPrompt: options.systemPrompt });
     const { stdout } = await this.limiter.run(() =>
       spawnCli({

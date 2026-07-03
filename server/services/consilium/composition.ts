@@ -130,14 +130,17 @@ export function buildLoopComposition(
   };
 
   // The SDLC coder runs through the Anthropic provider: "cli" mode = the local
-  // `claude` CLI (Opus, subscription-backed, 0 API tokens); "api" = the billed
-  // Anthropic API. Only the MODE and the resulting tool NAME are exposed — never
-  // the apiKey.
+  // `claude` CLI (subscription-backed, 0 API tokens); "api" = the billed Anthropic
+  // API. Only the MODE, the resulting tool NAME, and the (operator-pinned) model
+  // slug are exposed — never the apiKey. When the operator pins
+  // `implement.coderModel` it is surfaced VERBATIM (the coder spawns `--model
+  // <slug>`); absent ⇒ the coder runs on the CLI's OWN default (cli mode shows the
+  // known default slug, api mode has no slug).
   const cliMode = config.providers.anthropic.mode === "cli";
   const coder: CompositionRole = {
     role: "coder",
     label: "SDLC coder",
-    model: cliMode ? "claude-opus" : null,
+    model: impl.coderModel ?? (cliMode ? "claude-opus" : null),
     tool: cliMode ? "claude CLI (local)" : "Anthropic API",
   };
 

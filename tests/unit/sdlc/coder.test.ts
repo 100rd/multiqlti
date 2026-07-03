@@ -18,6 +18,7 @@ import {
   buildCoderPrompt,
   parseCoderOutput,
   sanitizedCoderEnv,
+  isValidCoderModel,
   ALLOWED_TOOLS,
   CODER_ENV_ALLOWLIST,
 } from "../../../server/services/sdlc/coder.js";
@@ -48,6 +49,83 @@ describe("buildCoderArgs — exact agentic arg array (DRY security check)", () =
     expect(args).not.toContain("Bash"); // C-1: a Bash child escapes --add-dir/cwd
     expect(args[args.indexOf("--add-dir") + 1]).toBe(WT); // confinement dir
     expect(ALLOWED_TOOLS).toEqual(["Edit", "Write", "Read"]);
+  });
+});
+
+describe("buildCoderArgs — operator-pinned --model threading (configurable coder model)", () => {
+  it("adds `--model <slug>` (as a SEPARATE argv element) when a valid model is set", () => {
+    const args = buildCoderArgs(WT, [...ALLOWED_TOOLS], "sonnet");
+    const i = args.indexOf("--model");
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(args[i + 1]).toBe("sonnet"); // the slug is its OWN element (no shell word-split)
+    // The confinement + allowlist construction is otherwise unchanged.
+    expect(args[args.indexOf("--add-dir") + 1]).toBe(WT);
+    const tools = args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--add-dir"));
+    expect(tools).toEqual(["Edit", "Write", "Read"]);
+  });
+
+  it("threads gemini-style dotted slugs verbatim (e.g. gemini-pro / claude-3.5)", () => {
+    expect(buildCoderArgs(WT, [...ALLOWED_TOOLS], "gemini-pro")).toContain("gemini-pro");
+    const args = buildCoderArgs(WT, [...ALLOWED_TOOLS], "claude-3.5-sonnet");
+    expect(args[args.indexOf("--model") + 1]).toBe("claude-3.5-sonnet");
+  });
+
+  it("absent model ⇒ NO --model flag ⇒ BYTE-FOR-BYTE the legacy arg array (no regression)", () => {
+    const legacy = [
+      "-p", "--output-format", "json",
+      "--permission-mode", "acceptEdits",
+      "--allowedTools", "Edit", "Write", "Read",
+      "--add-dir", WT,
+    ];
+    expect(buildCoderArgs(WT)).toEqual(legacy);
+    expect(buildCoderArgs(WT, [...ALLOWED_TOOLS])).toEqual(legacy);
+    expect(buildCoderArgs(WT, [...ALLOWED_TOOLS], undefined)).toEqual(legacy);
+    expect(buildCoderArgs(WT, [...ALLOWED_TOOLS], "")).toEqual(legacy); // empty ⇒ dropped
+  });
+
+  it("SECURITY: a flag-like / injection model value is DROPPED (never emits --model, never the value)", () => {
+    // A value crafted to look like an extra CLI flag or to carry shell/space chars.
+    for (const evil of [
+      "--dangerously-skip-permissions",
+      "sonnet --dangerously-skip-permissions",
+      "sonnet; rm -rf /",
+      "sonnet\n--verbose",
+      "$(whoami)",
+      "a b",
+      "../etc/passwd/../..",
+    ]) {
+      const args = buildCoderArgs(WT, [...ALLOWED_TOOLS], evil);
+      expect(args).not.toContain("--model"); // the flag itself is not emitted
+      expect(args).not.toContain(evil); // and neither is the raw value
+      // The invocation degrades to the safe legacy shape (confinement intact).
+      expect(args[args.indexOf("--add-dir") + 1]).toBe(WT);
+      expect(args).not.toContain("--dangerously-skip-permissions");
+    }
+  });
+});
+
+describe("isValidCoderModel — safe model-slug guard (^[a-zA-Z0-9._-]+$)", () => {
+  it("accepts real model slugs", () => {
+    for (const ok of ["sonnet", "gemini-pro", "claude-3.5-sonnet", "opus", "gpt-4o", "a", "model_1.2-x"]) {
+      expect(isValidCoderModel(ok)).toBe(true);
+    }
+  });
+
+  it("rejects empty, flag-like, whitespace, and shell-metachar values", () => {
+    for (const bad of [
+      "",
+      "-p",
+      "--model",
+      "a b",
+      "sonnet;rm",
+      "sonnet\n",
+      "$(x)",
+      "a|b",
+      "a/b",
+      "a`b`",
+    ]) {
+      expect(isValidCoderModel(bad)).toBe(false);
+    }
   });
 });
 

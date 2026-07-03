@@ -416,6 +416,35 @@ export const ConfigSchema = z.object({
          *  `consiliumLoop.enabled` (the loop only runs at all when that is true). */
         enabled: z.boolean().default(false),
         /**
+         * OPTIONAL operator-pinned model for the agentic SDLC coder (the local
+         * `claude` CLI that implements action points). Absent (default) ⇒ the coder
+         * spawns with NO `--model` flag and uses the CLI's OWN default model —
+         * byte-for-byte today's behavior. When SET, EVERY coder invocation of a
+         * round (initial per-AP coder, verify→fix iterations, final-state fix coder)
+         * adds `--model <slug>`.
+         *
+         * SECURITY (fail-closed at load): the coder passes this as a SEPARATE argv
+         * element (arg-array, no shell), but it is STILL constrained to a safe slug
+         * so a config value can never be flag-like, whitespaced, or a shell
+         * metacharacter — it can ONLY ever be a model id. The task specified
+         * `^[a-zA-Z0-9._-]+$`; this is tightened to require an alphanumeric FIRST
+         * char (a strict subset) so a value can never even look like a flag
+         * (`-p`, `--dangerously-...`). A value that fails ABORTS config load rather
+         * than silently defaulting; the argv seam (`buildCoderArgs`) re-validates
+         * with the SAME slug as an independent second layer. min(1) rejects empty.
+         * NOTE: this is a claude-CLI model slug (e.g. "sonnet"); the coder path is
+         * claude-CLI-specific — see the PR for why the Gemini/Antigravity CLI cannot
+         * serve as an agentic coder today.
+         */
+        coderModel: z
+          .string()
+          .min(1)
+          .regex(
+            /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/,
+            "coderModel must be a safe model slug (alphanumeric start; [A-Za-z0-9._-])",
+          )
+          .optional(),
+        /**
          * Stage 2b (design §3.C/§5/§10-2b): the per-criterion SANDBOXED VERIFICATION
          * + bounded code→test→fix loop — the ONLY surface that EXECUTES repo code (the
          * test command) in the isolated worktree. It has its OWN kill-switch, default

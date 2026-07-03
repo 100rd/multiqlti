@@ -93,6 +93,21 @@ describe("buildLoopComposition — config → flags & models", () => {
     expect(api.coder.model).toBeNull();
   });
 
+  it("surfaces the operator-pinned implement.coderModel on the coder role (over the CLI default)", () => {
+    const pinned = buildLoopComposition(
+      null,
+      ConfigSchema.parse({
+        pipeline: { consiliumLoop: { implement: { coderModel: "sonnet" } } },
+      }),
+    );
+    // When pinned, the coder role reports the configured slug (not the CLI default).
+    expect(pinned.coder.model).toBe("sonnet");
+    expect(pinned.coder.tool).toBe("claude CLI (local)");
+
+    // Absent ⇒ falls back to the CLI default representation (unchanged behavior).
+    expect(buildLoopComposition(null, baseConfig()).coder.model).toBe("claude-opus");
+  });
+
   it("threads verification flags, commands, timeouts, planner + judge-retry from config", () => {
     const config = ConfigSchema.parse({
       pipeline: {

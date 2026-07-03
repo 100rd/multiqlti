@@ -289,6 +289,17 @@ export interface SdlcHandoffRequest {
   /** Hard timeout PER action-point coder run (ms). Defaults to the coder default. */
   coderTimeoutMs?: number;
   /**
+   * OPTIONAL operator-pinned model slug for the agentic coder's `claude` CLI
+   * (config `pipeline.consiliumLoop.implement.coderModel`). Threaded ONCE at the
+   * `runCoder` seam into EVERY coder invocation of the round — the initial per-AP
+   * coder (skilled + unskilled), the verify→fix iterations, AND the final-state
+   * fix coder — so all call sites carry the same model. Absent ⇒ the CLI's own
+   * default model (byte-for-byte today's invocation, no regression). Constrained to
+   * a safe slug (`CODER_MODEL_SLUG_RE`) at BOTH config load AND the argv seam so it
+   * can never inject a flag.
+   */
+  coderModel?: string;
+  /**
    * Stage 2a: the loop's Stage-1 archetype. Drives the SKILLED step selection
    * (`selectSkillSet`). null/absent ⇒ NO steps ⇒ today's single unskilled coder
    * per action point (byte-for-byte unchanged — NO regression).
@@ -840,7 +851,16 @@ export async function runSdlcHandoff(
   const createWorktree = deps.createWorktree ?? createSdlcWorktree;
   const removeWorktree = deps.removeWorktree ?? removeSdlcWorktree;
   const resolveDefault = deps.resolveDefaultBranchFn ?? resolveDefaultBranch;
-  const runCoder = deps.runCoder ?? ((dir, aps, opts) => sharedCoder.run(dir, aps, opts));
+  // Thread the operator-pinned coder model ONCE here at the seam. Every call site
+  // (initial skilled + unskilled coder, verify→fix iterations, final-state fix
+  // coder) goes through this single `runCoder`, so folding `model` into the opts
+  // here carries it to ALL of them — including an injected (test) coder, so the
+  // threading is observable. When `req.coderModel` is ABSENT the opts object is
+  // passed through UNTOUCHED ⇒ no `model` key ⇒ no `--model` flag ⇒ byte-for-byte
+  // today's invocation (no regression).
+  const baseCoder = deps.runCoder ?? ((dir, aps, opts) => sharedCoder.run(dir, aps, opts));
+  const runCoder: NonNullable<SdlcExecutorDeps["runCoder"]> = (dir, aps, opts) =>
+    baseCoder(dir, aps, req.coderModel ? { ...opts, model: req.coderModel } : opts);
   const push = deps.push ?? pushBranch;
   const openPr = deps.openPr ?? openDraftPr;
   const progress = makeProgressTracker(onProgress, req.actionPoints);
