@@ -45,6 +45,35 @@ const CreateLoopSchema = z.object({
 });
 
 // Stage 1 (§6): the human archetype OVERRIDE body — enum-clamped (no model call).
+/** Max stored cancellation reason (truncated, not rejected — see `sanitizeReason`). */
+const MAX_CANCEL_REASON = 500;
+
+/**
+ * Cancel body is OPTIONAL — an auto-cancel is a POST with no/empty body. A
+ * present `reason` is untrusted free text, sanitized downstream; a non-string
+ * `reason` is a 400. `.passthrough()` is deliberately NOT used.
+ */
+const CancelLoopSchema = z.object({
+  reason: z.string().optional(),
+});
+
+/**
+ * Sanitize an untrusted cancellation reason: control-strip (C0/DEL/C1),
+ * collapse whitespace, trim, then CLAMP (not reject) to {@link MAX_CANCEL_REASON}.
+ * Returns undefined for a non-string or empty-after-strip input so the composed
+ * explanation falls back to the actor+timestamp form (never blank).
+ */
+function sanitizeReason(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const cleaned = raw
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_CANCEL_REASON);
+  return cleaned.length ? cleaned : undefined;
+}
+
 const ArchetypeOverrideSchema = z.object({
   archetype: z.enum(ARCHETYPES),
 });
@@ -261,10 +290,25 @@ export function registerConsiliumLoopRoutes(
   );
 
   // ── Cancel (any non-terminal → CANCELLED) ───────────────────────────────────
+  // Body is OPTIONAL: `{ reason?: string }` (untrusted → sanitized + clamped).
+  // The acting user is resolved from the authorized session (never client-set),
+  // so the recorded terminal explanation names a real actor, never "system"
+  // unless truly unresolvable.
   app.post("/api/consilium-loops/:id/cancel", async (req: Request, res: Response) => {
     const auth = await authorizeConsiliumLoop(req, res, storage, String(req.params.id));
     if (!auth) return;
-    const loop = await controller.cancel(auth.loop.id);
+    // Tolerate a missing/empty body (auto-cancel POSTs carry none); only a
+    // present-but-wrong-typed `reason` is a 400.
+    const parsed = CancelLoopSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Validation failed",
+        issues: parsed.error.issues.map((i) => ({ path: i.path, message: i.message })),
+      });
+    }
+    const reason = sanitizeReason(parsed.data.reason);
+    const actor = req.user?.name?.trim() || req.user?.email || req.user?.id || undefined;
+    const loop = await controller.cancel(auth.loop.id, { reason, actor });
     if (!loop) return res.status(409).json({ error: "loop is already terminal" });
     res.json(loop);
   });

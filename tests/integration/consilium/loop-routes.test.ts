@@ -226,6 +226,30 @@ describe("consilium-loop routes", () => {
     expect(res.body.state).toBe("cancelled");
   });
 
+  it("cancel with a reason records a self-explanatory `error` (who + when + why)", async () => {
+    const created = await post("/api/consilium-loops", { groupId: ctx.group.id, repoPath: REPO_ROOT });
+    const id = created.body.id;
+    ctx.setUser(OWNER_USER); // name "Owner"
+    const res = await post(`/api/consilium-loops/${id}/cancel`, { reason: "superseded by a newer loop" });
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe("cancelled");
+    expect(res.body.error).toMatch(/^Cancelled by Owner at .+ — superseded by a newer loop$/);
+    // Persisted (not just echoed): a fresh GET carries the same explanation.
+    ctx.setUser(OWNER_USER);
+    const got = await get(`/api/consilium-loops/${id}`);
+    expect(got.body.error).toBe(res.body.error);
+  });
+
+  it("cancel with NO body still records actor + timestamp — `error` is never blank", async () => {
+    const created = await post("/api/consilium-loops", { groupId: ctx.group.id, repoPath: REPO_ROOT });
+    const id = created.body.id;
+    ctx.setUser(OWNER_USER);
+    const res = await post(`/api/consilium-loops/${id}/cancel`);
+    expect(res.status).toBe(200);
+    expect(res.body.error).toMatch(/^Cancelled by Owner at .+Z$/);
+    expect(res.body.error).not.toContain("—");
+  });
+
   it("list is owner-scoped: OTHER_USER sees none of OWNER's loops", async () => {
     await post("/api/consilium-loops", { groupId: ctx.group.id, repoPath: REPO_ROOT });
     ctx.setUser(OTHER_USER);

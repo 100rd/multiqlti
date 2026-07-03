@@ -44,7 +44,7 @@ function makeApp(opts: {
   devProgress?: unknown;
   loop?: Record<string, unknown>;
   rounds?: unknown[];
-  user?: { id: string; role?: string };
+  user?: { id: string; role?: string; name?: string; email?: string };
 } = {}) {
   const {
     developResult = { ok: true, loop: { ...DEVELOPING_LOOP } as never },
@@ -60,6 +60,13 @@ function makeApp(opts: {
   const controller = {
     develop: vi.fn(async () => developResult),
     getDevProgress: vi.fn(() => devProgress),
+    // Cancel echoes back a cancelled loop; tests assert the ARGS the route passes
+    // (sanitized reason + session-resolved actor), not controller internals.
+    cancel: vi.fn(async (_id: string, _opts?: { reason?: string; actor?: string }) => ({
+      ...DEVELOPING_LOOP,
+      state: "cancelled",
+      error: "recorded",
+    })),
   } as unknown as ConsiliumLoopController;
 
   const storage = {
@@ -199,5 +206,79 @@ describe("removed standalone execute-sdlc surface", () => {
     const { app } = makeApp();
     const res = await request(app).post(`/api/task-groups/grp-1/execute-sdlc`).send({});
     expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /api/consilium-loops/:id/cancel — reason + actor threading", () => {
+  beforeEach(() => vi.clearAllMocks());
+  type CancelFn = ReturnType<typeof vi.fn>;
+
+  it("passes a sanitized reason + session-resolved actor (name preferred) to controller.cancel", async () => {
+    const { app, controller } = makeApp({ user: { id: OWNER, name: "Ada Lovelace", email: "ada@x.io" } });
+    const res = await request(app)
+      .post(`/api/consilium-loops/${LOOP_ID}/cancel`)
+      .send({ reason: "  superseded\tby #42  " });
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe("cancelled");
+    expect(controller.cancel as CancelFn).toHaveBeenCalledWith(LOOP_ID, {
+      reason: "superseded by #42", // control-stripped + whitespace-collapsed + trimmed
+      actor: "Ada Lovelace", // name wins over email/id
+    });
+  });
+
+  it("no body (auto-cancel) → controller.cancel called with reason undefined, actor from id", async () => {
+    const { app, controller } = makeApp({ user: { id: OWNER } }); // no name/email
+    const res = await request(app).post(`/api/consilium-loops/${LOOP_ID}/cancel`).send();
+    expect(res.status).toBe(200);
+    expect(controller.cancel as CancelFn).toHaveBeenCalledWith(LOOP_ID, {
+      reason: undefined,
+      actor: OWNER,
+    });
+  });
+
+  it("clamps an over-long reason to <= 500 chars (truncate, not reject)", async () => {
+    const { app, controller } = makeApp({ user: { id: OWNER, email: "ops@x.io" } });
+    const res = await request(app)
+      .post(`/api/consilium-loops/${LOOP_ID}/cancel`)
+      .send({ reason: "x".repeat(2000) });
+    expect(res.status).toBe(200);
+    const arg = (controller.cancel as CancelFn).mock.calls[0][1] as { reason?: string; actor?: string };
+    expect(arg.reason?.length).toBe(500);
+    expect(arg.actor).toBe("ops@x.io"); // email fallback when no name
+  });
+
+  it("a whitespace-only reason collapses to undefined (never a blank reason tail)", async () => {
+    const { app, controller } = makeApp();
+    const res = await request(app)
+      .post(`/api/consilium-loops/${LOOP_ID}/cancel`)
+      .send({ reason: "   \n\t  " });
+    expect(res.status).toBe(200);
+    const arg = (controller.cancel as CancelFn).mock.calls[0][1] as { reason?: string };
+    expect(arg.reason).toBeUndefined();
+  });
+
+  it("a non-string reason → 400 (validation), controller.cancel NOT called", async () => {
+    const { app, controller } = makeApp();
+    const res = await request(app)
+      .post(`/api/consilium-loops/${LOOP_ID}/cancel`)
+      .send({ reason: 123 });
+    expect(res.status).toBe(400);
+    expect(controller.cancel as CancelFn).not.toHaveBeenCalled();
+  });
+
+  it("a foreign loop → 404, controller.cancel NOT called (no existence oracle)", async () => {
+    const { app, controller } = makeApp({ user: { id: "intruder" } });
+    const res = await request(app)
+      .post(`/api/consilium-loops/${LOOP_ID}/cancel`)
+      .send({ reason: "nope" });
+    expect(res.status).toBe(404);
+    expect(controller.cancel as CancelFn).not.toHaveBeenCalled();
+  });
+
+  it("controller reports already-terminal (null) → 409", async () => {
+    const { app, controller } = makeApp();
+    (controller.cancel as CancelFn).mockResolvedValueOnce(null);
+    const res = await request(app).post(`/api/consilium-loops/${LOOP_ID}/cancel`).send();
+    expect(res.status).toBe(409);
   });
 });

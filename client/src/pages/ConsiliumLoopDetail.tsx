@@ -699,13 +699,19 @@ function ResultPanel({
         <CardTitle className="text-sm">Result</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Last-round error — the most important signal when a round degraded. */}
+        {/* Terminal explanation from `loop.error`. For a CANCELLED loop this is the
+            composed "Cancelled by <actor> at <ISO> — <reason>" note (who/when/why),
+            NOT a failure — so it reads as "Cancellation". For every other state it
+            is the last-round degradation signal. Same amber (neutral, not red)
+            treatment either way; the text is INERT loop/user-authored content. */}
         {loop.error && (
           <div className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
             <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
             <div className="min-w-0">
-              <p className="font-medium text-amber-700 dark:text-amber-300">Last round error</p>
-              {/* INERT loop-authored error text */}
+              <p className="font-medium text-amber-700 dark:text-amber-300">
+                {loop.state === "cancelled" ? "Cancellation" : "Last round error"}
+              </p>
+              {/* INERT loop/user-authored text */}
               <p className="text-amber-700/90 dark:text-amber-300/90 break-words">{loop.error}</p>
             </div>
           </div>

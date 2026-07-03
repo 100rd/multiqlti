@@ -80,7 +80,11 @@ export type LoopEvent =
   // DEVELOPING (injected ONLY by `controller.develop`, NEVER by `deriveEvent` —
   // the poller must never emit it). Round-preserving + CAS-guarded.
   | { kind: "develop_requested" }
-  | { kind: "cancel" };
+  // A cancel MAY carry a human-supplied `reason` and the resolved `actor` label
+  // (both already clamped + control-stripped at the route — untrusted). Absent on
+  // an auto-cancel (an API POST with no body); the reducer still records a
+  // never-blank terminal explanation. See `composeCancelExplanation`.
+  | { kind: "cancel"; reason?: string; actor?: string };
 
 /** A single FSM transition: CAS `from → to`, plus optional column updates. */
 export interface LoopTransition {
@@ -422,15 +426,41 @@ export function isAntiStall(series: number[], round: number): boolean {
 }
 
 /**
+ * Compose the terminal explanation persisted to `consilium_loops.error` when a
+ * loop is CANCELLED. NEVER blank: `actor` falls back to "system" (auto-cancel /
+ * unresolvable user), `reason` is optional. `reason` is expected already
+ * clamped + control-stripped at the route (untrusted); the extra trim here is a
+ * defensive belt on any non-route caller. Pure — the ISO timestamp is passed in
+ * so the reducer stays deterministic under a fixed `at`.
+ *
+ * Shape: `Cancelled by <actor> at <ISO>[ — <reason>]`.
+ */
+export function composeCancelExplanation(at: Date, actor?: string, reason?: string): string {
+  const who = actor && actor.trim() ? actor.trim() : "system";
+  const base = `Cancelled by ${who} at ${at.toISOString()}`;
+  const r = reason?.trim();
+  return r ? `${base} — ${r}` : base;
+}
+
+/**
  * PURE reducer (design §3 table). Given the current persisted `state` and an
  * `event`, return the single transition to commit, or `null` for a no-op.
  * No storage, no I/O, no `any` — the whole table is unit-testable in isolation.
  */
 export function reduce(state: ConsiliumLoopState, event: LoopEvent): LoopTransition | null {
-  // `cancel` from any non-terminal state → CANCELLED (design §3 last row).
+  // `cancel` from any non-terminal state → CANCELLED (design §3 last row). Same
+  // target/extra shape as before (NO FSM state-table change) plus the `error`
+  // column reused as a terminal explanation so the UI never shows a bare
+  // "cancelled" with no who/when/why. `error` here is a cancellation note, NOT a
+  // failure — no counter/filter keys off `error != null`; they gate on `state`.
   if (event.kind === "cancel") {
     if (isTerminal(state)) return null;
-    return { from: state, to: "cancelled", extra: { completedAt: new Date() } };
+    const at = new Date();
+    return {
+      from: state,
+      to: "cancelled",
+      extra: { completedAt: at, error: composeCancelExplanation(at, event.actor, event.reason) },
+    };
   }
 
   // HUMAN re-open: an authorized `develop_requested` promotes a VERDICT-terminal
@@ -991,11 +1021,22 @@ export class ConsiliumLoopController {
     return extractActionPoints(judgeOutput);
   }
 
-  /** Cancel + cascade-cancel the child group; terminal. */
-  async cancel(loopId: string): Promise<ConsiliumLoopRow | null> {
+  /**
+   * Cancel + cascade-cancel the child group; terminal. `opts.reason` +
+   * `opts.actor` (both route-sanitized) are threaded into the reducer so the
+   * `error` column carries a never-blank terminal explanation (who/when/why).
+   */
+  async cancel(
+    loopId: string,
+    opts?: { reason?: string; actor?: string },
+  ): Promise<ConsiliumLoopRow | null> {
     const loop = await this.storage.getLoop(loopId);
     if (!loop || isTerminal(loop.state)) return null;
-    const transition = reduce(loop.state, { kind: "cancel" });
+    const transition = reduce(loop.state, {
+      kind: "cancel",
+      reason: opts?.reason,
+      actor: opts?.actor,
+    });
     if (!transition) return null;
     await this.deps.taskOrchestrator.cancelGroup(loop.groupId).catch(() => undefined);
     this.sdlcRuns.delete(loopId); // H-2: drop any in-flight SDLC handle (terminal).
