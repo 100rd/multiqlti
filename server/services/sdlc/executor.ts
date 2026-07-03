@@ -967,6 +967,8 @@ export async function runSdlcHandoff(
       let committedCount: number;
       // Stage B: per-criterion method routing context (INERT unless perCriterionMethod on).
       const routing = { enabled: req.perCriterionMethod ?? false, judgeVerify: deps.judgeVerify };
+      // The per-AP IO shared by the fan-out workers, the sequential default, and the fallback.
+      const apIo: ApImplementIo = { gitRaw, runCoder, progress, skilledSteps, verify: verifyCtx, routing };
 
       // Parallel-develop (design §4): when the switch is on AND there is >1 AP to fan out,
       // run the round in DEPENDENCY-AWARE WAVES — each AP in its OWN worktree branched off
@@ -976,12 +978,7 @@ export async function runSdlcHandoff(
       if ((req.parallel?.enabled ?? false) && total > 1) {
         const waveResult = await runWaveScheduledImplement(
           {
-            gitRaw,
-            runCoder,
-            progress,
-            skilledSteps,
-            verify: verifyCtx,
-            routing,
+            ...apIo,
             createWorktree,
             removeWorktree,
             maxConcurrency: req.parallel!.maxConcurrency,
@@ -993,30 +990,28 @@ export async function runSdlcHandoff(
           req,
           wt,
         );
-        outcomes = waveResult.outcomes;
-        committedCount = waveResult.committedCount;
-      } else {
-        // SEQUENTIAL per-action-point runs in the ONE shared worktree (avoid edit
-        // conflicts). Each `runActionPoint` NEVER throws — a coder timeout/error is
-        // caught, its work committed `[partial]`, and the loop continues.
-        outcomes = [];
-        committedCount = 0;
-        for (let i = 0; i < total; i++) {
-          const outcome = await runActionPoint(
-            { gitRaw, runCoder, progress, completedBefore: committedCount, skilledSteps, verify: verifyCtx, routing },
-            wt,
-            req,
-            req.actionPoints[i],
-            i + 1,
-            total,
+        // FAIL-LOUD FALLBACK (fan-out fix): if the fan-out landed NOTHING on the integration
+        // branch AND at least one AP failed at worktree SETUP (the D/F-ref / git-admin
+        // breakage class), the parallel machinery is broken for this round — degrade to the
+        // SEQUENTIAL path so the operator gets working output, not an empty 0-commit PR. Guard
+        // on committedCount===0 so we NEVER double-run: if any AP already landed on `wt`, the
+        // fan-out worked and we keep its result untouched. `wt` is still at the base commit
+        // here (nothing merged), so the sequential re-run starts clean.
+        if (waveResult.committedCount === 0 && waveResult.setupFailures > 0) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[parallel-develop] loop=${req.loopId} round=${req.round}: fan-out produced 0 commits ` +
+              `with ${waveResult.setupFailures}/${total} worktree-setup failure(s) — FALLING BACK to ` +
+              `the sequential path so the round still produces output.`,
           );
-          outcomes.push(outcome);
-          if (outcome.committed) committedCount += 1;
-          // AP end: fold the settled status into the shared live snapshot. It surfaces
-          // on the very next beat (the next AP's start, or the push/done beat below) —
-          // the poll-based UI reads the latest snapshot, so no separate end beat.
-          progress.setStatus(i + 1, outcome.status);
+          ({ outcomes, committedCount } = await runSequentialImplement(apIo, wt, req));
+        } else {
+          outcomes = waveResult.outcomes;
+          committedCount = waveResult.committedCount;
         }
+      } else {
+        // SEQUENTIAL per-action-point runs in the ONE shared worktree (avoid edit conflicts).
+        ({ outcomes, committedCount } = await runSequentialImplement(apIo, wt, req));
       }
 
       // Stage A: FINAL-STATE re-verification. After every action point has been applied
@@ -1440,7 +1435,13 @@ async function runWaveScheduledImplement(
   ctx: WaveImplementCtx,
   req: SdlcHandoffRequest,
   integrationWt: CreateWorktreeResult,
-): Promise<{ outcomes: ApOutcome[]; committedCount: number; waveCount: number; mergeConflicts: number }> {
+): Promise<{
+  outcomes: ApOutcome[];
+  committedCount: number;
+  waveCount: number;
+  mergeConflicts: number;
+  setupFailures: number;
+}> {
   const total = req.actionPoints.length;
   // Original 1-based ordinal per AP (identity map — the schedule reorders but never clones).
   const ordinalOf = new Map<ActionPoint, number>();
@@ -1454,6 +1455,10 @@ async function runWaveScheduledImplement(
   const outcomes = new Array<ApOutcome | undefined>(total);
   let committedCount = 0;
   let mergeConflicts = 0;
+  // Per-AP worktree-creation failures (the D/F-ref / git-admin breakage class). When the WHOLE
+  // fan-out trips this uniformly (every AP), committedCount stays 0 and the caller degrades to
+  // the sequential path so the round still produces output instead of an empty PR.
+  let setupFailures = 0;
   const gitAdmin = createGitAdminMutex();
 
   for (const wave of waves) {
@@ -1507,7 +1512,11 @@ async function runWaveScheduledImplement(
           return { index, ap, apBranch, outcome };
         } catch (err) {
           // Create-worktree (or an unexpected throw) failed for THIS AP — surface it as a
-          // failed outcome (never silent) and let the round continue.
+          // failed outcome (never silent), COUNT it as a setup failure (drives the caller's
+          // sequential fallback when the whole fan-out breaks), and let the round continue.
+          // The read-then-write is synchronous (no await between), so it is race-free despite
+          // the concurrent lanes.
+          setupFailures += 1;
           const { priority, title } = apLabels(ap);
           ctx.progress.setStatus(index, "failed");
           return {
@@ -1584,7 +1593,41 @@ async function runWaveScheduledImplement(
     outcomes[i] = { index: i + 1, priority, title, status: "failed", committed: false, note: "round wall-clock deadline exceeded" };
   }
 
-  return { outcomes: outcomes as ApOutcome[], committedCount, waveCount: waves.length, mergeConflicts };
+  return { outcomes: outcomes as ApOutcome[], committedCount, waveCount: waves.length, mergeConflicts, setupFailures };
+}
+
+/**
+ * SEQUENTIAL per-action-point implement loop in the ONE shared (integration) worktree — the
+ * DEFAULT path (parallel off) AND the fan-out FALLBACK. Each `runActionPoint` NEVER throws (a
+ * coder timeout/error is caught, its work committed `[partial]`, and the loop continues), so
+ * this returns a full outcome set. Behavior is byte-for-byte the historical inline loop — it
+ * was extracted verbatim so the off-path and the fallback share ONE implementation.
+ */
+async function runSequentialImplement(
+  io: ApImplementIo,
+  wt: CreateWorktreeResult,
+  req: SdlcHandoffRequest,
+): Promise<{ outcomes: ApOutcome[]; committedCount: number }> {
+  const total = req.actionPoints.length;
+  const outcomes: ApOutcome[] = [];
+  let committedCount = 0;
+  for (let i = 0; i < total; i++) {
+    const outcome = await runActionPoint(
+      { ...io, completedBefore: committedCount },
+      wt,
+      req,
+      req.actionPoints[i],
+      i + 1,
+      total,
+    );
+    outcomes.push(outcome);
+    if (outcome.committed) committedCount += 1;
+    // AP end: fold the settled status into the shared live snapshot. It surfaces on the very
+    // next beat (the next AP's start, or the push/done beat) — the poll-based UI reads the
+    // latest snapshot, so no separate end beat.
+    io.progress.setStatus(i + 1, outcome.status);
+  }
+  return { outcomes, committedCount };
 }
 
 /**

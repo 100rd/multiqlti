@@ -5,8 +5,8 @@
  * worktree create/remove, coder, push, openPr, git runner). Load-bearing / adversarial:
  *   - OFF (default) ⇒ BYTE-IDENTICAL sequential path: ONE worktree, NO `ap-` branch, NO
  *     merge — proof the feature is inert when disabled.
- *   - ON, independent APs ⇒ N per-AP worktrees (each on a `…/ap-<k>` branch off the
- *     integration HEAD) merged back into the ROUND branch; ONE PR from the round branch.
+ *   - ON, independent APs ⇒ N per-AP worktrees (each on a `…/round-<n>-ap-<k>` SIBLING branch
+ *     off the integration HEAD) merged back into the ROUND branch; ONE PR from the round branch.
  *   - CONCURRENCY is bounded by `maxConcurrency` (risk e).
  *   - MERGE CONFLICT (risk c) ⇒ the AP is re-run on the integrated tree, its work SURFACED
  *     (note mentions the conflict), never silently dropped.
@@ -96,7 +96,7 @@ describe("parallel OFF (default) — byte-identical sequential path", () => {
     const deps = makeDeps();
     const res = await runSdlcHandoff(baseReq(), deps as never); // parallel absent
     expect(createdBranches(deps)).toEqual([ROUND_BRANCH]); // exactly one worktree
-    expect(createdBranches(deps).some((b) => /\/ap-\d+$/.test(b))).toBe(false);
+    expect(createdBranches(deps).some((b) => /-ap-\d+$/.test(b))).toBe(false);
     expect(mergedBranches(deps)).toHaveLength(0);
     expect(res.prRef).toBe("https://github.com/x/y/pull/9");
     expect(deps.removeWorktree).toHaveBeenCalledTimes(1);
@@ -130,11 +130,11 @@ describe("parallel ON — wave fan-out + merge", () => {
     const branches = createdBranches(deps);
     // integration (round) branch first, then one per-AP branch each.
     expect(branches[0]).toBe(ROUND_BRANCH);
-    expect(branches).toContain(`${ROUND_BRANCH}/ap-1`);
-    expect(branches).toContain(`${ROUND_BRANCH}/ap-2`);
+    expect(branches).toContain(`${ROUND_BRANCH}-ap-1`);
+    expect(branches).toContain(`${ROUND_BRANCH}-ap-2`);
     expect(branches).toHaveLength(3);
     // Both ap-branches merged back into the integration branch, in deterministic order.
-    expect(mergedBranches(deps)).toEqual([`${ROUND_BRANCH}/ap-1`, `${ROUND_BRANCH}/ap-2`]);
+    expect(mergedBranches(deps)).toEqual([`${ROUND_BRANCH}-ap-1`, `${ROUND_BRANCH}-ap-2`]);
     // ONE PR, opened from the round (integration) branch.
     expect(deps.openPr).toHaveBeenCalledTimes(1);
     const [dir, prOpts] = (deps.openPr as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -197,8 +197,8 @@ describe("parallel ON — wave fan-out + merge", () => {
       { title: "B", priority: "P0", dependsOn: [1] },
     ];
     await runSdlcHandoff(baseReq({ actionPoints: aps, parallel: { enabled: true, maxConcurrency: 3 } }), deps as never);
-    const mergeA = order.indexOf(`merge:${ROUND_BRANCH}/ap-1`);
-    const createB = order.indexOf(`create:${ROUND_BRANCH}/ap-2`);
+    const mergeA = order.indexOf(`merge:${ROUND_BRANCH}-ap-1`);
+    const createB = order.indexOf(`create:${ROUND_BRANCH}-ap-2`);
     expect(mergeA).toBeGreaterThanOrEqual(0);
     expect(createB).toBeGreaterThan(mergeA); // B fanned out only AFTER A merged
   });
@@ -207,7 +207,7 @@ describe("parallel ON — wave fan-out + merge", () => {
 describe("parallel ON — adversarial", () => {
   it("MERGE CONFLICT (risk c) ⇒ the AP is re-run on the integrated tree and SURFACED", async () => {
     // ap-1 conflicts on merge → abort → fallback re-run on the integration worktree.
-    const gitRaw = makeGitRaw({ conflictOn: /\/ap-1$/ });
+    const gitRaw = makeGitRaw({ conflictOn: /-ap-1$/ });
     const deps = makeDeps({ gitRaw });
     const res = await runSdlcHandoff(
       baseReq({ parallel: { enabled: true, maxConcurrency: 3 } }),
@@ -224,6 +224,52 @@ describe("parallel ON — adversarial", () => {
     // The PR opens; the conflicted AP's note surfaces the conflict (never silent — risk c).
     const [, prOpts] = (deps.openPr as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(prOpts.body).toMatch(/merge conflict/i);
+    expect(res.prRef).toBe("https://github.com/x/y/pull/9");
+  });
+
+  it("FAIL-LOUD FALLBACK ⇒ when EVERY per-AP worktree setup fails, degrade to the sequential path (no empty PR)", async () => {
+    // Simulate the fan-out breakage class (the shipped D/F-ref bug): createWorktree SUCCEEDS
+    // for the round (integration) branch but THROWS for every per-AP branch. With 0 commits on
+    // the integration branch + setup failures, the executor must fall back to sequential and
+    // still produce a PR — not an empty 0-commit result.
+    const createWorktree = vi.fn(async (opts: { branch: string; baseRef?: string }) => {
+      if (/-ap-\d+$/.test(opts.branch)) throw new Error("fatal: cannot lock ref (simulated D/F)");
+      return { worktreeDir: `/tmp/tree/${opts.branch}`, baseDir: `/tmp/base/${opts.branch}`, branch: opts.branch, baseRef: opts.baseRef ?? "main" };
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const deps = makeDeps({ createWorktree });
+    const res = await runSdlcHandoff(baseReq({ parallel: { enabled: true, maxConcurrency: 3 } }), deps as never);
+
+    // The fan-out was attempted (per-AP creates threw) THEN the sequential path ran on the
+    // integration worktree, committing both APs there.
+    const integrationCommits = (deps.gitRaw as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c) => c[0] === `/tmp/tree/${ROUND_BRANCH}` && (c[1] as string[])[0] === "commit",
+    );
+    expect(integrationCommits.length).toBe(2); // both APs committed sequentially on the integration tree
+    // NO merge was performed (sequential path merges nothing) and a PR still opened.
+    expect(mergedBranches(deps)).toHaveLength(0);
+    expect(res.prRef).toBe("https://github.com/x/y/pull/9");
+    // The degrade was surfaced LOUDLY.
+    expect(warn.mock.calls.some((c) => /FALLING BACK to.*sequential/i.test(String(c[0])))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("NO double-run: a PARTIAL fan-out (some APs committed) does NOT trigger the sequential fallback", async () => {
+    // ap-2's worktree create throws, but ap-1 fans out + merges fine (committedCount > 0), so the
+    // guard must NOT re-run the whole round sequentially (that would double-apply ap-1).
+    const createWorktree = vi.fn(async (opts: { branch: string; baseRef?: string }) => {
+      if (/-ap-2$/.test(opts.branch)) throw new Error("fatal: cannot lock ref (simulated)");
+      return { worktreeDir: `/tmp/tree/${opts.branch}`, baseDir: `/tmp/base/${opts.branch}`, branch: opts.branch, baseRef: opts.baseRef ?? "main" };
+    });
+    const deps = makeDeps({ createWorktree });
+    const res = await runSdlcHandoff(baseReq({ parallel: { enabled: true, maxConcurrency: 3 } }), deps as never);
+    // ap-1 merged via the fan-out; ap-2 surfaced as failed. NO sequential re-commit on the
+    // integration worktree (the fan-out path never commits directly on it).
+    expect(mergedBranches(deps)).toEqual([`${ROUND_BRANCH}-ap-1`]);
+    const integrationCommits = (deps.gitRaw as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c) => c[0] === `/tmp/tree/${ROUND_BRANCH}` && (c[1] as string[])[0] === "commit",
+    );
+    expect(integrationCommits).toHaveLength(0);
     expect(res.prRef).toBe("https://github.com/x/y/pull/9");
   });
 
