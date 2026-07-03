@@ -2,9 +2,10 @@
  * Test agent helper for E2E and integration tests.
  *
  * Provides an in-process A2A-compliant HTTP agent built on top of BaseAgent.
- * Starts on a random high port (30000-40000) to avoid conflicts with
- * parallel test runs.
+ * Each agent binds an OS-assigned ephemeral port (via listen(0)) so it can
+ * never collide with a sibling agent or a leftover socket from a prior test.
  */
+import { createServer as createNetServer } from "node:net";
 import { BaseAgent } from "../../packages/remote-agent/src/base-agent.js";
 import type { AgentToolHandler } from "../../packages/remote-agent/src/base-agent.js";
 
@@ -38,9 +39,41 @@ class TestAgent extends BaseAgent {
   }
 }
 
-/** Pick a random port in the 30000-40000 range. */
-function randomPort(): number {
-  return 30000 + Math.floor(Math.random() * 10000);
+/**
+ * Ask the OS for a free ephemeral port by binding a throwaway server to port 0
+ * and reading back the assigned port. This is the same technique the `get-port`
+ * family of libraries uses: the kernel guarantees the port is currently free,
+ * and it will not re-hand the same ephemeral port to a second listener that
+ * quickly, so serial test runs never collide.
+ *
+ * `portsHandedOut` additionally guards against the OS returning a port we have
+ * already given to a still-running agent in this process (e.g. the "three
+ * agents concurrently" test), eliminating the residual TOCTOU window entirely.
+ */
+const portsHandedOut = new Set<number>();
+
+function freeEphemeralPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createNetServer();
+    srv.unref();
+    srv.once("error", reject);
+    srv.listen(0, "0.0.0.0", () => {
+      const addr = srv.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+async function getEphemeralPort(): Promise<number> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const port = await freeEphemeralPort();
+    if (port !== 0 && !portsHandedOut.has(port)) {
+      portsHandedOut.add(port);
+      return port;
+    }
+  }
+  throw new Error("could not obtain a free ephemeral port after 20 attempts");
 }
 
 export interface TestAgentHandle {
@@ -67,13 +100,16 @@ export async function startTestAgent(
   port?: number,
   tools?: AgentToolHandler[],
 ): Promise<TestAgentHandle> {
-  const p = port ?? randomPort();
+  const p = port ?? (await getEphemeralPort());
   const agent = new TestAgent(p, tools ?? []);
   await agent.start();
   return {
     agent,
     port: p,
     url: `http://localhost:${p}`,
-    stop: () => agent.stop(),
+    stop: async () => {
+      await agent.stop();
+      portsHandedOut.delete(p);
+    },
   };
 }
