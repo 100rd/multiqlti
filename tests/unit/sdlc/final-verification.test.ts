@@ -93,6 +93,18 @@ const timedOut: TestRunResult = {
   exitCode: null,
   timedOut: true,
 };
+/** Tool-not-found at the final phase: the whole-suite command SPAWNED and ran, then exited
+ *  non-zero because its OWN tool is missing (`uv run pytest`, pytest absent). ran:false ⇒
+ *  the final fix loop must be SKIPPED; toolMissing ⇒ surfaced NOT-ADJUDICATED (tooling). */
+const toolMissing: TestRunResult = {
+  passed: false,
+  ran: false,
+  toolMissing: true,
+  summary:
+    "Test tooling not available: 'pytest' not found (command ran but its tool is missing) — configure implement.testCommand / perRepo for this repo. Not adjudicated; fix loop skipped.",
+  exitCode: 2,
+  timedOut: false,
+};
 
 function makeGitRaw() {
   return vi.fn(async (_repo: string, args: string[]) => {
@@ -372,6 +384,56 @@ describe("Stage A — final-run TIMEOUT (ambiguous) SKIPS the final fix loop, NO
   });
 
   it("CONTRAST: a non-timeout final RED still enters the final fix loop", async () => {
+    const runTests = sequencedRunTests([fail, pass]); // red → fix → pass
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(
+      baseReq({ finalVerification: FVCFG({ maxFinalFixIterations: 3 }) }),
+      deps as never,
+    );
+    expect(runTests).toHaveBeenCalledTimes(2); // initial + one re-verify
+    expect(res.finalVerification).toEqual(expect.objectContaining({ passed: true, fixIterations: 1 }));
+  });
+});
+
+describe("Stage A — final-run TOOL-NOT-FOUND (ran but tool missing) SKIPS the final fix loop, NOT-ADJUDICATED", () => {
+  it("a tool-not-found final run burns ZERO final fix iterations even with budget left (the omnius bug)", async () => {
+    const runTests = sequencedRunTests([toolMissing]);
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(
+      baseReq({ finalVerification: FVCFG({ maxFinalFixIterations: 3 }) }),
+      deps as never,
+    );
+    // ONE final run; the loop is skipped (ran:false env gap) despite a budget of 3.
+    expect(runTests).toHaveBeenCalledTimes(1);
+    // Only the 2 skilled implement steps; ZERO final fix coder re-invocations.
+    expect((deps.runCoder as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2);
+    expect(res.finalVerification).toEqual(
+      expect.objectContaining({ ran: false, passed: false, fixIterations: 0, toolMissing: true }),
+    );
+    // NEVER blocks PR creation.
+    expect(res.prRef).toBe("https://github.com/x/y/pull/9");
+  });
+
+  it("classifies the final block NOT-ADJUDICATED (tooling), never RED/REGRESSION/NOT-RUN", async () => {
+    const runTests = sequencedRunTests([toolMissing]);
+    const deps = makeDeps({ runTests });
+    const res = await runSdlcHandoff(
+      baseReq({ finalVerification: FVCFG({ maxFinalFixIterations: 3 }) }),
+      deps as never,
+    );
+    const body = prBody(deps);
+    expect(body).toMatch(/Final-state re-verification: NOT-ADJUDICATED \(tooling\)/);
+    expect(body).not.toMatch(/Final-state re-verification: RED/);
+    expect(body).not.toMatch(/Final-state re-verification: NOT-RUN/);
+    expect(body).not.toMatch(/REGRESSION/);
+    expect(body).toMatch(/TOOL NOT AVAILABLE/i);
+    expect(body).toMatch(/config\/environment gap/i);
+    // The testSummary (convergence wire) grounds the next review on NOT-ADJUDICATED.
+    expect(res.testSummary).toMatch(/NOT-ADJUDICATED \(tooling\)/);
+    expect(res.testSummary).not.toMatch(/REGRESSION/);
+  });
+
+  it("CONTRAST: a non-tool-missing final RED still enters the final fix loop", async () => {
     const runTests = sequencedRunTests([fail, pass]); // red → fix → pass
     const deps = makeDeps({ runTests });
     const res = await runSdlcHandoff(
