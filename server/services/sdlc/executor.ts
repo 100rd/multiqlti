@@ -365,6 +365,17 @@ export interface SdlcHandoffRequest {
    * A single-AP round always takes the sequential path (nothing to parallelize).
    */
   parallel?: ParallelConfig | null;
+  /**
+   * §3E verify-before-merge: after all action points commit, MERGE the base branch
+   * (`origin/<base>`, else local `<base>`) INTO the round branch so the pushed branch +
+   * Draft PR are "base + our changes" — the realistic landing state that a confirmation
+   * review then judges, and a PR that does NOT conflict with main. ABSENT/false (default)
+   * ⇒ NO integration merge runs (byte-for-byte today's develop path). Threaded true by the
+   * controller ONLY when `consiliumLoop.verifyBeforeMerge.enabled`. On a merge CONFLICT the
+   * executor ABORTS the merge and returns a no-PR result with `integrationConflict: true` —
+   * it NEVER pushes a broken merge (adversarial risk: silent dropped changes).
+   */
+  integrateBase?: boolean;
 }
 
 /** Parallel-develop config threaded into {@link runSdlcHandoff} (mirror of
@@ -419,6 +430,20 @@ export interface SdlcHandoffResult {
   headCommit: string;
   /** Scrubbed note present on any non-happy path. */
   error?: string;
+  /**
+   * §3E verify-before-merge: the resolved base sha (`origin/<base>` / local `<base>`) that
+   * was merged INTO the round branch. Present ONLY when `req.integrateBase` was set AND the
+   * merge succeeded; the controller uses it as the confirmation review's diff baseline
+   * (`base..roundBranch` = exactly what will land). Undefined ⇒ integration did not run.
+   */
+  integrationBase?: string;
+  /**
+   * §3E: set true when `req.integrateBase` was requested but the base→round merge
+   * CONFLICTED (the merge was aborted, nothing pushed). Pairs with `prRef: null` + an
+   * `error` describing the conflict, so the controller surfaces it at the human ship gate
+   * instead of running a confirmation on a broken merge.
+   */
+  integrationConflict?: boolean;
   /**
    * Stage 2b: the aggregated, bounded per-criterion test summary for this round.
    * Present ONLY when verification ran (kill-switch on); undefined otherwise (so the
@@ -1034,12 +1059,31 @@ export async function runSdlcHandoff(
         if (await commitFinalFixes(gitRaw, wt, req)) committedCount += 1;
       }
 
+      // §3E verify-before-merge: MERGE the base branch INTO the round branch BEFORE the
+      // push, so the Draft PR is "base + our changes" (the realistic landing state) and
+      // does NOT conflict with main. Only when something was actually committed (an empty
+      // round has no branch to integrate). Off by default ⇒ this whole block is skipped and
+      // the push path is byte-for-byte unchanged. A CONFLICT aborts + surfaces (never pushes
+      // a broken merge, never silently drops our commits).
+      let integrationBase: string | undefined;
+      if ((req.integrateBase ?? false) && committedCount > 0) {
+        const integ = await integrateBaseBranch(gitRaw, wt.worktreeDir, base);
+        if (!integ.ok) {
+          const head = await gitRaw(wt.worktreeDir, ["rev-parse", "HEAD"]).then((s) => s.trim()).catch(() => "");
+          return { prRef: null, headCommit: head, error: integ.error, integrationConflict: true };
+        }
+        integrationBase = integ.integrationBase;
+      }
+
       const result = await pushAndOpenPr(req, branch, base, wt, outcomes, committedCount, {
         gitRaw,
         push,
         openPr,
         emit: progress.beat,
       }, finalVerification);
+      // §3E: surface the integrated base sha (present only when the integration merge ran
+      // and a PR/branch was produced) so the controller can diff `base..roundBranch`.
+      if (integrationBase && result.prRef) result.integrationBase = integrationBase;
       // Stage 2b: aggregate the per-criterion verification into ONE bounded round
       // testSummary, surfaced on the result so the controller can persist it to
       // `consilium_loop_rounds.testSummary` (the convergence wire). Undefined when
@@ -2171,4 +2215,47 @@ async function pushAndOpenPr(
     return { prRef: null, headCommit, error: `pushed branch ${branch}; open PR manually` };
   }
   return { prRef: pr.prUrl, headCommit };
+}
+
+/**
+ * §3E verify-before-merge: MERGE the loop's base branch INTO the round branch (in the
+ * round worktree) so the branch becomes "base + our changes" — the realistic landing
+ * state. Best-effort `git fetch origin <base>` first (a repo with no `origin` / offline
+ * falls back to the LOCAL base ref); the resolved base sha is returned so the controller
+ * can diff `base..roundBranch`. A merge CONFLICT (or any merge failure) is caught, the
+ * merge is ABORTED so the worktree is left clean, and an error is returned — the caller
+ * NEVER pushes a broken merge. `base` is server-derived (resolveDefaultBranch) and pinned
+ * behind `--end-of-options`, so it can never inject a git flag.
+ */
+async function integrateBaseBranch(
+  gitRaw: GitRunner,
+  worktreeDir: string,
+  base: string,
+): Promise<{ ok: true; integrationBase: string } | { ok: false; error: string }> {
+  // Refresh the remote base (non-fatal — offline / no origin falls back to the local ref).
+  await gitRaw(worktreeDir, ["fetch", "origin", "--end-of-options", base]).catch(() => undefined);
+  // Prefer the freshly-fetched remote-tracking ref; fall back to the local base branch.
+  const remoteRef = `origin/${base}`;
+  const remoteSha = await gitRaw(worktreeDir, ["rev-parse", "--verify", "--quiet", `${remoteRef}^{commit}`])
+    .then((s) => s.trim())
+    .catch(() => "");
+  const target = remoteSha ? remoteRef : base;
+  const resolved = await gitRaw(worktreeDir, ["rev-parse", "--end-of-options", target])
+    .then((s) => s.trim())
+    .catch(() => "");
+  if (!resolved) {
+    return { ok: false, error: `integration: base ref '${base}' is unresolvable` };
+  }
+  try {
+    // --no-edit keeps a server-derived merge message (never model/AP text). If `base` is
+    // already an ancestor this is a no-op ("Already up to date"); otherwise a merge commit.
+    await gitRaw(worktreeDir, ["merge", "--no-edit", "--end-of-options", resolved]);
+  } catch (err) {
+    await gitRaw(worktreeDir, ["merge", "--abort"]).catch(() => undefined);
+    return {
+      ok: false,
+      error: scrub(`integration conflict merging ${base} into the round branch: ${err instanceof Error ? err.message : String(err)}`),
+    };
+  }
+  return { ok: true, integrationBase: resolved };
 }

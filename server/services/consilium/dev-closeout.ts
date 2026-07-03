@@ -48,6 +48,18 @@ export interface DevCloseoutResult {
   /** Scrubbed error/fallback note — present on any non-happy path. */
   error?: string;
   /**
+   * §3E verify-before-merge: the base sha merged INTO the round branch (present only when
+   * the close-out integrated the base branch AND produced a PR). The controller uses it as
+   * the confirmation review's diff baseline (`base..roundBranch`). Undefined otherwise.
+   */
+  integrationBase?: string;
+  /**
+   * §3E: true when the base→round integration merge CONFLICTED (merge aborted, nothing
+   * pushed). Pairs with `prRef: null` + an `error`; the controller surfaces it at the
+   * human ship gate instead of confirming a broken merge.
+   */
+  integrationConflict?: boolean;
+  /**
    * Stage 2b: the aggregated per-criterion test summary for the round, surfaced by
    * the SDLC executor when verification ran (kill-switch on). The controller persists
    * it to `consilium_loop_rounds.testSummary` so the NEXT review round grounds its
