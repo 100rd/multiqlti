@@ -375,11 +375,15 @@ export interface IStorage {
   /** Cross-project query for system/background use: returns ALL enabled triggers of this type
    *  across every project. Must be called within runAsSystem(). See ADR-001 §3.1(d). */
   getAllEnabledTriggersByType(type: string): Promise<TriggerRow[]>;
-  createTrigger(data: Omit<TriggerRow, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt' | 'suppressedCount'> & { secretEncrypted?: string | null }): Promise<TriggerRow>;
+  createTrigger(data: Omit<TriggerRow, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt' | 'suppressedCount' | 'lastFiredAt' | 'firedCount'> & { secretEncrypted?: string | null }): Promise<TriggerRow>;
   updateTrigger(id: string, updates: Partial<TriggerRow>): Promise<TriggerRow>;
   deleteTrigger(id: string): Promise<void>;
   /** T1 policy rail: atomically bump a trigger's suppressed-fire counter (dedup/budget). */
   incrementTriggerSuppressed(id: string): Promise<void>;
+  /** WRITE-on-fire rail: set `lastFiredAt` and atomically increment `firedCount` when a
+   *  trigger ACTUALLY launches a loop (NOT dedup-suppressed). Symmetric to
+   *  incrementTriggerSuppressed; the caller passes the fire instant (loop provenance firedAt). */
+  incrementTriggerFired(id: string, firedAt: Date): Promise<void>;
 
   // Practice Cards (Active Knowledge Base)
   createPracticeCard(data: InsertPracticeCard): Promise<PracticeCardRow>;
@@ -1959,7 +1963,7 @@ export class MemStorage implements IStorage {
   }
 
   async createTrigger(
-    data: Omit<TriggerRow, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt' | 'suppressedCount'> & { secretEncrypted?: string | null },
+    data: Omit<TriggerRow, 'id' | 'projectId' | 'createdAt' | 'updatedAt' | 'lastTriggeredAt' | 'suppressedCount' | 'lastFiredAt' | 'firedCount'> & { secretEncrypted?: string | null },
   ): Promise<TriggerRow> {
     const id = randomUUID();
     const now = new Date();
@@ -1973,6 +1977,8 @@ export class MemStorage implements IStorage {
       enabled: data.enabled ?? true,
       lastTriggeredAt: null,
       suppressedCount: 0,
+      lastFiredAt: null,
+      firedCount: 0,
       createdAt: now,
       updatedAt: now,
     };
@@ -1998,6 +2004,17 @@ export class MemStorage implements IStorage {
     this.triggersMap.set(id, {
       ...existing,
       suppressedCount: (existing.suppressedCount ?? 0) + 1,
+      updatedAt: new Date(),
+    });
+  }
+
+  async incrementTriggerFired(id: string, firedAt: Date): Promise<void> {
+    const existing = this.triggersMap.get(id);
+    if (!existing) return;
+    this.triggersMap.set(id, {
+      ...existing,
+      lastFiredAt: firedAt,
+      firedCount: (existing.firedCount ?? 0) + 1,
       updatedAt: new Date(),
     });
   }

@@ -232,6 +232,15 @@ export interface ConsiliumTriggerDispatchDeps {
    * so the lookup is not project-scoped away. T3.
    */
   resolveOwnerId: (projectId: string) => Promise<string | null>;
+  /**
+   * WRITE-on-fire (bug fix): record that a loop was ACTUALLY created for this
+   * trigger — set `lastFiredAt` and atomically increment `firedCount`. Invoked ONCE,
+   * ONLY on the successful-launch branch of `launchReviewWithDedup` (never on
+   * dedup-suppress — that rides the caller's `incrementTriggerSuppressed`). Wired by
+   * the route to the trigger store under the SAME (system) context as the suppressed
+   * write. `firedAt` is the loop's provenance instant, threaded in for determinism.
+   */
+  recordFire: (triggerId: string, firedAt: Date) => Promise<void>;
   /** Structured logger (the route passes `(m) => log(m, "triggers")`). */
   log: (message: string) => void;
 }
@@ -342,11 +351,16 @@ export async function launchReviewWithDedup(
   // §6 provenance: which trigger + event fired the loop (short payload digest, not
   // the untrusted payload verbatim; + an OPTIONAL human summary). Persisted inert
   // for the launch passport.
+  // The fire instant, computed ONCE at call-time (never Date.now() at import —
+  // determinism rule). Used for BOTH the loop's provenance AND the trigger's
+  // `lastFiredAt`, so the two always agree (the trigger row's lastFiredAt equals
+  // the launched loop's provenance.firedAt).
+  const firedAt = new Date();
   const provenance: TriggerProvenance = {
     triggerId: trigger.id,
     triggerType: trigger.type,
     eventDigest: eventDigest(plan.payload),
-    firedAt: new Date().toISOString(),
+    firedAt: firedAt.toISOString(),
     ...(plan.eventSummary ? { eventSummary: plan.eventSummary } : {}),
   };
 
@@ -408,7 +422,26 @@ export async function launchReviewWithDedup(
       deps.log(
         `review skipped-dedup for trigger ${trigger.id} — active loop ${dedupLoopId} already running for ${resolvedRepo}`,
       );
+      // WATERMARK DISCIPLINE: a dedup-suppressed fire must NOT touch lastFiredAt /
+      // firedCount — the caller counts it via `incrementTriggerSuppressed` instead.
       return "skipped-dedup";
+    }
+
+    // BUG FIX (WRITE-on-fire): the loop was ACTUALLY created (not dedup-suppressed),
+    // so record the fire on the trigger row — set `lastFiredAt = firedAt` and bump
+    // `firedCount`. This is the success-branch counterpart to the caller's suppressed
+    // increment; before this, a trigger that launched loops showed `lastFired: None`
+    // and no fire tally (only suppressedCount advanced). It rides the launched branch
+    // ONLY, so a race between concurrent webhook + poller fires cannot double-count:
+    // the dedup already serializes loop CREATION, and exactly one fire reaches here.
+    // Best-effort telemetry: a counter-write failure must NEVER flip a real launch to
+    // "failed" nor crash the watcher/poller (T4) — the created loop is the source of truth.
+    try {
+      await deps.recordFire(trigger.id, firedAt);
+    } catch (e) {
+      deps.log(
+        `review launched for trigger ${trigger.id} but fire-counter write failed: ${(e as Error).message}`,
+      );
     }
 
     deps.log(

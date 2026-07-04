@@ -57,6 +57,7 @@ function makeDeps(
   log: ReturnType<typeof vi.fn>;
   getLoops: ReturnType<typeof vi.fn>;
   resolveOwnerId: ReturnType<typeof vi.fn>;
+  recordFire: ReturnType<typeof vi.fn>;
 } {
   const createReview = vi
     .fn()
@@ -70,15 +71,18 @@ function makeDeps(
   // users.id. The dispatch resolves the PROJECT OWNER; mock it to a fake user id
   // so the factory is called with createdBy === "owner-1" (NOT the literal "system").
   const resolveOwnerId = vi.fn().mockResolvedValue("owner-1");
+  // WRITE-on-fire: the success-branch counter write (lastFiredAt + firedCount).
+  const recordFire = vi.fn().mockResolvedValue(undefined);
   const deps: ConsiliumTriggerDispatchDeps = {
     reviewDeps: { storage: { getLoops } } as unknown as ConsiliumTriggerDispatchDeps["reviewDeps"],
     createReview,
     runInProject,
     resolveOwnerId,
+    recordFire,
     log,
     ...over,
   };
-  return { deps, createReview, runInProject, log, getLoops, resolveOwnerId };
+  return { deps, createReview, runInProject, log, getLoops, resolveOwnerId, recordFire };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -146,6 +150,57 @@ describe("maybeLaunchConsiliumReview", () => {
     expect(params.objectiveExtra).toMatch(/\/allowed\/omnius\/specs\/00-overview\.md/);
   });
 
+  // ─── WRITE-on-fire: lastFiredAt + firedCount on a SUCCESSFUL launch ──────────
+  // Both the webhook receiver and the github poller funnel through `fireTrigger` →
+  // this shared seam (`launchReviewWithDedup`), so asserting the fire-write ONCE
+  // here covers both entry paths (they cannot diverge — one seam, one write).
+
+  it("a SUCCESSFUL launch records the fire on the trigger: recordFire once with (id, Date)", async () => {
+    const { deps, recordFire } = makeDeps();
+    const trigger = makeTrigger({ watchPath: "/allowed/omnius", patterns: ["**/*.md"], action: CONSILIUM_ACTION });
+
+    const result = await maybeLaunchConsiliumReview(deps, trigger, {
+      filePath: "/allowed/omnius/specs/00-overview.md",
+      watchPath: "/allowed/omnius",
+    });
+
+    expect(result).toBe("launched");
+    // The fire counter (lastFiredAt + firedCount) is written exactly once, for THIS
+    // trigger, with a Date instant — this is the bug fix (previously never written).
+    expect(recordFire).toHaveBeenCalledTimes(1);
+    const [triggerId, firedAt] = recordFire.mock.calls[0];
+    expect(triggerId).toBe("trig-1");
+    expect(firedAt).toBeInstanceOf(Date);
+  });
+
+  it("the recorded lastFiredAt EQUALS the loop's provenance firedAt (single instant)", async () => {
+    // createReview echoes back the triggerProvenance it was handed so the test can
+    // compare the fire instant written to the trigger against the loop's provenance.
+    const createReview = vi.fn().mockImplementation((_deps, params) =>
+      Promise.resolve({ id: "loop-1", repoPath: "/allowed/omnius", state: "reviewing", triggerProvenance: params.triggerProvenance } as unknown as ConsiliumLoopRow),
+    );
+    const { deps, recordFire } = makeDeps({ createReview });
+    const trigger = makeTrigger({ watchPath: "/allowed/omnius", patterns: ["**/*.md"], action: CONSILIUM_ACTION });
+
+    await maybeLaunchConsiliumReview(deps, trigger, {});
+
+    const firedAt = recordFire.mock.calls[0][1] as Date;
+    const provenance = createReview.mock.calls[0][1].triggerProvenance as { firedAt: string };
+    // lastFiredAt written to the trigger === the instant recorded in the loop's provenance.
+    expect(firedAt.toISOString()).toBe(provenance.firedAt);
+  });
+
+  it("a fire-counter write failure does NOT flip a real launch to failed (best-effort telemetry)", async () => {
+    const recordFire = vi.fn().mockRejectedValue(new Error("db down"));
+    const { deps, log } = makeDeps({ recordFire });
+    const trigger = makeTrigger({ watchPath: "/allowed/omnius", patterns: ["**/*.md"], action: CONSILIUM_ACTION });
+
+    const result = await maybeLaunchConsiliumReview(deps, trigger, {});
+    // The loop WAS created → still "launched"; the counter write is best-effort (T4).
+    expect(result).toBe("launched");
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/fire-counter write failed/));
+  });
+
   it("falls back to the watchPath-derived repo root when action.repoPath is absent (T2)", async () => {
     const { deps, createReview } = makeDeps();
     const action = { kind: "consilium_review", preset: "full-viability" } as ConsiliumReviewTriggerAction;
@@ -188,11 +243,13 @@ describe("maybeLaunchConsiliumReview", () => {
 
   it("a factory throw is CAUGHT → failed (never crashes the watcher loop, T4)", async () => {
     const createReview = vi.fn().mockRejectedValue(new Error("[repo-allowlist] outside every allowed repo root"));
-    const { deps, log } = makeDeps({ createReview });
+    const { deps, log, recordFire } = makeDeps({ createReview });
     const trigger = makeTrigger({ watchPath: "/evil/path", patterns: ["**/*.md"], action: { ...CONSILIUM_ACTION, repoPath: "/evil/path" } });
     const result = await maybeLaunchConsiliumReview(deps, trigger, {});
     expect(result).toBe("failed");
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/rejected/));
+    // No loop was created → no fire recorded (a rejected launch is not a fire).
+    expect(recordFire).not.toHaveBeenCalled();
   });
 
   // ─── FIX HIGH-1: active-loop dedup on the TRIGGER path (T5) ──────────────────
@@ -202,7 +259,7 @@ describe("maybeLaunchConsiliumReview", () => {
       // An in-flight review for the SAME repoPath this trigger targets.
       { id: "loop-active", repoPath: "/allowed/omnius", state: "reviewing" },
     ] as unknown as ConsiliumLoopRow[]);
-    const { deps, createReview, log } = makeDeps({
+    const { deps, createReview, log, recordFire } = makeDeps({
       reviewDeps: { storage: { getLoops } } as unknown as ConsiliumTriggerDispatchDeps["reviewDeps"],
     });
     const trigger = makeTrigger({ watchPath: "/allowed/omnius/specs", patterns: ["**/*.md"], action: CONSILIUM_ACTION });
@@ -215,6 +272,9 @@ describe("maybeLaunchConsiliumReview", () => {
     expect(result).toBe("skipped-dedup");
     expect(createReview).not.toHaveBeenCalled(); // no NEW heavy-model dispute spawned
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/skipped-dedup.*loop-active/));
+    // WATERMARK DISCIPLINE: a dedup-suppressed fire must NOT touch lastFiredAt /
+    // firedCount — only suppressedCount advances (counted by the caller). Unchanged.
+    expect(recordFire).not.toHaveBeenCalled();
   });
 
   it("a TERMINAL loop for the same repo does NOT block a new launch (only in-flight loops dedup)", async () => {

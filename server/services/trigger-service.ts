@@ -53,6 +53,8 @@ export class TriggerService {
       enabled: row.enabled,
       lastTriggeredAt: row.lastTriggeredAt ?? null,
       suppressedCount: row.suppressedCount ?? 0,
+      lastFiredAt: row.lastFiredAt ?? null,
+      firedCount: row.firedCount ?? 0,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
