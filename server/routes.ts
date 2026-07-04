@@ -451,12 +451,14 @@ export async function registerRoutes(
     // `fireTrigger` seam the webhook receiver uses. Default OFF → not constructed.
     if (appConfigLoader.get().features.triggers.githubPolling.enabled) {
       githubPoller = new GitHubPoller({
+        // The ONLY cross-project read — under runAsSystem (unscopedSystemQuery).
         getEnabledTriggersByType: (type) =>
           runAsSystem("github-poller-bootstrap", () => storage.getAllEnabledTriggersByType(type)),
-        getTrigger: (id) =>
-          runAsSystem("github-poller-get-trigger", () => storage.getTrigger(id)),
-        updateTrigger: (id, updates) =>
-          runAsSystem("github-poller-watermark", () => storage.updateTrigger(id, updates)),
+        // Per-trigger storage runs INSIDE runAsProject(trigger.projectId) below
+        // (project isolation) — these deps are plain; the poller owns the context.
+        runInProject: runAsProject,
+        getTrigger: (id) => storage.getTrigger(id),
+        updateTrigger: (id, updates) => storage.updateTrigger(id, updates),
         fireTrigger,
         config: () => appConfigLoader.get(),
         log: (m: string) => log(m, "github-poller"),

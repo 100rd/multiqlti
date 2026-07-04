@@ -34,11 +34,21 @@ export function registerWebhookRoutes(
   // POST /api/webhooks/:triggerId — generic webhook receiver
   app.post("/api/webhooks/:triggerId", async (req, res) => {
     try {
-      await handleWebhookRequest(req, res, {
-        getTrigger: (id) => storage.getTrigger(id),
-        getSecret: (id) => triggerService.getSecret(id),
-        fireTrigger,
-      });
+      // CONTEXT FIX: a public webhook POST has NO x-project-id header and runs
+      // outside any request-scoped ALS context, but `storage.getTrigger` /
+      // `triggerService.getSecret` are project-scoped (they call `withProject`,
+      // which THROWS "no request context" otherwise → a 500 on every delivery).
+      // A webhook identifies its trigger by id across ALL projects, so it is a
+      // cross-project SYSTEM caller: establish a system context for the whole
+      // handler (getTrigger + getSecret). `fireTrigger` re-establishes its own
+      // system/project context internally, so the nesting is safe.
+      await runAsSystem("github-webhook", () =>
+        handleWebhookRequest(req, res, {
+          getTrigger: (id) => storage.getTrigger(id),
+          getSecret: (id) => triggerService.getSecret(id),
+          fireTrigger,
+        }),
+      );
     } catch (e) {
       if (e instanceof ZodError) {
         return res.status(400).json({ error: "Validation failed", issues: e.issues });
@@ -52,21 +62,23 @@ export function registerWebhookRoutes(
   // POST /api/github-events — GitHub webhook event router
   app.post("/api/github-events", async (req, res) => {
     try {
-      const result = await handleGitHubEvent(
-        req.rawBody,
-        req.headers as Record<string, string | string[] | undefined>,
-        req.body as unknown,
-        {
-          // getEnabledTriggersByType must run cross-project (no ALS context on github-events).
-          // runAsSystem establishes a system context; getAllEnabledTriggersByType bypasses
-          // the project filter so all matching triggers across all projects are returned.
-          getEnabledTriggersByType: (type) =>
-            runAsSystem("github-event-trigger-lookup", () =>
-              storage.getAllEnabledTriggersByType(type),
-            ),
-          getSecret: (id) => triggerService.getSecret(id),
-          fireTrigger,
-        },
+      // CONTEXT FIX: like the generic receiver, this public endpoint has no ALS
+      // context. `getAllEnabledTriggersByType` (cross-project) AND `getSecret`
+      // (→ storage.getTrigger → withProject) BOTH require a system context — the
+      // latter was previously unwrapped and 500'd for any trigger WITH a secret
+      // (i.e. every HMAC-verified github webhook). Wrap the whole handler in ONE
+      // system context so both reads succeed; fireTrigger nests its own context.
+      const result = await runAsSystem("github-webhook-event", () =>
+        handleGitHubEvent(
+          req.rawBody,
+          req.headers as Record<string, string | string[] | undefined>,
+          req.body as unknown,
+          {
+            getEnabledTriggersByType: (type) => storage.getAllEnabledTriggersByType(type),
+            getSecret: (id) => triggerService.getSecret(id),
+            fireTrigger,
+          },
+        ),
       );
 
       // VETO-3 fix: do NOT return internal trigger IDs or raw error strings to the

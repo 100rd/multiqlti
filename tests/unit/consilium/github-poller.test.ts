@@ -22,7 +22,10 @@ import {
 import type { ExecFileFn } from "../../../server/services/github-status.js";
 import { mapGitHubEventToReview } from "../../../server/services/consilium/github-event-map.js";
 import type { TriggerFireResult } from "../../../server/services/consilium/trigger-dispatch.js";
-import type { TriggerRow } from "../../../shared/schema.js";
+import { runAsProject } from "../../../server/context.js";
+import { withProject } from "../../../server/db.js";
+import { triggers, type TriggerRow } from "../../../shared/schema.js";
+import { eq } from "drizzle-orm";
 import type { AppConfig, GitHubEventTriggerConfig, GitHubPollState } from "../../../shared/types.js";
 
 const HEAD_A = "a".repeat(40);
@@ -110,8 +113,14 @@ function harness(opts: {
     return typeof r === "function" ? r(payload) : r;
   });
   const updates: Array<Partial<TriggerRow>> = [];
+  const projectIds: string[] = [];
   const deps: GitHubPollerDeps = {
     getEnabledTriggersByType: async () => [stored],
+    // Pass-through project context (real ALS wiring is covered by a separate test).
+    runInProject: async (pid, fn) => {
+      projectIds.push(pid);
+      return fn();
+    },
     getTrigger: async () => stored,
     updateTrigger: async (_id, u) => {
       updates.push(u);
@@ -131,6 +140,7 @@ function harness(opts: {
     fire,
     firePayloads,
     updates,
+    projectIds,
     lastWatermark: (): GitHubPollState | undefined =>
       (stored.config as GitHubEventTriggerConfig).pollState,
   };
@@ -295,6 +305,25 @@ describe("GitHubPoller — rails", () => {
     expect(prList).toContain("acme/widget");
   });
 
+  it("scopes the per-trigger poll to the trigger's OWN project (runInProject)", async () => {
+    const h = harness({
+      trigger: ghTrigger({ pollState: { prHeads: {} } }),
+      gh: fakeGh({ prs: [{ number: 3, headRefOid: HEAD_A, baseRefOid: BASE_SHA }] }).run,
+    });
+    await h.poller.pollAll();
+    expect(h.projectIds).toEqual(["proj-1"]); // storage ran inside runAsProject(proj-1)
+  });
+
+  it("skips a project-less trigger (cannot scope storage / launch a review)", async () => {
+    const gh = fakeGh({ prs: [{ number: 1, headRefOid: HEAD_A, baseRefOid: BASE_SHA }] });
+    const trigger = { ...ghTrigger({}), projectId: null } as TriggerRow;
+    const h = harness({ trigger, gh: gh.run });
+    await h.poller.pollAll();
+    expect(h.fire).not.toHaveBeenCalled();
+    expect(h.projectIds).toEqual([]); // never entered a project context
+    expect(gh.argv.length).toBe(0);
+  });
+
   it("a gh outage degrades to a skip — never throws, never fires", async () => {
     const gh = fakeGh({ throwOn: () => true });
     const h = harness({ trigger: ghTrigger({}), gh: gh.run });
@@ -309,6 +338,7 @@ describe("GitHubPoller — rails", () => {
     const fireCalls: string[] = [];
     const deps: GitHubPollerDeps = {
       getEnabledTriggersByType: async () => [t1, { ...t1, id: "trig-2" } as TriggerRow],
+      runInProject: async (_pid, fn) => fn(),
       getTrigger: async (id) => ({ ...t1, id } as TriggerRow),
       updateTrigger: async () => t1,
       fireTrigger: async (t) => {
@@ -325,5 +355,78 @@ describe("GitHubPoller — rails", () => {
     await expect(poller.pollAll()).resolves.toBeUndefined();
     // Both triggers were attempted despite the first throwing.
     expect(fireCalls).toEqual(["trig-1", "trig-2"]);
+  });
+});
+
+// ─── REAL context path (non-mocked withProject) — regression guard ─────────────
+//
+// The #471-style tests mocked storage so the project-scoped `withProject` gate
+// was never exercised — that hid a crash where background/webhook callers with no
+// ALS context throw "no request context". These tests route the poller's storage
+// through the REAL `withProject` (server/db.ts) + REAL `runAsProject`
+// (server/context.ts) so a missing/incorrect context cannot regress silently.
+describe("GitHubPoller — real project-context path (withProject regression)", () => {
+  // A storage stub whose reads/writes go through the REAL project-scope gate.
+  function contextCheckedStorage(trigger: TriggerRow) {
+    let stored = trigger;
+    return {
+      getTrigger: async (id: string) => {
+        // Throws "no request context" if called outside runAsProject/runAsSystem.
+        withProject(triggers, eq(triggers.id, id));
+        return stored;
+      },
+      updateTrigger: async (id: string, u: Partial<TriggerRow>) => {
+        withProject(triggers, eq(triggers.id, id));
+        if (u.config) stored = { ...stored, config: u.config } as TriggerRow;
+        return stored;
+      },
+      current: () => stored,
+    };
+  }
+
+  const openPr = { number: 5, title: "ctx", headRefOid: HEAD_A, baseRefOid: BASE_SHA };
+
+  it("does NOT throw when per-trigger storage runs inside the REAL runAsProject", async () => {
+    const trigger = ghTrigger({});
+    const store = contextCheckedStorage(trigger);
+    const gh = fakeGh({ prs: [openPr] });
+    const poller = new GitHubPoller({
+      getEnabledTriggersByType: async () => [trigger],
+      runInProject: runAsProject, // REAL ALS context
+      getTrigger: store.getTrigger,
+      updateTrigger: store.updateTrigger,
+      fireTrigger: async () => "launched",
+      config: cfg(true),
+      runGh: gh.run,
+      log: () => {},
+      now: () => 0,
+    });
+    await expect(poller.pollAll()).resolves.toBeUndefined();
+    // The watermark WAS written through the real project-scope gate.
+    expect((store.current().config as GitHubEventTriggerConfig).pollState?.prHeads).toEqual({
+      "5": HEAD_A,
+    });
+  });
+
+  it("PROVES the guard bites: the same storage throws 'no request context' with a pass-through runInProject", async () => {
+    const trigger = ghTrigger({});
+    const store = contextCheckedStorage(trigger);
+    const gh = fakeGh({ prs: [openPr] });
+    const poller = new GitHubPoller({
+      getEnabledTriggersByType: async () => [trigger],
+      // BROKEN wiring: does NOT establish an ALS context (the original bug shape).
+      runInProject: async (_pid, fn) => fn(),
+      getTrigger: store.getTrigger,
+      updateTrigger: store.updateTrigger,
+      fireTrigger: async () => "launched",
+      config: cfg(true),
+      runGh: gh.run,
+      log: () => {},
+      now: () => 0,
+    });
+    // pollAll swallows per-trigger errors, so assert the write never landed
+    // (persistWatermark threw inside the guarded cycle → watermark unchanged).
+    await poller.pollAll();
+    expect((store.current().config as GitHubEventTriggerConfig).pollState).toBeUndefined();
   });
 });
