@@ -1507,6 +1507,45 @@ export interface PipelineTrigger {
   updatedAt: Date;
 }
 
+/**
+ * One consilium loop a trigger actually fired, for the Triggers page "result"
+ * view (GET /api/triggers/:id/loops). Computed from the loops whose
+ * `triggerProvenance.triggerId` matches the trigger — only trigger-born loops
+ * carry provenance, so a human/API loop never appears here. `state`/`prRef` are
+ * the loop's OWN fields (where the result lives); `eventSummary`/`eventDigest`/
+ * `firedAt` come from the loop's INERT trigger provenance (already single-line
+ * control-stripped + clamped at the mapping boundary — rendered as inert text).
+ */
+export interface TriggerFiredLoop {
+  loopId: string;
+  /** ConsiliumLoopState (kept as string here to avoid a schema→types cycle). */
+  state: string;
+  /** The loop's Draft PR ref, or null before one exists. */
+  prRef: string | null;
+  /** Firing event label (e.g. "PR #352: <title>"); absent for schedule/file_change. */
+  eventSummary: string | null;
+  /** Short hex digest correlating the loop to its firing payload. */
+  eventDigest: string;
+  /** ISO-8601 instant the trigger fired this loop (from provenance). */
+  firedAt: string;
+}
+
+/**
+ * GET /api/triggers/:id/loops response. `firedCount` is the UNBOUNDED total of
+ * loops this trigger created (the card's "Fired N" counter, DISTINCT from the
+ * trigger's suppressedCount); `loops` is the newest-first list bounded to
+ * {@link TRIGGER_FIRED_LOOPS_LIMIT} (a trigger with hundreds of fires never
+ * returns them all).
+ */
+export interface TriggerFiredLoopsResponse {
+  triggerId: string;
+  firedCount: number;
+  loops: TriggerFiredLoop[];
+}
+
+/** Max fired loops returned by GET /api/triggers/:id/loops (newest first). */
+export const TRIGGER_FIRED_LOOPS_LIMIT = 50;
+
 export interface InsertTrigger {
   // Legacy/nullable — new loop-template triggers are project-scoped, no pipeline.
   pipelineId?: string | null;
