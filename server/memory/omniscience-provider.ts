@@ -2,10 +2,13 @@
  * OmniscienceProvider — world-knowledge retrieval via Omniscience's MCP `search`
  * tool (memory-architecture ADR, Track A).
  *
- * Contract-first: built against Omniscience ADR 0004's stable `search` contract
- * while Omniscience itself is pre-v0.1. The provider:
+ * Contract-first: validated against the REAL Omniscience v0.2 `search` response
+ * (the server's Pydantic `SearchResponse`/`SearchHit` models), proven live over
+ * MCP. The response is `hits: SearchHit[]` — an earlier build parsed a top-level
+ * `chunks[]` that only ever matched a mock and threw `chunks: Required` against a
+ * real server. The provider:
  *   - calls the `search` MCP tool with { query, retrieval_strategy, as_of, ... },
- *   - validates the returned chunk+citation payload at the boundary (zod),
+ *   - validates the returned hits+citation payload at the boundary (zod),
  *   - maps results into the existing RetrievalResult shape so the Retriever can
  *     route to it transparently.
  *
@@ -45,36 +48,73 @@ export interface OmniscienceSearchParams {
   filters?: { source_types?: string[] };
 }
 
-// ─── Boundary validation: search tool result ───────────────────────────────────
+// ─── Boundary validation: search tool result (Omniscience v0.2 SearchResponse) ──
+//
+// Ground truth = the running server's Pydantic models. The top-level response is
+// `SearchHit[]` under `hits` (NOT a top-level `chunks[]` — that was the shape of
+// an early mock and never matched a real Omniscience). Sibling fields
+// (query_stats, effective_as_of, degraded_subsystems, meta, min_applied_version,
+// staleness_seconds, pinned_watermark, snapshot_id, next_cursor) are tolerated
+// and ignored via `.passthrough()`; an empty `hits: []` is a valid response.
 
 /**
- * A single citation attached to a chunk. Omniscience returns chunks WITH
- * citations; the caller LLM synthesizes from them.
+ * SourceInfo — the source a hit came from. Nested object (id/name/type), NOT the
+ * flat source_id/source_type the old mock used.
  */
-const citationSchema = z.object({
-  source_id: z.string(),
-  source_type: z.string().optional(),
-  uri: z.string().optional(),
-  title: z.string().optional(),
-  locator: z.string().optional(),
-});
+const sourceInfoSchema = z
+  .object({
+    id: z.string(),
+    name: z.string().optional(),
+    type: z.string(),
+  })
+  .passthrough();
 
-const searchResultChunkSchema = z.object({
-  id: z.string(),
-  text: z.string(),
-  score: z.number(),
-  source_id: z.string().optional(),
-  source_type: z.string().optional(),
-  citations: z.array(citationSchema).optional(),
-  metadata: z.record(z.unknown()).optional(),
-});
+/**
+ * A SINGLE citation object per hit (not an array). Tolerant: `title` may be null,
+ * and indexed_at/doc_version may be absent on some hits.
+ */
+const hitCitationSchema = z
+  .object({
+    uri: z.string(),
+    title: z.string().nullish(),
+    indexed_at: z.string().optional(),
+    doc_version: z.number().optional(),
+  })
+  .passthrough();
 
-const searchResultSchema = z.object({
-  chunks: z.array(searchResultChunkSchema),
-});
+/**
+ * SearchHit — one retrieved chunk. Required: chunk_id/score/text. `source` and
+ * `citation` are present in practice but modeled tolerantly (a hit may omit the
+ * citation). Scoring/lineage extras are accepted and ignored; unknown score_type
+ * strings are allowed. Extra fields pass through so future server additions never
+ * break validation.
+ */
+const searchHitSchema = z
+  .object({
+    chunk_id: z.string(),
+    document_id: z.string().optional(),
+    score: z.number(),
+    text: z.string(),
+    source: sourceInfoSchema.optional(),
+    citation: hitCitationSchema.nullish(),
+    metadata: z.record(z.unknown()).optional(),
+    // Accepted-and-ignored (or threaded into metadata) scoring/provenance extras.
+    confidence: z.number().nullish(),
+    score_type: z.string().nullish(),
+    impact: z.number().nullish(),
+    source_instance: z.string().nullish(),
+    lineage: z.unknown().optional(),
+  })
+  .passthrough();
+
+const searchResultSchema = z
+  .object({
+    hits: z.array(searchHitSchema),
+  })
+  .passthrough();
 
 export type OmniscienceSearchResult = z.infer<typeof searchResultSchema>;
-type OmniscienceChunk = z.infer<typeof searchResultChunkSchema>;
+type OmniscienceHit = z.infer<typeof searchHitSchema>;
 
 // ─── Tool caller seam ──────────────────────────────────────────────────────────
 
@@ -95,8 +135,14 @@ const DEFAULT_TOP_K = 5;
 const DEFAULT_MAX_TOKENS = 2000;
 const CHARS_PER_TOKEN = 4;
 
-/** Map an Omniscience source_type string onto our ChunkSourceType union. */
+/**
+ * Map an Omniscience `source.type` string onto our ChunkSourceType union.
+ * Covers the real Omniscience v0.2 source_type enum
+ * (git/fs/confluence/notion/slack/jira/grafana/k8s/terraform/otel/k8s_operator/
+ * s3/aws/alerts) plus legacy/contract aliases. Anything unknown → "document".
+ */
 const SOURCE_TYPE_MAP: Record<string, ChunkSourceType> = {
+  // Legacy / contract aliases.
   code: "code",
   document: "document",
   doc: "document",
@@ -105,6 +151,21 @@ const SOURCE_TYPE_MAP: Record<string, ChunkSourceType> = {
   infra: "document",
   pipeline_run: "pipeline_run",
   memory_entry: "memory_entry",
+  // Real Omniscience v0.2 source_type enum.
+  git: "code",
+  terraform: "code",
+  k8s: "document",
+  k8s_operator: "document",
+  fs: "document",
+  s3: "document",
+  aws: "document",
+  confluence: "document",
+  notion: "document",
+  slack: "document",
+  jira: "document",
+  grafana: "document",
+  otel: "document",
+  alerts: "document",
 };
 
 function mapSourceType(raw: string | undefined): ChunkSourceType {
@@ -191,18 +252,36 @@ export function parseSearchResult(raw: string): OmniscienceSearchResult {
 
 // ─── Mapping to RetrievalResult ──────────────────────────────────────────────────
 
-function toRetrievedChunk(chunk: OmniscienceChunk): RetrievedChunk {
-  const metadata: Record<string, unknown> = { ...(chunk.metadata ?? {}) };
-  if (chunk.citations && chunk.citations.length > 0) {
-    metadata.citations = chunk.citations;
+function toRetrievedChunk(hit: OmniscienceHit): RetrievedChunk {
+  const metadata: Record<string, unknown> = { ...(hit.metadata ?? {}) };
+  const sourceId = hit.source?.id ?? hit.chunk_id;
+  const sourceType = hit.source?.type;
+
+  // The real hit carries ONE `citation` object; normalize it into the existing
+  // `metadata.citations` array shape the formatter/consumers already expect.
+  if (hit.citation) {
+    metadata.citations = [
+      {
+        source_id: sourceId,
+        source_type: sourceType,
+        uri: hit.citation.uri,
+        title: hit.citation.title ?? undefined,
+      },
+    ];
   }
+
+  // Thread useful provenance/scoring extras into metadata (best-effort).
+  if (hit.confidence != null) metadata.confidence = hit.confidence;
+  if (hit.document_id) metadata.documentId = hit.document_id;
+  if (hit.lineage != null) metadata.lineage = hit.lineage;
+
   metadata.backend = "omniscience";
   return {
-    id: chunk.id,
-    sourceType: mapSourceType(chunk.source_type),
-    sourceId: chunk.source_id ?? chunk.id,
-    chunkText: chunk.text,
-    score: chunk.score,
+    id: hit.chunk_id,
+    sourceType: mapSourceType(sourceType),
+    sourceId,
+    chunkText: hit.text,
+    score: hit.score,
     metadata,
   };
 }
@@ -216,8 +295,8 @@ function toRetrievalResult(
   const selected: RetrievedChunk[] = [];
   let usedChars = 0;
 
-  for (const chunk of result.chunks) {
-    const mapped = toRetrievedChunk(chunk);
+  for (const hit of result.hits) {
+    const mapped = toRetrievedChunk(hit);
     if (usedChars + mapped.chunkText.length > maxChars && selected.length > 0) break;
     selected.push(mapped);
     usedChars += mapped.chunkText.length;
