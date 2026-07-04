@@ -108,11 +108,31 @@ function normalizeOwnerRepo(owner: string, repo: string): string | null {
 }
 
 export interface GitHubPollerDeps {
-  /** Cross-project, system-context load of enabled github_event triggers. */
+  /**
+   * Cross-project, system-context load of enabled github_event triggers. This is
+   * the ONLY cross-project call — it MUST be wired under `runAsSystem` (it uses
+   * `unscopedSystemQuery`). Every subsequent per-trigger storage call runs under
+   * `runInProject(trigger.projectId)` instead (ADR-001 project isolation).
+   */
   getEnabledTriggersByType: (type: "github_event") => Promise<TriggerRow[]>;
-  /** Re-read a trigger fresh so the watermark write does not clobber a concurrent edit. */
+  /**
+   * Establish a project-scoped ALS context for one trigger's poll (= runAsProject).
+   * The poll runs OUTSIDE any request, so `getTrigger`/`updateTrigger` (which call
+   * the project-scoped `withProject`) would throw "no request context" without
+   * this — the SAME crash the public webhook receiver hit. Scoping to the
+   * trigger's OWN project (not a broad system context) keeps the watermark
+   * read/write inside that project's isolation boundary.
+   */
+  runInProject: <T>(projectId: string, fn: () => Promise<T>) => Promise<T>;
+  /**
+   * Re-read a trigger fresh so the watermark write does not clobber a concurrent
+   * edit. Called INSIDE `runInProject` — do NOT wrap it in a context yourself.
+   */
   getTrigger: (id: string) => Promise<TriggerRow | undefined>;
-  /** Persist the advanced watermark (writes back `config` with `pollState`). */
+  /**
+   * Persist the advanced watermark (writes back `config` with `pollState`). Called
+   * INSIDE `runInProject` — do NOT wrap it in a context yourself.
+   */
   updateTrigger: (id: string, updates: Partial<TriggerRow>) => Promise<unknown>;
   /**
    * The SAME `fireTrigger` seam the webhook receiver uses. Returns the dispatch
@@ -235,6 +255,14 @@ export class GitHubPoller {
     const events = Array.isArray(config.events) ? config.events : [];
     if (events.length === 0) return;
 
+    // A github polling trigger MUST carry a project: its storage calls are
+    // project-scoped, and a review cannot launch without a projectId anyway
+    // (maybeLaunchGitHubReview returns "skipped"). Skip a project-less trigger.
+    if (!trigger.projectId) {
+      this.deps.log(`github poll skipped for trigger ${trigger.id} — trigger has no projectId`);
+      return;
+    }
+
     const ownerRepo = await this.resolveOwnerRepo(config);
     if (!ownerRepo) {
       this.deps.log(
@@ -243,23 +271,29 @@ export class GitHubPoller {
       return;
     }
 
-    // Read-modify: work on a COPY of the current watermark.
-    const state: GitHubPollState = { ...(config.pollState ?? {}) };
-    let changed = false;
+    // CONTEXT FIX: the poll runs OUTSIDE any request. `getTrigger`/`updateTrigger`
+    // (and, defensively, `fireTrigger`) call the project-scoped `withProject`,
+    // which throws "no request context" without an ALS context — the SAME crash
+    // the public webhook receiver hit. Scope the WHOLE per-trigger poll to the
+    // trigger's OWN project so the watermark read/write stays inside that
+    // project's isolation boundary. `fireTrigger` re-establishes its own context
+    // internally, so the nesting is harmless.
+    const projectId = trigger.projectId;
+    await this.deps.runInProject(projectId, async () => {
+      // Read-modify: work on a COPY of the current watermark.
+      const state: GitHubPollState = { ...(config.pollState ?? {}) };
 
-    if (events.includes("pull_request")) {
-      changed = (await this.pollPullRequests(trigger, ownerRepo, state)) || changed;
-    }
-    if (events.includes("push")) {
-      changed = (await this.pollPush(trigger, ownerRepo, state)) || changed;
-    }
+      if (events.includes("pull_request")) {
+        await this.pollPullRequests(trigger, ownerRepo, state);
+      }
+      if (events.includes("push")) {
+        await this.pollPush(trigger, ownerRepo, state);
+      }
 
-    state.lastPolledAt = new Date(this.now()).toISOString();
-    changed = true; // always persist lastPolledAt for diagnosability
-
-    if (changed) {
+      // Always persist (advances the watermark + records lastPolledAt for diagnosis).
+      state.lastPolledAt = new Date(this.now()).toISOString();
       await this.persistWatermark(trigger.id, state);
-    }
+    });
   }
 
   /**
