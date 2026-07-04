@@ -15,13 +15,26 @@ import { randomUUID } from "crypto";
 import type { TriggerService } from "../services/trigger-service.js";
 import type { IStorage } from "../storage.js";
 import { requireRole, requireOwnerOrRole } from "../auth/middleware.js";
-import { CONSILIUM_REVIEW_PRESETS } from "@shared/types";
+import { CONSILIUM_REVIEW_PRESETS, TRIGGER_FIRED_LOOPS_LIMIT } from "@shared/types";
+import type { TriggerFiredLoop, TriggerFiredLoopsResponse } from "@shared/types";
+import type { ConsiliumLoopRow } from "@shared/schema";
 
 // ─── Correlation ID helper ────────────────────────────────────────────────────
 
 /** Generate a short correlation ID for error tracking. */
 function correlationId(): string {
   return randomUUID().slice(0, 8);
+}
+
+/**
+ * Sort key for a fired loop: the provenance `firedAt` instant in ms, falling back
+ * to the row's `createdAt` when a legacy row has no firedAt. Used to order fired
+ * loops newest-first for GET /api/triggers/:id/loops.
+ */
+function firedAtMs(loop: ConsiliumLoopRow): number {
+  const firedAt = loop.triggerProvenance?.firedAt;
+  const t = firedAt ? Date.parse(firedAt) : NaN;
+  return Number.isNaN(t) ? new Date(loop.createdAt).getTime() : t;
 }
 
 // ─── Fix 3: Strict per-type config schemas (no passthrough catch-all) ─────────
@@ -342,6 +355,69 @@ export function registerTriggerRoutes(app: Express, triggerService: TriggerServi
       }
       const cid = correlationId();
       console.error(`[triggers] GET trigger error cid=${cid}`, e);
+      return res.status(500).json({ error: "Internal server error", correlationId: cid });
+    }
+  });
+
+  // GET /api/triggers/:id/loops
+  //
+  // The "how do I find the result of a fire" endpoint. A trigger fire creates a
+  // consilium loop that records `triggerProvenance` (triggerId, firedAt,
+  // eventDigest, eventSummary) on the loop row (#457/#471). This route returns the
+  // loops THIS trigger created, newest first, so the operator can click through to
+  // each ConsiliumLoopDetail and read the PR / verdict.
+  //
+  // AUTH: inherits `requireAuth + requireProject` from the `/api/triggers` mount
+  // (routes.ts) — no per-route auth to forget (the /api/pr-queue 401 lesson). The
+  // trigger is additionally fetched via the PROJECT-SCOPED `getTrigger` and gated
+  // by assertTriggerAccess, exactly like GET /api/triggers/:id.
+  //
+  // SCOPE: loops are read via `storage.getLoops()`, which is PROJECT-scoped by the
+  // requireProject ALS context (a loop belongs to a project-scoped task group) —
+  // NOT owner-scoped, because a trigger-fired loop's `createdBy` is the project
+  // OWNER, so owner-scoping would hide fires from other project members. We then
+  // keep only loops whose `triggerProvenance.triggerId === :id` (human/API loops
+  // have null provenance and are correctly excluded). `firedCount` is the full
+  // total; the returned `loops` list is BOUNDED (a trigger with hundreds of fires
+  // must not return them all).
+  app.get("/api/triggers/:id/loops", async (req, res) => {
+    try {
+      const trigger = await triggerService.getTrigger(String(req.params.id));
+      if (!trigger) return res.status(404).json({ error: "Trigger not found" });
+
+      const allowed = await assertTriggerAccess(trigger, storage, req, res);
+      if (!allowed) return;
+
+      const all = await storage.getLoops();
+      const fired = all
+        .filter((l) => l.triggerProvenance?.triggerId === trigger.id)
+        // Newest fire first. `firedAt` is the provenance instant; fall back to
+        // the row's createdAt if a legacy row lacks it.
+        .sort((a, b) => firedAtMs(b) - firedAtMs(a));
+
+      const loops: TriggerFiredLoop[] = fired
+        .slice(0, TRIGGER_FIRED_LOOPS_LIMIT)
+        .map((l) => {
+          const prov = l.triggerProvenance!;
+          return {
+            loopId: l.id,
+            state: l.state,
+            prRef: l.prRef ?? null,
+            eventSummary: prov.eventSummary ?? null,
+            eventDigest: prov.eventDigest,
+            firedAt: prov.firedAt ?? new Date(l.createdAt).toISOString(),
+          };
+        });
+
+      const body: TriggerFiredLoopsResponse = {
+        triggerId: trigger.id,
+        firedCount: fired.length,
+        loops,
+      };
+      return res.json(body);
+    } catch (e) {
+      const cid = correlationId();
+      console.error(`[triggers] GET trigger loops error cid=${cid}`, e);
       return res.status(500).json({ error: "Internal server error", correlationId: cid });
     }
   });

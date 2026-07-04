@@ -1,6 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { PipelineTrigger, InsertTrigger, UpdateTrigger } from "@shared/types";
+import type { PipelineTrigger, InsertTrigger, UpdateTrigger, TriggerFiredLoopsResponse } from "@shared/types";
 import type { TriggerValidationIssue } from "@/components/triggers/trigger-form-logic";
+// Project-scoped transport: buildAuthHeaders attaches `x-project-id` (the pr-queue
+// 401 lesson — a project-scoped read that omits the header gets rejected).
+import { apiRequest as projectApiRequest } from "@/hooks/use-pipeline";
 
 /** Error thrown by {@link apiRequest}, carrying the server's structured validation issues. */
 export type TriggerApiError = Error & {
@@ -62,6 +65,21 @@ export function useTrigger(id: string) {
     queryKey: ["/api/triggers", id],
     queryFn: () => apiRequest("GET", `/api/triggers/${id}`) as Promise<PipelineTrigger>,
     enabled: !!id,
+  });
+}
+
+/**
+ * The consilium loops a trigger actually fired (newest first), plus the total
+ * `firedCount`. Powers the TriggerCard's fire counter, last-fire event, and the
+ * expandable "find the result" loop links. Uses the project-scoped transport so
+ * `x-project-id` is attached (the route inherits requireAuth + requireProject).
+ */
+export function useTriggerLoops(id: string, enabled = true) {
+  return useQuery<TriggerFiredLoopsResponse>({
+    queryKey: ["/api/triggers", id, "loops"],
+    queryFn: () =>
+      projectApiRequest("GET", `/api/triggers/${id}/loops`) as Promise<TriggerFiredLoopsResponse>,
+    enabled: enabled && !!id,
   });
 }
 
