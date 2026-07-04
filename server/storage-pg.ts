@@ -1358,7 +1358,7 @@ export class PgStorage implements IStorage {
   }
 
   async createTrigger(
-    data: Omit<TriggerRow, "id" | "projectId" | "createdAt" | "updatedAt" | "lastTriggeredAt" | "suppressedCount"> & { secretEncrypted?: string | null },
+    data: Omit<TriggerRow, "id" | "projectId" | "createdAt" | "updatedAt" | "lastTriggeredAt" | "suppressedCount" | "lastFiredAt" | "firedCount"> & { secretEncrypted?: string | null },
   ): Promise<TriggerRow> {
     const [row] = await db
       .insert(triggers)
@@ -1399,6 +1399,26 @@ export class PgStorage implements IStorage {
       .update(triggers)
       .set({
         suppressedCount: drizzleSql`${triggers.suppressedCount} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(withProject(triggers, eq(triggers.id, id)));
+  }
+
+  /**
+   * WRITE-on-fire rail: set `last_fired_at` and atomically bump `fired_count` when a
+   * trigger ACTUALLY launches a loop. Called from `launchReviewWithDedup` (via the
+   * injected `recordFire` dep) ONLY on the successful-launch branch — never on
+   * dedup-suppress (that rides `incrementTriggerSuppressed`). The `+ 1` is computed
+   * in SQL (no read-modify-write race between concurrent webhook + poller fires);
+   * `firedAt` is the loop's provenance instant, threaded in for determinism. Scoped
+   * like every other trigger write; in the system context `withProject` applies no filter.
+   */
+  async incrementTriggerFired(id: string, firedAt: Date): Promise<void> {
+    await db
+      .update(triggers)
+      .set({
+        lastFiredAt: firedAt,
+        firedCount: drizzleSql`${triggers.firedCount} + 1`,
         updatedAt: new Date(),
       })
       .where(withProject(triggers, eq(triggers.id, id)));

@@ -56,20 +56,23 @@ function makeDeps(over: Partial<ConsiliumTriggerDispatchDeps> = {}) {
   const log = vi.fn();
   const getLoops = vi.fn().mockResolvedValue([] as ConsiliumLoopRow[]);
   const resolveOwnerId = vi.fn().mockResolvedValue("owner-1");
+  // WRITE-on-fire: the success-branch counter write (lastFiredAt + firedCount).
+  const recordFire = vi.fn().mockResolvedValue(undefined);
   const deps: ConsiliumTriggerDispatchDeps = {
     reviewDeps: { storage: { getLoops } } as unknown as ConsiliumTriggerDispatchDeps["reviewDeps"],
     createReview,
     runInProject,
     resolveOwnerId,
+    recordFire,
     log,
     ...over,
   };
-  return { deps, createReview, runInProject, log, getLoops, resolveOwnerId };
+  return { deps, createReview, runInProject, log, getLoops, resolveOwnerId, recordFire };
 }
 
 describe("maybeLaunchGitHubReview", () => {
   it("pull_request(opened) → launches diff-pr-review on the PR head vs base", async () => {
-    const { deps, createReview, runInProject } = makeDeps();
+    const { deps, createReview, runInProject, recordFire } = makeDeps();
     const trigger = makeTrigger();
 
     const result = await maybeLaunchGitHubReview(deps, trigger, envelope("pull_request", prPayload()));
@@ -77,6 +80,11 @@ describe("maybeLaunchGitHubReview", () => {
     expect(result).toBe("launched");
     expect(runInProject).toHaveBeenCalledWith("proj-1", expect.any(Function));
     expect(createReview).toHaveBeenCalledTimes(1);
+    // WRITE-on-fire also fires on the GITHUB path (shared seam) — the poller funnels
+    // through the same `launchReviewWithDedup`, so a github fire records lastFiredAt.
+    expect(recordFire).toHaveBeenCalledTimes(1);
+    expect(recordFire.mock.calls[0][0]).toBe(trigger.id);
+    expect(recordFire.mock.calls[0][1]).toBeInstanceOf(Date);
     const [, params] = createReview.mock.calls[0];
     expect(params.preset).toBe("diff-pr-review");
     expect(params.repoPath).toBe("/allowed/omnius");

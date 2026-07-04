@@ -399,6 +399,12 @@ export async function registerRoutes(
                 .where(eq(projects.id, projectId));
               return row?.ownerId ?? null;
             }),
+          // WRITE-on-fire (bug fix): when a loop is ACTUALLY created, record the fire
+          // on the trigger row (lastFiredAt + firedCount). Runs in THIS runAsSystem
+          // context (cross-project), mirroring the suppressed-count write below —
+          // fireTrigger is a background/system ctx with no request project scope.
+          recordFire: (triggerId: string, firedAt: Date) =>
+            storage.incrementTriggerFired(triggerId, firedAt),
           log: (m: string) => log(m, "triggers"),
         };
 

@@ -1503,6 +1503,12 @@ export interface PipelineTrigger {
   // T1 policy rail: count of fires suppressed by a policy (dedup/budget). Surfaced
   // on the triggers page so silence is diagnosable (loop-triggers.md §6).
   suppressedCount: number;
+  // WRITE-on-fire rail (loop-triggers.md §6): the last time this trigger ACTUALLY
+  // created a loop, and how many loops it created. Distinct from lastTriggeredAt
+  // (EVERY fire) and suppressedCount (dedup-suppressed fires). The triggers card
+  // renders "Fired {firedCount} · Suppressed {suppressedCount}".
+  lastFiredAt: Date | null;
+  firedCount: number;
   createdAt: Date;
   updatedAt: Date;
 }

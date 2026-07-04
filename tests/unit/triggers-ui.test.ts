@@ -76,6 +76,8 @@ function buildTrigger(overrides: Partial<PipelineTrigger> & { type: TriggerType 
     enabled: true,
     lastTriggeredAt: null,
     suppressedCount: 0,
+    lastFiredAt: null,
+    firedCount: 0,
     createdAt: new Date("2026-01-01"),
     updatedAt: new Date("2026-01-01"),
     config: {},

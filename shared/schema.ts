@@ -656,6 +656,14 @@ export const triggers = pgTable(
     // T1 policy rail: monotonically-incremented count of fires suppressed by a
     // policy (dedup today; budget/debounce later). Surfaced on the triggers page.
     suppressedCount: integer("suppressed_count").notNull().default(0),
+    // WRITE-on-fire rail: `last_fired_at`/`fired_count` record when a trigger
+    // ACTUALLY launches a loop (a loop row was created) — as opposed to
+    // `last_triggered_at` (EVERY fire, incl. suppressed/no-op) and
+    // `suppressed_count` (fires the dedup rail suppressed). Populated ONLY on the
+    // successful-launch branch of `launchReviewWithDedup`, so the triggers page can
+    // render "Fired N · Suppressed M". lastFiredAt equals the loop's provenance firedAt.
+    lastFiredAt: timestamp("last_fired_at"),
+    firedCount: integer("fired_count").notNull().default(0),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
@@ -674,6 +682,8 @@ export const insertTriggerSchema = createInsertSchema(triggers).omit({
   lastTriggeredAt: true,
   secretEncrypted: true,
   suppressedCount: true,
+  lastFiredAt: true,
+  firedCount: true,
 });
 
 export type TriggerRow = typeof triggers.$inferSelect;
