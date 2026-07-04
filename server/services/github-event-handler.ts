@@ -11,7 +11,8 @@ import { verifyHmacSignature } from "./webhook-handler.js";
 export interface GitHubEventHandlerDeps {
   getEnabledTriggersByType: (type: "github_event") => Promise<TriggerRow[]>;
   getSecret: (id: string) => Promise<string | null>;
-  fireTrigger: (trigger: TriggerRow, payload: unknown) => Promise<void>;
+  // Returns the shared TriggerFireResult (widened to `unknown` — ignored here).
+  fireTrigger: (trigger: TriggerRow, payload: unknown) => Promise<unknown>;
 }
 
 /**

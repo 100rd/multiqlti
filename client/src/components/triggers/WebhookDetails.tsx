@@ -24,12 +24,39 @@ export function WebhookDetails({ webhookUrl, secret }: WebhookDetailsProps) {
 
   const maskedSecret = `sk_${"•".repeat(16)}`;
 
+  // A localhost / private-LAN URL can NEVER receive a GitHub webhook — GitHub's
+  // servers are on the public internet and cannot POST to a local daemon behind NAT.
+  const isLocalUrl = /(?:localhost|127\.0\.0\.1|\/\/(?:10|192\.168)\.|\/\/172\.(?:1[6-9]|2\d|3[01])\.)/.test(
+    webhookUrl,
+  );
+
   return (
     <div className="space-y-4">
       <Alert className="border-amber-500/50 bg-amber-500/5">
         <AlertTriangle className="h-4 w-4 text-amber-500" />
         <AlertDescription className="text-xs text-amber-700">
           This secret will not be shown again in full. Copy it now and store it securely.
+        </AlertDescription>
+      </Alert>
+
+      <Alert className={isLocalUrl ? "border-red-500/50 bg-red-500/5" : "border-blue-500/40 bg-blue-500/5"}>
+        <AlertTriangle className={`h-4 w-4 ${isLocalUrl ? "text-red-500" : "text-blue-500"}`} />
+        <AlertDescription className={`text-xs ${isLocalUrl ? "text-red-700" : "text-blue-700"}`}>
+          {isLocalUrl ? (
+            <>
+              <span className="font-semibold">This is a local URL — GitHub cannot deliver webhooks to it.</span>{" "}
+              GitHub&apos;s servers cannot reach <span className="font-mono">localhost</span> or a private-LAN
+              address behind NAT, so this trigger will never fire from a webhook.
+            </>
+          ) : (
+            <>For GitHub to deliver events, this URL must be publicly reachable.</>
+          )}{" "}
+          Either point <span className="font-mono">PUBLIC_URL</span> at a public tunnel
+          (<span className="font-mono">cloudflared</span> / <span className="font-mono">ngrok</span>),{" "}
+          <span className="font-semibold">or</span> enable{" "}
+          <span className="font-mono">features.triggers.githubPolling</span> — the poller PULLS events
+          from GitHub over the <span className="font-mono">gh</span> CLI and needs no public endpoint
+          (works behind NAT).
         </AlertDescription>
       </Alert>
 

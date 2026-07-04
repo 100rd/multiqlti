@@ -110,6 +110,31 @@ export async function fetchPrStatus(
   }
 }
 
+/**
+ * Reusable `gh` JSON seam (github-trigger-polling reuses this exact discipline).
+ * Runs `gh <args>` under the SANITIZED env (drop inherited `GH_*`, re-add only the
+ * intended token var — pr-wrapper H-7b parity), bounded by a wall-clock timeout,
+ * and parses stdout as JSON. NEVER throws and NEVER blocks indefinitely: `gh`
+ * missing / unauthenticated / rate-limited / timed out / non-JSON stdout ALL
+ * degrade to `null`. The caller MUST supply only fixed, non-free-form args
+ * (nothing leading-dash / attacker-shaped can be read as a flag).
+ */
+export async function runGhJson<T>(
+  args: string[],
+  run: ExecFileFn = execFileAsync,
+  timeoutMs: number = GH_TIMEOUT_MS,
+): Promise<T | null> {
+  try {
+    const { stdout } = await run("gh", args, { timeout: timeoutMs, env: sanitizedEnv() });
+    const trimmed = (stdout ?? "").trim();
+    if (trimmed.length === 0) return null;
+    return JSON.parse(trimmed) as T;
+  } catch {
+    // gh absent / unauthenticated / rate-limited / timed out / non-JSON → fail open.
+    return null;
+  }
+}
+
 // ─── TTL + in-flight-dedup + bounded cache ───────────────────────────────────────
 
 interface CacheEntry {

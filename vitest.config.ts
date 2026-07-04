@@ -207,6 +207,9 @@ export default defineConfig({
         "client/src/lib/task-iterations.ts",
         "client/src/components/task-groups/task-form-logic.ts",
         "client/src/components/task-groups/timeline.ts",
+        // github-trigger-polling — the poller + the reusable gh JSON seam.
+        "server/services/github-poller.ts",
+        "server/services/github-status.ts",
       ],
       exclude: ["server/**/*.test.ts", "server/index.ts", "server/vite.ts"],
     },

@@ -196,6 +196,17 @@ export type ConsiliumDispatchResult =
   | "noop-event"
   | "failed";
 
+/**
+ * The value `fireTrigger` (server/routes.ts) resolves with. It is the dispatch
+ * result, PLUS `"recorded"` for the paths that record `lastTriggeredAt` but launch
+ * nothing (the master-kill-switch-off early return). Existing callers (cron, file
+ * watcher, webhook receiver) ignore it (their dep is typed `Promise<void>`, which
+ * accepts any return); the github POLLER reads it to decide whether to advance its
+ * watermark — it holds the watermark ONLY on `"skipped-dedup"` so a suppressed
+ * event is retried next cycle rather than lost.
+ */
+export type TriggerFireResult = ConsiliumDispatchResult | "recorded";
+
 export interface ConsiliumTriggerDispatchDeps {
   /**
    * The factory deps, or `null` when the consilium-loop subsystem (kill-switch)

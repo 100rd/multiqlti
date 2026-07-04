@@ -1332,11 +1332,39 @@ export interface ScheduleTriggerConfig {
   action?: ConsiliumReviewTriggerAction;
 }
 
+/**
+ * github-trigger-polling watermark. Persisted INSIDE the trigger's `config` jsonb
+ * (no migration) under `pollState`, OWNED by the poller (never authored in the UI).
+ * Tracks what the poller has already seen so it does NOT re-fire the same event:
+ *   - `prHeads`: open-PR number → last-seen head sha. A PR whose head matches is
+ *     already reviewed at that commit; a new number OR a changed head re-fires.
+ *   - `lastPushSha`: last-seen default-branch head sha. The FIRST observation only
+ *     records a baseline (a first-seen head is the current state, not a "push"
+ *     event); a subsequent ADVANCE fires a post-merge review of before..after.
+ *   - `lastPolledAt`: diagnostics only.
+ * The watermark is advanced ONLY when a fire is NOT dedup-suppressed, so an event
+ * suppressed while another loop is active is retried on the next cycle (never lost,
+ * never a re-fire storm).
+ */
+export interface GitHubPollState {
+  lastPolledAt?: string;               // ISO-8601
+  prHeads?: Record<string, string>;    // PR number (as string) → last-seen head sha
+  lastPushSha?: string;                // last-seen default-branch head sha
+}
+
 export interface GitHubEventTriggerConfig {
-  repository: string;   // "owner/repo"
+  repository: string;   // "owner/repo" — ALSO the owner/repo the poller pulls from
   events: string[];     // ["push", "pull_request", "issues", "release"]
   refFilter?: string;   // optional, e.g. "refs/heads/main"
   // secret stored encrypted in secretEncrypted column — not in this object
+  /**
+   * github-trigger-polling watermark (see GitHubPollState). Owned + maintained by
+   * the poller; absent until the poller first runs. Embedded in `config` jsonb so
+   * no schema migration is needed. A UI config edit that omits it resets the
+   * watermark — an ACCEPTED bound: at worst the currently-open PRs re-fire once
+   * (dedup + the master switch + the interval bound the blast).
+   */
+  pollState?: GitHubPollState;
   /**
    * T1-full (loop-triggers.md §3.1): the loop template a matching GitHub event
    * fires. `repoPath` (REQUIRED for a github trigger to launch — there is no

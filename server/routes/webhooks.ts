@@ -25,7 +25,8 @@ export function registerWebhookRoutes(
   app: Express,
   storage: IStorage,
   triggerService: TriggerService,
-  fireTrigger: (trigger: TriggerRow, payload: unknown) => Promise<void>,
+  // Returns the shared TriggerFireResult (widened to `unknown` — ignored here).
+  fireTrigger: (trigger: TriggerRow, payload: unknown) => Promise<unknown>,
 ): void {
   // Start the rate-limit map cleanup interval
   startRateLimitCleanup();

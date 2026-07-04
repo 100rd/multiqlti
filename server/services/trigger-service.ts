@@ -26,9 +26,19 @@ export class TriggerService {
 
   // ─── Public helpers ───────────────────────────────────────────────────────
 
-  /** Synthesize the webhook URL for webhook and github_event triggers. */
+  /**
+   * Synthesize the webhook URL for webhook and github_event triggers.
+   *
+   * FIX: the default now reflects the ACTUAL server port (`PORT`, the dev server
+   * runs on 5050) instead of the hardcoded 5000 — a bare `http://localhost:5000`
+   * URL pointed at nothing. Note that even the correct localhost URL will NEVER
+   * receive a GitHub webhook (GitHub's servers cannot reach a local/LAN address):
+   * for delivery, `PUBLIC_URL` must be a publicly-reachable tunnel (cloudflared/
+   * ngrok), OR use github polling (features.triggers.githubPolling). The UI shows
+   * this guidance next to the copied URL.
+   */
   webhookUrl(triggerId: string): string {
-    const baseUrl = process.env.PUBLIC_URL ?? "http://localhost:5000";
+    const baseUrl = process.env.PUBLIC_URL ?? `http://localhost:${process.env.PORT ?? 5000}`;
     return `${baseUrl}/api/webhooks/${triggerId}`;
   }
 

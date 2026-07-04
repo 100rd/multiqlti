@@ -39,6 +39,7 @@ import { registerLmStudioRoutes } from "./routes/lmstudio";
 import { TriggerService } from "./services/trigger-service";
 import { CronScheduler } from "./services/cron-scheduler";
 import { FileWatcherService } from "./services/file-watcher";
+import { GitHubPoller } from "./services/github-poller";
 import { stopRateLimitCleanup } from "./services/webhook-handler";
 import { requireAuth } from "./auth/middleware";
 import { requireProject } from "./middleware/project";
@@ -327,6 +328,7 @@ export async function registerRoutes(
   let webhookRoutesRegistered = false;
   let cronScheduler: CronScheduler | null = null;
   let fileWatcherService: FileWatcherService | null = null;
+  let githubPoller: GitHubPoller | null = null;
 
   try {
     triggerService = new TriggerService(storage);
@@ -336,8 +338,11 @@ export async function registerRoutes(
     // allows withProject to operate cross-project (no project filter applied in system
     // context). getPipeline validates the pipeline still exists; updateTrigger records
     // the last-fired timestamp. Both operate cross-project in system context.
-    const fireTrigger = async (trigger: import("@shared/schema").TriggerRow, payload: unknown): Promise<void> => {
-      await runAsSystem("fire-trigger", async () => {
+    const fireTrigger = async (
+      trigger: import("@shared/schema").TriggerRow,
+      payload: unknown,
+    ): Promise<import("./services/consilium/trigger-dispatch").TriggerFireResult> => {
+      return runAsSystem("fire-trigger", async () => {
         // T1 RETARGET: a trigger fires a CONSILIUM LOOP (loop template in config),
         // not a (deleted) pipeline run. pipelineId is now NULLABLE — a loop-template
         // trigger has none. We NO LONGER gate on a pipeline lookup (that made every
@@ -358,7 +363,7 @@ export async function registerRoutes(
           !appConfigLoader.get().features.triggers.enabled
         ) {
           log(`[triggers] ${trigger.type} trigger ${trigger.id} not fired — features.triggers.enabled is off`, "triggers");
-          return;
+          return "recorded" as const;
         }
 
         // ── Loop-template dispatch ───────────────────────────────────────────────
@@ -408,6 +413,10 @@ export async function registerRoutes(
         if (result === "skipped-dedup") {
           await storage.incrementTriggerSuppressed(trigger.id);
         }
+        // The github POLLER reads this result to decide whether to advance its
+        // watermark (it holds on "skipped-dedup" → retries next cycle). Other
+        // callers (cron / file watcher / webhook receiver) ignore the return.
+        return result;
       });
     };
 
@@ -434,6 +443,26 @@ export async function registerRoutes(
       fireTrigger,
     });
     await fileWatcherService.bootstrap();
+
+    // github-trigger-polling: a LOCAL daemon behind NAT can NEVER receive a GitHub
+    // webhook, so an enabled github_event trigger silently never fires. When the
+    // kill-switch (features.triggers.githubPolling.enabled) is on, the poller PULLS
+    // from GitHub via the `gh` CLI and fires matching triggers through the SAME
+    // `fireTrigger` seam the webhook receiver uses. Default OFF → not constructed.
+    if (appConfigLoader.get().features.triggers.githubPolling.enabled) {
+      githubPoller = new GitHubPoller({
+        getEnabledTriggersByType: (type) =>
+          runAsSystem("github-poller-bootstrap", () => storage.getAllEnabledTriggersByType(type)),
+        getTrigger: (id) =>
+          runAsSystem("github-poller-get-trigger", () => storage.getTrigger(id)),
+        updateTrigger: (id, updates) =>
+          runAsSystem("github-poller-watermark", () => storage.updateTrigger(id, updates)),
+        fireTrigger,
+        config: () => appConfigLoader.get(),
+        log: (m: string) => log(m, "github-poller"),
+      });
+      githubPoller.start();
+    }
 
     log("[triggers] Trigger subsystem started", "triggers");
   } catch (e) {
@@ -507,6 +536,7 @@ export async function registerRoutes(
     cronScheduler?.stopAll();
     consiliumLoopPoller?.stop();
     fileWatcherService?.stopAll();
+    githubPoller?.stop();
     getRefreshScheduler()?.stop();
     stopRateLimitCleanup();
     await remoteAgentManager?.shutdown();

@@ -131,7 +131,8 @@ export function checkRateLimit(triggerId: string): boolean {
 export interface WebhookHandlerDeps {
   getTrigger: (id: string) => Promise<TriggerRow | undefined>;
   getSecret: (id: string) => Promise<string | null>;
-  fireTrigger: (trigger: TriggerRow, payload: unknown) => Promise<void>;
+  // Returns the shared TriggerFireResult (widened to `unknown` — ignored here).
+  fireTrigger: (trigger: TriggerRow, payload: unknown) => Promise<unknown>;
 }
 
 export async function handleWebhookRequest(
