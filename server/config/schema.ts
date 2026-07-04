@@ -104,6 +104,24 @@ export const ConfigSchema = z.object({
      */
     triggers: z.object({
       enabled: z.boolean().default(false),
+      /**
+       * github-trigger-polling: a LOCAL daemon behind NAT can NEVER receive a
+       * GitHub webhook (GitHub's servers cannot POST to localhost / a private LAN
+       * IP), so an enabled github_event trigger silently never fires. This
+       * kill-switch turns on a POLLER that PULLS from GitHub via the `gh` CLI
+       * (works behind NAT, no public endpoint) and fires matching triggers through
+       * the SAME dispatch path the webhook receiver uses.
+       *
+       * Default FALSE ⇒ no polling; back-compatible. Polling ALSO requires the
+       * `enabled` master switch above (a poll that fires a loop is gated by it) —
+       * with the master switch off the poller idles without consuming watermarks.
+       * `intervalSec` bounds GitHub traffic (min 60s so a misconfig cannot hammer
+       * the API; max 1h).
+       */
+      githubPolling: z.object({
+        enabled: z.boolean().default(false),
+        intervalSec: z.number().int().min(60).max(3600).default(300),
+      }).default({}),
     }).default({}),
   }).default({}),
   federation: z.object({

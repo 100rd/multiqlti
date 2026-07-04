@@ -98,7 +98,8 @@ export function validateWatchPath(rawPath: string): string {
 
 export interface FileWatcherDeps {
   getEnabledTriggersByType: (type: "file_change") => Promise<TriggerRow[]>;
-  fireTrigger: (trigger: TriggerRow, payload: unknown) => Promise<void>;
+  // Returns the shared TriggerFireResult (widened to `unknown` — ignored here).
+  fireTrigger: (trigger: TriggerRow, payload: unknown) => Promise<unknown>;
 }
 
 interface WatcherEntry {

@@ -10,7 +10,9 @@ import type { ScheduleTriggerConfig } from "@shared/types";
 
 export interface CronSchedulerDeps {
   getEnabledTriggersByType: (type: "schedule") => Promise<TriggerRow[]>;
-  fireTrigger: (trigger: TriggerRow, payload: unknown) => Promise<void>;
+  // Returns the shared TriggerFireResult (widened to `unknown` here — this caller
+  // ignores it; only the github poller reads it to advance its watermark).
+  fireTrigger: (trigger: TriggerRow, payload: unknown) => Promise<unknown>;
 }
 
 export class CronScheduler {
