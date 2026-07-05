@@ -37,6 +37,11 @@ const TYPE_META: Record<TriggerType, { label: string; className: string; Icon: R
     className: "bg-amber-500/15 text-amber-700 border-amber-500/30",
     Icon: FolderSearch,
   },
+  tracker_event: {
+    label: "GitHub Issues",
+    className: "bg-emerald-500/15 text-emerald-700 border-emerald-500/30",
+    Icon: Github,
+  },
 };
 
 // ─── Fired-loop helpers ───────────────────────────────────────────────────────

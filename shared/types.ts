@@ -1310,7 +1310,7 @@ export interface PipelineDAG {
 
 // ─── Trigger Types (Phase 6.3) ────────────────────────────────────────────────
 
-export type TriggerType = "webhook" | "schedule" | "github_event" | "file_change";
+export type TriggerType = "webhook" | "schedule" | "github_event" | "file_change" | "tracker_event";
 
 // Per-type discriminated union for the config JSONB column
 export interface WebhookTriggerConfig {
@@ -1500,11 +1500,37 @@ export interface SpecProvenance {
   source?: { kind: string; ref?: string; url?: string };
 }
 
+/**
+ * TRACK-1 watermark: what the tracker poller has already intaken so it does NOT
+ * re-open a spec PR for the same issue. Persisted INSIDE the trigger's `config`
+ * jsonb under `pollState`, OWNED by the poller (never authored in the UI).
+ */
+export interface TrackerPollState {
+  lastPolledAt?: string;
+  intake?: Record<string, { specPrUrl?: string; at: string }>;
+}
+
+/**
+ * TRACK-1 (github-issues -> committed spec PR). A tracker_event trigger polls a
+ * GitHub repo's ISSUES; each labelled, spec-ready issue becomes a committed spec
+ * PR (which SPEC-1's spec-watch fires the loop off on merge) + a pickup comment.
+ * This trigger PRODUCES specs + UPDATES tickets — it never fires a loop directly.
+ */
+export interface TrackerEventTriggerConfig {
+  tracker: "github";            // TRACK-1 = github only
+  repo: string;                 // owner/repo to poll issues from
+  targetRepoPath: string;       // allowlisted local repo path -> the spec's `repo:` frontmatter + PR target
+  filter?: { label?: string };  // label gate (consent to intake) — required at fire time
+  specStatus?: "ready" | "draft";
+  pollState?: TrackerPollState;  // owned by the poller (watermark)
+}
+
 export type TriggerConfig =
   | WebhookTriggerConfig
   | ScheduleTriggerConfig
   | GitHubEventTriggerConfig
-  | FileChangeTriggerConfig;
+  | FileChangeTriggerConfig
+  | TrackerEventTriggerConfig;
 
 // Public-facing Trigger shape returned from API (no secretEncrypted)
 export interface PipelineTrigger {

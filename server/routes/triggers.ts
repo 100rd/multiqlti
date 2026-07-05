@@ -112,7 +112,15 @@ const FileChangeConfigSchema = z.object({
   action: LoopTemplateActionSchema.optional(),
 });
 
-type TriggerTypeValue = "webhook" | "schedule" | "github_event" | "file_change";
+const TrackerConfigSchema = z.object({
+  tracker: z.literal("github"),
+  repo: z.string().min(1).max(500).regex(/^[^/]+\/[^/]+$/, "Must be owner/repo"),
+  targetRepoPath: z.string().min(1).max(4096),
+  filter: z.object({ label: z.string().min(1).max(200).optional() }).optional(),
+  specStatus: z.enum(["ready", "draft"]).optional(),
+});
+
+type TriggerTypeValue = "webhook" | "schedule" | "github_event" | "file_change" | "tracker_event";
 
 /**
  * Fix 3: Discriminated union validator — picks the correct schema based on type.
@@ -128,12 +136,14 @@ function validateTriggerConfig(type: TriggerTypeValue, config: unknown): unknown
       return GitHubConfigSchema.parse(config);
     case "file_change":
       return FileChangeConfigSchema.parse(config);
+    case "tracker_event":
+      return TrackerConfigSchema.parse(config);
   }
 }
 
 // ─── Top-level request schemas ────────────────────────────────────────────────
 
-const TriggerTypeEnum = z.enum(["webhook", "schedule", "github_event", "file_change"]);
+const TriggerTypeEnum = z.enum(["webhook", "schedule", "github_event", "file_change", "tracker_event"]);
 
 const CreateTriggerSchema = z.object({
   type: TriggerTypeEnum,

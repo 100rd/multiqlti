@@ -577,6 +577,10 @@ export function TriggerForm({
         };
       case "file_change":
         return { watchPath, patterns: filePatterns, action: buildLoopTemplate(template) };
+      case "tracker_event":
+        // Not offered in the type picker above; this case exists only for
+        // TriggerType exhaustiveness (tracker_event triggers are created via API/tool).
+        return {};
     }
   }
 

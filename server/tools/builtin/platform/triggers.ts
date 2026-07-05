@@ -8,7 +8,7 @@ import { withConfirmation } from "./confirmation";
 
 const CreateTriggerInput = z.object({
   pipelineId: z.string().min(1),
-  type: z.enum(["webhook", "schedule", "github_event", "file_change"]),
+  type: z.enum(["webhook", "schedule", "github_event", "file_change", "tracker_event"]),
   config: z.record(z.unknown()).default({}),
   enabled: z.boolean().default(true),
 });
@@ -71,7 +71,7 @@ export const createTriggerHandler: ToolHandler = {
         pipelineId: { type: "string", description: "Pipeline ID to attach the trigger to" },
         type: {
           type: "string",
-          enum: ["webhook", "schedule", "github_event", "file_change"],
+          enum: ["webhook", "schedule", "github_event", "file_change", "tracker_event"],
           description: "Trigger type",
         },
         config: { type: "object", description: "Trigger-specific configuration" },

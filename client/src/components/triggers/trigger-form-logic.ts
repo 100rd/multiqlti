@@ -14,6 +14,7 @@ import type {
   ScheduleTriggerConfig,
   GitHubEventTriggerConfig,
   FileChangeTriggerConfig,
+  TrackerEventTriggerConfig,
 } from "@shared/types";
 
 /** Trigger types whose firing creates a consilium loop (carry a loop template). */
@@ -176,6 +177,11 @@ export function configSummary(trigger: PipelineTrigger): string {
       const cfg = trigger.config as FileChangeTriggerConfig;
       const patterns = (cfg.patterns ?? []).join(", ");
       return patterns ? `${cfg.watchPath} · ${patterns}` : cfg.watchPath;
+    }
+    case "tracker_event": {
+      const cfg = trigger.config as TrackerEventTriggerConfig;
+      const label = cfg.filter?.label;
+      return label ? `${cfg.repo} · ${label}` : cfg.repo;
     }
   }
 }

@@ -40,6 +40,9 @@ import { TriggerService } from "./services/trigger-service";
 import { CronScheduler } from "./services/cron-scheduler";
 import { FileWatcherService } from "./services/file-watcher";
 import { GitHubPoller } from "./services/github-poller";
+import { GithubIssuesPoller } from "./services/consilium/trackers/github-issues-poller";
+import { buildSynthPrompt, parseSynthOutput } from "./services/consilium/trackers/issue-spec";
+import { DEFAULT_TASK_MODEL } from "./config/schema";
 import { stopRateLimitCleanup } from "./services/webhook-handler";
 import { requireAuth } from "./auth/middleware";
 import { requireProject } from "./middleware/project";
@@ -329,6 +332,7 @@ export async function registerRoutes(
   let cronScheduler: CronScheduler | null = null;
   let fileWatcherService: FileWatcherService | null = null;
   let githubPoller: GitHubPoller | null = null;
+  let githubIssuesPoller: GithubIssuesPoller | null = null;
 
   try {
     triggerService = new TriggerService(storage);
@@ -479,6 +483,55 @@ export async function registerRoutes(
       githubPoller.start();
     }
 
+    // TRACK-1 (github-issues -> committed spec PR). When the tracker kill-switch is
+    // on, a poller PULLS a repo's ISSUES via `gh` and, for each labelled + spec-ready
+    // issue, opens a committed-spec PR (SPEC-1's spec-watch fires the loop on merge)
+    // + a pickup comment. It NEVER fires a loop itself and never mutates the
+    // operator's working tree (all writes go through `gh api`). Default OFF -> not
+    // constructed. Also folded under the master features.triggers.enabled at poll time.
+    if (appConfigLoader.get().features.triggers.tracker.enabled) {
+      githubIssuesPoller = new GithubIssuesPoller({
+        // The ONLY cross-project read — under runAsSystem (unscopedSystemQuery).
+        getEnabledTriggersByType: (type) =>
+          runAsSystem("tracker-poller-bootstrap", () => storage.getAllEnabledTriggersByType(type)),
+        // Per-trigger storage runs INSIDE runAsProject(trigger.projectId).
+        runInProject: runAsProject,
+        getTrigger: (id) => storage.getTrigger(id),
+        updateTrigger: (id, updates) => storage.updateTrigger(id, updates),
+        config: () => appConfigLoader.get(),
+        allowedRepoPaths: () => appConfigLoader.get().pipeline.consiliumLoop.allowedRepoPaths,
+        // Gateway-backed synthesiser for FREE-FORM issues (no spec-shaped body). Any
+        // error degrades to no-criteria (never throws into the poll loop) -> the poller
+        // posts an ask-for-criteria comment instead of opening a spec PR.
+        synthesizer: {
+          synthesize: async (issue) => {
+            try {
+              const { system, user } = buildSynthPrompt(issue);
+              const res = await gateway.completeStreaming(
+                {
+                  modelSlug: DEFAULT_TASK_MODEL,
+                  messages: [
+                    { role: "system", content: system },
+                    { role: "user", content: user },
+                  ],
+                  temperature: 0.2,
+                  maxTokens: 2048,
+                },
+                undefined,
+                undefined,
+                { overallTimeoutMs: 60_000 },
+              );
+              return parseSynthOutput(res.content);
+            } catch {
+              return { criteria: [] };
+            }
+          },
+        },
+        log: (m: string) => log(m, "tracker-poller"),
+      });
+      githubIssuesPoller.start();
+    }
+
     log("[triggers] Trigger subsystem started", "triggers");
   } catch (e) {
     // TriggerCrypto throws if TRIGGER_SECRET_KEY is absent — subsystem is disabled.
@@ -552,6 +605,7 @@ export async function registerRoutes(
     consiliumLoopPoller?.stop();
     fileWatcherService?.stopAll();
     githubPoller?.stop();
+    githubIssuesPoller?.stop();
     getRefreshScheduler()?.stop();
     stopRateLimitCleanup();
     await remoteAgentManager?.shutdown();
