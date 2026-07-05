@@ -122,6 +122,21 @@ export const ConfigSchema = z.object({
         enabled: z.boolean().default(false),
         intervalSec: z.number().int().min(60).max(3600).default(300),
       }).default({}),
+      /**
+       * TRACK-1 (github-issues -> committed spec PR). A tracker poller PULLS a
+       * GitHub repo's ISSUES via `gh` and, for each labelled + spec-ready issue,
+       * opens a committed-spec PR (which SPEC-1's spec-watch fires the loop off on
+       * merge) + a pickup comment. It fires NO loop itself.
+       *
+       * Default FALSE => no tracker poller constructed; byte-identical. ALSO gated
+       * by the master `features.triggers.enabled` (a poll that would produce a spec
+       * is pointless with firing off). `pollIntervalSec` bounds GitHub traffic
+       * (min 60s so a misconfig cannot hammer the API; max 1h).
+       */
+      tracker: z.object({
+        enabled: z.boolean().default(false),
+        pollIntervalSec: z.number().int().min(60).max(3600).default(300),
+      }).default({}),
     }).default({}),
   }).default({}),
   federation: z.object({
