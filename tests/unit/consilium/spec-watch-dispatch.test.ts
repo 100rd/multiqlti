@@ -17,8 +17,10 @@ import {
   maybeLaunchConsiliumReview,
   maybeLaunchSpecReview,
   resolveSpecRepo,
+  resolveSpecWatchConfig,
   type ConsiliumTriggerDispatchDeps,
 } from "../../../server/services/consilium/trigger-dispatch.js";
+import { ConfigSchema } from "../../../server/config/schema.js";
 
 // ─── On-disk fixtures ──────────────────────────────────────────────────────────
 
@@ -231,6 +233,50 @@ describe("maybeLaunchSpecReview — ready gate", () => {
     expect(result).toBe("skipped");
     expect(createReview).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/no-repo/));
+  });
+});
+
+// ─── Route-level fold: the MASTER switch alone disables spec-watch ─────────────
+
+describe("resolveSpecWatchConfig — master-switch fold", () => {
+  /** A real AppConfig with the three spec-watch-relevant flags set explicitly. */
+  const cfg = (masterEnabled: boolean, specWatchEnabled: boolean) =>
+    ConfigSchema.parse({
+      features: { triggers: { enabled: masterEnabled } },
+      pipeline: {
+        consiliumLoop: {
+          enabled: true, // isolate the master switch as the sole disabler
+          allowedRepoPaths: ["/allowed/omnius"],
+          specWatch: { enabled: specWatchEnabled },
+        },
+      },
+    });
+
+  it("features.triggers.enabled=false ALONE zeroes effective enabled (even with specWatch+loop on)", () => {
+    const view = resolveSpecWatchConfig(cfg(false, true));
+    expect(view.enabled).toBe(false); // the master switch off ⇒ spec-watch off
+    // The other fields still pass through (they are inert while disabled).
+    expect(view.globs).toEqual(["docs/specs/**/*.md", "docs/adr/**/*.md"]);
+    expect(view.allowedRepoPaths).toEqual(["/allowed/omnius"]);
+  });
+
+  it("both switches on ⇒ effective enabled true; specWatch off alone ⇒ false", () => {
+    expect(resolveSpecWatchConfig(cfg(true, true)).enabled).toBe(true);
+    expect(resolveSpecWatchConfig(cfg(true, false)).enabled).toBe(false);
+  });
+
+  it("master-switch OFF ⇒ NO spec fires end-to-end (byte-identical), even for a ready spec", async () => {
+    const p = specFile("ready-master-off.md", READY);
+    // The EXACT view the route hands the dispatch, folded from a real config with the
+    // master switch OFF but specWatch+loop ON — proves the fold, not a duplicated bool.
+    const folded = resolveSpecWatchConfig(cfg(false, true));
+    const { deps, createReview } = makeDeps({}, [], folded);
+    const result = await maybeLaunchConsiliumReview(deps, makeTrigger(), {
+      filePath: p,
+      watchPath: specsDir,
+    });
+    expect(result).toBe("noop"); // legacy path (no action) — spec pre-check never ran
+    expect(createReview).not.toHaveBeenCalled();
   });
 });
 

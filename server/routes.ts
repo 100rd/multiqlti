@@ -55,7 +55,7 @@ import { registerTaskGroupResolveRoute } from "./routes/task-group-resolve";
 import { registerConsiliumLoopRoutes } from "./routes/consilium-loops";
 import { registerConsiliumReviewRoutes } from "./routes/consilium-reviews";
 import { createConsiliumReview } from "./services/consilium/review-factory";
-import { maybeLaunchConsiliumReview, maybeLaunchGitHubReview } from "./services/consilium/trigger-dispatch";
+import { maybeLaunchConsiliumReview, maybeLaunchGitHubReview, resolveSpecWatchConfig } from "./services/consilium/trigger-dispatch";
 import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consilium/consilium-loop-controller";
 import { registerModelSkillBindingRoutes } from "./routes/model-skill-bindings";
 import { registerTaskTraceRoutes } from "./routes/task-traces";
@@ -406,19 +406,12 @@ export async function registerRoutes(
           recordFire: (triggerId: string, firedAt: Date) =>
             storage.incrementTriggerFired(triggerId, firedAt),
           // SPEC-1 (spec-as-task.md §3): the spec-watch config, master-gated HERE so
-          // the dispatch sees ONE boolean. `enabled` folds the master trigger switch
-          // (features.triggers.enabled) AND the spec-watch kill-switch — either off ⇒
-          // the spec pre-check is skipped and the file_change dispatch is byte-identical.
-          // The parent consiliumLoop.enabled gate is enforced downstream (reviewDeps null).
-          specWatch: () => {
-            const c = appConfigLoader.get();
-            return {
-              enabled:
-                c.features.triggers.enabled && c.pipeline.consiliumLoop.specWatch.enabled,
-              globs: c.pipeline.consiliumLoop.specWatch.globs,
-              allowedRepoPaths: c.pipeline.consiliumLoop.allowedRepoPaths,
-            };
-          },
+          // the dispatch sees ONE boolean. `resolveSpecWatchConfig` folds the master
+          // trigger switch (features.triggers.enabled) AND the spec-watch kill-switch —
+          // either off ⇒ the spec pre-check is skipped and the file_change dispatch is
+          // byte-identical. The parent consiliumLoop.enabled gate is enforced downstream
+          // (reviewDeps null). The fold lives in one tested helper (see its unit test).
+          specWatch: () => resolveSpecWatchConfig(appConfigLoader.get()),
           log: (m: string) => log(m, "triggers"),
         };
 
