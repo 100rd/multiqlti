@@ -1,7 +1,7 @@
 # SPEC: Task-tracker integrations & triggers — a ticket becomes a spec becomes a loop
 
 > Status: **spec / design** (v2). The factory's **inbound front door**: a ticket created in a tracker
-> (Jira, GitHub / GitLab / Bitbucket Issues, **Linear**, **Azure DevOps**) is turned into a
+> (Jira, GitHub / GitLab / Bitbucket Issues, **Linear**, **Azure DevOps**, **ClickUp**) is turned into a
 > **committed spec** (per [spec-as-task.md](spec-as-task.md)), the spec fires a consilium loop, and
 > the loop **writes back to the origin ticket** at every step. Connectors are *spec producers +
 > ticket updaters* — they never fire loops directly; the committed spec does (one execution route).
@@ -47,12 +47,14 @@ link). All six reduce to the same interface; only the API dialect differs.
 | **Bitbucket Issues** | webhook **or** `/issues?q=updated_on>` poll | `/repositories/…/issues/{id}` | comment, state, PR link | app password / OAuth |
 | **Linear** | webhook (Issue events) **or** GraphQL poll (`issues(filter:{updatedAt})`) | GraphQL `issue(id)` | GraphQL `commentCreate`, state update, attachment link | API key / OAuth |
 | **Azure DevOps** | Service Hook (workitem.created/updated) **or** WIQL poll | REST `/wit/workitems/{id}` | `/comments`, state field, PR link (artifact) | PAT / Entra OAuth |
+| **ClickUp** | webhook (`taskCreated`/`taskUpdated`/`taskTagUpdated`) **or** REST poll (`/list/{id}/task?date_updated_gt=…`) | REST `/task/{id}` | `/task/{id}/comment`, status update, custom-field/attachment link | personal API token / OAuth |
 
 **Reuse — do not rebuild:** watching is exactly the trigger runtime we built. Webhooks land on the
-existing `/api/webhooks/:triggerId` receiver (HMAC-verified, `runAsSystem`-scoped, per #494); when the
-tracker is behind NAT / can't reach us, the **polling mode (#492)** applies verbatim — a tracker poll
-is `gh issue list` / a JQL / WIQL / GraphQL query on an interval with a per-trigger watermark. So Part
-A is mostly **six adapters over one existing watch spine + one spec-writer.**
+existing `/api/webhooks/:triggerId` receiver (HMAC-verified, `runAsSystem`-scoped, per #494; ClickUp
+signs deliveries with an `X-Signature` HMAC the receiver already validates in kind); when the tracker
+is behind NAT / can't reach us, the **polling mode (#492)** applies verbatim — a tracker poll is
+`gh issue list` / a JQL / WIQL / GraphQL / ClickUp REST query on an interval with a per-trigger
+watermark. So Part A is mostly **seven adapters over one existing watch spine + one spec-writer.**
 
 **Auth & secrets:** every connector holds a scoped API token from a secret manager (never committed),
 fail-closed. A connector for one tracker site/project cannot read another's — workspace-scoped, same
@@ -171,7 +173,7 @@ already have plus these connectors.
 - **TRACK-2 — full write-back lifecycle:** all rows of §4 (start/verdict/terminal/close) + transitions.
 - **TRACK-3 — Jira connector** (webhook + JQL; the org-standard tracker).
 - **TRACK-4 — GitLab + Bitbucket connectors.**
-- **TRACK-5 — Linear + Azure DevOps connectors** (GraphQL / WIQL dialects).
+- **TRACK-5 — Linear + Azure DevOps + ClickUp connectors** (GraphQL / WIQL / ClickUp-REST dialects).
 - **TRACK-6 — Standing Role on a tracker** + `/spec`,`/approve` comment commands.
 - **TRACK-7 — graduate:** a genai-enablement ADR for the cross-repo tracker-connector + spec contract;
   omnius consumes it for org-scale governed intake.
