@@ -1477,6 +1477,27 @@ export interface TriggerProvenance {
    * prompt/shell sink.
    */
   eventSummary?: string;
+  /**
+   * SPEC-1 (spec-as-task.md §3): present when the loop was fired by the spec-watch
+   * (a `docs/specs|adr` file transitioning to `status: ready`). Carries the ORIGIN
+   * of the spec so the SPEC dedup key (one active loop per spec path) and a future
+   * write-back (SPEC-2+: status flip / ticket write-back) can find it. Persisted
+   * INERT as jsonb; never a prompt/shell sink. Absent for every non-spec fire.
+   */
+  spec?: SpecProvenance;
+}
+
+/**
+ * SPEC-1 provenance recorded on a spec-fired consilium loop (spec-as-task.md §3).
+ * `specPath` is the ABSOLUTE path of the committed spec that fired the loop — it
+ * is the DEDUP KEY (one active loop per spec path) and the anchor a future
+ * write-back keys off. `source` is the spec's declared origin ({kind, ref?, url?})
+ * for auditability; `status` is the spec status at fire time (`ready`). All inert.
+ */
+export interface SpecProvenance {
+  specPath: string;
+  status: string;
+  source?: { kind: string; ref?: string; url?: string };
 }
 
 export type TriggerConfig =
