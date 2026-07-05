@@ -70,7 +70,8 @@
  */
 import { existsSync, realpathSync } from "fs";
 import { createHash } from "crypto";
-import { dirname, join } from "path";
+import { basename, dirname, join, resolve } from "path";
+import { load as jsYamlLoad } from "js-yaml";
 import {
   CONSILIUM_LOOP_TERMINAL_STATES,
   type TriggerRow,
@@ -81,8 +82,15 @@ import type {
   ConsiliumReviewPreset,
   GitHubEventTriggerConfig,
   TriggerProvenance,
+  SpecProvenance,
 } from "@shared/types";
 import { mapGitHubEventToReview } from "./github-event-map.js";
+import {
+  readSpecFile,
+  evaluateReadyGate,
+  buildSpecInstruction,
+  pathMatchesSpecGlobs,
+} from "./spec-parser.js";
 import type {
   CreateConsiliumReviewDeps,
   CreateConsiliumReviewParams,
@@ -241,6 +249,16 @@ export interface ConsiliumTriggerDispatchDeps {
    * write. `firedAt` is the loop's provenance instant, threaded in for determinism.
    */
   recordFire: (triggerId: string, firedAt: Date) => Promise<void>;
+  /**
+   * SPEC-1 (spec-as-task.md §3): the spec-watch config accessor, or absent when the
+   * caller does not wire it (every existing test / non-route caller). Returns the
+   * ALREADY-master-gated view — the route folds `features.triggers.enabled` INTO
+   * `enabled` so a single boolean decides whether the spec pre-check runs. When
+   * absent OR `enabled === false`, `maybeLaunchConsiliumReview` skips the pre-check
+   * entirely and is BYTE-IDENTICAL to the pre-SPEC-1 dispatch. `allowedRepoPaths`
+   * is the consilium-loop repo allowlist (used to resolve a spec's `repo:` field).
+   */
+  specWatch?: () => SpecWatchDispatchView;
   /** Structured logger (the route passes `(m) => log(m, "triggers")`). */
   log: (message: string) => void;
 }
@@ -263,6 +281,23 @@ export async function maybeLaunchConsiliumReview(
   trigger: TriggerRow,
   payload: unknown,
 ): Promise<ConsiliumDispatchResult> {
+  // ── SPEC-1 pre-check (spec-as-task.md §3) ──────────────────────────────────
+  // A file_change whose changed file is under the spec globs (and spec-watch is
+  // enabled — already master-gated by the route) is parsed as a committed spec and
+  // routed to the spec path BEFORE the legacy action dispatch. This is the ONLY
+  // added surface on the off path: when `specWatch` is absent or disabled, or the
+  // changed file is not under the globs, control falls straight through and the
+  // dispatch is BYTE-IDENTICAL to before. A file that matches the globs is handled
+  // ENTIRELY by the spec path (fires or logs a reason) — it never also runs the
+  // legacy action, so a spec write can never double-launch.
+  const specCfg = deps.specWatch?.();
+  if (specCfg?.enabled && trigger.type === "file_change") {
+    const filePath = payloadString(payload, "filePath");
+    if (filePath && pathMatchesSpecGlobs(filePath, specCfg.globs)) {
+      return maybeLaunchSpecReview(deps, trigger, payload, filePath, specCfg.allowedRepoPaths);
+    }
+  }
+
   const config = trigger.config as LoopTemplateConfig;
   const action = config?.action;
   if (action?.kind !== "consilium_review") return "noop";
@@ -308,6 +343,183 @@ export async function maybeLaunchConsiliumReview(
   });
 }
 
+// ─── SPEC-1: spec-watch → consilium loop (spec-as-task.md §3) ──────────────────
+
+/** The default preset for a spec fire when the trigger action does not pin one. */
+const SPEC_DEFAULT_PRESET: ConsiliumReviewPreset = "sdlc-cross-review";
+
+/** The spec-watch view the dispatch reads (the folded, master-gated config). */
+export interface SpecWatchDispatchView {
+  enabled: boolean;
+  globs: string[];
+  allowedRepoPaths: string[];
+}
+
+/**
+ * Fold the spec-watch dispatch view from AppConfig. The master
+ * `features.triggers.enabled` switch is AND-ed into `enabled` HERE, in ONE place, so
+ * the dispatch sees a single boolean: master-off ⇒ effective-off ⇒ the spec
+ * pre-check never runs and the file_change dispatch is BYTE-IDENTICAL to before.
+ * (The parent `consiliumLoop.enabled` gate is enforced separately downstream via
+ * `reviewDeps`, which is null when that subsystem is off.) The route wires this as
+ * `specWatch: () => resolveSpecWatchConfig(appConfigLoader.get())`.
+ */
+export function resolveSpecWatchConfig(config: {
+  features: { triggers: { enabled: boolean } };
+  pipeline: {
+    consiliumLoop: { allowedRepoPaths: string[]; specWatch: { enabled: boolean; globs: string[] } };
+  };
+}): SpecWatchDispatchView {
+  const sw = config.pipeline.consiliumLoop.specWatch;
+  return {
+    enabled: config.features.triggers.enabled && sw.enabled,
+    globs: sw.globs,
+    allowedRepoPaths: config.pipeline.consiliumLoop.allowedRepoPaths,
+  };
+}
+
+/**
+ * Resolve a spec's `repo:` field to an ALLOWLISTED local path, fail-closed.
+ *   - No `repo:` field ⇒ the trigger's OWN repo (`derivedRepo`, from the watchPath).
+ *     May be undefined ⇒ the caller no-ops (no-repo).
+ *   - An absolute `repo:` whose realpath is within/equals an allowed root ⇒ that
+ *     canonical path.
+ *   - A slug/basename `repo:` that matches the basename of exactly one allowed root
+ *     ⇒ that allowed root.
+ *   - Anything else (a `repo:` that maps to no allowed root) ⇒ `null` (no-op + log).
+ *
+ * The factory RE-VALIDATES the returned path against the same allowlist (+ the
+ * project's workspaces), so this is a convenience resolver whose only failure mode
+ * is to reject — it can NEVER widen access beyond the allowlist.
+ */
+export function resolveSpecRepo(
+  repoField: string | undefined,
+  derivedRepo: string | undefined,
+  allowedRepoPaths: readonly string[],
+): string | null {
+  if (repoField === undefined || repoField.length === 0) {
+    return derivedRepo ?? null;
+  }
+  const allowedCanon = allowedRepoPaths.map((p) => ({ raw: p, canon: resolve(canonicalRepoPath(p)) }));
+
+  // Absolute path: accept iff its realpath is within/equal to an allowed root.
+  if (repoField.startsWith("/")) {
+    // M2 (defense-in-depth): realpathSync collapses `..` for an EXISTING path, but
+    // a non-existent path falls back to the RAW string with `..` intact — which
+    // could string-prefix-match an allowed root. `resolve` normalizes the traversal
+    // LEXICALLY so `/allowed/root/../../etc` can never prefix-match `/allowed/root/`.
+    const canonField = resolve(canonicalRepoPath(repoField));
+    for (const a of allowedCanon) {
+      if (canonField === a.canon || canonField.startsWith(a.canon + "/")) return canonField;
+    }
+    return null;
+  }
+
+  // Slug / basename: match the basename of exactly one allowed root.
+  const matches = allowedCanon.filter((a) => basename(a.canon) === repoField);
+  if (matches.length === 1) return matches[0].canon;
+  return null;
+}
+
+/**
+ * Parse a changed `docs/specs|adr` file as a committed spec and, IFF it is a
+ * `ready` spec with acceptance criteria, launch ONE consilium loop for it
+ * (spec-as-task.md §3). The caller has already confirmed the file is under the
+ * spec globs and spec-watch is enabled (master-gated). Every non-firing outcome is
+ * a logged NO-OP (never a throw): `draft` / `no-acceptance-criteria` / `not-a-spec`
+ * / `status:done` / `no-repo`. The loop is:
+ *   - `engineerInstruction` = the human-authored body + the acceptanceCriteria
+ *     rendered as an explicit, fenced Definition-of-Done (byte-bounded).
+ *   - `repoPath` = the spec's `repo:` resolved to an allowlisted path, else the
+ *     trigger's own repo (unresolvable ⇒ no-op).
+ *   - `skillIds` = the spec's explicit `skills` (the `role`, if any, is folded into
+ *     the instruction header — NOT passed as a skill id, so it can never trigger a
+ *     skill-resolution throw for a role that is not a registered skill).
+ *   - dedup keyed by the SPEC PATH (one active loop per spec).
+ *   - `triggerProvenance.spec = { specPath, source, status }`.
+ *
+ * Like every trigger path, the launch is FORCED review-only (maxRounds=1, T6) —
+ * an unattended file-system event never reaches the SDLC coder; escalation to
+ * develop is a human/UI action (SPEC-2+ boundary). Reuses the SAME
+ * `launchReviewWithDedup` owner/factory/T4 core as every other trigger.
+ */
+export async function maybeLaunchSpecReview(
+  deps: ConsiliumTriggerDispatchDeps,
+  trigger: TriggerRow,
+  payload: unknown,
+  filePath: string,
+  allowedRepoPaths: readonly string[],
+): Promise<ConsiliumDispatchResult> {
+  if (!deps.reviewDeps) {
+    deps.log(`spec-watch skipped for ${filePath} — consilium loop disabled`);
+    return "skipped";
+  }
+  const projectId = trigger.projectId;
+  if (!projectId) {
+    deps.log(`spec-watch skipped for ${filePath} — trigger has no projectId`);
+    return "skipped";
+  }
+
+  // Parse + ready-gate. readSpecFile is size/binary/error-guarded and NEVER throws,
+  // so a malformed/huge/binary/deleted file under the globs degrades to a no-op.
+  const parsed = readSpecFile(filePath, (s) => jsYamlLoad(s));
+  const gate = evaluateReadyGate(parsed);
+  if (!gate.fire) {
+    deps.log(`spec-watch no-op for ${filePath} — ${gate.reason}`);
+    return "skipped";
+  }
+  const { frontmatter, body } = gate;
+
+  // Resolve the target repo (spec `repo:` → allowlisted path, else the trigger's own).
+  const config = trigger.config as LoopTemplateConfig;
+  const watchPath = payloadString(payload, "watchPath") ?? config?.watchPath;
+  const repoPath = resolveSpecRepo(frontmatter.repo, deriveRepoRoot(watchPath), allowedRepoPaths);
+  if (repoPath === null) {
+    deps.log(`spec-watch no-op for ${filePath} — no-repo (repo="${frontmatter.repo ?? ""}")`);
+    return "skipped";
+  }
+
+  const engineerInstruction = buildSpecInstruction(
+    body,
+    frontmatter.acceptanceCriteria,
+    frontmatter.role,
+  );
+  // ACCEPTED for SPEC-1 (M1): a skill id the factory cannot resolve project-scoped
+  // THROWS → the launch is caught (T4) and returns "failed" (fail-closed, no
+  // cross-tenant leak). SPEC-1 is HUMAN-AUTHORED specs only (no connectors — TRACK-1),
+  // so the operator owns these ids and a typo failing visibly is acceptable; graceful
+  // "drop unknown skill" is deferred to the connector-fed path (a synthesised spec).
+  const skillIds =
+    frontmatter.skills && frontmatter.skills.length > 0 ? frontmatter.skills : undefined;
+  const preset = config?.action?.preset ?? SPEC_DEFAULT_PRESET;
+
+  // The spec title is UNTRUSTED (frontmatter): single-line + clamp before it becomes
+  // the inert provenance passport label (never a prompt/shell sink — display only).
+  const titleLabel = (frontmatter.title ?? basename(filePath))
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .trim()
+    .slice(0, 120);
+
+  return launchReviewWithDedup(deps, trigger, {
+    projectId,
+    repoPath,
+    preset,
+    engineerInstruction,
+    skillIds,
+    // Per-spec dedup (NOT per-repo) — two specs in one repo each fire their own loop.
+    specDedupKey: filePath,
+    specProvenance: {
+      specPath: filePath,
+      status: frontmatter.status ?? "ready",
+      ...(frontmatter.source ? { source: frontmatter.source } : {}),
+    },
+    // H2: use the SANITIZED title (single-line, control-stripped, length-clamped) —
+    // NOT the raw frontmatter title — for the inert provenance passport label.
+    eventSummary: `spec ready: ${titleLabel}`,
+    payload,
+  });
+}
+
 /**
  * The launch plan the shared core turns into a factory call. `preset`/`repoPath`
  * are already chosen by the caller (the action's for file_change/schedule; the
@@ -326,6 +538,22 @@ export interface ReviewLaunchPlan {
   engineerInstruction?: string;
   objectiveExtra?: string;
   eventSummary?: string;
+  /**
+   * SPEC-1: operator/spec-selected skill ids, resolved PROJECT-SCOPED inside the
+   * factory (a foreign id throws → "failed", caught by T4). Absent for every
+   * non-spec path (byte-identical). The spec path passes `frontmatter.skills`.
+   */
+  skillIds?: string[];
+  /**
+   * SPEC-1 (spec-as-task.md §3): when set, the dedup key is the SPEC PATH — dedup
+   * matches an active loop by `triggerProvenance.spec.specPath === specDedupKey`,
+   * NOT by repoPath. This is what lets TWO distinct specs in the SAME repo each
+   * fire their own loop (per-spec dedup, not per-repo). Absent ⇒ the historical
+   * per-repoPath dedup (unchanged for every non-spec fire).
+   */
+  specDedupKey?: string;
+  /** SPEC-1: spec origin folded into the loop's provenance (`{specPath,source,status}`). */
+  specProvenance?: SpecProvenance;
   payload: unknown;
 }
 
@@ -362,10 +590,16 @@ export async function launchReviewWithDedup(
     eventDigest: eventDigest(plan.payload),
     firedAt: firedAt.toISOString(),
     ...(plan.eventSummary ? { eventSummary: plan.eventSummary } : {}),
+    // SPEC-1 (§3): carry the spec origin so the per-spec dedup below and a future
+    // write-back can find it. Inert jsonb; never a prompt/shell sink.
+    ...(plan.specProvenance ? { spec: plan.specProvenance } : {}),
   };
 
   // T5: dedup key — match against the CANONICAL path the factory persists.
   const resolvedRepo = canonicalRepoPath(plan.repoPath);
+  // SPEC-1: a spec fire dedups on the SPEC PATH (one active loop per spec), NOT the
+  // repo — so two distinct specs in the same repo each fire their own loop.
+  const specDedupKey = plan.specDedupKey;
 
   // FK FIX: a trigger-launched review has no `req.user`. Resolve the PROJECT OWNER
   // (a real `users.id`). Inside the try so a lookup throw is caught (T4) rather
@@ -387,11 +621,16 @@ export async function launchReviewWithDedup(
       // a spec-write burst) must not fan out into unbounded heavy-model disputes.
       // (The explicit UI endpoint calls the factory directly and is NOT deduped.)
       const existing = await reviewDeps.storage.getLoops();
-      const active = existing.find(
-        (l) =>
-          !TERMINAL_LOOP_STATES.has(l.state) &&
-          (l.repoPath === resolvedRepo || l.repoPath === plan.repoPath),
-      );
+      const active = existing.find((l) => {
+        if (TERMINAL_LOOP_STATES.has(l.state)) return false;
+        // SPEC-1: a spec fire dedups PURELY on the spec path (a distinct spec, even
+        // in the same repo, is a DIFFERENT unit of work → its own loop). A non-spec
+        // fire keeps the historical per-repoPath dedup.
+        if (specDedupKey !== undefined) {
+          return l.triggerProvenance?.spec?.specPath === specDedupKey;
+        }
+        return l.repoPath === resolvedRepo || l.repoPath === plan.repoPath;
+      });
       if (active) {
         dedupLoopId = active.id;
         return null; // signal: deduped, do NOT launch the factory
@@ -401,6 +640,9 @@ export async function launchReviewWithDedup(
         projectId: plan.projectId,
         repoPath: plan.repoPath,
         preset: plan.preset,
+        // SPEC-1: spec-selected skills (resolved project-scoped in the factory);
+        // undefined for every non-spec path (byte-identical).
+        skillIds: plan.skillIds,
         // FK FIX: real `users.id` (project owner), NOT the literal "system".
         createdBy,
         // T6 (FIX MED-2): FORCE review-only on EVERY trigger path. An unattended,
@@ -420,7 +662,9 @@ export async function launchReviewWithDedup(
 
     if (loop === null) {
       deps.log(
-        `review skipped-dedup for trigger ${trigger.id} — active loop ${dedupLoopId} already running for ${resolvedRepo}`,
+        specDedupKey !== undefined
+          ? `review skipped-dedup:spec for trigger ${trigger.id} — active loop ${dedupLoopId} already running for spec ${specDedupKey}`
+          : `review skipped-dedup for trigger ${trigger.id} — active loop ${dedupLoopId} already running for ${resolvedRepo}`,
       );
       // WATERMARK DISCIPLINE: a dedup-suppressed fire must NOT touch lastFiredAt /
       // firedCount — the caller counts it via `incrementTriggerSuppressed` instead.
