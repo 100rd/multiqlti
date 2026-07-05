@@ -551,6 +551,30 @@ export const ConfigSchema = z.object({
         enabled: z.boolean().default(false),
       }).default({}),
       /**
+       * SPEC-1 (spec-as-task.md §3): the spec-watch. A `file_change` trigger whose
+       * changed file matches one of these globs is parsed as a committed spec/ADR;
+       * a spec with `status: ready` AND non-empty `acceptanceCriteria` fires ONE
+       * consilium loop (review-only, per the T6 fs-event rail). Everything else is a
+       * logged no-op (`draft` / `no-acceptance-criteria` / `not-a-spec` / `status:done`).
+       * Dedup is keyed by the SPEC PATH (not the repo), so two distinct specs in the
+       * same repo each fire their own loop.
+       *
+       * Default FALSE ⇒ BYTE-IDENTICAL: the spec pre-check is skipped entirely and a
+       * file_change trigger behaves exactly as before. Firing ALSO requires the master
+       * `features.triggers.enabled` switch (wired in the route) AND the parent
+       * `pipeline.consiliumLoop.enabled` (the loop subsystem) — triple-gated.
+       */
+      specWatch: z.object({
+        /** Kill-switch: false (default) → no spec parsing, no spec fires (inert). */
+        enabled: z.boolean().default(false),
+        /**
+         * Repo-relative globs identifying committed specs/ADRs under the watched
+         * base. A changed file matching ANY glob is treated as a spec candidate.
+         * config.yaml only (arrays are not env-mapped — matches allowedRepoPaths).
+         */
+        globs: z.array(z.string()).default(["docs/specs/**/*.md", "docs/adr/**/*.md"]),
+      }).default({}),
+      /**
        * Stage 2a (design §3.C/§4): the SKILLED, archetype-branched implement
        * (develop) phase. When `enabled` is FALSE the loop runs TODAY'S single
        * unskilled coder per action point (byte-for-byte unchanged). When TRUE the

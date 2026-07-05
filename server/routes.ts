@@ -405,6 +405,20 @@ export async function registerRoutes(
           // fireTrigger is a background/system ctx with no request project scope.
           recordFire: (triggerId: string, firedAt: Date) =>
             storage.incrementTriggerFired(triggerId, firedAt),
+          // SPEC-1 (spec-as-task.md §3): the spec-watch config, master-gated HERE so
+          // the dispatch sees ONE boolean. `enabled` folds the master trigger switch
+          // (features.triggers.enabled) AND the spec-watch kill-switch — either off ⇒
+          // the spec pre-check is skipped and the file_change dispatch is byte-identical.
+          // The parent consiliumLoop.enabled gate is enforced downstream (reviewDeps null).
+          specWatch: () => {
+            const c = appConfigLoader.get();
+            return {
+              enabled:
+                c.features.triggers.enabled && c.pipeline.consiliumLoop.specWatch.enabled,
+              globs: c.pipeline.consiliumLoop.specWatch.globs,
+              allowedRepoPaths: c.pipeline.consiliumLoop.allowedRepoPaths,
+            };
+          },
           log: (m: string) => log(m, "triggers"),
         };
 
