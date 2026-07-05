@@ -11,8 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { useEnableTrigger, useDisableTrigger, useTriggerLoops } from "@/hooks/use-triggers";
-import type { PipelineTrigger, TriggerType, ScheduleTriggerConfig, GitHubEventTriggerConfig, FileChangeTriggerConfig, TriggerFiredLoop } from "@shared/types";
-import { loopTargetSummary } from "./trigger-form-logic";
+import type { PipelineTrigger, TriggerType, TriggerFiredLoop } from "@shared/types";
+import { configSummary, loopTargetSummary } from "./trigger-form-logic";
 
 // ─── Type badge config ────────────────────────────────────────────────────────
 
@@ -38,29 +38,6 @@ const TYPE_META: Record<TriggerType, { label: string; className: string; Icon: R
     Icon: FolderSearch,
   },
 };
-
-// ─── Config summary ───────────────────────────────────────────────────────────
-
-function configSummary(trigger: PipelineTrigger): string {
-  switch (trigger.type) {
-    case "webhook":
-      return trigger.webhookUrl
-        ? `POST ${trigger.webhookUrl}`
-        : "Webhook endpoint auto-assigned";
-    case "schedule": {
-      const cfg = trigger.config as ScheduleTriggerConfig;
-      return cfg.cron;
-    }
-    case "github_event": {
-      const cfg = trigger.config as GitHubEventTriggerConfig;
-      return `${cfg.repository} · ${cfg.events.join(", ")}`;
-    }
-    case "file_change": {
-      const cfg = trigger.config as FileChangeTriggerConfig;
-      return `${cfg.watchPath} · ${cfg.patterns.join(", ")}`;
-    }
-  }
-}
 
 // ─── Fired-loop helpers ───────────────────────────────────────────────────────
 

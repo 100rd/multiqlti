@@ -11,6 +11,9 @@ import type {
   TriggerType,
   ConsiliumReviewPreset,
   ConsiliumReviewTriggerAction,
+  ScheduleTriggerConfig,
+  GitHubEventTriggerConfig,
+  FileChangeTriggerConfig,
 } from "@shared/types";
 
 /** Trigger types whose firing creates a consilium loop (carry a loop template). */
@@ -140,6 +143,41 @@ export function buildLoopTemplate(state: LoopTemplateState): ConsiliumReviewTrig
   }
   if (Number.isFinite(rounds) && rounds >= 1 && rounds <= 6) action.maxRounds = rounds;
   return action;
+}
+
+/**
+ * One-line, human-readable summary of a trigger's config — the mono line on the
+ * trigger card. Extracted here (from TriggerCard.tsx) so it is node-testable and
+ * has a single source of truth.
+ *
+ * ROBUSTNESS: `events`/`patterns` are typed `string[]` but a trigger created via
+ * the API can omit them entirely (e.g. the spec-watch demo file_change trigger is
+ * just `{ watchPath, action }`). An unguarded `cfg.events.join`/`cfg.patterns.join`
+ * on `undefined` throws and takes the WHOLE TriggersPage into its error boundary.
+ * We coalesce to `[]` and, when the array is empty/absent, fall back to a sensible
+ * summary (repository / watchPath alone) rather than a trailing " · ".
+ */
+export function configSummary(trigger: PipelineTrigger): string {
+  switch (trigger.type) {
+    case "webhook":
+      return trigger.webhookUrl
+        ? `POST ${trigger.webhookUrl}`
+        : "Webhook endpoint auto-assigned";
+    case "schedule": {
+      const cfg = trigger.config as ScheduleTriggerConfig;
+      return cfg.cron;
+    }
+    case "github_event": {
+      const cfg = trigger.config as GitHubEventTriggerConfig;
+      const events = (cfg.events ?? []).join(", ");
+      return events ? `${cfg.repository} · ${events}` : cfg.repository;
+    }
+    case "file_change": {
+      const cfg = trigger.config as FileChangeTriggerConfig;
+      const patterns = (cfg.patterns ?? []).join(", ");
+      return patterns ? `${cfg.watchPath} · ${patterns}` : cfg.watchPath;
+    }
+  }
 }
 
 /**

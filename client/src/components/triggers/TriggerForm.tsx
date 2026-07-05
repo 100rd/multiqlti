@@ -528,7 +528,11 @@ export function TriggerForm({
     );
     setGhEvents(
       trigger?.type === "github_event"
-        ? (trigger.config as GitHubEventTriggerConfig).events
+        ? // `events` is typed string[] but an API-created trigger can omit it;
+          // fall back to [] (mirrors the `patterns ?? []` guard below) so editing a
+          // malformed github trigger renders the noEvents warning instead of crashing
+          // on `events.includes`/`events.length`.
+          (trigger.config as GitHubEventTriggerConfig).events ?? []
         : [...GITHUB_DEFAULT_EVENTS],
     );
     setWatchPath(

@@ -39,6 +39,15 @@ import { validateReviewRef } from "./ref-validator.js";
 export interface GitDiffClient {
   revparse(args: string[]): Promise<string>;
   diff(args: string[]): Promise<string>;
+  /**
+   * OPTIONAL, best-effort single fetch of a specific ref from origin — used to
+   * recover a PR head/base sha that fired from GitHub/polling and was never
+   * fetched into the local checkout. Absent on a fake ⇒ resolution stays local
+   * only (the pre-fetch behaviour). Bounded by the client's own block timeout
+   * (see `buildDiffContext`). Args are passed straight through as a git arg-array
+   * (no shell), e.g. `["origin", "<sha>"]`.
+   */
+  fetch?(args: string[]): Promise<unknown>;
 }
 
 export interface DiffContextRequest {
@@ -103,6 +112,13 @@ export interface DiffContextResult {
 const SHA_RE = /^[0-9a-f]{7,64}$/;
 
 /**
+ * Block-timeout (ms) for the DEFAULT simple-git client: git is killed if it emits
+ * no output for this long. Bounds the best-effort `git fetch` (and every other git
+ * call) so an unreachable remote or a wedged fetch can never hang a review round.
+ */
+const GIT_BLOCK_TIMEOUT_MS = 15_000;
+
+/**
  * Char cap on the caller-supplied `testSummary` before it enters the LLM input.
  * The DEV pipeline produces it opaquely, so it is untrusted/unbounded here — a
  * 10MB summary would otherwise flow straight into every debater + judge prompt.
@@ -124,38 +140,98 @@ function fail(errorKind: GitErrorKind, rawMessage: string): GitFail {
 }
 
 /**
- * B-1/H-2: strict-hex gate + `revparse --verify --end-of-options <sha>^{commit}`.
- * Returns the RESOLVED sha (used downstream), or a scrubbed GitFail.
+ * Fail-closed for a revision that could not be resolved LOCALLY even after a
+ * bounded fetch. Distinct `errorKind: "unresolved-ref"` (DETERMINISTIC — a retry
+ * cannot fix it) so the loop controller drives the loop to a TERMINAL state with
+ * this reason instead of leaving it stuck in `reviewing` re-driving the same
+ * missing sha forever. `repoLabel` is the repo BASENAME (no `/`), and a hex sha
+ * has no `/`, so both survive `scrubMessage` and reach the operator intact; a
+ * slash-bearing branch ref is path-scrubbed (the security guarantee) but the
+ * remediation ("fetch the PR ref / point at a local branch") still lands.
  */
-async function resolveCommit(git: GitDiffClient, ref: string): Promise<string | GitFail> {
+function unresolvedRef(role: "baseline" | "head", ref: string, repoLabel: string): GitFail {
+  return fail(
+    "unresolved-ref",
+    `diff ${role} ${ref} is not present in the local checkout of ${repoLabel}; ` +
+      `fetch the PR ref or point the review at a local branch`,
+  );
+}
+
+/**
+ * B-1/H-2: `revparse --verify --end-of-options <ref>^{commit}` — resolve a ref to
+ * a concrete sha WITHOUT trusting git's exit path. Returns the resolved sha, or
+ * null when git cannot resolve it (a missing object → "fatal: Needed a single
+ * revision"; the raw error is swallowed, never bubbled). `--end-of-options`
+ * precedes the ref so a leading-dash/option-looking ref can never be parsed as a
+ * git flag.
+ */
+async function verifyLocally(git: GitDiffClient, ref: string): Promise<string | null> {
+  try {
+    const out = (await git.revparse(["--verify", "--end-of-options", `${ref}^{commit}`])).trim();
+    return SHA_RE.test(out) ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bounded, best-effort SINGLE fetch of `ref` from origin — recovers a PR head/base
+ * sha that fired from GitHub/polling and was never fetched locally. Failures (a
+ * server that disallows fetch-by-sha, an offline box, a gone ref) are swallowed:
+ * the caller re-verifies and fails closed. Never fetches the symbolic "HEAD". The
+ * ref is already gated upstream (baseline strict-hex; head via `validateReviewRef`,
+ * which rejects leading `-`), so it is a safe git arg-array element.
+ */
+async function fetchRefOnce(git: GitDiffClient, ref: string): Promise<void> {
+  if (typeof git.fetch !== "function" || ref === "HEAD") return;
+  try {
+    await git.fetch(["origin", ref]);
+  } catch {
+    // best-effort — fall through to the fail-closed unresolved-ref below.
+  }
+}
+
+/**
+ * B-1/H-2: strict-hex gate → resolve the diff baseline. If it is not present
+ * locally, attempt ONE bounded fetch, then re-verify; still missing ⇒ a
+ * DETERMINISTIC `unresolved-ref` GitFail (never a raw git error).
+ */
+async function resolveCommit(
+  git: GitDiffClient,
+  ref: string,
+  repoLabel: string,
+): Promise<string | GitFail> {
   if (!SHA_RE.test(ref)) {
     return fail("unknown", "baseline commit is not a 7-64 char hex sha");
   }
-  try {
-    const out = await git.revparse(["--verify", "--end-of-options", `${ref}^{commit}`]);
-    const resolved = out.trim();
-    if (!SHA_RE.test(resolved)) return fail("unknown", "resolved commit is not a valid sha");
-    return resolved;
-  } catch (err) {
-    return fail("not-a-repo", err instanceof Error ? err.message : String(err));
-  }
+  const local = await verifyLocally(git, ref);
+  if (local) return local;
+  await fetchRefOnce(git, ref);
+  const refetched = await verifyLocally(git, ref);
+  if (refetched) return refetched;
+  return unresolvedRef("baseline", ref, repoLabel);
 }
 
 /**
  * B-1: resolve the review HEAD to a concrete sha (server-derived, still
  * pinned/validated). `ref` defaults to "HEAD" (working-tree HEAD); a
- * BRANCH-targeted review passes the loop's `reviewRef` so the resolved tip is the
- * chosen branch's, WITHOUT any checkout. `--end-of-options` precedes the ref so a
- * leading-dash/option-looking ref can never be parsed as a git flag.
+ * BRANCH-targeted / diff-pr review passes the loop's `reviewRef` (a PR head sha or
+ * branch) so the resolved tip is the chosen ref's, WITHOUT any checkout. A missing
+ * ref is fetched once then re-verified; still missing ⇒ a DETERMINISTIC
+ * `unresolved-ref` GitFail (an EMPTY repo — zero commits — also lands here for
+ * "HEAD"), never a raw "Needed a single revision".
  */
-async function resolveHead(git: GitDiffClient, ref: string): Promise<string | GitFail> {
-  try {
-    const head = (await git.revparse(["--verify", "--end-of-options", `${ref}^{commit}`])).trim();
-    if (!SHA_RE.test(head)) return fail("unknown", "resolved HEAD is not a valid sha");
-    return head;
-  } catch (err) {
-    return fail("not-a-repo", err instanceof Error ? err.message : String(err));
-  }
+async function resolveHead(
+  git: GitDiffClient,
+  ref: string,
+  repoLabel: string,
+): Promise<string | GitFail> {
+  const local = await verifyLocally(git, ref);
+  if (local) return local;
+  await fetchRefOnce(git, ref);
+  const refetched = await verifyLocally(git, ref);
+  if (refetched) return refetched;
+  return unresolvedRef("head", ref, repoLabel);
 }
 
 interface DiffParts {
@@ -320,7 +396,12 @@ export async function buildDiffContext(
     return fail("not-a-repo", err instanceof Error ? err.message : String(err));
   }
 
-  const git: GitDiffClient = req.gitClient ?? simpleGit(resolvedRepo);
+  // Default client is bounded by a block timeout so the best-effort fetch (and any
+  // git call) can never hang the review round; a fake injected by a test is used
+  // as-is. `repoLabel` is the basename — safe to embed in an operator-facing error.
+  const git: GitDiffClient =
+    req.gitClient ?? simpleGit({ baseDir: resolvedRepo, timeout: { block: GIT_BLOCK_TIMEOUT_MS } });
+  const repoLabel = resolvedRepo.split("/").filter(Boolean).pop() ?? "the target repo";
 
   // LOW-1 (defense-in-depth): reviewRef is write-once and strict-validated at the
   // factory boundary, but on later rounds the controller reads it back from the DB
@@ -338,7 +419,7 @@ export async function buildDiffContext(
 
   // BRANCH-targeted review: resolve the chosen ref's tip (loop.reviewRef) as the
   // HEAD side; null/undefined ⇒ working-tree "HEAD" (full back-compat).
-  const head = await resolveHead(git, req.ref ?? "HEAD");
+  const head = await resolveHead(git, req.ref ?? "HEAD", repoLabel);
   if (typeof head !== "string") return head;
 
   if (req.baselineCommit === null) {
@@ -351,7 +432,7 @@ export async function buildDiffContext(
     return { ok: true, input: built.input, headCommit: head, baselineCommit: null, truncated: built.truncated };
   }
 
-  const baseline = await resolveCommit(git, req.baselineCommit);
+  const baseline = await resolveCommit(git, req.baselineCommit, repoLabel);
   if (typeof baseline !== "string") return baseline;
 
   const parts = await collectDiff(git, baseline, head, req.maxDiffBytes);

@@ -26,6 +26,11 @@ export type GitErrorKind =
   | "no-upstream"
   | "merge-conflict"
   | "offline"
+  // A required revision (a commit sha or a branch/tag ref) could not be resolved
+  // in the local checkout even after a bounded fetch attempt — git reports this as
+  // "fatal: Needed a single revision". DETERMINISTIC (a retry cannot fix it), so
+  // callers must fail closed to a terminal state rather than re-drive forever.
+  | "unresolved-ref"
   | "unknown";
 
 // ─── Result types ─────────────────────────────────────────────────────────────

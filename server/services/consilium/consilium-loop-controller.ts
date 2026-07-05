@@ -1285,6 +1285,10 @@ export class ConsiliumLoopController {
     this.log(loop.id, `re-drive CLAIMED stranded ${loop.state} (age ${ageMs}ms > grace) — running side effect`);
     if (claimed.state === "reviewing") {
       const extra = await this.startReviewRound(claimed);
+      // Fail-closed on a deterministic unresolved ref rather than re-stranding it.
+      if (extra.terminal) {
+        return this.failUnresolvedReview(claimed, String(extra.error ?? "diff ref unresolvable"));
+      }
       return Object.keys(extra).length === 0 ? claimed : this.storage.updateLoop(claimed.id, extra);
     }
     // developing
@@ -1395,10 +1399,14 @@ export class ConsiliumLoopController {
       `review stall — re-launching round ${claimed.round} (attempt ${attempt}/${max}) after ${idleMin}m idle`,
     );
     const extra = await this.startReviewRound(claimed, { relaunch: true });
+    if (extra.terminal) {
+      // Deterministic unresolved ref on re-launch — fail closed (do NOT re-strand).
+      return this.failUnresolvedReview(claimed, String(extra.error ?? "diff ref unresolvable"));
+    }
     if (extra.error) {
-      // The re-launch itself failed to build (e.g. git) — record it and leave the
-      // loop reviewing with a null child ref; the null-ref redrive re-attempts it
-      // after the grace window (bounded overall by maxRounds).
+      // The re-launch itself failed to build (e.g. a transient git error) — record
+      // it and leave the loop reviewing with a null child ref; the null-ref redrive
+      // re-attempts it after the grace window (bounded overall by maxRounds).
       return this.storage.updateLoop(claimed.id, extra);
     }
     return this.storage.updateLoop(claimed.id, {
@@ -1536,7 +1544,17 @@ export class ConsiliumLoopController {
     transition: LoopTransition,
     event: LoopEvent,
   ): Promise<Record<string, unknown>> {
-    if (transition.to === "reviewing") return this.startReviewRound(loop);
+    if (transition.to === "reviewing") {
+      const extra = await this.startReviewRound(loop);
+      // Fail-closed: a DETERMINISTIC unresolved-ref failure must not strand the
+      // loop in `reviewing` (loop-73fddadc). Drive it terminal WITH the reason and
+      // return no extra columns (the terminal CAS already persisted the reason).
+      if (extra.terminal) {
+        await this.failUnresolvedReview(loop, String(extra.error ?? "diff ref unresolvable"));
+        return {};
+      }
+      return extra;
+    }
     if (transition.to === "developing" && event.kind === "decided") {
       return this.startDevHandoff(loop, event.verdict);
     }
@@ -1855,6 +1873,31 @@ export class ConsiliumLoopController {
    * KICKOFF (milliseconds) — `deriveReviewEvent` then polls the settle (§14.5).
    * `round` only ever increments here (M-2).
    */
+  /**
+   * Fail a review round CLOSED to a terminal state with an operator-readable
+   * reason (the #486 status-explanation style). Used when `startReviewRound`
+   * reports a DETERMINISTIC unresolved-ref failure (`terminal: true`): the diff
+   * baseline/head sha is not in the local checkout and a retry cannot fix it, so
+   * the loop MUST NOT sit in `reviewing` re-driving the same missing sha forever.
+   *
+   * The loop is already in `reviewing` at every call site (the CAS to reviewing
+   * ran before the side effect). We commit `reviewing → failed` via the EXISTING
+   * `review_failed` edge (no new FSM state), which records the reason on
+   * `loop.error` + sets `completedAt`, so the UI shows the explanation instead of a
+   * bare git string. Single-flight: it is a CAS, so a concurrent tick that already
+   * advanced the loop loses the race and no-ops (the reason is never double-written
+   * or lost — the winning transition carries it atomically).
+   */
+  private async failUnresolvedReview(
+    loop: ConsiliumLoopRow,
+    reason: string,
+  ): Promise<ConsiliumLoopRow | null> {
+    const transition = reduce("reviewing", { kind: "review_failed", error: reason });
+    if (!transition) return null; // loop no longer reviewing (a concurrent tick won).
+    this.log(loop.id, `review ref unresolvable → failing loop closed: ${reason}`);
+    return this.commit(loop, transition);
+  }
+
   private async startReviewRound(
     loop: ConsiliumLoopRow,
     opts?: { relaunch?: boolean },
@@ -1898,6 +1941,16 @@ export class ConsiliumLoopController {
       repoMap,
     });
     if (!ctx.ok) {
+      // A DETERMINISTIC unresolved ref (the diff baseline/head sha is absent from
+      // the local checkout even after a bounded fetch — e.g. a PR fired from GitHub
+      // polling whose commit was never fetched, or an empty repo) can NEVER be fixed
+      // by re-driving the same round. Signal it as TERMINAL so the caller fails the
+      // loop closed WITH this reason instead of stranding it in `reviewing` forever
+      // (the loop-73fddadc bug). Any OTHER (transient) git failure keeps the legacy
+      // strand-and-redrive behaviour (null child ref → redriveStranded re-attempts).
+      if (ctx.errorKind === "unresolved-ref") {
+        return { error: ctx.message, terminal: true };
+      }
       // Surface the (scrubbed) git failure as a loop error; the next tick from
       // REVIEWING with no iteration will not advance — recorded for the human.
       return { error: ctx.message };

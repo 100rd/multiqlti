@@ -16,6 +16,7 @@ import {
   isTriggerFormValid,
   canAddTrigger,
   buildLoopTemplate,
+  configSummary,
   loopTargetSummary,
   isGitHubRepoValid,
   formatValidationIssues,
@@ -24,27 +25,8 @@ import {
 
 // ─── Helpers duplicated from TriggerCard / TriggerForm ──────────────────────
 // (keeping them in test scope avoids re-exporting implementation details)
-
-function configSummary(trigger: PipelineTrigger): string {
-  switch (trigger.type) {
-    case "webhook":
-      return trigger.webhookUrl
-        ? `POST ${trigger.webhookUrl}`
-        : "Webhook endpoint auto-assigned";
-    case "schedule": {
-      const cfg = trigger.config as ScheduleTriggerConfig;
-      return cfg.cron;
-    }
-    case "github_event": {
-      const cfg = trigger.config as GitHubEventTriggerConfig;
-      return `${cfg.repository} · ${cfg.events.join(", ")}`;
-    }
-    case "file_change": {
-      const cfg = trigger.config as FileChangeTriggerConfig;
-      return `${cfg.watchPath} · ${cfg.patterns.join(", ")}`;
-    }
-  }
-}
+// NOTE: `configSummary` is imported from the module above (single source of
+// truth) so these tests exercise the real render logic the card uses.
 
 function parseCronHuman(cron: string): string {
   const parts = cron.trim().split(/\s+/);
@@ -131,6 +113,48 @@ describe("configSummary", () => {
       } as FileChangeTriggerConfig,
     });
     expect(configSummary(trigger)).toBe("/workspace/src · **/*.ts, !node_modules/**");
+  });
+
+  // ─── ROBUSTNESS: API-created triggers can omit `events`/`patterns` ──────────
+  // Regression guard for "Cannot read properties of undefined (reading 'join')"
+  // which took the whole /triggers page into its error boundary.
+
+  it("file_change with NO patterns (spec-watch demo shape) renders without throwing", () => {
+    // The spec-watch demo trigger is exactly { watchPath, action } — no patterns.
+    const trigger = buildTrigger({
+      type: "file_change",
+      config: {
+        watchPath: "/workspace/specs",
+        action: { kind: "consilium_review", preset: "sdlc-cross-review" },
+      } as unknown as FileChangeTriggerConfig,
+    });
+    expect(() => configSummary(trigger)).not.toThrow();
+    expect(configSummary(trigger)).toBe("/workspace/specs");
+  });
+
+  it("file_change with empty patterns array falls back to watchPath alone", () => {
+    const trigger = buildTrigger({
+      type: "file_change",
+      config: { watchPath: "/workspace/src", patterns: [] } as FileChangeTriggerConfig,
+    });
+    expect(configSummary(trigger)).toBe("/workspace/src");
+  });
+
+  it("github_event with NO events renders repository alone without throwing", () => {
+    const trigger = buildTrigger({
+      type: "github_event",
+      config: { repository: "acme/app" } as unknown as GitHubEventTriggerConfig,
+    });
+    expect(() => configSummary(trigger)).not.toThrow();
+    expect(configSummary(trigger)).toBe("acme/app");
+  });
+
+  it("github_event with empty events array falls back to repository alone", () => {
+    const trigger = buildTrigger({
+      type: "github_event",
+      config: { repository: "acme/app", events: [] } as GitHubEventTriggerConfig,
+    });
+    expect(configSummary(trigger)).toBe("acme/app");
   });
 });
 
