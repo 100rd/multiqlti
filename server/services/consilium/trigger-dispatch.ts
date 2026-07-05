@@ -258,7 +258,7 @@ export interface ConsiliumTriggerDispatchDeps {
    * entirely and is BYTE-IDENTICAL to the pre-SPEC-1 dispatch. `allowedRepoPaths`
    * is the consilium-loop repo allowlist (used to resolve a spec's `repo:` field).
    */
-  specWatch?: () => { enabled: boolean; globs: string[]; allowedRepoPaths: string[] };
+  specWatch?: () => SpecWatchDispatchView;
   /** Structured logger (the route passes `(m) => log(m, "triggers")`). */
   log: (message: string) => void;
 }
@@ -347,6 +347,36 @@ export async function maybeLaunchConsiliumReview(
 
 /** The default preset for a spec fire when the trigger action does not pin one. */
 const SPEC_DEFAULT_PRESET: ConsiliumReviewPreset = "sdlc-cross-review";
+
+/** The spec-watch view the dispatch reads (the folded, master-gated config). */
+export interface SpecWatchDispatchView {
+  enabled: boolean;
+  globs: string[];
+  allowedRepoPaths: string[];
+}
+
+/**
+ * Fold the spec-watch dispatch view from AppConfig. The master
+ * `features.triggers.enabled` switch is AND-ed into `enabled` HERE, in ONE place, so
+ * the dispatch sees a single boolean: master-off ⇒ effective-off ⇒ the spec
+ * pre-check never runs and the file_change dispatch is BYTE-IDENTICAL to before.
+ * (The parent `consiliumLoop.enabled` gate is enforced separately downstream via
+ * `reviewDeps`, which is null when that subsystem is off.) The route wires this as
+ * `specWatch: () => resolveSpecWatchConfig(appConfigLoader.get())`.
+ */
+export function resolveSpecWatchConfig(config: {
+  features: { triggers: { enabled: boolean } };
+  pipeline: {
+    consiliumLoop: { allowedRepoPaths: string[]; specWatch: { enabled: boolean; globs: string[] } };
+  };
+}): SpecWatchDispatchView {
+  const sw = config.pipeline.consiliumLoop.specWatch;
+  return {
+    enabled: config.features.triggers.enabled && sw.enabled,
+    globs: sw.globs,
+    allowedRepoPaths: config.pipeline.consiliumLoop.allowedRepoPaths,
+  };
+}
 
 /**
  * Resolve a spec's `repo:` field to an ALLOWLISTED local path, fail-closed.
