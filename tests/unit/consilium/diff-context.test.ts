@@ -121,13 +121,53 @@ describe("buildDiffContext — B-1 git argument injection (BINDING)", () => {
 });
 
 describe("buildDiffContext — failures & H-1 allowlist", () => {
-  it("git failure → GitFail with scrubbed (no-path) message", async () => {
-    const git = fakeGit({ revparse: vi.fn(async () => { throw new Error("fatal: /home/secret/.git not a repository"); }) });
+  it("unresolvable HEAD (git throws) → unresolved-ref GitFail, raw git string NOT leaked", async () => {
+    // The resolver never embeds git's raw error for a resolution failure — it fails
+    // closed with a crafted, path-free operator reason. So a leaked path/secret in
+    // the underlying "fatal: ..." can NEVER reach the message (structural guarantee).
+    const git = fakeGit({ revparse: vi.fn(async () => { throw new Error("fatal: /home/secret/.git Needed a single revision"); }) });
     const res = await buildDiffContext({ repoPath: REPO, baselineCommit: null, objective: "O", allowedRepoPaths: ALLOW, maxDiffBytes: 1000, gitClient: git });
     expect(res.ok).toBe(false);
     if (res.ok) return;
+    expect(res.errorKind).toBe("unresolved-ref");
     expect(res.message).not.toContain("/home/secret");
-    expect(res.message).toContain("<path>");
+    expect(res.message).not.toContain("Needed a single revision");
+    expect(res.message).toContain("not present in the local checkout");
+  });
+
+  it("no fetch client on the injected git → resolution stays local, still fails closed", async () => {
+    // A fake without `fetch` must not throw when the sha is missing — the optional
+    // fetch is skipped and the resolver returns unresolved-ref (never a raw error).
+    const git = fakeGit({ revparse: vi.fn(async () => { throw new Error("fatal: bad object"); }) });
+    expect(git.fetch).toBeUndefined();
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "O", allowedRepoPaths: ALLOW, maxDiffBytes: 1000, gitClient: git });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.errorKind).toBe("unresolved-ref");
+  });
+
+  it("fetch-then-resolve (unit): a sha absent on first verify resolves after ONE fetch", async () => {
+    // First revparse throws (missing); fetch is invoked ONCE; the second revparse
+    // succeeds. Proves the recovery seam calls fetch exactly once and re-verifies.
+    let verifyCalls = 0;
+    const fetch = vi.fn(async () => undefined);
+    const git = fakeGit({
+      revparse: vi.fn(async (args: string[]) => {
+        const ref = args[args.length - 1];
+        verifyCalls += 1;
+        // HEAD resolves normally; the baseline sha is "missing" until fetched.
+        if (ref === "HEAD^{commit}") return HEAD_SHA + "\n";
+        if (verifyCalls <= 2) throw new Error("fatal: Needed a single revision");
+        return BASE_SHA + "\n";
+      }),
+      fetch,
+    });
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "O", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, gitClient: git });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(["origin", BASE_SHA]);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.baselineCommit).toBe(BASE_SHA);
   });
 
   it("empty allowlist → GitFail (fail-closed), no git call", async () => {
