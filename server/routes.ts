@@ -42,6 +42,8 @@ import { FileWatcherService } from "./services/file-watcher";
 import { GitHubPoller } from "./services/github-poller";
 import { GithubIssuesPoller } from "./services/consilium/trackers/github-issues-poller";
 import { JiraIssuesPoller } from "./services/consilium/trackers/jira-issues-poller";
+import { GitlabIssuesPoller } from "./services/consilium/trackers/gitlab-issues-poller";
+import { BitbucketIssuesPoller } from "./services/consilium/trackers/bitbucket-issues-poller";
 import { TrackerWritebackObserver } from "./services/consilium/trackers/writeback-observer";
 import { ExperienceDistillerObserver } from "./services/consilium/experience/experience-distiller-observer";
 import { buildSynthPrompt, parseSynthOutput } from "./services/consilium/trackers/issue-spec";
@@ -421,6 +423,8 @@ export async function registerRoutes(
   let githubPoller: GitHubPoller | null = null;
   let githubIssuesPoller: GithubIssuesPoller | null = null;
   let jiraIssuesPoller: JiraIssuesPoller | null = null;
+  let gitlabIssuesPoller: GitlabIssuesPoller | null = null;
+  let bitbucketIssuesPoller: BitbucketIssuesPoller | null = null;
   let trackerWritebackObserver: TrackerWritebackObserver | null = null;
 
   try {
@@ -671,6 +675,92 @@ export async function registerRoutes(
         log: (m: string) => log(m, "jira-tracker-poller"),
       });
       jiraIssuesPoller.start();
+
+      // TRACK-4 (gitlab -> committed spec PR). The GitLab analogue of the jira poller: a
+      // REST poll of a GitLab project's labelled issues, each crystallised into a
+      // committed-spec PR (in the TARGET git repo — the spec PR still opens via `gh`) + a
+      // GitLab pickup note. Shares the SAME kill-switch (features.triggers.tracker.enabled)
+      // and the SAME crystallise pipeline (spec-intake) as github/jira; only the GitLab
+      // dialect differs. The GitLab PAT is read from GITLAB_TOKEN at call time (fail-closed).
+      // A gitlab-tracker trigger is a no-op here until its `tracker: "gitlab"` config exists.
+      gitlabIssuesPoller = new GitlabIssuesPoller({
+        getEnabledTriggersByType: (type) =>
+          runAsSystem("gitlab-tracker-poller-bootstrap", () => storage.getAllEnabledTriggersByType(type)),
+        runInProject: runAsProject,
+        getTrigger: (id) => storage.getTrigger(id),
+        updateTrigger: (id, updates) => storage.updateTrigger(id, updates),
+        config: () => appConfigLoader.get(),
+        allowedRepoPaths: () => appConfigLoader.get().pipeline.consiliumLoop.allowedRepoPaths,
+        synthesizer: {
+          synthesize: async (ticket) => {
+            try {
+              const { system, user } = buildSynthPrompt({ number: 0, title: ticket.title, body: ticket.body });
+              const res = await gateway.completeStreaming(
+                {
+                  modelSlug: DEFAULT_TASK_MODEL,
+                  messages: [
+                    { role: "system", content: system },
+                    { role: "user", content: user },
+                  ],
+                  temperature: 0.2,
+                  maxTokens: 2048,
+                },
+                undefined,
+                undefined,
+                { overallTimeoutMs: 60_000 },
+              );
+              return parseSynthOutput(res.content);
+            } catch {
+              return { criteria: [] };
+            }
+          },
+        },
+        log: (m: string) => log(m, "gitlab-tracker-poller"),
+      });
+      gitlabIssuesPoller.start();
+
+      // TRACK-4 (bitbucket -> committed spec PR). The Bitbucket Cloud analogue: a BBQL
+      // poll of a repo's issue tracker (the consent `filter.label` matches the issue
+      // COMPONENT), each crystallised into a committed-spec PR + a Bitbucket pickup
+      // comment. Same kill-switch + crystallise pipeline as github/jira/gitlab; only the
+      // Bitbucket dialect differs. The app password is read from BITBUCKET_USERNAME/
+      // BITBUCKET_APP_PASSWORD at call time (fail-closed). A no-op until a
+      // `tracker: "bitbucket"` config exists.
+      bitbucketIssuesPoller = new BitbucketIssuesPoller({
+        getEnabledTriggersByType: (type) =>
+          runAsSystem("bitbucket-tracker-poller-bootstrap", () => storage.getAllEnabledTriggersByType(type)),
+        runInProject: runAsProject,
+        getTrigger: (id) => storage.getTrigger(id),
+        updateTrigger: (id, updates) => storage.updateTrigger(id, updates),
+        config: () => appConfigLoader.get(),
+        allowedRepoPaths: () => appConfigLoader.get().pipeline.consiliumLoop.allowedRepoPaths,
+        synthesizer: {
+          synthesize: async (ticket) => {
+            try {
+              const { system, user } = buildSynthPrompt({ number: 0, title: ticket.title, body: ticket.body });
+              const res = await gateway.completeStreaming(
+                {
+                  modelSlug: DEFAULT_TASK_MODEL,
+                  messages: [
+                    { role: "system", content: system },
+                    { role: "user", content: user },
+                  ],
+                  temperature: 0.2,
+                  maxTokens: 2048,
+                },
+                undefined,
+                undefined,
+                { overallTimeoutMs: 60_000 },
+              );
+              return parseSynthOutput(res.content);
+            } catch {
+              return { criteria: [] };
+            }
+          },
+        },
+        log: (m: string) => log(m, "bitbucket-tracker-poller"),
+      });
+      bitbucketIssuesPoller.start();
     }
 
     // TRACK-2 (full write-back lifecycle). When the write-back sub-switch is on (and
@@ -773,6 +863,8 @@ export async function registerRoutes(
     githubPoller?.stop();
     githubIssuesPoller?.stop();
     jiraIssuesPoller?.stop();
+    gitlabIssuesPoller?.stop();
+    bitbucketIssuesPoller?.stop();
     trackerWritebackObserver?.stop();
     getRefreshScheduler()?.stop();
     stopRateLimitCleanup();
