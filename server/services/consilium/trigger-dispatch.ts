@@ -90,6 +90,7 @@ import {
   evaluateReadyGate,
   buildSpecInstruction,
   pathMatchesSpecGlobs,
+  applyAdrIntake,
 } from "./spec-parser.js";
 import type {
   CreateConsiliumReviewDeps,
@@ -481,7 +482,13 @@ export async function maybeLaunchSpecReview(
 
   // Parse + ready-gate. readSpecFile is size/binary/error-guarded and NEVER throws,
   // so a malformed/huge/binary/deleted file under the globs degrades to a no-op.
-  const parsed = readSpecFile(filePath, (s) => jsYamlLoad(s));
+  // SPEC-4 (spec-as-task.md §2/§7): applyAdrIntake makes an ADR a valid task — for a
+  // file under docs/adr/ (or with an `adr:`/`decision:` marker) it normalises the
+  // accepted-state → ready and synthesises the implicit decision-DoD when the ADR
+  // declares no explicit criteria, so the SAME ready-gate fires it. A non-ADR spec is
+  // returned UNCHANGED (byte-identical SPEC-1/2). `isAdr` stamps the provenance.
+  const rawParsed = readSpecFile(filePath, (s) => jsYamlLoad(s));
+  const { parsed, isAdr } = applyAdrIntake(rawParsed, filePath);
   const gate = evaluateReadyGate(parsed);
   if (!gate.fire) {
     deps.log(`spec-watch no-op for ${filePath} — ${gate.reason}`);
@@ -531,6 +538,8 @@ export async function maybeLaunchSpecReview(
       specPath: filePath,
       status: frontmatter.status ?? "ready",
       ...(frontmatter.source ? { source: frontmatter.source } : {}),
+      // SPEC-4: record that this loop was fired by an ADR (not a docs/specs spec).
+      ...(isAdr ? { artifact: "adr" as const } : {}),
     },
     // H2: use the SANITIZED title (single-line, control-stripped, length-clamped) —
     // NOT the raw frontmatter title — for the inert provenance passport label.

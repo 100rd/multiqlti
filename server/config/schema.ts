@@ -604,6 +604,32 @@ export const ConfigSchema = z.object({
          * config.yaml only (arrays are not env-mapped — matches allowedRepoPaths).
          */
         globs: z.array(z.string()).default(["docs/specs/**/*.md", "docs/adr/**/*.md"]),
+        /**
+         * SPEC-3 (spec-as-task.md §4/§5/§7): the HIGH-TRUST auto-commit policy. When
+         * enabled for a repo, a connector- or draft-produced spec may be committed
+         * DIRECTLY to the default branch as `status: ready` — SKIPPING GATE 1, the spec
+         * PR where a human reviews the *intent*. This does NOT touch the SPEC-1 watch
+         * (which only ever sees already-committed specs); it is the POLICY a spec
+         * PRODUCER (a TRACK-1+ connector) consults via `shouldAutoCommitSpec` to choose
+         * "open a spec PR" vs "direct-commit ready". GATE 2 (the code PR merge) is
+         * UNAFFECTED. Default OFF everywhere, FAIL-CLOSED: an empty `repos` list means
+         * NOTHING is auto-committed (it NEVER means "all repos"). config.yaml only
+         * (arrays are not env-mapped — matches `globs`/`allowedRepoPaths`). Also gated
+         * by the parent `specWatch.enabled` + `consiliumLoop.enabled`.
+         *
+         * SECURITY: auto-commit SKIPS the human intent-review gate — enable it ONLY for
+         * repos whose spec producers are trusted (spec-as-task §5).
+         */
+        autoCommit: z.object({
+          /** Kill-switch: false (default) → every spec opens a spec PR (Gate 1 stands). */
+          enabled: z.boolean().default(false),
+          /**
+           * EXPLICIT allowlist of repos (paths/slugs) permitted to auto-commit. Empty
+           * (default) ⇒ nothing is trusted even when `enabled` — the flag can NEVER
+           * widen beyond this list.
+           */
+          repos: z.array(z.string()).default([]),
+        }).default({}),
       }).default({}),
       /**
        * Stage 2a (design §3.C/§4): the SKILLED, archetype-branched implement
