@@ -658,6 +658,18 @@ export interface ConsiliumLoopControllerDeps {
    * gateway. NEVER reached for non-research loops.
    */
   runResearch?: typeof runResearchHandoff;
+  /**
+   * SPEC-2 (spec-as-task.md §4): notify that a SPEC-FIRED loop (one carrying
+   * `triggerProvenance.spec`) reached a TERMINAL state, so the spec's frontmatter
+   * `status:` can be flipped accordingly (a stalled terminal → `blocked`; `converged`
+   * leaves it `in-progress` — the code PR is the next gate). The route wires this to
+   * the spec-status writer, GATED behind `specWatch`; absent for every non-route
+   * caller / test ⇒ no write (byte-identical, no new default-on behaviour). Invoked
+   * ONLY on the CAS WINNER for a terminal transition, so a status flip fires at most
+   * once per loop terminal. Best-effort + never-throw: a status-write failure must
+   * never crash a `tick`/`cancel` nor undo the (already-committed) FSM transition.
+   */
+  onSpecLoopTerminal?: (loop: ConsiliumLoopRow, terminalState: ConsiliumLoopState) => Promise<void>;
 }
 
 export class ConsiliumLoopController {
@@ -1226,9 +1238,21 @@ export class ConsiliumLoopController {
     extra?: Record<string, unknown>,
   ): Promise<ConsiliumLoopRow | null> {
     const merged = { ...(transition.extra ?? {}), ...(extra ?? {}) };
-    return (
-      (await this.storage.casLoopState(loop.id, transition.from, transition.to, merged)) ?? null
-    );
+    const won =
+      (await this.storage.casLoopState(loop.id, transition.from, transition.to, merged)) ?? null;
+    // SPEC-2 (spec-as-task.md §4): a SPEC-FIRED loop reaching a TERMINAL state flips
+    // the spec's `status:` (terminal-stall → `blocked`; `converged` stays
+    // `in-progress`). Runs ONLY on the CAS winner (`won !== null`), so exactly one
+    // terminal flip fires per loop even under multi-instance ticks. Best-effort +
+    // never-throw: a status-write failure must not undo the (already-persisted)
+    // transition nor crash the tick/cancel. The mapping/gating live in the injected
+    // hook (`onSpecLoopTerminal`); absent ⇒ no-op (byte-identical).
+    if (won && this.deps.onSpecLoopTerminal && isTerminal(won.state) && won.triggerProvenance?.spec) {
+      await this.deps
+        .onSpecLoopTerminal(won, won.state)
+        .catch((e) => this.log(won.id, `spec-status terminal flip errored: ${scrubErr(String(e))}`));
+    }
+    return won;
   }
 
   /**
