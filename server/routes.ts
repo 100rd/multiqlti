@@ -48,6 +48,7 @@ import { LinearIssuesPoller } from "./services/consilium/trackers/linear-issues-
 import { AzureIssuesPoller } from "./services/consilium/trackers/azure-issues-poller";
 import { ClickUpIssuesPoller } from "./services/consilium/trackers/clickup-issues-poller";
 import { TrackerWritebackObserver } from "./services/consilium/trackers/writeback-observer";
+import { GithubCommandPoller } from "./services/consilium/trackers/github-command-poller";
 import { ExperienceDistillerObserver } from "./services/consilium/experience/experience-distiller-observer";
 import { buildSynthPrompt, parseSynthOutput } from "./services/consilium/trackers/issue-spec";
 import { DEFAULT_TASK_MODEL } from "./config/schema";
@@ -432,6 +433,7 @@ export async function registerRoutes(
   let azureIssuesPoller: AzureIssuesPoller | null = null;
   let clickupIssuesPoller: ClickUpIssuesPoller | null = null;
   let trackerWritebackObserver: TrackerWritebackObserver | null = null;
+  let githubCommandPoller: GithubCommandPoller | null = null;
 
   try {
     triggerService = new TriggerService(storage);
@@ -618,6 +620,10 @@ export async function registerRoutes(
         updateTrigger: (id, updates) => storage.updateTrigger(id, updates),
         config: () => appConfigLoader.get(),
         allowedRepoPaths: () => appConfigLoader.get().pipeline.consiliumLoop.allowedRepoPaths,
+        // TRACK-6 (standing-role.md §5): project-scoped role load so a tracker trigger
+        // bound to a Standing Role's concern STAMPS the role's name + skills into the
+        // crystallised spec (undefined roleConcern ⇒ no stamp — byte-identical TRACK-1).
+        getStandingRole: (id) => storage.getStandingRole(id),
         // Gateway-backed synthesiser for FREE-FORM issues (no spec-shaped body). Any
         // error degrades to no-criteria (never throws into the poll loop) -> the poller
         // posts an ask-for-criteria comment instead of opening a spec PR.
@@ -868,6 +874,66 @@ export async function registerRoutes(
       trackerWritebackObserver.start();
     }
 
+    // TRACK-6 (task-tracker-triggers.md §8). When the commands sub-switch is on (and the
+    // tracker switch), a command poller scans a repo's recent ISSUE COMMENTS for /spec
+    // (force intake), /approve (mark the spec PR ready), and /stop (cancel the ticket's
+    // active loop) — acting ONLY on comments authored by the ticket assignee or a repo
+    // maintainer (verified via the `gh` API, fail-closed). Default OFF -> not constructed
+    // (TRACK-1..5 byte-identical — no comment is ever acted on). The /stop path reaches
+    // the loop controller's `cancel`; /spec reuses the SHARED github crystallise dialect.
+    if (
+      appConfigLoader.get().features.triggers.tracker.enabled &&
+      appConfigLoader.get().features.triggers.tracker.commands.enabled &&
+      consiliumLoopController
+    ) {
+      // Capture a non-null const so the /stop closure keeps the narrowing (a `let` is
+      // not narrowed inside a closure).
+      const loopControllerForCommands = consiliumLoopController;
+      githubCommandPoller = new GithubCommandPoller({
+        // The ONLY cross-project read — under runAsSystem (unscopedSystemQuery).
+        getEnabledTriggersByType: (type) =>
+          runAsSystem("tracker-command-bootstrap", () => storage.getAllEnabledTriggersByType(type)),
+        // Per-trigger storage + loop reads run INSIDE runAsProject(trigger.projectId).
+        runInProject: runAsProject,
+        getTrigger: (id) => storage.getTrigger(id),
+        updateTrigger: (id, updates) => storage.updateTrigger(id, updates),
+        config: () => appConfigLoader.get(),
+        allowedRepoPaths: () => appConfigLoader.get().pipeline.consiliumLoop.allowedRepoPaths,
+        // TRACK-6: project-scoped role load for the /spec role stamp (same as intake).
+        getStandingRole: (id) => storage.getStandingRole(id),
+        // Reuse the intake poller's gateway-backed synthesiser for free-form issues on /spec.
+        synthesizer: {
+          synthesize: async (issue) => {
+            try {
+              const { system, user } = buildSynthPrompt(issue);
+              const res = await gateway.completeStreaming(
+                {
+                  modelSlug: DEFAULT_TASK_MODEL,
+                  messages: [
+                    { role: "system", content: system },
+                    { role: "user", content: user },
+                  ],
+                  temperature: 0.2,
+                  maxTokens: 2048,
+                },
+                undefined,
+                undefined,
+                { overallTimeoutMs: 60_000 },
+              );
+              return parseSynthOutput(res.content);
+            } catch {
+              return { criteria: [] };
+            }
+          },
+        },
+        getLoops: () => storage.getLoops(),
+        // /stop cancels via the loop controller (the SAME cancel the UI/API uses).
+        cancelLoop: (loopId, opts) => loopControllerForCommands.cancel(loopId, opts),
+        log: (m: string) => log(m, "tracker-commands"),
+      });
+      githubCommandPoller.start();
+    }
+
     log("[triggers] Trigger subsystem started", "triggers");
   } catch (e) {
     // TriggerCrypto throws if TRIGGER_SECRET_KEY is absent — subsystem is disabled.
@@ -950,6 +1016,7 @@ export async function registerRoutes(
     azureIssuesPoller?.stop();
     clickupIssuesPoller?.stop();
     trackerWritebackObserver?.stop();
+    githubCommandPoller?.stop();
     getRefreshScheduler()?.stop();
     stopRateLimitCleanup();
     await remoteAgentManager?.shutdown();

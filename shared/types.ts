@@ -1487,10 +1487,15 @@ export interface StandingRoleConcern {
   triggerId?: string;
 }
 
-/** A concern's trigger: the class (file_change | github_event) + its filter shape. */
+/**
+ * A concern's trigger: the class (file_change | github_event | tracker_event) + its
+ * filter shape. TRACK-6 adds `tracker_event` — a role whose INBOX is a tracker project
+ * (standing-role.md §5, task-tracker-triggers.md §5): a labelled ticket crystallises a
+ * spec STAMPED with the role's skills/persona, so the merged spec fires the ROLE's loop.
+ */
 export interface StandingRoleConcernTrigger {
-  type: "file_change" | "github_event";
-  filter: FileChangeConcernFilter | GitHubConcernFilter;
+  type: "file_change" | "github_event" | "tracker_event";
+  filter: FileChangeConcernFilter | GitHubConcernFilter | TrackerConcernFilter;
 }
 
 /** file_change concern filter — the path watched + optional glob patterns. */
@@ -1504,6 +1509,27 @@ export interface GitHubConcernFilter {
   repository: string;
   events?: string[];
   refFilter?: string;
+}
+
+/**
+ * TRACK-6 (task-tracker-triggers.md §5): a `tracker_event` concern filter — the role's
+ * INBOX is a tracker project. `tracker`/`repo`/`label` are the source coordinates the
+ * backing `tracker_event` trigger polls; the concern's own `repoPath` becomes the
+ * `targetRepoPath` (the allowlisted local repo the spec PR lands in + the spec's
+ * `repo:`). When a labelled ticket crystallises a spec, the poller STAMPS the role's
+ * name + skills into the spec frontmatter, so on merge SPEC-1 fires the ROLE's loop.
+ *
+ * GitHub-first (TRACK-6 boundary): only `tracker: "github"` stamps the role today (the
+ * `gh` reference path); other trackers already have their pollers + the shared
+ * crystallise pipeline, so extending the stamp to them is a documented follow-up.
+ */
+export interface TrackerConcernFilter {
+  /** TRACK-6 stamps only "github" today; the other kinds are a documented follow-up. */
+  tracker: "github";
+  /** `owner/repo` whose ISSUES are polled (also the git repo the spec PR lands in). */
+  repo: string;
+  /** The label gate — the operator's consent-to-intake (required, like the poller's). */
+  label: string;
 }
 
 /**
@@ -1664,6 +1690,18 @@ export interface TrackerPollState {
 }
 
 /**
+ * TRACK-6 (task-tracker-triggers.md §8) command-poller watermark. `lastCommentAt` is
+ * the newest issue-comment instant already scanned (the `since` cursor); `processed`
+ * maps a comment id → when it was acted on / decided (idempotency across the cursor
+ * boundary, bounded). Persisted INSIDE the trigger's `config.commandState`; OWNED by
+ * the command poller (never authored in the UI).
+ */
+export interface TrackerCommandState {
+  lastCommentAt?: string;
+  processed?: Record<string, { at: string }>;
+}
+
+/**
  * TRACK-1 (github-issues -> committed spec PR). A tracker_event trigger polls a
  * GitHub repo's ISSUES; each labelled, spec-ready issue becomes a committed spec
  * PR (which SPEC-1's spec-watch fires the loop off on merge) + a pickup comment.
@@ -1680,6 +1718,22 @@ export interface TrackerEventTriggerConfig {
   filter?: { label?: string };  // label/tag gate (consent to intake) — required at fire time (Jira label, Linear label, Azure tag, ClickUp tag)
   specStatus?: "ready" | "draft";
   pollState?: TrackerPollState;  // owned by the poller (watermark)
+  /**
+   * TRACK-6 (standing-role.md §5): when present, this tracker_event trigger is the
+   * BACKING trigger of a Standing Role's tracker concern. The github-issues poller
+   * loads the named role and STAMPS its name + skills into each crystallised spec, so
+   * the merged spec fires the ROLE's loop. Absent ⇒ the poller is byte-identical to
+   * TRACK-1 (an unstamped spec). Inert on every non-github tracker (follow-up).
+   */
+  roleConcern?: RoleConcernBinding;
+  /**
+   * TRACK-6 (task-tracker-triggers.md §8): the command poller's watermark for
+   * `/spec`,`/approve`,`/stop` comment commands — the newest comment instant seen and
+   * a bounded set of processed comment ids (idempotency). OWNED by the command poller
+   * (never authored in the UI); a TOP-LEVEL key (not under `pollState`) so the issues
+   * poller and the command poller each rewrite only their own watermark key.
+   */
+  commandState?: TrackerCommandState;
   // ─── Jira-only (TRACK-3; ignored by the github poller) ──────────────────────
   /** Jira site base URL, e.g. `https://acme.atlassian.net` (validated https). Also the
    *  optional API base override for the TRACK-5 connectors (Linear/Azure/ClickUp each

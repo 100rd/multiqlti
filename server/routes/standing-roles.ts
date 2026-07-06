@@ -103,12 +103,28 @@ const GitHubConcernFilterSchema = z.object({
   refFilter: z.string().min(1).max(300).optional(),
 });
 
+/** `owner/repo` — the conservative GitHub name charset the pollers accept (no flag). */
+const OWNER_REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+/**
+ * TRACK-6 (task-tracker-triggers.md §5): tracker_event concern filter — the role's
+ * INBOX is a tracker project. Only `tracker: "github"` is accepted today (the stamped
+ * reference path); the concern's own `repoPath` is the `targetRepoPath` (allowlisted
+ * local repo the spec PR lands in — re-validated by the poller). The `label` is the
+ * consent-to-intake gate the poller requires at fire time.
+ */
+const TrackerConcernFilterSchema = z.object({
+  tracker: z.literal("github"),
+  repo: z.string().regex(OWNER_REPO_RE, "repo must be owner/repo").max(200),
+  label: z.string().min(1).max(100),
+});
+
 /**
  * ROLE-2 (standing-role.md §3/§8): a concern to ADD to a role. `repoPath` is
  * re-validated fail-closed by the factory at wake (not here). `focus` is UNTRUSTED —
- * fenced by the factory. The `trigger` is a file_change | github_event discriminated
- * union; tracker_event is a documented follow-up (TRACK-6) so it is intentionally NOT
- * accepted here.
+ * fenced by the factory. The `trigger` is a file_change | github_event | tracker_event
+ * discriminated union. TRACK-6 adds `tracker_event` (github only) — a role whose INBOX
+ * is a tracker project; the labelled ticket crystallises a spec STAMPED with the role.
  */
 const AddConcernSchema = z.object({
   repoPath: z.string().min(1).max(4096),
@@ -117,6 +133,7 @@ const AddConcernSchema = z.object({
   trigger: z.discriminatedUnion("type", [
     z.object({ type: z.literal("file_change"), filter: FileChangeConcernFilterSchema }),
     z.object({ type: z.literal("github_event"), filter: GitHubConcernFilterSchema }),
+    z.object({ type: z.literal("tracker_event"), filter: TrackerConcernFilterSchema }),
   ]),
 });
 
@@ -191,6 +208,26 @@ function buildConcernTriggerConfig(
       config: {
         watchPath: f.watchPath,
         patterns: f.patterns ?? [],
+        roleConcern: binding,
+      } as TriggerConfig,
+    };
+  }
+  if (concern.trigger.type === "tracker_event") {
+    // TRACK-6: the role's INBOX is a tracker project. The backing trigger is a normal
+    // tracker_event trigger (the SAME github-issues poller picks it up) whose config
+    // ALSO carries `roleConcern` — on crystallise the poller stamps the role's name +
+    // skills into the spec. The concern's own `repoPath` is the allowlisted local
+    // targetRepoPath (the poller re-validates it fail-closed). No `action` — a
+    // tracker trigger never fires a loop directly (it produces a spec PR).
+    const f = concern.trigger.filter as { tracker: "github"; repo: string; label: string };
+    return {
+      type: "tracker_event",
+      config: {
+        tracker: f.tracker,
+        repo: f.repo,
+        targetRepoPath: concern.repoPath,
+        filter: { label: f.label },
+        specStatus: "ready",
         roleConcern: binding,
       } as TriggerConfig,
     };

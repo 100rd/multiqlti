@@ -348,15 +348,35 @@ describe("ROLE-2 concern endpoints", () => {
     expect(trig.config.roleConcern).toBeTruthy();
   });
 
-  it("POST a concern with an invalid trigger type (tracker_event → TRACK-6) → 400", async () => {
+  it("POST a tracker_event concern with an INCOMPLETE filter → 400 (no trigger created)", async () => {
     const storage = makeStorage([seedRole()], ["sk-1"]);
     const res = await request(makeApp(storage)).post("/api/roles/role-1/concerns").send({
       repoPath: "/repos/iac",
       focus: "f",
-      trigger: { type: "tracker_event", filter: {} },
+      trigger: { type: "tracker_event", filter: {} }, // missing tracker/repo/label
     });
     expect(res.status).toBe(400);
     expect(storage.createTrigger).not.toHaveBeenCalled();
+  });
+
+  it("POST a tracker_event concern (TRACK-6) builds a github tracker_event backing trigger with the roleConcern", async () => {
+    const storage = makeStorage([seedRole()], ["sk-1"]);
+    const res = await request(makeApp(storage)).post("/api/roles/role-1/concerns").send({
+      repoPath: "/repos/iac",
+      focus: "implement the ticket",
+      trigger: { type: "tracker_event", filter: { tracker: "github", repo: "acme/widget", label: "agent" } },
+    });
+    expect(res.status).toBe(201);
+    const trig = storage.createTrigger.mock.calls[0][0] as { type: string; config: Record<string, unknown> };
+    expect(trig.type).toBe("tracker_event");
+    expect(trig.config.tracker).toBe("github");
+    expect(trig.config.repo).toBe("acme/widget");
+    // The concern's own repoPath becomes the allowlisted targetRepoPath.
+    expect(trig.config.targetRepoPath).toBe("/repos/iac");
+    expect(trig.config.filter).toMatchObject({ label: "agent" });
+    // The binding names the SAME concern id that was stored on the role.
+    const concerns = res.body.concerns as Array<Record<string, unknown>>;
+    expect((trig.config.roleConcern as { roleId: string; concernId: string })).toMatchObject({ roleId: "role-1", concernId: concerns[0].id });
   });
 
   it("POST a concern to an unknown role → 404 (no trigger created)", async () => {

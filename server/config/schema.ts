@@ -152,6 +152,23 @@ export const ConfigSchema = z.object({
         writeback: z.object({
           enabled: z.boolean().default(false),
         }).default({}),
+        /**
+         * TRACK-6 (task-tracker-triggers.md §8). A command poller scans a repo's
+         * recent ISSUE COMMENTS for `/spec` (force intake), `/approve` (mark the spec
+         * PR ready), and `/stop` (cancel the ticket's active loop). Only the ticket
+         * ASSIGNEE or a repo MAINTAINER (write/admin) may command — the poller verifies
+         * the commenter's role via the `gh` API before acting; an unauthorized command
+         * is ignored + logged. Commands are idempotent (comment-id deduped) and
+         * best-effort.
+         *
+         * Default FALSE ⇒ the command poller is never constructed and NO comment is
+         * ever acted on (byte-identical to TRACK-1..5). ALSO requires the tracker
+         * `enabled` switch above and the master `features.triggers.enabled`. Rides the
+         * tracker `pollIntervalSec` so it cannot hammer `gh`.
+         */
+        commands: z.object({
+          enabled: z.boolean().default(false),
+        }).default({}),
       }).default({}),
     }).default({}),
   }).default({}),
