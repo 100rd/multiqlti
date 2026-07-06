@@ -3966,3 +3966,58 @@ export interface ExperienceConsolidation {
    */
   decayedFrom?: ExperienceConfidence | null;
 }
+
+// ─── DREAM-4: Experience → SKILL.md feedback proposals (experience-plane-dream §5/§9) ──
+//
+// The FEEDBACK side of the Experience plane, and the STRICT §5 boundary made mechanical:
+// Experience ≠ Skill. A background proposer reads REPEATEDLY-`verified` Experience items
+// (across >= K independent loops, with a positive MEASURED `successDelta`) whose scope
+// maps to a KNOWN skill, and opens ONE PROPOSED SKILL.md patch per proven pattern into the
+// ADR-0002 trust envelope as `unverified`. It is PROPOSE-ONLY: it NEVER edits a SKILL.md in
+// place, NEVER graduates a patch, NEVER writes experience_items or the state graph. The
+// Dream may PROPOSE; a human owns the DECISION. Graduation (unverified→verified→deprecated)
+// is the envelope's job — human/CODEOWNERS + measured success-delta — never the Dream's.
+
+/**
+ * The ADR-0002 trust-envelope status of a proposed SKILL.md patch. DREAM-4 ONLY ever
+ * WRITES `unverified` (a fresh proposal); EVERY forward move is a HUMAN/CODEOWNERS decision
+ * (the review endpoint, requireRole maintainer/admin) — never the Dream, never automatic:
+ *   - `unverified` ⇐ DREAM-4 opened it (the envelope entry) — awaiting human review.
+ *   - `verified`   ⇐ a human GRADUATED it after the patched skill was reused and its
+ *                    measured success-delta held (the envelope lifecycle) — NOT DREAM-4.
+ *   - `rejected`   ⇐ a human declined it (a bad/opinion pattern) — closed, never reused.
+ *   - `deprecated` ⇐ a once-verified patch that stopped working (self-correction).
+ */
+export const SKILL_PROPOSAL_STATUS_VALUES = ["unverified", "verified", "rejected", "deprecated"] as const;
+export type SkillProposalStatus = (typeof SKILL_PROPOSAL_STATUS_VALUES)[number];
+
+/**
+ * Auditable origin of a proposal — the PROVEN pattern's evidence so a reviewer can audit
+ * WHY the Dream proposed it (never an opinion; every field is measured, §5).
+ */
+export interface SkillProposalProvenance {
+  /** ISO-8601 — when the proposer opened the proposal. */
+  createdAt: string;
+  /** The proposer pass id (one per sweep) that opened it. */
+  dreamRunId: string;
+  /** The Experience item ids the proposal was distilled from (all `verified`). */
+  experienceItemIds: string[];
+  /** DISTINCT independent loops that verified the pattern (>= minVerifiedLoops). */
+  sourceLoops: string[];
+  /** How many distinct verified loops backed it (>= minVerifiedLoops). */
+  verifiedLoopCount: number;
+  /** The MEASURED net effect that gated the proposal (>= minSuccessDelta, > 0). */
+  successDelta: number;
+  /** The dominant criterion class of the evidence (test-run/web-evidence/…). */
+  criterionClass: string;
+}
+
+/** One auditable link back to a raw session behind the proposal (mirrors ExperienceEvidence). */
+export interface SkillProposalEvidence {
+  loopId: string;
+  round: number;
+  /** The action-point title (clamped, inert) the evidence came from. */
+  apTitle: string;
+  /** A git ref/commit for the round, if any. */
+  diffRef: string | null;
+}

@@ -38,6 +38,8 @@ import {
   type ConsiliumLoopState,
   type ExperienceItemRow,
   type InsertExperienceItem,
+  type SkillProposalRow,
+  type InsertSkillProposal,
   type TaskRow,
   type InsertTask,
   type TaskTraceRow,
@@ -76,7 +78,7 @@ import {
   type PracticeCardReviewState,
   type PracticeCardStatus,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace, ActionPoint } from "@shared/types";
+import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace, ActionPoint, SkillProposalStatus } from "@shared/types";
 import type { LessonRecallFilter } from "./memory/lessons/types";
 // ROLE-1 (standing-role.md §3/§8): the StandingRole record types. Separate localized
 // import so the shared `@shared/schema` import block above stays a single merge point.
@@ -350,6 +352,11 @@ export interface IStorage {
   // Skills
   getSkills(filter?: { teamId?: string; isBuiltin?: boolean }): Promise<Skill[]>;
   getSkill(id: string): Promise<Skill | undefined>;
+  /**
+   * DREAM-4 registry READ: resolve a skill name → its row id (or null). Used by the skill
+   * proposer to LINK a proposal to a known skill row. A READ only — never a write.
+   */
+  getSkillIdByName(name: string): Promise<string | null>;
   createSkill(data: InsertSkill): Promise<Skill>;
   updateSkill(id: string, updates: Partial<InsertSkill>): Promise<Skill>;
   deleteSkill(id: string): Promise<void>;
@@ -607,6 +614,31 @@ export interface IStorage {
    * survivor). Idempotent: unknown ids are ignored. Bounded batch (the consolidator caps it).
    */
   deleteExperienceItems(ids: string[]): Promise<void>;
+
+  // DREAM-4 — Experience → SKILL.md feedback proposals (§5/§9). The proposer observer reads
+  // repeatedly-verified items (read-only) and writes ONLY here, ALWAYS as `unverified` (the
+  // ADR-0002 trust-envelope entry). It NEVER mutates a SKILL.md, the `skills` table,
+  // experience_items, or the state graph. Forward status moves are human/CODEOWNERS decisions.
+  /**
+   * Insert PROPOSED SKILL.md patches (each `status: 'unverified'`). ON CONFLICT on the
+   * unique `dedup_key` DO NOTHING — the observer pre-filters, this is the race backstop so a
+   * proven pattern yields ONE proposal. Returns only the rows actually inserted.
+   */
+  createSkillProposals(items: InsertSkillProposal[]): Promise<SkillProposalRow[]>;
+  /** List proposals, most-recent-first, optionally filtered by trust-envelope status. */
+  listSkillProposals(opts?: { status?: SkillProposalStatus; limit?: number }): Promise<SkillProposalRow[]>;
+  /** The dedup keys already proposed — the proposer skips a pattern already present. */
+  listSkillProposalDedupKeys(): Promise<string[]>;
+  /**
+   * The HUMAN GATE: move a proposal's trust-envelope status (the review endpoint, gated
+   * maintainer/admin). Stamps an optional review note + updatedAt. Returns the updated row,
+   * or undefined if the id is gone. DREAM-4 the observer NEVER calls this — only a reviewer.
+   */
+  updateSkillProposalStatus(
+    id: string,
+    status: SkillProposalStatus,
+    reviewNote?: string | null,
+  ): Promise<SkillProposalRow | undefined>;
 
 
   // Tracker Connections (Issue Tracker Integration)
@@ -1583,6 +1615,13 @@ export class MemStorage implements IStorage {
     return this.skillsMap.get(id);
   }
 
+  async getSkillIdByName(name: string): Promise<string | null> {
+    for (const s of this.skillsMap.values()) {
+      if (s.name === name) return s.id;
+    }
+    return null;
+  }
+
   async createSkill(data: InsertSkill): Promise<Skill> {
     const id = (data.id as string | undefined) ?? randomUUID();
     const now = new Date();
@@ -2037,6 +2076,75 @@ export class MemStorage implements IStorage {
 
   async deleteExperienceItems(ids: string[]): Promise<void> {
     for (const id of ids) this.experienceItemsMap.delete(id);
+  }
+
+  // ─── DREAM-4 — Experience → SKILL.md feedback proposals (§5/§9) ─────────────
+
+  private skillProposalsMap: Map<string, SkillProposalRow> = new Map();
+
+  async createSkillProposals(items: InsertSkillProposal[]): Promise<SkillProposalRow[]> {
+    const existingKeys = new Set(
+      Array.from(this.skillProposalsMap.values()).map((p) => p.dedupKey),
+    );
+    const out: SkillProposalRow[] = [];
+    const now = new Date();
+    for (const data of items) {
+      // ON CONFLICT (dedup_key) DO NOTHING — one proposal per (project, skill, pattern).
+      if (existingKeys.has(data.dedupKey)) continue;
+      existingKeys.add(data.dedupKey);
+      const row: SkillProposalRow = {
+        id: randomUUID(),
+        projectId: data.projectId ?? null,
+        skillName: data.skillName,
+        skillId: data.skillId ?? null,
+        dedupKey: data.dedupKey,
+        patternKey: data.patternKey,
+        scope: data.scope,
+        patchText: data.patchText,
+        // DREAM-4 ALWAYS opens `unverified` — the trust-envelope entry. Never any other status.
+        status: data.status ?? "unverified",
+        evidence: data.evidence,
+        provenance: data.provenance,
+        reviewNote: data.reviewNote ?? null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.skillProposalsMap.set(row.id, row);
+      out.push(row);
+    }
+    return out;
+  }
+
+  async listSkillProposals(opts?: {
+    status?: SkillProposalStatus;
+    limit?: number;
+  }): Promise<SkillProposalRow[]> {
+    let rows = Array.from(this.skillProposalsMap.values());
+    if (opts?.status) rows = rows.filter((p) => p.status === opts.status);
+    return rows
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, opts?.limit ?? 200);
+  }
+
+  async listSkillProposalDedupKeys(): Promise<string[]> {
+    return Array.from(this.skillProposalsMap.values()).map((p) => p.dedupKey);
+  }
+
+  async updateSkillProposalStatus(
+    id: string,
+    status: SkillProposalStatus,
+    reviewNote?: string | null,
+  ): Promise<SkillProposalRow | undefined> {
+    const existing = this.skillProposalsMap.get(id);
+    if (!existing) return undefined;
+    const updated: SkillProposalRow = {
+      ...existing,
+      status,
+      reviewNote: reviewNote ?? existing.reviewNote,
+      updatedAt: new Date(),
+    };
+    this.skillProposalsMap.set(id, updated);
+    return updated;
   }
 
   // ─── Triggers (Phase 6.3) ─────────────────────────────────────────────────

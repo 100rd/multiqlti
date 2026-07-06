@@ -17,7 +17,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { TriggerConfig, TriggerType, TriggerProvenance, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, ExecutionTrace, ReviewMode, ExperienceScope, ExperienceEvidence, ExperienceVerification, ExperienceProvenance, ExperienceFreshness, ExperienceConfidence, ExperienceConsolidation } from "./types.js";
+import type { TriggerConfig, TriggerType, TriggerProvenance, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, ExecutionTrace, ReviewMode, ExperienceScope, ExperienceEvidence, ExperienceVerification, ExperienceProvenance, ExperienceFreshness, ExperienceConfidence, ExperienceConsolidation, SkillProposalStatus, SkillProposalProvenance, SkillProposalEvidence } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -2379,3 +2379,67 @@ export const insertExperienceItemSchema = createInsertSchema(experienceItems).om
 });
 export type InsertExperienceItem = typeof experienceItems.$inferInsert;
 export type ExperienceItemRow = typeof experienceItems.$inferSelect;
+
+// ─── DREAM-4: Experience → SKILL.md feedback proposals (experience-plane-dream §5/§9) ──
+//
+// The FEEDBACK side of the Experience plane, and the STRICT §5 boundary in table form:
+// Experience ≠ Skill. A background proposer reads REPEATEDLY-`verified` experience_items
+// and writes ONLY here — a PROPOSED SKILL.md patch entered into the ADR-0002 trust envelope
+// as `unverified`. It NEVER mutates a SKILL.md, the `skills` table, `experience_items`, or
+// the state graph. EVERY forward status move (`unverified`→`verified`/`rejected`/`deprecated`)
+// is a HUMAN/CODEOWNERS decision via the review endpoint (requireRole maintainer/admin) —
+// the Dream PROPOSES, a human DECIDES.
+//
+// `dedupKey` = `${project}::${skillName}::${patternHash}` — a UNIQUE guard so a proven
+// pattern yields ONE proposal, never a spam of duplicates (the proposer skips a candidate
+// whose key already exists; the DB unique index is the backstop against a race). `patchText`
+// is INERT, clamped, fence-delimited model-derived text — the distilled claim is fenced-as-
+// data, never a shell/branch/PR sink. `skillId` links the `skills`-table row when a READ of
+// the registry knows the name, else null (the SKILL.md is referenced by name). Nullable/new
+// table ⇒ byte-identical when `skillFeedback.enabled=false` (no proposer ⇒ no rows).
+export const skillProposals = pgTable(
+  "skill_proposals",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    // Nullable, mirrors experience_items.project_id — the proven pattern's project.
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    // The target skill name (the SKILL.md / skills-table `name`) the pattern maps to.
+    skillName: text("skill_name").notNull(),
+    // The skills-table row id, when a registry READ knows the name; else null. NEVER an FK
+    // write target — DREAM-4 reads the registry, it never mutates it.
+    skillId: varchar("skill_id"),
+    // Idempotency/dedup guard: ONE proposal per (project, skill, pattern). UNIQUE.
+    dedupKey: text("dedup_key").notNull(),
+    // The normalized claim/pattern (audit; the human-readable side of dedupKey).
+    patternKey: text("pattern_key").notNull(),
+    // WHERE the pattern applies (the source items' scope).
+    scope: jsonb("scope").$type<ExperienceScope>().notNull(),
+    // The PROPOSED SKILL.md addition — INERT, clamped, fence-delimited. NEVER applied here.
+    patchText: text("patch_text").notNull(),
+    // The ADR-0002 trust-envelope status. DREAM-4 writes ONLY 'unverified'; forward moves are
+    // human/CODEOWNERS decisions (the review endpoint).
+    status: text("status").$type<SkillProposalStatus>().notNull().default("unverified"),
+    // Auditable evidence links back to the proven loops.
+    evidence: jsonb("evidence").$type<SkillProposalEvidence[]>().notNull(),
+    // Auditable origin (which items/loops + the success-delta basis).
+    provenance: jsonb("provenance").$type<SkillProposalProvenance>().notNull(),
+    // A human review note stamped when a reviewer moves the status (audit). Null until reviewed.
+    reviewNote: text("review_note"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    // The dedup backstop — one proposal per (project, skill, pattern).
+    dedupIdx: uniqueIndex("skill_proposals_dedup_key_idx").on(table.dedupKey),
+    projectIdx: index("skill_proposals_project_id_idx").on(table.projectId),
+    statusIdx: index("skill_proposals_status_idx").on(table.status),
+  }),
+);
+
+export const insertSkillProposalSchema = createInsertSchema(skillProposals).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertSkillProposal = typeof skillProposals.$inferInsert;
+export type SkillProposalRow = typeof skillProposals.$inferSelect;
