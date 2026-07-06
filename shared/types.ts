@@ -1428,6 +1428,19 @@ export const REVIEW_MODES = ["full-dispute", "single-verifier"] as const;
 export type ReviewMode = (typeof REVIEW_MODES)[number];
 
 /**
+ * ROLE-1 (standing-role.md §3): the "how its loops run" slice of a Standing Role —
+ * the loop template. A wake composes exactly the `POST /api/consilium-reviews`
+ * payload from the role, using this template for the loop shape. `preset` +
+ * `reviewMode` are server enums (`CONSILIUM_REVIEW_PRESETS` / `REVIEW_MODES`);
+ * `maxRounds` is bounded 1..6 by the review factory (`clampRounds`).
+ */
+export interface StandingRoleLoopTemplate {
+  preset: ConsiliumReviewPreset;
+  maxRounds?: number;
+  reviewMode?: ReviewMode;
+}
+
+/**
  * A file-change trigger ACTION that launches a consilium review. Embedded in the
  * trigger's `config` JSONB. `repoPath`, when present, MUST resolve inside the
  * consilium-loop allowlist (re-validated INSIDE the factory — never trusted from
@@ -1456,18 +1469,42 @@ export interface ConsiliumReviewTriggerAction {
 }
 
 /**
- * T1 (loop-triggers.md §2, hard-rail §6): provenance recorded on EVERY
- * trigger-fired consilium loop so the launch passport (#457) can show which
- * trigger + which event started it. Persisted INERT as jsonb on the loop
- * (`consilium_loops.trigger_provenance`); display/audit only, never a prompt or
- * shell sink. `eventDigest` is a short hex hash of the firing payload — enough to
- * correlate a loop to the event without storing the (untrusted) payload verbatim.
+ * ROLE-1 (standing-role.md §3/§8): provenance recorded on a consilium loop that a
+ * Standing Role WAKE launched (POST /api/roles/:id/wake). A wake is NOT a trigger
+ * fire — it has no triggerId/triggerType/eventDigest — so those launch fields are
+ * ABSENT on a wake and this `role` block identifies the originating role instead.
+ * Persisted INERT as jsonb on `consilium_loops.trigger_provenance`; display/audit
+ * only, never a prompt/shell sink. `name` is the role's stored (human-authored)
+ * name, rendered as inert text.
+ */
+export interface RoleProvenance {
+  roleId: string;
+  name: string;
+}
+
+/**
+ * LAUNCH provenance recorded on a consilium loop for the launch passport (#457):
+ * WHICH trigger + event started it, OR (ROLE-1) which Standing Role wake did.
+ * Persisted INERT as jsonb on the loop (`consilium_loops.trigger_provenance`);
+ * display/audit only, never a prompt or shell sink.
+ *
+ * T1 (loop-triggers.md §2, hard-rail §6): the `triggerId`/`triggerType`/
+ * `eventDigest` trio identifies a trigger fire (`eventDigest` is a short hex hash of
+ * the firing payload — enough to correlate a loop to the event without storing the
+ * untrusted payload verbatim). The trio is OPTIONAL because a Standing Role wake
+ * (ROLE-1) has no trigger; a wake sets `firedAt` + `role` and OMITS the trio. A
+ * human/API-initiated loop with neither trigger nor role leaves the whole column null.
  */
 export interface TriggerProvenance {
-  triggerId: string;
-  triggerType: TriggerType;
-  eventDigest: string;
+  triggerId?: string;
+  triggerType?: TriggerType;
+  eventDigest?: string;
   firedAt: string; // ISO-8601
+  /**
+   * ROLE-1: present when a Standing Role wake launched this loop (absent for every
+   * trigger/human fire). Identifies the role for the launch passport / traceability.
+   */
+  role?: RoleProvenance;
   /**
    * OPTIONAL short, human-readable description of the firing event for the launch
    * passport (#457) — e.g. `PR #123: <title>` or `post-merge push to main (abc1234)`.

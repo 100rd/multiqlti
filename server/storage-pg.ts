@@ -106,6 +106,9 @@ import {
   type SessionConflictRow,
   type DecisionLogRow,
 } from "@shared/schema";
+// ROLE-1 (standing-role.md §3/§8): the StandingRole table + types. Separate localized
+// import so the shared `@shared/schema` import block above stays a single merge point.
+import { standingRoles, type StandingRoleRow, type InsertStandingRole } from "@shared/schema";
 import type { LessonRecallFilter } from "./memory/lessons/types";
 import type { TraceSpan, SkillVersionRecord, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace, ActionPoint } from "@shared/types";
 
@@ -2606,6 +2609,45 @@ export class PgStorage implements IStorage {
           eq(taskTraces.groupId, groupId),
         ),));
     return row ?? null;
+  }
+
+  // ─── Standing Roles (ROLE-1 — standing-role.md §3/§8) ──────────────────────
+  // All queries are PROJECT-scoped via withProject/withProjectList/withProjectInsert
+  // (owner/member isolation from the caller's ALS) — mirrors the skills CRUD exactly.
+
+  async getStandingRoles(): Promise<StandingRoleRow[]> {
+    return db.select().from(standingRoles).where(withProjectList(standingRoles)).orderBy(standingRoles.name);
+  }
+
+  async getStandingRole(id: string): Promise<StandingRoleRow | undefined> {
+    const [row] = await db
+      .select()
+      .from(standingRoles)
+      .where(withProject(standingRoles, eq(standingRoles.id, id)));
+    return row;
+  }
+
+  async createStandingRole(data: InsertStandingRole): Promise<StandingRoleRow> {
+    type RoleInsert = Parameters<ReturnType<typeof db.insert<typeof standingRoles>>["values"]>[0];
+    const [row] = await db
+      .insert(standingRoles)
+      .values(withProjectInsert(standingRoles, data as unknown as RoleInsert))
+      .returning();
+    return row;
+  }
+
+  async updateStandingRole(id: string, updates: Partial<InsertStandingRole>): Promise<StandingRoleRow> {
+    const [row] = await db
+      .update(standingRoles)
+      .set({ ...(updates as Record<string, unknown>), updatedAt: new Date() } as Parameters<ReturnType<typeof db.update<typeof standingRoles>>["set"]>[0])
+      .where(withProject(standingRoles, eq(standingRoles.id, id)))
+      .returning();
+    if (!row) throw new Error(`Standing role not found: ${id}`);
+    return row;
+  }
+
+  async deleteStandingRole(id: string): Promise<void> {
+    await db.delete(standingRoles).where(withProject(standingRoles, eq(standingRoles.id, id)));
   }
 
 }

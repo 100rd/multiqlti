@@ -58,6 +58,7 @@ import { registerTaskGroupRoutes } from "./routes/task-groups";
 import { registerTaskGroupResolveRoute } from "./routes/task-group-resolve";
 import { registerConsiliumLoopRoutes } from "./routes/consilium-loops";
 import { registerConsiliumReviewRoutes } from "./routes/consilium-reviews";
+import { registerStandingRoleRoutes } from "./routes/standing-roles";
 import { createConsiliumReview } from "./services/consilium/review-factory";
 import { maybeLaunchConsiliumReview, maybeLaunchGitHubReview, resolveSpecWatchConfig, deriveRepoRoot } from "./services/consilium/trigger-dispatch";
 import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consilium/consilium-loop-controller";
@@ -167,6 +168,10 @@ export async function registerRoutes(
   // route is unauthenticated (the /api/pr-queue class of bug). Do not drop it.
   app.use("/api/telemetry", requireAuth, requireProject);
   app.use("/api/consilium-reviews", requireAuth, requireProject);
+  // ROLE-1 (standing-role.md §3/§8): StandingRole CRUD + manual wake. Project-scoped
+  // — the mount carries auth (the /api/pr-queue 401 lesson); the routes register
+  // inside the consiliumLoop.enabled kill-switch (wake reuses the review factory).
+  app.use("/api/roles", requireAuth, requireProject);
   app.use("/api/lmstudio", requireAuth, requireProject);       // UNCERTAIN — see note above
   app.use("/api/tracker-connections", requireAuth, requireProject);
   app.use("/api/remote-agents", requireAuth, requireProject);
@@ -325,6 +330,16 @@ export async function registerRoutes(
       config: () => appConfigLoader.get(),
       // "Magic mode" reformulate endpoint uses the SAME gateway path (completeStreaming)
       // direct_llm/planner use. Gated by consiliumLoop.reformulate.enabled in the route.
+      gateway,
+    });
+    // ROLE-1 — StandingRole CRUD + manual wake. Registered inside the SAME kill-switch
+    // (inert otherwise) and given the SAME deps as the review routes: wake reuses the
+    // `createConsiliumReview` factory (no reimplemented loop creation; dispatch untouched).
+    registerStandingRoleRoutes(app, {
+      storage,
+      orchestrator: taskOrchestrator,
+      controller: consiliumLoopController,
+      config: () => appConfigLoader.get(),
       gateway,
     });
     // NOTE: the standalone POST /api/task-groups/:groupId/execute-sdlc surface was
