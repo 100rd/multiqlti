@@ -1562,12 +1562,24 @@ export interface TrackerPollState {
  * This trigger PRODUCES specs + UPDATES tickets — it never fires a loop directly.
  */
 export interface TrackerEventTriggerConfig {
-  tracker: "github";            // TRACK-1 = github only
-  repo: string;                 // owner/repo to poll issues from
+  // TRACK-1 = github; TRACK-3 adds jira. The poller for each tracker guards on this
+  // discriminant (`config.tracker !== "<kind>"` → skip), so widening it is ADDITIVE:
+  // the github path is byte-identical and only the new jira poller reads the jira fields.
+  tracker: "github" | "jira";
+  repo: string;                 // github: owner/repo to poll issues from. jira: owner/repo of the git repo the spec PR lands in.
   targetRepoPath: string;       // allowlisted local repo path -> the spec's `repo:` frontmatter + PR target
   filter?: { label?: string };  // label gate (consent to intake) — required at fire time
   specStatus?: "ready" | "draft";
   pollState?: TrackerPollState;  // owned by the poller (watermark)
+  // ─── Jira-only (TRACK-3; ignored by the github poller) ──────────────────────
+  /** Jira site base URL, e.g. `https://acme.atlassian.net` (validated https). */
+  baseUrl?: string;
+  /** Jira project key to poll, e.g. `ACME`. */
+  project?: string;
+  /** Optional operator JQL predicate (trusted config) ANDed into the label search. */
+  jql?: string;
+  /** Optional Jira transition name/id to move the ticket to on pickup (best-effort). */
+  transitionTo?: string;
   /**
    * TRACK-2 (full write-back lifecycle). Per-trigger tuning for the read-only
    * write-back OBSERVER, which comments the loop's lifecycle transitions back on

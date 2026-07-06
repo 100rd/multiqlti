@@ -112,13 +112,34 @@ const FileChangeConfigSchema = z.object({
   action: LoopTemplateActionSchema.optional(),
 });
 
-const TrackerConfigSchema = z.object({
+// TRACK-1 (github) — byte-identical shape, now the `github` arm of the union.
+const GithubTrackerConfigSchema = z.object({
   tracker: z.literal("github"),
   repo: z.string().min(1).max(500).regex(/^[^/]+\/[^/]+$/, "Must be owner/repo"),
   targetRepoPath: z.string().min(1).max(4096),
   filter: z.object({ label: z.string().min(1).max(200).optional() }).optional(),
   specStatus: z.enum(["ready", "draft"]).optional(),
 });
+
+// TRACK-3 (jira) — JQL poll → committed spec PR in `repo` (the git repo) + Jira pickup.
+const JiraTrackerConfigSchema = z.object({
+  tracker: z.literal("jira"),
+  baseUrl: z.string().min(1).max(500).url().startsWith("https://", "Jira baseUrl must be https"),
+  project: z.string().min(1).max(64).regex(/^[A-Za-z0-9_]+$/, "Jira project key: alnum/underscore"),
+  jql: z.string().max(2000).optional(),
+  transitionTo: z.string().min(1).max(200).optional(),
+  repo: z.string().min(1).max(500).regex(/^[^/]+\/[^/]+$/, "Must be owner/repo (the git repo the spec PR lands in)"),
+  targetRepoPath: z.string().min(1).max(4096),
+  filter: z.object({ label: z.string().min(1).max(200).optional() }).optional(),
+  specStatus: z.enum(["ready", "draft"]).optional(),
+});
+
+// Discriminated on `tracker` so a bad/absent kind yields a precise 400 (additive: the
+// github arm is unchanged, so existing github trigger creation validates identically).
+const TrackerConfigSchema = z.discriminatedUnion("tracker", [
+  GithubTrackerConfigSchema,
+  JiraTrackerConfigSchema,
+]);
 
 type TriggerTypeValue = "webhook" | "schedule" | "github_event" | "file_change" | "tracker_event";
 

@@ -52,10 +52,9 @@ import {
   extractSpecFromIssue,
   specBranchName,
   specFilePath,
-  buildSpecMarkdown,
   type GhIssue,
 } from "./issue-spec.js";
-import { writeSpecPr } from "./spec-writer.js";
+import { crystallizeTicket } from "./spec-intake.js";
 import { postPickupComment, postNeedCriteriaComment } from "./issue-writeback.js";
 
 const execFileAsync: ExecFileFn = promisify(execFile);
@@ -335,32 +334,13 @@ export class GithubIssuesPoller {
           }
         }
 
-        if (criteria.length === 0) {
-          // No testable criteria — ask the human (idempotent), open NO spec PR, and
-          // do NOT record intake so a re-poll re-checks after they edit the issue.
-          await postNeedCriteriaComment(
-            { runGh: this.deps.runGh, log: this.deps.log },
-            { repo, issueNumber: number },
-          );
-          continue;
-        }
-
+        // Crystallise via the SHARED spec-intake (same renderer + spec-writer + order
+        // as Jira/TRACK-4/5). GitHub supplies only its dialect: the `github` source,
+        // the `spec/gh-issue-<n>` branch/path, the `closes #n` copy, and the pickup /
+        // need-criteria GitHub-comment write-backs. Byte-identical to the original
+        // inline tail (same gh calls, same order) — github-issues-poller.test asserts it.
         const specStatus = config.specStatus ?? "ready";
         const title = typeof issue.title === "string" ? issue.title : "";
-        const filePath = specFilePath(number, title);
-        const branch = specBranchName(number);
-        const markdown = buildSpecMarkdown({
-          title: title.trim().length > 0 ? title : `Issue #${number}`,
-          issueNumber: number,
-          issueUrl: issue.url,
-          repo: targetRepoPath, // the allowlisted local path → SPEC-1's resolveSpecRepo maps it.
-          status: specStatus,
-          problem: problem ?? title,
-          scope,
-          outOfScope,
-          criteria,
-        });
-
         const sanitizedTitle = sanitizeTitleLine(title);
         const commitMessage = `feat: add spec for issue #${number} (closes #${number})`;
         const prTitle = `spec: ${sanitizedTitle || `issue #${number}`} (closes #${number})`;
@@ -373,33 +353,50 @@ export class GithubIssuesPoller {
           `Closes #${number}`,
         ].join("\n");
 
-        const res = await writeSpecPr(
-          { runGh: this.deps.runGh, gitRemoteUrl: this.gitRemoteUrl, log: this.deps.log },
+        const result = await crystallizeTicket(
           {
-            targetRepoPath,
-            issueNumber: number,
-            branch,
-            filePath,
-            fileContent: markdown,
+            runGh: this.deps.runGh,
+            gitRemoteUrl: this.gitRemoteUrl,
+            log: this.deps.log,
+            writeback: {
+              pickup: (specPrUrl) =>
+                postPickupComment(
+                  { runGh: this.deps.runGh, log: this.deps.log },
+                  { repo, issueNumber: number, specPrUrl },
+                ),
+              needCriteria: () =>
+                postNeedCriteriaComment(
+                  { runGh: this.deps.runGh, log: this.deps.log },
+                  { repo, issueNumber: number },
+                ),
+            },
+          },
+          {
+            source: { kind: "github", ref: String(number), url: issue.url },
+            targetRepoPath, // the allowlisted local path → SPEC-1's resolveSpecRepo maps it.
+            branch: specBranchName(number),
+            filePath: specFilePath(number, title),
+            title: title.trim().length > 0 ? title : `Issue #${number}`,
+            status: specStatus,
+            problem: problem ?? title,
+            scope,
+            outOfScope,
+            criteria,
             commitMessage,
             prTitle,
             prBody,
           },
         );
-        if (!res.ok) {
+
+        if (result.outcome === "need-criteria") continue; // asked human, no intake.
+        if (result.outcome === "failed") {
           // Do NOT record intake → retried next cycle.
-          this.deps.log(`tracker poll: spec PR failed for ${repo}#${number}: ${res.reason}`);
+          this.deps.log(`tracker poll: spec PR failed for ${repo}#${number}: ${result.reason}`);
           continue;
         }
 
-        // WRITE-BACK (mandatory, idempotent, non-fatal): comment the pickup + PR link.
-        await postPickupComment(
-          { runGh: this.deps.runGh, log: this.deps.log },
-          { repo, issueNumber: number, specPrUrl: res.prUrl },
-        );
-
         // Record intake in the watermark (bound the map to the most-recent entries).
-        state.intake![key] = { specPrUrl: res.prUrl, at: new Date(this.now()).toISOString() };
+        state.intake![key] = { specPrUrl: result.prUrl, at: new Date(this.now()).toISOString() };
         intaken++;
       }
 

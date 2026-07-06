@@ -38,10 +38,17 @@ import { runGhJson, type ExecFileFn } from "../../github-status.js";
 import { parseOwnerRepo } from "../../github-poller.js";
 import { runGhCapture } from "./gh-exec.js";
 
-/** The server-derived spec branch shape (`spec/gh-issue-<n>`). */
-export const SPEC_BRANCH_RE = /^spec\/gh-issue-[0-9]+$/;
+/**
+ * The server-derived spec branch shapes, one alternative per connector dialect:
+ *   - GitHub (TRACK-1): `spec/gh-issue-<n>`     (n = issue number)
+ *   - Jira   (TRACK-3): `spec/jira-<KEY>`       (KEY = `PROJ-123`, uppercased)
+ * Every alternative is SERVER-DERIVED from a validated ticket id, so nothing
+ * attacker-shaped (a leading dash, a path separator, a `..`) can reach `gh`. New
+ * connectors (TRACK-4/5) add their own alternative here — the writer stays generic.
+ */
+export const SPEC_BRANCH_RE = /^spec\/(gh-issue-[0-9]+|jira-[A-Za-z0-9._-]+)$/;
 
-/** True iff `branch` is a server-derived TRACK-1 spec branch. */
+/** True iff `branch` is a server-derived tracker spec branch (any connector). */
 export function isValidSpecBranch(branch: string): boolean {
   return SPEC_BRANCH_RE.test(branch);
 }
@@ -57,7 +64,12 @@ export interface SpecWriterDeps {
 
 export interface WriteSpecPrParams {
   targetRepoPath: string;
-  issueNumber: number;
+  /**
+   * The origin ticket id, for logging/traceability only (NOT used to build any
+   * `gh` arg — the branch/path/title are pre-derived by the caller). Optional
+   * because a Jira key is not a number; the GitHub caller still passes its number.
+   */
+  issueNumber?: number;
   branch: string;
   filePath: string;
   fileContent: string;

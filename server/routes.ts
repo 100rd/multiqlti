@@ -41,6 +41,7 @@ import { CronScheduler } from "./services/cron-scheduler";
 import { FileWatcherService } from "./services/file-watcher";
 import { GitHubPoller } from "./services/github-poller";
 import { GithubIssuesPoller } from "./services/consilium/trackers/github-issues-poller";
+import { JiraIssuesPoller } from "./services/consilium/trackers/jira-issues-poller";
 import { TrackerWritebackObserver } from "./services/consilium/trackers/writeback-observer";
 import { ExperienceDistillerObserver } from "./services/consilium/experience/experience-distiller-observer";
 import { buildSynthPrompt, parseSynthOutput } from "./services/consilium/trackers/issue-spec";
@@ -419,6 +420,7 @@ export async function registerRoutes(
   let fileWatcherService: FileWatcherService | null = null;
   let githubPoller: GitHubPoller | null = null;
   let githubIssuesPoller: GithubIssuesPoller | null = null;
+  let jiraIssuesPoller: JiraIssuesPoller | null = null;
   let trackerWritebackObserver: TrackerWritebackObserver | null = null;
 
   try {
@@ -623,6 +625,52 @@ export async function registerRoutes(
         log: (m: string) => log(m, "tracker-poller"),
       });
       githubIssuesPoller.start();
+
+      // TRACK-3 (jira -> committed spec PR). The Jira analogue of the github-issues
+      // poller: a JQL poll of a Jira project's labelled issues, each crystallised into
+      // a committed-spec PR (in the TARGET git repo — Jira has no git) + a Jira pickup
+      // comment. Shares the SAME kill-switch (features.triggers.tracker.enabled) and the
+      // SAME crystallise pipeline (spec-intake) as github; only the Jira dialect differs.
+      // The Jira token is read from JIRA_EMAIL/JIRA_API_TOKEN at call time (fail-closed).
+      // A jira-tracker trigger is a no-op here until its `tracker: "jira"` config exists.
+      jiraIssuesPoller = new JiraIssuesPoller({
+        getEnabledTriggersByType: (type) =>
+          runAsSystem("jira-tracker-poller-bootstrap", () => storage.getAllEnabledTriggersByType(type)),
+        runInProject: runAsProject,
+        getTrigger: (id) => storage.getTrigger(id),
+        updateTrigger: (id, updates) => storage.updateTrigger(id, updates),
+        config: () => appConfigLoader.get(),
+        allowedRepoPaths: () => appConfigLoader.get().pipeline.consiliumLoop.allowedRepoPaths,
+        // Gateway-backed synthesiser for FREE-FORM tickets — connector-agnostic
+        // (title+body only). Any error degrades to no-criteria (never throws into the
+        // poll loop) -> the poller posts an ask-for-criteria comment instead of a PR.
+        synthesizer: {
+          synthesize: async (ticket) => {
+            try {
+              const { system, user } = buildSynthPrompt({ number: 0, title: ticket.title, body: ticket.body });
+              const res = await gateway.completeStreaming(
+                {
+                  modelSlug: DEFAULT_TASK_MODEL,
+                  messages: [
+                    { role: "system", content: system },
+                    { role: "user", content: user },
+                  ],
+                  temperature: 0.2,
+                  maxTokens: 2048,
+                },
+                undefined,
+                undefined,
+                { overallTimeoutMs: 60_000 },
+              );
+              return parseSynthOutput(res.content);
+            } catch {
+              return { criteria: [] };
+            }
+          },
+        },
+        log: (m: string) => log(m, "jira-tracker-poller"),
+      });
+      jiraIssuesPoller.start();
     }
 
     // TRACK-2 (full write-back lifecycle). When the write-back sub-switch is on (and
@@ -724,6 +772,7 @@ export async function registerRoutes(
     fileWatcherService?.stopAll();
     githubPoller?.stop();
     githubIssuesPoller?.stop();
+    jiraIssuesPoller?.stop();
     trackerWritebackObserver?.stop();
     getRefreshScheduler()?.stop();
     stopRateLimitCleanup();
