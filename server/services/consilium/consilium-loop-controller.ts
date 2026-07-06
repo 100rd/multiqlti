@@ -64,6 +64,12 @@ import { findLoopWorkspace } from "./workspace-bind.js";
 import type { DevCloseoutResult } from "./dev-closeout.js";
 import { runSdlcHandoff, type SdlcProgress, type JudgeVerifyFn, type JudgeVerifyInput } from "../sdlc/executor.js";
 import { runResearchHandoff, type ResearchGateway } from "../research/research-runner.js";
+import {
+  buildPriorExperienceBlock,
+  normalizeExperienceRepo,
+  selectExperienceItems,
+  type ExperienceReadQuery,
+} from "./experience/experience-reader.js";
 import { assertAllowedRepoPath } from "./repo-allowlist.js";
 import { buildBranchName } from "./pr-wrapper.js";
 import { assertRepoIsProjectWorkspace, backtickFence, stripControlMultiline, buildSingleVerifierTask, VERIFIER_TASK_NAME } from "./review-factory.js";
@@ -242,6 +248,7 @@ function formatActionPointsForPlanner(actionPoints: ActionPoint[]): string {
 export function buildPlannerPrompt(
   actionPoints: ActionPoint[],
   engineerInstruction: string | null | undefined,
+  priorExperienceBlock?: string | null,
 ): { system: string; user: string } {
   const apBlock = formatActionPointsForPlanner(actionPoints);
   const apFence = backtickFence(apBlock);
@@ -277,6 +284,12 @@ export function buildPlannerPrompt(
       instr,
       instrFence,
     );
+  }
+  // DREAM-2 (§8): the OPTIONAL "prior experience" block, fully self-fenced/byte-bounded by
+  // the reader. Appended only when non-empty — when absent (kill-switch off / no items in
+  // scope) the prompt is BYTE-IDENTICAL to today's (the safe-degrade contract).
+  if (typeof priorExperienceBlock === "string" && priorExperienceBlock.length > 0) {
+    parts.push("", priorExperienceBlock);
   }
   return { system, user: parts.join("\n") };
 }
@@ -993,7 +1006,13 @@ export class ConsiliumLoopController {
     const actionPoints = await this.resolveDevActionPoints(loop);
     if (!verdict || actionPoints.length === 0) return { ok: false, code: "NO_VERDICT" };
 
-    const { system, user } = buildPlannerPrompt(actionPoints, loop.engineerInstruction);
+    // DREAM-2 (§8): the READ path — query Experience items in scope, rank by
+    // confidence×freshness, and fold the top-K into the prompt as a bounded, fenced "prior
+    // experience" preamble. Kill-switch OFF (default) ⇒ null ⇒ prompt byte-identical to
+    // today; a read failure/timeout ⇒ null ⇒ plan cold (safe degrade — NEVER throws/blocks).
+    const priorExperienceBlock = await this.readPriorExperience(loop, actionPoints);
+
+    const { system, user } = buildPlannerPrompt(actionPoints, loop.engineerInstruction, priorExperienceBlock);
 
     // OUT-OF-BAND model call via the SAME gateway path direct_llm tasks use.
     let content: string;
@@ -1080,6 +1099,91 @@ export class ConsiliumLoopController {
         .catch(() => undefined);
     }
     return { ok: true, loop: updated, archetype: parsed.archetype };
+  }
+
+  /**
+   * DREAM-2 (design §8) — the Experience-plane READ. Query stored Experience items in this
+   * loop's scope (repo/archetype/criterion classes), rank by `confidence × freshness` (§6
+   * decay), and render the top-K as a bounded, fenced "prior experience" block for the
+   * planner prompt. Returns `null` (⇒ the planner prompt is byte-identical to today) when:
+   *   - the kill-switch (`experiencePlane.read.enabled`) is OFF — the safe-degrade default;
+   *   - no items are in scope;
+   *   - the bounded storage read TIMES OUT or THROWS (the plan runs cold — the read must
+   *     NEVER block a loop or fail a plan, §8).
+   *
+   * The read is READ-ONLY over `experience_items` (DREAM-2 never writes them) and BOUNDED
+   * (scan limit + byte-capped top-K) so a large store can never blow the prompt.
+   */
+  private async readPriorExperience(
+    loop: ConsiliumLoopRow,
+    actionPoints: ActionPoint[],
+  ): Promise<string | null> {
+    const readCfg = this.loopConfig().experiencePlane?.read;
+    // Kill-switch OFF (default) ⇒ NO read at all ⇒ byte-identical prompt (the §8 safe degrade).
+    if (!readCfg?.enabled) return null;
+
+    try {
+      // Scope (§8): HARD repo bind + the criterion classes the verdict actually names. The
+      // archetype is the loop's (may be null at plan time — experience then helps pick it).
+      const criterionClasses = Array.from(
+        new Set(
+          actionPoints
+            .map((ap) => ap.verificationMethod)
+            .filter((m): m is NonNullable<typeof m> => typeof m === "string"),
+        ),
+      );
+      const query: ExperienceReadQuery = {
+        repo: normalizeExperienceRepo(loop.repoPath),
+        archetype: loop.archetype ?? null,
+        criterionClasses,
+      };
+      const opts = {
+        topK: readCfg.topK,
+        maxBytes: readCfg.maxBytes,
+        decayHalfLifeDays: readCfg.decayHalfLifeDays,
+        staleVerifiedDays: readCfg.staleVerifiedDays,
+      };
+
+      // BOUNDED read with a hard timeout — the planner NEVER blocks on the plane. On timeout
+      // the race rejects and we fall through to the catch → cold plan (safe degrade).
+      const items = await this.withReadTimeout(
+        this.storage.listExperienceItems(readCfg.readScanLimit),
+        readCfg.readTimeoutMs,
+      );
+
+      const ranked = selectExperienceItems(items, query, opts);
+      const block = buildPriorExperienceBlock(ranked, opts);
+
+      // MEASURE (§9): log whether experience was injected + how many items, so the operator
+      // can see the plane working. Behind the read kill-switch (only logs when read is ON).
+      if (block) {
+        this.log(loop.id, `plan: experience injected — ${ranked.length} item(s) in scope`);
+      } else {
+        this.log(loop.id, "plan: experience read — no items in scope (plan runs cold)");
+      }
+      return block;
+    } catch (err) {
+      // SAFE DEGRADE (§8): any read failure/timeout ⇒ plan cold. NEVER throws, NEVER blocks.
+      this.log(loop.id, `plan: experience read failed (safe-degrade, plan runs cold) — ${scrubErr(String(err))}`);
+      return null;
+    }
+  }
+
+  /** Race a read promise against a wall-clock cap; reject on timeout (⇒ caller degrades cold). */
+  private withReadTimeout<T>(p: Promise<T>, timeoutMs: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`experience read timed out after ${timeoutMs}ms`)), timeoutMs);
+      p.then(
+        (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      );
+    });
   }
 
   /**

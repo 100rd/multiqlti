@@ -916,6 +916,33 @@ export const ConfigSchema = z.object({
          * default 60s. NaN/out-of-range fails load.
          */
         intervalMs: z.coerce.number().int().min(10_000).max(3_600_000).default(60_000),
+        /**
+         * DREAM-2 — the READ path (the closed loop, §8). When ON, the planner (`plan()`)
+         * queries Experience items by scope (repo, archetype, criterion classes), ranks
+         * them by `confidence × freshness` (§6 decay), and injects the top-K as a bounded,
+         * fenced "prior experience" preamble that BIASES the plan without dictating it.
+         *
+         * Kill-switch DEFAULT FALSE ⇒ BYTE-IDENTICAL: `plan()` performs NO read and the
+         * planner prompt is byte-for-byte today's (§8 safe degrade — loops run cold). The
+         * read is bounded (scan limit + timeout) and NEVER blocks a loop; a read failure
+         * degrades to a cold plan, never throws.
+         */
+        read: z.object({
+          /** Kill-switch: false (default) → planner does no read; prompt byte-identical. */
+          enabled: z.boolean().default(false),
+          /** Max items folded into the "prior experience" block (a bias, not a dump). 1..20; default 5. */
+          topK: z.coerce.number().int().min(1).max(20).default(5),
+          /** Hard UTF-8 byte cap on the injected block (a huge store can't blow the prompt). 256..16KiB; default 2048. */
+          maxBytes: z.coerce.number().int().min(256).max(16_384).default(2_048),
+          /** Max items scanned from the store per read (bounds the query). 10..2000; default 500. */
+          readScanLimit: z.coerce.number().int().min(10).max(2_000).default(500),
+          /** Wall-clock cap on the storage read; on timeout the plan runs cold. 50ms..10s; default 1500ms. */
+          readTimeoutMs: z.coerce.number().int().min(50).max(10_000).default(1_500),
+          /** Freshness half-life (days): an item's freshness weight halves every this-many days. 1..365; default 30. */
+          decayHalfLifeDays: z.coerce.number().min(1).max(365).default(30),
+          /** A `verified` item unconfirmed longer than this (days) is down-weighted to `observed`. 1..365; default 60. */
+          staleVerifiedDays: z.coerce.number().min(1).max(365).default(60),
+        }).default({}),
       }).default({}),
     }).default({}),
   }).default({}),

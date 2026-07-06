@@ -181,6 +181,8 @@ function makePlannerStorage(loop: ConsiliumLoopRow, executions: { output: unknow
 interface PlannerConfigOpts {
   plannerEnabled?: boolean;
   model?: string;
+  /** DREAM-2 — turn the Experience READ path on (default OFF ⇒ byte-identical prompt). */
+  experienceReadEnabled?: boolean;
 }
 function fakeConfig(opts: PlannerConfigOpts = {}) {
   return () =>
@@ -193,6 +195,18 @@ function fakeConfig(opts: PlannerConfigOpts = {}) {
           maxDiffBytes: 200000,
           allowedRepoPaths: [process.cwd()],
           planner: { enabled: opts.plannerEnabled ?? true, model: opts.model ?? "claude-sonnet" },
+          // DREAM-2 read config — OFF unless a test opts in. Bounds mirror the schema defaults.
+          experiencePlane: {
+            read: {
+              enabled: opts.experienceReadEnabled ?? false,
+              topK: 5,
+              maxBytes: 2048,
+              readScanLimit: 500,
+              readTimeoutMs: 1500,
+              decayHalfLifeDays: 30,
+              staleVerifiedDays: 60,
+            },
+          },
         },
         taskGroups: { taskTimeoutMs: 600000 },
       },
@@ -429,5 +443,143 @@ describe("controller.setArchetype + override is sacrosanct", () => {
     const controller = makeController(storage, undefined);
     const res = await controller.setArchetype("ghost", "infra");
     expect(res).toEqual({ ok: false, code: "NOT_FOUND" });
+  });
+});
+
+// ─── DREAM-2: the Experience READ path in plan() (experience-plane-dream.md §8) ──
+
+import {
+  normalizeExperienceRepo,
+} from "../../../server/services/consilium/experience/experience-reader.js";
+import type { ExperienceItemRow } from "@shared/schema";
+import type { ExperienceConfidence } from "@shared/types";
+
+// The scope.repo the distiller would have stamped for THIS loop (repoPath = process.cwd()).
+const LOOP_REPO = normalizeExperienceRepo(process.cwd());
+
+function makeExpItem(p: {
+  id: string;
+  repo?: string;
+  confidence?: ExperienceConfidence;
+  claim?: string;
+  daysAgo?: number;
+}): ExperienceItemRow {
+  const iso = new Date(Date.now() - (p.daysAgo ?? 1) * 86_400_000).toISOString();
+  return {
+    id: p.id,
+    projectId: "proj-1",
+    scope: { repo: p.repo ?? LOOP_REPO, archetype: "repo-assessment", criterionClass: "test-run" },
+    claim: p.claim ?? `On ${LOOP_REPO}, criterion ${p.id} was checked.`,
+    evidence: [{ loopId: `loop-${p.id}`, round: 1, apTitle: "AP", diffRef: "abc123" }],
+    verification: { method: "test-run", outcome: "independent-pass", groundingRatioAtTime: 0.9 },
+    confidence: p.confidence ?? "verified",
+    successDelta: null,
+    provenance: { createdAt: iso, dreamRunId: "d1", sourceLoops: [`loop-${p.id}`] },
+    freshness: { lastConfirmedAt: iso, decayPolicy: "reuse:5" },
+    relatedComponents: [],
+    sourceLoopId: `loop-${p.id}`,
+    createdAt: new Date(iso),
+  } as ExperienceItemRow;
+}
+
+/** The plan() storage mock, plus a `listExperienceItems` the DREAM-2 read consumes. */
+function makeReadStorage(
+  loop: ConsiliumLoopRow,
+  experienceItems: ExperienceItemRow[],
+  opts?: { throwOnRead?: boolean },
+) {
+  const base = makePlannerStorage(loop);
+  const listExperienceItems = vi.fn(async (_limit?: number) => {
+    if (opts?.throwOnRead) throw new Error("boom: experience store unavailable");
+    return experienceItems;
+  });
+  return { ...base, storage: { ...base.storage, listExperienceItems }, listExperienceItems };
+}
+
+/** Pull the planner's UNTRUSTED user message out of the gateway spy. */
+function userPromptFrom(spy: ReturnType<typeof vi.fn>): string {
+  const req = spy.mock.calls[0][0] as { messages: Array<{ role: string; content: string }> };
+  return req.messages.find((m) => m.role === "user")!.content;
+}
+
+describe("controller.plan — DREAM-2 Experience read", () => {
+  it("flag ON + items in scope ⇒ the plan carries a bounded 'prior experience' block (verified first, refuted negative)", async () => {
+    const loop = makeLoop({});
+    const items = [
+      makeExpItem({ id: "ver", confidence: "verified", claim: "coverage gates close via pyproject", daysAgo: 1 }),
+      makeExpItem({ id: "ref", confidence: "refuted", claim: "per-test edits fix coverage", daysAgo: 1 }),
+    ];
+    const { storage, listExperienceItems } = makeReadStorage(loop, items);
+    const { gateway, spy } = fakeGateway(PROPOSAL);
+    const controller = makeController(storage, gateway, { experienceReadEnabled: true });
+
+    const res = await controller.plan(loop.id);
+    expect(res.ok).toBe(true);
+    expect(listExperienceItems).toHaveBeenCalledTimes(1);
+
+    const user = userPromptFrom(spy);
+    expect(user).toContain("Prior experience");
+    expect(user).toContain("[verified] coverage gates close via pyproject");
+    expect(user).toContain("[refuted — AVOID] per-test edits fix coverage");
+    expect(user.indexOf("[verified]")).toBeLessThan(user.indexOf("[refuted"));
+  });
+
+  it("flag OFF ⇒ NO read and the prompt is BYTE-IDENTICAL to today's (safe degrade)", async () => {
+    const loop = makeLoop({});
+    // Even with items present, read is never called and nothing is injected.
+    const { storage, listExperienceItems } = makeReadStorage(loop, [makeExpItem({ id: "ver" })]);
+    const { gateway, spy } = fakeGateway(PROPOSAL);
+    const controller = makeController(storage, gateway, { experienceReadEnabled: false });
+
+    await controller.plan(loop.id);
+    expect(listExperienceItems).not.toHaveBeenCalled();
+
+    const user = userPromptFrom(spy);
+    // Byte-identical: equals the prompt the pure builder produces with NO experience arg.
+    const expected = buildPlannerPrompt(
+      extractActionPoints(JUDGE_WITH_APS),
+      loop.engineerInstruction,
+    ).user;
+    expect(user).toBe(expected);
+    expect(user).not.toContain("Prior experience");
+  });
+
+  it("no matching items ⇒ no block (prompt byte-identical, plan runs cold)", async () => {
+    const loop = makeLoop({});
+    const { storage } = makeReadStorage(loop, []); // empty store
+    const { gateway, spy } = fakeGateway(PROPOSAL);
+    const controller = makeController(storage, gateway, { experienceReadEnabled: true });
+
+    await controller.plan(loop.id);
+    const user = userPromptFrom(spy);
+    const expected = buildPlannerPrompt(extractActionPoints(JUDGE_WITH_APS), loop.engineerInstruction).user;
+    expect(user).toBe(expected);
+  });
+
+  it("scope BINDS on repo: a cross-repo item is never injected", async () => {
+    const loop = makeLoop({});
+    const items = [makeExpItem({ id: "cross", repo: "some-other-repo", claim: "leaked from elsewhere" })];
+    const { storage } = makeReadStorage(loop, items);
+    const { gateway, spy } = fakeGateway(PROPOSAL);
+    const controller = makeController(storage, gateway, { experienceReadEnabled: true });
+
+    await controller.plan(loop.id);
+    const user = userPromptFrom(spy);
+    expect(user).not.toContain("leaked from elsewhere");
+    expect(user).not.toContain("Prior experience");
+  });
+
+  it("a read failure ⇒ the plan runs cold (no throw, archetype still proposed)", async () => {
+    const loop = makeLoop({});
+    const { storage } = makeReadStorage(loop, [], { throwOnRead: true });
+    const { gateway, spy } = fakeGateway(PROPOSAL);
+    const controller = makeController(storage, gateway, { experienceReadEnabled: true });
+
+    const res = await controller.plan(loop.id);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.archetype).toBe("infra"); // the plan still succeeded
+    const user = userPromptFrom(spy);
+    expect(user).not.toContain("Prior experience"); // degraded cold
   });
 });
