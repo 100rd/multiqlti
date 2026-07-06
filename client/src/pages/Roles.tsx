@@ -9,9 +9,15 @@
  */
 import { useState } from "react";
 import { useLocation } from "wouter";
-import { UserCog, Plus, Trash2, Zap, Eye, Radio } from "lucide-react";
+import { UserCog, Plus, Trash2, Zap, Eye, Radio, Download, Upload, Award } from "lucide-react";
 import { CONSILIUM_REVIEW_PRESETS, REVIEW_MODES } from "@shared/types";
-import type { ConsiliumReviewPreset, ReviewMode, StandingRoleConcern } from "@shared/types";
+import type {
+  ConsiliumReviewPreset,
+  ReviewMode,
+  StandingRoleConcern,
+  StandingRoleDefinition,
+  GraduationStatus,
+} from "@shared/types";
 import type { StandingRoleRow } from "@shared/schema";
 import { useSkills } from "@/hooks/use-skills";
 import {
@@ -22,6 +28,9 @@ import {
   useAddConcern,
   useDeleteConcern,
   useWokenLoops,
+  useTrackRecord,
+  useImportRole,
+  exportRoleDefinition,
 } from "@/hooks/use-roles";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -568,6 +577,127 @@ function WokenLoops({ roleId }: { roleId: string }) {
   );
 }
 
+// ─── ROLE-4: graduation-readiness badge (measured, read-only) ─────────────────
+
+const GRADUATION_LABEL: Record<GraduationStatus, string> = {
+  proven: "proven",
+  "needs-more-evidence": "needs more evidence",
+  "insufficient-evidence": "insufficient evidence",
+};
+
+/**
+ * The role's "proven → graduate" signal. EARNED from measured outcomes (woken-loop
+ * terminal states + role-scoped verified/refuted experience) — never self-reported.
+ * Read-only; a human decides the actual cross-repo graduation (§6).
+ */
+function GraduationBadge({ roleId }: { roleId: string }) {
+  const { data, isLoading } = useTrackRecord(roleId);
+  if (isLoading || !data) return null;
+  const proven = data.status === "proven";
+  return (
+    <Badge
+      variant={proven ? "default" : "outline"}
+      className="text-xs gap-1"
+      title={`${data.summary}\n${data.rationale.join("\n")}`}
+      data-testid={`graduation-badge-${roleId}`}
+    >
+      {proven && <Award className="h-3 w-3" />}
+      {GRADUATION_LABEL[data.status]}
+    </Badge>
+  );
+}
+
+/** Export the role's portable definition as a downloaded JSON file. */
+function ExportRoleButton({ role }: { role: StandingRoleRow }) {
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+  const onExport = async () => {
+    setBusy(true);
+    try {
+      const def: StandingRoleDefinition = await exportRoleDefinition(role.id);
+      const blob = new Blob([JSON.stringify(def, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `role-${role.name.replace(/[^A-Za-z0-9._-]/g, "_")}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({ title: `Exported "${role.name}" definition` });
+    } catch (e) {
+      toast({ title: "Failed to export role", description: e instanceof Error ? e.message : undefined, variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Button size="sm" variant="ghost" onClick={onExport} disabled={busy} data-testid={`export-role-${role.id}`}>
+      <Download className="h-4 w-4" />
+    </Button>
+  );
+}
+
+// ─── ROLE-4: import a portable definition ─────────────────────────────────────
+
+function ImportRoleDialog() {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const { toast } = useToast();
+  const importRole = useImportRole();
+
+  const submit = async () => {
+    let parsed: StandingRoleDefinition;
+    try {
+      parsed = JSON.parse(text) as StandingRoleDefinition;
+    } catch {
+      toast({ title: "Not valid JSON", variant: "destructive" });
+      return;
+    }
+    try {
+      const role = await importRole.mutateAsync(parsed);
+      toast({ title: `Imported "${role.name}" — created disabled; enable it to use.` });
+      setText("");
+      setOpen(false);
+    } catch (e) {
+      // The server threads the fail-closed skill / schema-version rejection verbatim.
+      toast({ title: "Failed to import role", description: e instanceof Error ? e.message : undefined, variant: "destructive" });
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline" data-testid="import-role-button">
+          <Upload className="h-4 w-4 mr-2" />
+          Import
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Import a role definition</DialogTitle>
+          <DialogDescription>
+            Paste a portable role definition (exported JSON). Its skills are re-validated
+            against this project — an unknown skill is rejected. The role is created
+            DISABLED; enable it when you are ready.
+          </DialogDescription>
+        </DialogHeader>
+        <Textarea
+          data-testid="import-role-textarea"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={12}
+          placeholder='{ "kind": "standing-role-definition", "schemaVersion": 1, ... }'
+          className="font-mono text-xs"
+        />
+        <DialogFooter>
+          <Button onClick={submit} disabled={importRole.isPending || !text.trim()} data-testid="import-role-submit">
+            {importRole.isPending ? "Importing…" : "Import"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ─── Role card ──────────────────────────────────────────────────────────────
 
 function RoleCard({ role }: { role: StandingRoleRow }) {
@@ -596,6 +726,7 @@ function RoleCard({ role }: { role: StandingRoleRow }) {
           <CardTitle className="flex items-center gap-2">
             {role.name}
             {!role.enabled && <Badge variant="outline">disabled</Badge>}
+            <GraduationBadge roleId={role.id} />
           </CardTitle>
           <Badge variant="secondary">{tpl.preset}</Badge>
         </div>
@@ -639,6 +770,7 @@ function RoleCard({ role }: { role: StandingRoleRow }) {
       </CardContent>
       <CardFooter className="gap-2">
         <WakeRoleDialog role={role} />
+        <ExportRoleButton role={role} />
         <Button
           size="sm"
           variant="ghost"
@@ -665,7 +797,10 @@ export default function Roles() {
           <UserCog className="h-5 w-5" />
           <h1 className="text-xl font-semibold">Standing Roles</h1>
         </div>
-        <CreateRoleDialog />
+        <div className="flex items-center gap-2">
+          <ImportRoleDialog />
+          <CreateRoleDialog />
+        </div>
       </div>
 
       {isLoading && <p className="text-muted-foreground">Loading roles…</p>}

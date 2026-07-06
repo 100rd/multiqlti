@@ -11,6 +11,8 @@ import type {
   StandingRoleLoopTemplate,
   StandingRolePolicy,
   StandingRoleConcernTrigger,
+  StandingRoleDefinition,
+  GraduationReadiness,
 } from "@shared/types";
 
 const ROLES_KEY = ["/api/roles"] as const;
@@ -126,5 +128,39 @@ export function useWokenLoops(roleId: string, enabled = true) {
         Array<{ id: string; state?: string; repoPath?: string }>
       >,
     enabled,
+  });
+}
+
+// ─── ROLE-4: track record / graduation signal + export / import ────────────────
+
+/**
+ * The role's MEASURED track record + graduation-readiness verdict (ADR-0002 success-
+ * delta). Read-only — computed server-side from woken loops + role-scoped experience.
+ */
+export function useTrackRecord(roleId: string, enabled = true) {
+  return useQuery<GraduationReadiness>({
+    queryKey: ["/api/roles", roleId, "track-record"],
+    queryFn: () => apiRequest("GET", `/api/roles/${roleId}/track-record`) as Promise<GraduationReadiness>,
+    enabled,
+  });
+}
+
+/**
+ * Fetch a role's PORTABLE definition (skills by name, no runtime/secret state). Returns
+ * the JSON object — the caller serialises + downloads it. Not a hook (imperative, on click).
+ */
+export function exportRoleDefinition(roleId: string): Promise<StandingRoleDefinition> {
+  return apiRequest("GET", `/api/roles/${roleId}/export`) as Promise<StandingRoleDefinition>;
+}
+
+/**
+ * Import a role FROM a portable definition. Creates a DISABLED role (skills re-validated
+ * against THIS project fail-closed) — a human enables it. Invalidates the roles list.
+ */
+export function useImportRole() {
+  const qc = useQueryClient();
+  return useMutation<StandingRoleRow, Error, StandingRoleDefinition>({
+    mutationFn: (definition) => apiRequest("POST", "/api/roles/import", definition) as Promise<StandingRoleRow>,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ROLES_KEY }),
   });
 }

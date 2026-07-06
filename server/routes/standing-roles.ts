@@ -39,10 +39,16 @@
 import { randomUUID } from "node:crypto";
 import type { Express, Request, Response } from "express";
 import { z } from "zod";
-import { CONSILIUM_REVIEW_PRESETS, REVIEW_MODES } from "@shared/types";
-import type { StandingRoleConcern, TriggerConfig, TriggerType } from "@shared/types";
+import { CONSILIUM_REVIEW_PRESETS, REVIEW_MODES, STANDING_ROLE_DEFINITION_VERSION } from "@shared/types";
+import type {
+  StandingRoleConcern,
+  StandingRoleDefinition,
+  TriggerConfig,
+  TriggerType,
+} from "@shared/types";
 import type { IStorage } from "../storage.js";
-import type { InsertStandingRole } from "@shared/schema";
+import type { InsertStandingRole, StandingRoleRow } from "@shared/schema";
+import { computeRoleGraduation } from "../services/consilium/role-track-record.js";
 import { validateBody } from "../middleware/validate.js";
 import {
   createConsiliumReview,
@@ -126,15 +132,49 @@ const TrackerConcernFilterSchema = z.object({
  * discriminated union. TRACK-6 adds `tracker_event` (github only) — a role whose INBOX
  * is a tracker project; the labelled ticket crystallises a spec STAMPED with the role.
  */
+/** The concern's trigger union — shared by add-concern AND import (identical bounds). */
+const ConcernTriggerSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("file_change"), filter: FileChangeConcernFilterSchema }),
+  z.object({ type: z.literal("github_event"), filter: GitHubConcernFilterSchema }),
+  z.object({ type: z.literal("tracker_event"), filter: TrackerConcernFilterSchema }),
+]);
+
 const AddConcernSchema = z.object({
   repoPath: z.string().min(1).max(4096),
   focus: z.string().min(1).max(8000),
   enabled: z.boolean().optional(),
-  trigger: z.discriminatedUnion("type", [
-    z.object({ type: z.literal("file_change"), filter: FileChangeConcernFilterSchema }),
-    z.object({ type: z.literal("github_event"), filter: GitHubConcernFilterSchema }),
-    z.object({ type: z.literal("tracker_event"), filter: TrackerConcernFilterSchema }),
-  ]),
+  trigger: ConcernTriggerSchema,
+});
+
+/**
+ * ROLE-4 (standing-role.md §8): the portable-definition body `POST /api/roles/import`
+ * accepts. Mirrors `StandingRoleDefinition`. Skills travel by NAME (re-resolved against
+ * the TARGET registry, fail-closed). `id`/`projectId`/`createdBy`/`triggerId` are NOT
+ * accepted — identity/runtime is minted fresh by the import (an incoming `enabled` is
+ * IGNORED: import always creates DISABLED, §6). Same bounds as create/add-concern so an
+ * oversized/foreign definition is a clean 400, never a downstream truncation.
+ */
+const ImportRoleSchema = z.object({
+  kind: z.literal("standing-role-definition"),
+  schemaVersion: z.number().int(),
+  // exportedAt is informational — accepted but not trusted (bounded to a sane length).
+  exportedAt: z.string().max(64).optional(),
+  name: z.string().min(1).max(200),
+  persona: z.string().min(1).max(8000),
+  skills: z.array(z.object({ name: z.string().min(1).max(200) })).max(MAX_ROLE_SKILLS).default([]),
+  loopTemplate: LoopTemplateSchema,
+  policy: PolicySchema.nullish(),
+  concerns: z
+    .array(
+      z.object({
+        repoPath: z.string().min(1).max(4096),
+        focus: z.string().min(1).max(8000),
+        enabled: z.boolean().optional(),
+        trigger: ConcernTriggerSchema,
+      }),
+    )
+    .max(50)
+    .default([]),
 });
 
 /** PATCH is a partial of create (every field optional). */
@@ -162,6 +202,118 @@ async function firstUnknownSkillId(storage: IStorage, skillIds: readonly string[
     if (!skill) return id;
   }
   return null;
+}
+
+/**
+ * ROLE-4 export: map a role's stored skill IDS → portable NAMES (the SKILL.md slug —
+ * the only cross-project-stable key; a UUID is meaningless elsewhere). A skill id that
+ * no longer resolves (a since-deleted skill) is DROPPED from the portable definition —
+ * it is already a dangling reference, and export must never leak an opaque local id as a
+ * "name" (that would fail-closed on import in a confusing way). Returns { names, dropped }.
+ */
+async function skillIdsToPortableNames(
+  storage: IStorage,
+  skillIds: readonly string[],
+): Promise<{ names: string[]; dropped: number }> {
+  const names: string[] = [];
+  let dropped = 0;
+  for (const id of skillIds) {
+    const skill = await storage.getSkill(id);
+    if (skill?.name) names.push(skill.name);
+    else dropped += 1;
+  }
+  return { names, dropped };
+}
+
+/**
+ * ROLE-4 import: re-resolve portable skill NAMES against the TARGET project's registry,
+ * FAIL-CLOSED. Returns the resolved local ids OR the FIRST offending name (safe to echo
+ * — it is the caller's own input). This is the import trust gate: an imported role can
+ * NEVER reference a capability the target project lacks (adversarial: "import trusting
+ * unvalidated skills"). Name is the join key; the first registry match by name wins.
+ */
+async function resolveSkillNames(
+  storage: IStorage,
+  names: readonly string[],
+): Promise<{ ids: string[] } | { unknownName: string }> {
+  if (names.length === 0) return { ids: [] };
+  const registry = await storage.getSkills();
+  const byName = new Map<string, string>();
+  for (const s of registry) {
+    if (!byName.has(s.name)) byName.set(s.name, s.id);
+  }
+  const ids: string[] = [];
+  for (const name of names) {
+    const id = byName.get(name);
+    if (!id) return { unknownName: name };
+    ids.push(id);
+  }
+  return { ids };
+}
+
+/**
+ * ROLE-4 export: render a StandingRole row → its PORTABLE definition (standing-role.md
+ * §8). Emits DEFINITION only — persona/skills(by name)/loopTemplate/policy/concerns —
+ * and DELIBERATELY OMITS all runtime/identity/secret state: `id`, `projectId`,
+ * `createdBy`, timestamps, the role's live `enabled`, and every concern's `id` +
+ * backing `triggerId`. (A concern's `id`/`triggerId` are per-project runtime rows; a
+ * fresh import mints its own.) Nothing here can wake work or leak a secret — it is a
+ * spec, not a session.
+ */
+async function roleToDefinition(
+  storage: IStorage,
+  role: StandingRoleRow,
+): Promise<{ definition: StandingRoleDefinition; skillsDropped: number }> {
+  const { names, dropped } = await skillIdsToPortableNames(storage, role.skills ?? []);
+  const concerns = ((role.concerns ?? []) as StandingRoleConcern[]).map((c) => ({
+    repoPath: c.repoPath,
+    focus: c.focus,
+    trigger: c.trigger,
+    ...(c.enabled !== undefined ? { enabled: c.enabled } : {}),
+  }));
+  const definition: StandingRoleDefinition = {
+    kind: "standing-role-definition",
+    schemaVersion: STANDING_ROLE_DEFINITION_VERSION,
+    exportedAt: new Date().toISOString(),
+    name: role.name,
+    persona: role.persona,
+    skills: names.map((name) => ({ name })),
+    loopTemplate: role.loopTemplate,
+    policy: role.policy ?? null,
+    concerns,
+  };
+  return { definition, skillsDropped: dropped };
+}
+
+/**
+ * ROLE-2/ROLE-4: build a concern (fresh id) + MATERIALISE its backing trigger, returning
+ * the concern with its `triggerId` set. Shared by the add-concern endpoint AND import so
+ * the trigger-wiring can never drift between the two paths. The backing trigger's
+ * `enabled` mirrors the concern; the ROLE's own `enabled` is the master gate the dispatch
+ * checks first (a disabled role never wakes — verified in trigger-dispatch), so an
+ * imported concern is doubly inert until a human enables the (disabled-on-import) role.
+ */
+async function materializeConcern(
+  storage: IStorage,
+  roleId: string,
+  input: { repoPath: string; focus: string; trigger: StandingRoleConcern["trigger"]; enabled?: boolean },
+): Promise<StandingRoleConcern> {
+  const concern: StandingRoleConcern = {
+    id: randomUUID(),
+    repoPath: input.repoPath,
+    focus: input.focus,
+    trigger: input.trigger,
+    ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+  };
+  const { type, config } = buildConcernTriggerConfig(concern, roleId);
+  const trigger = await storage.createTrigger({
+    pipelineId: null,
+    type,
+    config,
+    enabled: concern.enabled !== false,
+  } as Parameters<IStorage["createTrigger"]>[0]);
+  concern.triggerId = trigger.id;
+  return concern;
 }
 
 /**
@@ -380,25 +532,14 @@ export function registerStandingRoleRoutes(app: Express, deps: CreateConsiliumRe
     const role = await storage.getStandingRole(String(req.params.id));
     if (!role) return res.status(404).json({ error: "Role not found" });
 
-    const concern: StandingRoleConcern = {
-      id: randomUUID(),
+    // Materialise the concern + its backing trigger via the shared helper (same wiring
+    // import uses). createTrigger sets projectId from the request ALS (project-scoped).
+    const concern = await materializeConcern(storage, role.id, {
       repoPath: body.repoPath,
       focus: body.focus,
       trigger: body.trigger as StandingRoleConcern["trigger"],
-      ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
-    };
-
-    // Materialise the backing trigger FIRST so its id can be stored on the concern for
-    // lifecycle (delete concern → delete trigger). createTrigger sets projectId from the
-    // request ALS (project-scoped). enabled mirrors the concern (default on).
-    const { type, config } = buildConcernTriggerConfig(concern, role.id);
-    const trigger = await storage.createTrigger({
-      pipelineId: null,
-      type,
-      config,
-      enabled: concern.enabled !== false,
-    } as Parameters<IStorage["createTrigger"]>[0]);
-    concern.triggerId = trigger.id;
+      enabled: body.enabled,
+    });
 
     const concerns = [...((role.concerns ?? []) as StandingRoleConcern[]), concern];
     const updated = await storage.updateStandingRole(String(req.params.id), {
@@ -444,5 +585,113 @@ export function registerStandingRoleRoutes(app: Express, deps: CreateConsiliumRe
     const loops = await storage.getLoops();
     const woken = loops.filter((l) => l.triggerProvenance?.role?.roleId === role.id);
     return res.json(woken);
+  });
+
+  // ─── ROLE-4: TRACK RECORD → the "proven → graduate" signal ─────────────────
+  // READ-ONLY (standing-role.md §8, ADR-0002 success-delta): compute the role's measured
+  // track record from its woken loops' terminal states + its ROLE-SCOPED (fail-closed)
+  // Experience items, and derive the graduation-readiness verdict. Mutates NOTHING — a
+  // read of this endpoint can never alter a loop or an item. `proven` is EARNED from
+  // ground truth here; there is no user-settable "proven" field anywhere.
+  app.get("/api/roles/:id/track-record", async (req: Request, res: Response) => {
+    if (!req.user?.id) return res.status(401).json({ error: "Authentication required" });
+    if (!req.projectId) return res.status(400).json({ error: "x-project-id header is required" });
+    const role = await storage.getStandingRole(String(req.params.id));
+    if (!role) return res.status(404).json({ error: "Role not found" });
+
+    // Both reads are project-scoped by the request ALS. Experience items are filtered to
+    // THIS role fail-closed inside the pure computation (scope.role === role.id); a
+    // generous limit so an active role's full record is seen (role-id filter is exact).
+    const [loops, items] = await Promise.all([
+      storage.getLoops(),
+      storage.listExperienceItems(2000),
+    ]);
+    const readiness = computeRoleGraduation(role.id, loops, items);
+    return res.json(readiness);
+  });
+
+  // ─── ROLE-4: EXPORT a role as a portable, shareable definition ─────────────
+  // Emits the DEFINITION only (persona/skills-by-name/loopTemplate/policy/concerns) with
+  // NO runtime/identity/secret state — see `roleToDefinition`. The JSON a human hands to
+  // another project (or attaches to a genai-enablement ADR for cross-repo graduation).
+  app.get("/api/roles/:id/export", async (req: Request, res: Response) => {
+    if (!req.user?.id) return res.status(401).json({ error: "Authentication required" });
+    if (!req.projectId) return res.status(400).json({ error: "x-project-id header is required" });
+    const role = await storage.getStandingRole(String(req.params.id));
+    if (!role) return res.status(404).json({ error: "Role not found" });
+
+    const { definition, skillsDropped } = await roleToDefinition(storage, role);
+    // Suggest a filename; the client can save the body verbatim.
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="role-${role.name.replace(/[^A-Za-z0-9._-]/g, "_")}.json"`,
+    );
+    if (skillsDropped > 0) res.setHeader("X-Skills-Dropped", String(skillsDropped));
+    return res.json(definition);
+  });
+
+  // ─── ROLE-4: IMPORT a role FROM a portable definition ──────────────────────
+  // Create-from-definition (standing-role.md §8). SAFETY:
+  //   - schemaVersion mismatch → 400 (fail-closed, never a silent mis-map).
+  //   - skills re-resolved by NAME against THIS project's registry, FAIL-CLOSED (an
+  //     unknown skill → 400, NOTHING created) — the import trust gate.
+  //   - the role is ALWAYS created DISABLED (§6: enabling a role is a human act) — an
+  //     imported definition can never wake work on arrival.
+  //   - persona/focus stay UNTRUSTED end-to-end (fenced by the factory at any later wake).
+  //   - no cross-repo auto-push / auto-graduation — import is a LOCAL create only.
+  app.post("/api/roles/import", validateBody(ImportRoleSchema), async (req: Request, res: Response) => {
+    if (!req.user?.id) return res.status(401).json({ error: "Authentication required" });
+    if (!req.projectId) return res.status(400).json({ error: "x-project-id header is required" });
+    const def = req.body as z.infer<typeof ImportRoleSchema>;
+
+    if (def.schemaVersion !== STANDING_ROLE_DEFINITION_VERSION) {
+      return res.status(400).json({
+        error: `unsupported definition schemaVersion ${def.schemaVersion} (this server imports version ${STANDING_ROLE_DEFINITION_VERSION})`,
+      });
+    }
+
+    // Fail-closed skill re-validation against the TARGET registry (by name).
+    const resolved = await resolveSkillNames(storage, def.skills.map((s) => s.name));
+    if ("unknownName" in resolved) {
+      return res.status(400).json({
+        error: `skill "${resolved.unknownName}" from the imported definition was not found in this project — create it first, then re-import.`,
+      });
+    }
+
+    // Create the role DISABLED with the LOCAL skill ids. Concerns are materialised
+    // AFTER (each needs the role id for its backing-trigger binding).
+    const created = await storage.createStandingRole({
+      name: def.name,
+      persona: def.persona,
+      skills: resolved.ids,
+      loopTemplate: def.loopTemplate,
+      concerns: [],
+      policy: def.policy ?? null,
+      // §6: import NEVER enables — a shared definition arrives inert; a human enables it.
+      enabled: false,
+      createdBy: req.user.id,
+    } as InsertStandingRole);
+
+    // Re-materialise each concern's backing trigger (shared wiring). The role is disabled,
+    // so none can fire until a human enables it (double-gated: role + concern `enabled`).
+    if (def.concerns.length > 0) {
+      const concerns: StandingRoleConcern[] = [];
+      for (const c of def.concerns) {
+        concerns.push(
+          await materializeConcern(storage, created.id, {
+            repoPath: c.repoPath,
+            focus: c.focus,
+            trigger: c.trigger as StandingRoleConcern["trigger"],
+            enabled: c.enabled,
+          }),
+        );
+      }
+      const updated = await storage.updateStandingRole(created.id, {
+        concerns,
+      } as Partial<InsertStandingRole>);
+      return res.status(201).json(updated);
+    }
+
+    return res.status(201).json(created);
   });
 }
