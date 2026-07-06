@@ -1563,6 +1563,111 @@ export interface RoleConcernBinding {
 }
 
 /**
+ * ROLE-4 (standing-role.md §8): the CURRENT export/import schema version. A portable
+ * definition carries this so an import from a newer/older exporter fails-closed with a
+ * clear error rather than silently mis-mapping fields.
+ */
+export const STANDING_ROLE_DEFINITION_VERSION = 1 as const;
+
+/**
+ * ROLE-4 (standing-role.md §8): a PORTABLE StandingRole definition — the shareable
+ * artifact `GET /api/roles/:id/export` emits and `POST /api/roles/import` consumes.
+ *
+ * It is the role's DEFINITION only — deliberately WITHOUT runtime/identity/secret state:
+ *   - NO `id` / `projectId` / `createdBy` / timestamps (identity is per-project; import
+ *     mints a fresh row owned by the importer).
+ *   - NO backing `triggerId` on any concern (that is a per-project runtime row; import
+ *     re-materialises its own backing triggers).
+ *   - NO `enabled: true` bypass — import ALWAYS creates the role DISABLED (§6: enabling a
+ *     role is a human act), so a shared definition can never wake work on arrival.
+ *
+ * Skills travel by NAME (the ADR-0002 SKILL.md slug), NOT by the source project's opaque
+ * skill UUID — a UUID is meaningless in another project. Import re-resolves each name
+ * against the TARGET project's registry FAIL-CLOSED (an unknown skill → 400, nothing
+ * created), so an imported role can never reference a capability the target lacks.
+ */
+export interface StandingRoleDefinition {
+  /** Discriminator so a stray JSON blob is rejected before field access. */
+  kind: "standing-role-definition";
+  /** Schema version — `STANDING_ROLE_DEFINITION_VERSION`; a mismatch fails-closed. */
+  schemaVersion: number;
+  /** ISO-8601 when the export was taken (informational; not trusted on import). */
+  exportedAt: string;
+  name: string;
+  persona: string;
+  /** Skills by portable NAME (SKILL.md slug), re-validated against the target registry. */
+  skills: StandingRoleDefinitionSkill[];
+  loopTemplate: StandingRoleLoopTemplate;
+  /** The per-role rails (budget/cascade), carried as-is (config, not runtime). */
+  policy?: StandingRolePolicy | null;
+  /** The concerns the role watches — declarations only (no `id`, no `triggerId`). */
+  concerns: StandingRoleDefinitionConcern[];
+}
+
+/** A skill reference in a portable definition — the NAME is the join key on import. */
+export interface StandingRoleDefinitionSkill {
+  /** The skill's NAME (SKILL.md slug) — re-resolved to a local id on import. */
+  name: string;
+}
+
+/** A concern in a portable definition — the ROLE-2 concern MINUS its runtime bookkeeping. */
+export interface StandingRoleDefinitionConcern {
+  repoPath: string;
+  focus: string;
+  trigger: StandingRoleConcernTrigger;
+  enabled?: boolean;
+}
+
+/**
+ * ROLE-4 (standing-role.md §8, [[platform-canon]] ADR-0002 success-delta): a role's
+ * MEASURED track record — computed READ-ONLY from its woken loops' terminal states +
+ * its role-scoped Experience items (ROLE-3). NOTHING here is self-reported; every count
+ * is ground-truth (a loop's terminal `state` / an item's independently-set `confidence`).
+ */
+export interface RoleTrackRecord {
+  /** All loops this role has woken (manual + trigger), terminal or not. */
+  wokenLoops: number;
+  /** Woken loops that reached the `converged` terminal. */
+  convergedLoops: number;
+  /** Woken loops that reached a NON-converged terminal (stopped_cap/failed/escalated/cancelled). */
+  failedLoops: number;
+  /** Woken loops still running (non-terminal) — excluded from the convergence rate. */
+  activeLoops: number;
+  /** convergedLoops + failedLoops — the loops with a settled outcome. */
+  terminalLoops: number;
+  /** convergedLoops / terminalLoops, or null when no loop has settled yet. */
+  convergenceRate: number | null;
+  /** Role-scoped Experience items independently CONFIRMED (`confidence: verified`). */
+  verifiedPatterns: number;
+  /** Role-scoped Experience items independently REFUTED (`confidence: refuted`). */
+  refutedPatterns: number;
+  /** Role-scoped Experience items merely observed (unverified). */
+  observedPatterns: number;
+}
+
+/** The graduation signal's verdict — EARNED from `RoleTrackRecord`, never self-reported. */
+export type GraduationStatus = "proven" | "needs-more-evidence" | "insufficient-evidence";
+
+/**
+ * ROLE-4: the "proven → graduate" signal (standing-role.md §8, ADR-0002). A role EARNS
+ * `proven` from measured outcomes (a floor of settled loops, a convergence-rate floor,
+ * net-positive verified patterns) — it can NEVER be set by a user. This surfaces
+ * READINESS + the export; a human (per §6 / CODEOWNERS) decides the actual cross-repo
+ * graduation. ROLE-4 ships the exportable definition + this signal; the cross-repo
+ * publish to omnius/genai-enablement is a documented boundary (a separate ADR), not an
+ * auto-push.
+ */
+export interface GraduationReadiness {
+  status: GraduationStatus;
+  /** One-line human summary, e.g. "6 loops, 83% converged, 3 verified patterns — proven". */
+  summary: string;
+  /** Why the status is what it is — each gate's contribution (audit, never opinion). */
+  rationale: string[];
+  /** The measured record the verdict was computed from. */
+  trackRecord: RoleTrackRecord;
+}
+
+/**
  * A file-change trigger ACTION that launches a consilium review. Embedded in the
  * trigger's `config` JSONB. `repoPath`, when present, MUST resolve inside the
  * consilium-loop allowlist (re-validated INSIDE the factory — never trusted from
