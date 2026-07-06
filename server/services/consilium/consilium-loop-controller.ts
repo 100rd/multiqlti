@@ -1132,10 +1132,17 @@ export class ConsiliumLoopController {
             .filter((m): m is NonNullable<typeof m> => typeof m === "string"),
         ),
       );
+      // ROLE-3 (standing-role.md §3/§6/§8): if THIS loop was role-fired, key the read by its
+      // (role, concern) too so the Role reads its OWN prior lessons first (warm start) and —
+      // fail-closed — never another role's. Absent for human/spec/non-role loops (role null),
+      // which then read only role-agnostic (repo-scoped) items, byte-identical to DREAM-2.
+      const roleProv = loop.triggerProvenance?.role;
       const query: ExperienceReadQuery = {
         repo: normalizeExperienceRepo(loop.repoPath),
         archetype: loop.archetype ?? null,
         criterionClasses,
+        role: roleProv?.roleId ?? null,
+        concern: roleProv?.concernId ?? null,
       };
       const opts = {
         topK: readCfg.topK,

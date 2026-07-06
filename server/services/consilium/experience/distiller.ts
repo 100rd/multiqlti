@@ -180,6 +180,17 @@ export function distillLoop(
   const loopConverged = loop.state === "converged";
   const archetype = loop.archetype ?? null;
 
+  // ── ROLE-3 (standing-role.md §3/§6/§8) — SCOPE experience by role ────────────
+  // When THIS loop was ROLE-FIRED (ROLE-1 wake / ROLE-2 trigger records
+  // `triggerProvenance.role`), stamp the role (+ its concern) onto every item's scope so
+  // the item records "as THIS role on THIS concern, pattern X was verified". A non-role
+  // loop leaves both ABSENT — its items are byte-identical to pre-ROLE-3 (repo-scoped).
+  // We stamp only the server-generated IDs (never the role's human `name`), clamped inert
+  // for defence-in-depth; a concern is stamped ONLY alongside a role (meaningless alone).
+  const roleProv = loop.triggerProvenance?.role;
+  const roleId = clampText(roleProv?.roleId) || null;
+  const concernId = roleId ? clampText(roleProv?.concernId) || null : null;
+
   // Collapse duplicate (criterionClass + claim) leaves across rounds into ONE item,
   // keeping the STRONGEST confidence and accumulating (bounded) evidence links.
   const byKey = new Map<string, Candidate>();
@@ -246,7 +257,14 @@ export function distillLoop(
     };
     items.push({
       projectId: loop.projectId ?? null,
-      scope: { repo, archetype, criterionClass: cand.method },
+      scope: {
+        repo,
+        archetype,
+        criterionClass: cand.method,
+        // ROLE-3: additive — present ONLY for a role-fired loop (fail-closed on read).
+        ...(roleId ? { role: roleId } : {}),
+        ...(concernId ? { concern: concernId } : {}),
+      },
       claim: cand.claim,
       evidence: cand.evidence,
       verification,

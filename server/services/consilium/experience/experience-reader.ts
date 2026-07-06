@@ -39,6 +39,20 @@ export interface ExperienceReadQuery {
   archetype: Archetype | null;
   /** The criterion classes named in the verdict (the APs' methods). Empty ⇒ any class. */
   criterionClasses: readonly string[];
+  /**
+   * ROLE-3 (standing-role.md §3/§6/§8): the Standing Role that FIRED this loop
+   * (`triggerProvenance.role.roleId`), or null/undefined for a human/spec/non-role loop.
+   * This is the KEY to the fail-closed boundary (§6): a role reads its OWN role-scoped
+   * items PLUS every role-agnostic (repo-scoped) item, and NEVER another role's items. A
+   * non-role loop (role null) reads ONLY role-agnostic items. Absent ⇒ treated as null.
+   */
+  role?: string | null;
+  /**
+   * ROLE-3: the CONCERN that woke the role (`triggerProvenance.role.concernId`), or null.
+   * NOT part of the fail-closed boundary (that is `role` alone) — it only RANKS a role's
+   * own `(role, concern)` lessons above its other-concern / generic ones.
+   */
+  concern?: string | null;
 }
 
 /** Bounds for the read (all sourced from config so an operator can tune/clamp them). */
@@ -69,6 +83,14 @@ const CONFIDENCE_TIE_RANK: Record<ExperienceConfidence, number> = {
   refuted: 1,
 };
 
+// ── ROLE-3 rank affinity (a Role starts warm, standing-role.md §3/§8) ───────────
+/** A role's OWN `(role, concern)` lesson — its beat; leads its plan. */
+const ROLE_CONCERN_AFFINITY = 2.0;
+/** Same role, other/absent concern — boosted above generic, below same-concern. */
+const ROLE_AFFINITY = 1.5;
+/** Role-agnostic (repo-scoped) — the shared cross-role baseline (byte-identical pre-ROLE-3). */
+const GENERIC_AFFINITY = 1.0;
+
 const MS_PER_DAY = 86_400_000;
 /** Never render a claim longer than this in the block (distiller already clamps to 400). */
 const MAX_CLAIM_RENDER = 400;
@@ -93,8 +115,9 @@ export function normalizeExperienceRepo(repoPath: string | null | undefined): st
 }
 
 /**
- * SCOPE BIND (§8): does this item apply to this query? `repo` is a HARD exact match (the
- * anti-cross-repo guard); `archetype` and `criterionClass` are soft (null/empty ⇒ wildcard).
+ * SCOPE BIND (§8 + ROLE-3 §6): does this item apply to this query? `repo` is a HARD exact
+ * match (the anti-cross-repo guard); `archetype` and `criterionClass` are soft (null/empty
+ * ⇒ wildcard); and a ROLE-scoped item is FAIL-CLOSED — readable only by the same role.
  */
 export function itemMatchesScope(item: ExperienceItemRow, query: ExperienceReadQuery): boolean {
   const scope = item.scope;
@@ -110,7 +133,41 @@ export function itemMatchesScope(item: ExperienceItemRow, query: ExperienceReadQ
   if (query.criterionClasses.length > 0 && !query.criterionClasses.includes(scope.criterionClass)) {
     return false;
   }
+  // ROLE-3 FAIL-CLOSED role bind (standing-role.md §6): a ROLE-SCOPED item
+  // (`scope.role` set) is a private lesson — it is readable ONLY by the SAME role. A
+  // different role, OR a non-role loop (`query.role` null/undefined), NEVER sees it — a
+  // DevOps role must not silently inherit a Security role's lesson. A role-AGNOSTIC item
+  // (no `scope.role`) has NO such gate: it is repo-scoped and read by every role and by
+  // non-role loops alike (that is the shared, cross-role repo experience).
+  if (scope.role != null) {
+    if (query.role == null || query.role !== scope.role) return false;
+  }
   return true;
+}
+
+/**
+ * ROLE-3 RANK affinity (standing-role.md §3/§8 — "a Role starts warm"): a role's OWN
+ * experience should LEAD its plan. This is a multiplier folded into the base
+ * `confidence × freshness` score in `selectExperienceItems`, so a role-scoped verified
+ * item out-ranks a generic one of comparable freshness, while §6 decay still applies (a
+ * badly-stale role item can still be overtaken — the plane stays anti-Goodhart honest).
+ *
+ * Only role-scoped items reach the boosted branches (the fail-closed `itemMatchesScope`
+ * already guarantees any surviving role-scoped item shares the query's role), so:
+ *   - same role AND same concern → strongest (the role's own beat, `(role, concern)`);
+ *   - same role, other/no concern → boosted, but below same-concern;
+ *   - role-agnostic (no `scope.role`) → neutral (the shared repo baseline).
+ */
+export function roleAffinity(item: ExperienceItemRow, query: ExperienceReadQuery): number {
+  const itemRole = item.scope?.role;
+  if (itemRole == null) return GENERIC_AFFINITY; // role-agnostic — shared repo baseline.
+  // Defensive: fail-closed scope should already exclude a role mismatch; re-check anyway.
+  if (query.role == null || query.role !== itemRole) return GENERIC_AFFINITY;
+  const itemConcern = item.scope?.concern;
+  if (query.concern != null && itemConcern != null && itemConcern === query.concern) {
+    return ROLE_CONCERN_AFFINITY; // the role's own (role, concern) beat — leads.
+  }
+  return ROLE_AFFINITY; // same role, different/absent concern — boosted, below same-concern.
 }
 
 /** Age in whole+fractional days since `lastConfirmedAt` (>= 0; unparseable ⇒ very stale). */
@@ -152,11 +209,14 @@ interface Ranked {
   score: number;
   effConfidence: ExperienceConfidence;
   age: number;
+  affinity: number;
 }
 
 /**
- * Filter to scope, rank by `confidence × freshness` (verified-first, fresher-first, refuted
- * shown but sunk), and take the top-K. PURE — the input array is never mutated.
+ * Filter to scope, rank by `confidence × freshness × role-affinity` (ROLE-3: a role's own
+ * `(role, concern)` lessons lead — verified-first, fresher-first, refuted shown but sunk),
+ * and take the top-K. PURE — the input array is never mutated. For a non-role query every
+ * surviving item is role-agnostic (affinity 1.0), so the ranking is byte-identical to DREAM-2.
  */
 export function selectExperienceItems(
   items: readonly ExperienceItemRow[],
@@ -167,15 +227,20 @@ export function selectExperienceItems(
   const ranked: Ranked[] = [];
   for (const item of items) {
     if (!itemMatchesScope(item, query)) continue;
+    const affinity = roleAffinity(item, query);
     ranked.push({
       item,
-      score: scoreExperienceItem(item, opts, now),
+      // ROLE-3: the affinity multiplier biases toward the role's own experience while §6
+      // time-decay still applies (affinity 1.0 for role-agnostic ⇒ unchanged base score).
+      score: scoreExperienceItem(item, opts, now) * affinity,
       effConfidence: effectiveConfidence(item, opts, now),
       age: ageDays(item, now),
+      affinity,
     });
   }
   ranked.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score; // higher confidence×freshness first
+    if (b.score !== a.score) return b.score - a.score; // higher confidence×freshness×affinity
+    if (b.affinity !== a.affinity) return b.affinity - a.affinity; // then the role's own leads
     const tie = CONFIDENCE_TIE_RANK[b.effConfidence] - CONFIDENCE_TIE_RANK[a.effConfidence];
     if (tie !== 0) return tie; // verified > observed > refuted at equal score
     return a.age - b.age; // then fresher first

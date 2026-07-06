@@ -2335,7 +2335,9 @@ export const experienceItems = pgTable(
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
     // Nullable, mirrors consilium_loops.project_id — the source loop's project.
     projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-    // WHERE the pattern applies (§3): { repo, archetype, criterionClass }.
+    // WHERE the pattern applies (§3): { repo, archetype, criterionClass } — plus an
+    // OPTIONAL ROLE-3 (role, concern) when the source loop was role-fired (additive, no
+    // migration: jsonb). A role-scoped item is fail-closed on read (same role only).
     scope: jsonb("scope").$type<ExperienceScope>().notNull(),
     // ONE distilled fact/pattern (clamped, inert).
     claim: text("claim").notNull(),
