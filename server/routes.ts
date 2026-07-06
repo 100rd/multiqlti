@@ -59,8 +59,13 @@ import { registerTaskGroupResolveRoute } from "./routes/task-group-resolve";
 import { registerConsiliumLoopRoutes } from "./routes/consilium-loops";
 import { registerConsiliumReviewRoutes } from "./routes/consilium-reviews";
 import { createConsiliumReview } from "./services/consilium/review-factory";
-import { maybeLaunchConsiliumReview, maybeLaunchGitHubReview, resolveSpecWatchConfig } from "./services/consilium/trigger-dispatch";
+import { maybeLaunchConsiliumReview, maybeLaunchGitHubReview, resolveSpecWatchConfig, deriveRepoRoot } from "./services/consilium/trigger-dispatch";
 import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consilium/consilium-loop-controller";
+import {
+  writeSpecStatusRemote,
+  specStatusForTerminalLoop,
+  type SpecStatusValue,
+} from "./services/consilium/spec-status-writer";
 import { registerModelSkillBindingRoutes } from "./routes/model-skill-bindings";
 import { registerTaskTraceRoutes } from "./routes/task-traces";
 import { registerTaskIterationRoutes } from "./routes/task-iterations";
@@ -256,6 +261,29 @@ export async function registerRoutes(
   // SAME controller. Stays null when the kill-switch is off — fireTrigger then
   // treats a consilium_review action as an inert no-op (logs + skips).
   let consiliumLoopController: ConsiliumLoopController | null = null;
+  // SPEC-2 (spec-as-task.md §4): the ONE spec-status write seam, GATED behind
+  // spec-watch. BOTH lifecycle flips route through here — the launch flip
+  // (`ready → in-progress`, via the trigger dispatch) and the terminal flip
+  // (`in-progress → blocked`, via the loop controller) — so the kill-switch is
+  // enforced in a SINGLE place and the write is BEST-EFFORT + never-throw. When
+  // spec-watch is OFF, this returns immediately: no `gh` call, no commit, byte-
+  // identical to before. It commits REMOTELY (never the operator's local tree).
+  const flipSpecStatus = async (args: {
+    specPath: string;
+    specRepoPath: string;
+    from: SpecStatusValue;
+    to: SpecStatusValue;
+    reason?: string;
+  }): Promise<void> => {
+    if (!resolveSpecWatchConfig(appConfigLoader.get()).enabled) return; // kill-switch OFF ⇒ no write.
+    const res = await writeSpecStatusRemote(
+      { log: (m) => log(m, "triggers") },
+      { specRepoPath: args.specRepoPath, specPath: args.specPath, expectedFrom: args.from, to: args.to, reason: args.reason },
+    );
+    if (!res.ok) {
+      log(`[spec-status] ${args.from}->${args.to} not written for ${args.specPath}: ${res.reason}`, "triggers");
+    }
+  };
   if (appConfigLoader.get().pipeline.consiliumLoop.enabled) {
     consiliumLoopController = new ConsiliumLoopController({
       storage,
@@ -268,6 +296,22 @@ export async function registerRoutes(
       // §14.4: the DEVELOPING→AWAITING_MERGE close-out runs the SDLC executor
       // (isolated worktree + agentic coder + Draft PR) by default — no manager
       // seam needed here. Push/PR go through pr-wrapper (B-3/H-6/H-7/M-6/M-7).
+      //
+      // SPEC-2 (§4): on a SPEC-FIRED loop reaching a TERMINAL state, flip the spec's
+      // `status:`. `converged` leaves it `in-progress` (the code PR is the next gate,
+      // spec→done comes from the merge — reconcileSpecStatusOnPrMerge); a stalled
+      // terminal (`failed`/`stopped_cap`/`escalated`/`cancelled`) → `blocked` so it
+      // does NOT re-fire the watch trigger (only `ready` fires). CAS-guarded on
+      // `in-progress`, so a spec a human already moved is never clobbered.
+      onSpecLoopTerminal: async (loop, terminalState) => {
+        const specPath = loop.triggerProvenance?.spec?.specPath;
+        if (!specPath) return;
+        const target = specStatusForTerminalLoop(terminalState);
+        if (!target) return; // converged / non-terminal → leave in-progress.
+        const specRepoPath = deriveRepoRoot(specPath);
+        if (!specRepoPath) return;
+        await flipSpecStatus({ specPath, specRepoPath, from: "in-progress", to: target.to, reason: target.reason });
+      },
     });
     registerConsiliumLoopRoutes(app, storage, consiliumLoopController, () => appConfigLoader.get());
     // POST /api/consilium-reviews — the UI "New consilium review" button. Same
@@ -418,6 +462,12 @@ export async function registerRoutes(
           // byte-identical. The parent consiliumLoop.enabled gate is enforced downstream
           // (reviewDeps null). The fold lives in one tested helper (see its unit test).
           specWatch: () => resolveSpecWatchConfig(appConfigLoader.get()),
+          // SPEC-2 (§4): flip a just-launched spec `ready → in-progress`. The shared
+          // `flipSpecStatus` helper is spec-watch-gated + best-effort + never-throw, so
+          // a status-commit hiccup can never turn a real loop launch into a failure. The
+          // dispatch only calls it on a genuine `launched` (not dedup/skip), from inside
+          // the spec path (which itself runs only when spec-watch is enabled).
+          flipSpecStatus,
           log: (m: string) => log(m, "triggers"),
         };
 

@@ -259,6 +259,25 @@ export interface ConsiliumTriggerDispatchDeps {
    * is the consilium-loop repo allowlist (used to resolve a spec's `repo:` field).
    */
   specWatch?: () => SpecWatchDispatchView;
+  /**
+   * SPEC-2 (spec-as-task.md §4, GATE-1→work): flip the just-fired spec's frontmatter
+   * `status: ready → in-progress` (a small remote commit to the spec file, via the
+   * SAME safe `gh` seam SPEC-1/TRACK-1 use — never the operator's local tree). Called
+   * BEST-EFFORT and ONLY on a real `launched` (not dedup-suppress / skip): a failed
+   * status commit must NEVER flip the launch result or crash the watcher. This is the
+   * DURABLE "this spec is being worked" signal that replaces reliance on the in-memory
+   * active-loop dedup (which still guards the window before the commit lands). Absent
+   * for every non-route caller / test ⇒ NO write (byte-identical). Gated by the route
+   * behind `specWatch.enabled`, and only reached from inside the spec path (which only
+   * runs when spec-watch is enabled) — so a disabled spec-watch never writes.
+   */
+  flipSpecStatus?: (args: {
+    specPath: string;
+    specRepoPath: string;
+    from: "ready" | "in-progress" | "done" | "blocked" | "draft";
+    to: "ready" | "in-progress" | "done" | "blocked" | "draft";
+    reason?: string;
+  }) => Promise<void>;
   /** Structured logger (the route passes `(m) => log(m, "triggers")`). */
   log: (message: string) => void;
 }
@@ -500,7 +519,7 @@ export async function maybeLaunchSpecReview(
     .trim()
     .slice(0, 120);
 
-  return launchReviewWithDedup(deps, trigger, {
+  const result = await launchReviewWithDedup(deps, trigger, {
     projectId,
     repoPath,
     preset,
@@ -518,6 +537,28 @@ export async function maybeLaunchSpecReview(
     eventSummary: `spec ready: ${titleLabel}`,
     payload,
   });
+
+  // SPEC-2 (§3/§4): a spec that ACTUALLY launched a loop transitions `ready →
+  // in-progress` — the durable "being worked" marker that stops a re-fire once the
+  // in-memory dedup expires (a `blocked`/`done`/`in-progress` spec no longer passes
+  // the ready-gate). ONLY on a real `launched` (never dedup-suppress: that means a
+  // loop is ALREADY running — its OWN launch already flipped the status, or is about
+  // to; re-flipping would be a redundant no-op the CAS guard rejects anyway). The
+  // spec file lives in ITS OWN repo (the watched repo), which may differ from the
+  // loop's target `repo:` — so the write targets `deriveRepoRoot(watchPath)`, not
+  // `repoPath`. Best-effort: the closure never throws; the extra catch is belt-and-
+  // braces so a status-write hiccup can never turn a real launch into a crash.
+  if (result === "launched" && deps.flipSpecStatus) {
+    const specRepoPath = deriveRepoRoot(watchPath);
+    if (specRepoPath) {
+      await deps
+        .flipSpecStatus({ specPath: filePath, specRepoPath, from: "ready", to: "in-progress" })
+        .catch((e) => deps.log(`spec-status flip (launch) errored for ${filePath}: ${(e as Error).message}`));
+    } else {
+      deps.log(`spec-status flip (launch) skipped for ${filePath} — no spec repo root`);
+    }
+  }
+  return result;
 }
 
 /**

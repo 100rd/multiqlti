@@ -189,6 +189,29 @@ describe("evaluateReadyGate", () => {
       reason: "not-a-spec",
     });
   });
+
+  // SPEC-2 (spec-as-task.md §4): `blocked` is a recognized INERT status — the target
+  // a stalled terminal loop flips the spec to. It must NEVER fire (only `ready`
+  // fires); a human moves `blocked → ready` after fixing to re-trigger.
+  it("blocked → no-op(status:blocked) — an inert stalled spec never re-fires", () => {
+    expect(gate(`---\nstatus: blocked\nacceptanceCriteria: ["c"]\n---\nb`)).toEqual({
+      fire: false,
+      reason: "status:blocked",
+    });
+  });
+
+  // SPEC-2 re-run discipline (§4 #4) — the SAFE subset, enforced entirely by the
+  // ready-gate: the system never AUTO-reopens; re-opening is a HUMAN status edit.
+  it("re-run discipline: an in-progress/done/blocked spec whose BODY is edited still does NOT fire", () => {
+    // Editing the prose of a spec already being worked / closed changes nothing —
+    // the gate keys on `status`, so a 2nd loop is never spawned (per-spec dedup
+    // also holds for in-progress). Only a human status flip to `ready` re-opens.
+    expect(gate(`---\nstatus: in-progress\nacceptanceCriteria: ["c"]\n---\nEDITED BODY`).fire).toBe(false);
+    expect(gate(`---\nstatus: done\nacceptanceCriteria: ["c"]\n---\nMATERIALLY CHANGED`).fire).toBe(false);
+    expect(gate(`---\nstatus: blocked\nacceptanceCriteria: ["c"]\n---\nEDITED`).fire).toBe(false);
+    // The re-open: a human moves a done spec back to `ready` → it fires again.
+    expect(gate(`---\nstatus: ready\nacceptanceCriteria: ["c"]\n---\nreopened`).fire).toBe(true);
+  });
 });
 
 // ─── buildSpecInstruction ──────────────────────────────────────────────────────

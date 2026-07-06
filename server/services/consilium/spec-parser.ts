@@ -97,6 +97,7 @@ export type ReadyGateReason =
   | "no-acceptance-criteria"
   | "status:in-progress"
   | "status:done"
+  | "status:blocked"
   | "unknown-status";
 
 export type ReadyGateResult =
@@ -225,7 +226,11 @@ export function readSpecFile(
 
 // ─── Ready-gate (spec-as-task §3/§5) ────────────────────────────────────────────
 
-const RECOGNIZED_STATUSES = new Set(["draft", "ready", "in-progress", "done"]);
+// SPEC-2 (spec-as-task.md §4): `blocked` is a recognized, INERT terminal status —
+// a spec-fired loop that fails/escalates/caps/cancels is flipped `in-progress →
+// blocked` (see spec-status-writer.specStatusForTerminalLoop) so it never RE-FIRES
+// (only `ready` fires). A human moves `blocked → ready` after fixing to re-trigger.
+const RECOGNIZED_STATUSES = new Set(["draft", "ready", "in-progress", "done", "blocked"]);
 
 /**
  * Decide whether a parsed candidate FIRES a loop. Fires ONLY when
@@ -247,6 +252,9 @@ export function evaluateReadyGate(parsed: SpecParseResult): ReadyGateResult {
   if (status === "draft") return { fire: false, reason: "draft" };
   if (status === "in-progress") return { fire: false, reason: "status:in-progress" };
   if (status === "done") return { fire: false, reason: "status:done" };
+  // SPEC-2: a `blocked` spec is inert — it stalled and needs a human to move it back
+  // to `ready`. NEVER fires (that would re-launch the same failing loop unbounded).
+  if (status === "blocked") return { fire: false, reason: "status:blocked" };
 
   // status === "ready": REQUIRES non-empty acceptanceCriteria (the DoD the loop
   // verifies against — no criteria ⇒ nothing to verify ⇒ not ready).

@@ -318,6 +318,55 @@ describe("maybeLaunchSpecReview — per-SPEC dedup", () => {
   });
 });
 
+// ─── SPEC-2: ready → in-progress flip on launch ────────────────────────────────
+
+describe("maybeLaunchSpecReview — SPEC-2 launch flip (ready → in-progress)", () => {
+  it("a real launch flips the spec ready → in-progress via the injected writer", async () => {
+    const p = specFile("s2-flip.md", READY);
+    const flipSpecStatus = vi.fn().mockResolvedValue(undefined);
+    const { deps } = makeDeps({ flipSpecStatus });
+    const result = await maybeLaunchSpecReview(deps, makeTrigger(), { watchPath: specsDir }, p, []);
+    expect(result).toBe("launched");
+    expect(flipSpecStatus).toHaveBeenCalledTimes(1);
+    expect(flipSpecStatus).toHaveBeenCalledWith(
+      // The spec file lives in ITS OWN repo (derived from watchPath), not the loop's `repo:`.
+      expect.objectContaining({ specPath: p, specRepoPath: specsDir, from: "ready", to: "in-progress" }),
+    );
+  });
+
+  it("a dedup-suppressed fire does NOT flip (a loop is already running for this spec)", async () => {
+    const p = specFile("s2-dedup.md", READY);
+    const flipSpecStatus = vi.fn().mockResolvedValue(undefined);
+    const { deps } = makeDeps({ flipSpecStatus }, [activeSpecLoop(p, specsDir)]);
+    const result = await maybeLaunchSpecReview(deps, makeTrigger(), { watchPath: specsDir }, p, []);
+    expect(result).toBe("skipped-dedup");
+    expect(flipSpecStatus).not.toHaveBeenCalled();
+  });
+
+  it("a non-firing (draft) spec does NOT flip", async () => {
+    const p = specFile("s2-draft.md", READY.replace("status: ready", "status: draft"));
+    const flipSpecStatus = vi.fn().mockResolvedValue(undefined);
+    const { deps } = makeDeps({ flipSpecStatus });
+    expect(await maybeLaunchSpecReview(deps, makeTrigger(), { watchPath: specsDir }, p, [])).toBe("skipped");
+    expect(flipSpecStatus).not.toHaveBeenCalled();
+  });
+
+  it("a status-write throw NEVER turns a real launch into a failure (best-effort)", async () => {
+    const p = specFile("s2-throw.md", READY);
+    const flipSpecStatus = vi.fn().mockRejectedValue(new Error("gh down"));
+    const { deps } = makeDeps({ flipSpecStatus });
+    // The launch still succeeds; the flip error is swallowed + logged.
+    expect(await maybeLaunchSpecReview(deps, makeTrigger(), { watchPath: specsDir }, p, [])).toBe("launched");
+    expect(flipSpecStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("spec-watch UNWIRED writer (flipSpecStatus absent) → launches, no flip (byte-identical)", async () => {
+    const p = specFile("s2-nowriter.md", READY);
+    const { deps } = makeDeps(); // no flipSpecStatus dep
+    expect(await maybeLaunchSpecReview(deps, makeTrigger(), { watchPath: specsDir }, p, [])).toBe("launched");
+  });
+});
+
 // ─── Kill-switch + glob routing via maybeLaunchConsiliumReview ──────────────────
 
 describe("maybeLaunchConsiliumReview — spec pre-check routing", () => {
