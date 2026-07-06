@@ -890,6 +890,33 @@ export const ConfigSchema = z.object({
           maxConcurrency: z.coerce.number().int().min(1).max(8).default(3),
         }).default({}),
       }).default({}),
+      /**
+       * Experience plane — the "Dream" distillation, WRITE side (DREAM-1).
+       * Spec: docs/design/experience-plane-dream.md §9.
+       *
+       * A background, READ-ONLY observer that, when a consilium loop reaches a terminal
+       * state, distils that loop's already-persisted trail (rounds, execution traces,
+       * verdicts, git refs) into compact, verification-GROUNDED Experience items in the
+       * `experience_items` table. It NEVER touches the loop controller (observe-only, like
+       * TRACK-2's writeback-observer) and is NEVER on the hot path — if it is down, loops
+       * run exactly as today (safe-degrade, §4).
+       *
+       * DREAM-1 is WRITE-ONLY: items only ACCUMULATE for inspection. There is NO read path
+       * (the planner reading items back is DREAM-2) and NO consolidation (DREAM-3).
+       *
+       * Kill-switch DEFAULT FALSE ⇒ BYTE-IDENTICAL: the distiller observer is NEVER
+       * constructed (routes.ts), so no rows are written and nothing about a loop changes.
+       */
+      experiencePlane: z.object({
+        /** Kill-switch: false (default) → no distiller observer constructed (inert). */
+        enabled: z.boolean().default(false),
+        /**
+         * Background observe interval (ms) — how often the distiller sweeps for terminal,
+         * not-yet-distilled loops. Deliberately coarse (off the hot path). 10s..1h;
+         * default 60s. NaN/out-of-range fails load.
+         */
+        intervalMs: z.coerce.number().int().min(10_000).max(3_600_000).default(60_000),
+      }).default({}),
     }).default({}),
   }).default({}),
 });

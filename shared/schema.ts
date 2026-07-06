@@ -17,7 +17,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { TriggerConfig, TriggerType, TriggerProvenance, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, ExecutionTrace, ReviewMode } from "./types.js";
+import type { TriggerConfig, TriggerType, TriggerProvenance, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, ExecutionTrace, ReviewMode, ExperienceScope, ExperienceEvidence, ExperienceVerification, ExperienceProvenance, ExperienceFreshness, ExperienceConfidence } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -2298,3 +2298,65 @@ export const insertStandingRoleSchema = createInsertSchema(standingRoles).omit({
 });
 export type InsertStandingRole = typeof standingRoles.$inferInsert;
 export type StandingRoleRow = typeof standingRoles.$inferSelect;
+// ─── Experience plane — the "Dream" distillation (DREAM-1) ───────────────────
+//
+// The WRITE side of the Experience plane (docs/design/experience-plane-dream.md).
+// A background distiller reads a TERMINAL consilium loop's already-persisted trail
+// and emits compact, verification-GROUNDED items here — separate from Omniscience
+// (state) and the SKILL.md registry (capability). DREAM-1 is WRITE-ONLY: items
+// accumulate for inspection; no read path (DREAM-2), no consolidation (DREAM-3).
+//
+// GROUNDING (the crux, §1/§3/§6): `confidence` is a function of HOW the underlying
+// claim was verified by OUR INDEPENDENT verification (test-run pass / single-verifier
+// `closed` / merged-converged), NEVER of an agent's self-report. A coder-believed but
+// verifier-refuted pattern lands as `refuted` (a negative lesson), equally stored.
+//
+// SCOPING: `projectId` mirrors `consilium_loops` (nullable) so items inherit the
+// source loop's project isolation. The distiller writes with the loop's OWN projectId
+// (not the ambient context — it runs cross-project under runAsSystem). `sourceLoopId`
+// is the single loop the item was distilled from — its index makes the idempotency
+// dedup ("has THIS loop already produced items?") an O(1) lookup, so a re-observe of a
+// distilled loop writes NO duplicate. All model-derived text (`claim`, evidence titles)
+// is clamped at distill time and INERT here — never a shell/branch/PR sink.
+export const experienceItems = pgTable(
+  "experience_items",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    // Nullable, mirrors consilium_loops.project_id — the source loop's project.
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    // WHERE the pattern applies (§3): { repo, archetype, criterionClass }.
+    scope: jsonb("scope").$type<ExperienceScope>().notNull(),
+    // ONE distilled fact/pattern (clamped, inert).
+    claim: text("claim").notNull(),
+    // Auditable links back to the raw sessions this was distilled from.
+    evidence: jsonb("evidence").$type<ExperienceEvidence[]>().notNull(),
+    // HOW it was confirmed — the grounding (method, independent outcome, ratio).
+    verification: jsonb("verification").$type<ExperienceVerification>().notNull(),
+    // verified ⇐ independent confirmation ONLY | observed | refuted.
+    confidence: text("confidence").$type<ExperienceConfidence>().notNull(),
+    // Measured effect if this pattern was reused (DREAM-3 fills it; null at write).
+    successDelta: real("success_delta"),
+    // Auditable origin: { createdAt, dreamRunId, sourceLoops[] }.
+    provenance: jsonb("provenance").$type<ExperienceProvenance>().notNull(),
+    // Freshness/decay descriptor stamped at write (§6); decay machinery is DREAM-3.
+    freshness: jsonb("freshness").$type<ExperienceFreshness>().notNull(),
+    // Links into Omniscience state (state ≠ experience, §5) — NEVER mutated here.
+    relatedComponents: jsonb("related_components").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    // The single loop this item was distilled from — the idempotency dedup key.
+    sourceLoopId: varchar("source_loop_id").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    // O(1) idempotency dedup: "has this loop already produced items?"
+    sourceLoopIdx: index("experience_items_source_loop_id_idx").on(table.sourceLoopId),
+    // DREAM-2 read path scopes by project; index it now (additive, cheap).
+    projectIdx: index("experience_items_project_id_idx").on(table.projectId),
+  }),
+);
+
+export const insertExperienceItemSchema = createInsertSchema(experienceItems).omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertExperienceItem = typeof experienceItems.$inferInsert;
+export type ExperienceItemRow = typeof experienceItems.$inferSelect;

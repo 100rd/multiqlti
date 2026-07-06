@@ -63,6 +63,9 @@ import {
   taskExecutions,
   consiliumLoops,
   consiliumLoopRounds,
+  experienceItems,
+  type ExperienceItemRow,
+  type InsertExperienceItem,
   type ConsiliumLoopRow,
   type InsertConsiliumLoop,
   type ConsiliumLoopRoundRow,
@@ -1320,6 +1323,34 @@ export class PgStorage implements IStorage {
       .update(consiliumLoopRounds)
       .set({ openActionPoints: actionPoints })
       .where(and(eq(consiliumLoopRounds.loopId, loopId), eq(consiliumLoopRounds.round, round)));
+  }
+
+  // ─── Experience plane — the "Dream" distillation, WRITE side (DREAM-1) ─────
+
+  async createExperienceItems(items: InsertExperienceItem[]): Promise<ExperienceItemRow[]> {
+    if (items.length === 0) return [];
+    // The distiller sets each item's projectId EXPLICITLY (the source loop's own), so
+    // this insert does NOT stamp the ambient context (it runs cross-project under
+    // runAsSystem). ONE insert per loop ⇒ atomic: a re-observe sees "already distilled".
+    return db.insert(experienceItems).values(items).returning();
+  }
+
+  async getExperienceItemsBySourceLoop(loopId: string): Promise<ExperienceItemRow[]> {
+    // withProjectList: system context (the distiller) sees ALL projects' items so the
+    // idempotency dedup is global; a project-scoped caller (DREAM-2) sees only its own.
+    return db
+      .select()
+      .from(experienceItems)
+      .where(withProjectList(experienceItems, eq(experienceItems.sourceLoopId, loopId)));
+  }
+
+  async listExperienceItems(limit = 200): Promise<ExperienceItemRow[]> {
+    return db
+      .select()
+      .from(experienceItems)
+      .where(withProjectList(experienceItems))
+      .orderBy(desc(experienceItems.createdAt))
+      .limit(limit);
   }
 
   // ─── Triggers (Phase 6.3) ─────────────────────────────────────────────────

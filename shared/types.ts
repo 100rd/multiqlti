@@ -3506,3 +3506,94 @@ export interface EvaluatorResult {
   proofs: VerificationProof[];
   summary: string;
 }
+
+// ─── Experience plane — the "Dream" distillation (DREAM-1, experience-plane-dream.md) ──
+//
+// The WRITE side of the Experience plane. A background distiller reads a terminal
+// consilium loop's already-persisted trail (rounds, execution traces, verdicts, git
+// refs) and emits compact, verification-GROUNDED Experience items (§2/§3). These
+// interfaces are the jsonb payload shapes for the `experience_items` table
+// (schema.ts). No read path (DREAM-2) and no consolidation (DREAM-3) here — items
+// only accumulate for inspection. INERT/display-and-audit data: every string is
+// distilled/clamped from persisted rows, never a shell/branch/PR sink.
+
+/**
+ * `confidence` — the crux of the plane (§1/§3/§6). It is a function of HOW the claim
+ * was verified, NEVER of an agent's opinion:
+ *   - `verified` ⇐ OUR INDEPENDENT verification confirmed it: a criterion's execution
+ *     trace shows a real test-run pass, OR the single-verifier marked the AP `closed`,
+ *     OR the loop reached a merged/converged terminal state.
+ *   - `refuted`  ⇐ the coder believed it but our verification REFUTED it (a criterion
+ *     that ran and failed / regressed at final re-verify) — a negative lesson, stored.
+ *   - `observed` ⇐ neither confirmed nor refuted (judge/manual-ops only, no ground truth).
+ */
+export const EXPERIENCE_CONFIDENCE_VALUES = ["verified", "observed", "refuted"] as const;
+export type ExperienceConfidence = (typeof EXPERIENCE_CONFIDENCE_VALUES)[number];
+
+/** WHERE an item applies (§3). The DREAM-2 planner queries by this tuple. */
+export interface ExperienceScope {
+  /** The repo the pattern was observed on (loop `repoPath`, basename-normalized). */
+  repo: string;
+  /** The loop archetype (repo-assessment/research/…), or null if the loop had none. */
+  archetype: Archetype | null;
+  /**
+   * The class of criterion the claim is about — the dominant verification method of
+   * the evidence (`test-run` | `web-evidence` | `judge` | `manual-ops`). Lets the
+   * planner match "coverage-gate/test-run patterns on this repo".
+   */
+  criterionClass: string;
+}
+
+/** One auditable link back to the raw session the claim was distilled from (§2/§3). */
+export interface ExperienceEvidence {
+  loopId: string;
+  round: number;
+  /** The action-point title (clamped, inert) the evidence came from. */
+  apTitle: string;
+  /** A git ref/commit that closed (or failed to close) the AP, if the round had one. */
+  diffRef: string | null;
+}
+
+/** HOW the claim was confirmed — the grounding (§3/§6). NOT an opinion. */
+export interface ExperienceVerification {
+  /** The verification method of the grounding criterion (design §5). */
+  method: ExperienceCriterionMethod;
+  /**
+   * The INDEPENDENT outcome that set `confidence` — the audit trail for the grounding.
+   * `independent-pass` / `loop-converged` ⇒ verified; `independent-fail` / `regressed`
+   * ⇒ refuted; `unverified` ⇒ observed. A judge/manual-ops opinion is NEVER by itself
+   * an `independent-*` outcome (that is the whole anti-Goodhart point, §6).
+   */
+  outcome:
+    | "independent-pass"   // a mechanical criterion (test-run/web-evidence) ran and passed
+    | "loop-converged"     // the loop reached the converged terminal (panel/verifier/merge gate)
+    | "independent-fail"   // a mechanical criterion ran and FAILED (coder believed, we refuted)
+    | "regressed"          // passed at implement time, FAILED at final whole-suite re-verify
+    | "unverified";        // no independent ground-truth signal (judge/manual-ops/not-adjudicated)
+  /** The loop's grounding ratio at distill time (trust telemetry), or null. */
+  groundingRatioAtTime: number | null;
+}
+
+/** The `ExecutionCriterion.method` union (re-declared to avoid an import cycle risk). */
+export type ExperienceCriterionMethod = "test-run" | "web-evidence" | "judge" | "manual-ops" | "none";
+
+/** Where the item came from (§3) — auditable back to the distiller run + source loops. */
+export interface ExperienceProvenance {
+  /** ISO-8601 timestamp the distiller emitted the item. */
+  createdAt: string;
+  /** The distiller pass id (one per observe cycle) — groups items emitted together. */
+  dreamRunId: string;
+  /** The loop id(s) this item was distilled from. DREAM-1: always exactly one. */
+  sourceLoops: string[];
+}
+
+/**
+ * Freshness + decay (§6, anti-Goodhart). DREAM-1 only STAMPS these at write time;
+ * the decay/re-grounding machinery is DREAM-3. `decayPolicy` is a compact descriptor.
+ */
+export interface ExperienceFreshness {
+  /** ISO-8601 — when the claim was last confirmed by independent verification. */
+  lastConfirmedAt: string;
+  /** e.g. "reuse:5" (drop verified→observed after 5 unconfirmed reuses) — descriptor. */
+  decayPolicy: string;
+}
