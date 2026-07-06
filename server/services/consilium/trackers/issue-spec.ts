@@ -331,10 +331,25 @@ function yamlQuote(value: string): string {
   return `"${escaped}"`;
 }
 
-export interface BuildSpecMarkdownInput {
+/**
+ * Provenance of the ticket a spec was crystallised from. `kind` is a server-chosen
+ * connector literal ("github" | "jira" | …) and is REQUIRED — it is what write-back
+ * (and the round-trip ready-gate) keys off. `ref` is the tracker-native ticket id
+ * (a GitHub issue number as a string, or a Jira key like `ACME-123`).
+ *
+ * GENERALISATION (TRACK-3): this is the shared provenance shape every connector
+ * emits, so ONE renderer (`renderSpecMarkdown`) + ONE synthesis feeds all trackers.
+ */
+export interface TicketSource {
+  kind: string;
+  ref: string;
+  url?: string;
+}
+
+export interface RenderSpecMarkdownInput {
   title: string;
-  issueNumber: number;
-  issueUrl?: string;
+  /** Provenance — `{ kind: <connector>, ref: <ticket-id>[, url] }`. */
+  source: TicketSource;
   repo: string;
   status: "ready" | "draft";
   problem: string;
@@ -345,25 +360,35 @@ export interface BuildSpecMarkdownInput {
   skills?: string[];
 }
 
+/** A `kind` safe to emit as a BARE YAML scalar (server literal); else it is quoted. */
+const SAFE_KIND_RE = /^[a-z][a-z0-9-]*$/;
+
 /**
- * Render a committed spec markdown that spec-parser.ts reads cleanly (see the
- * ROUND-TRIP CONTRACT at the top). Frontmatter: quoted `title`, bare `status`,
- * a `source` flow map `{ kind: github, ref: "<n>"[, url: "<url>"] }` (ref is the
- * issue number as a QUOTED string), quoted `repo`, optional `role`/`skills`, and a
- * block list of quoted `acceptanceCriteria`. Body: `## Problem / ## Scope / ## Out
- * of scope` (defaults `TBD` / `None specified.`). All untrusted text is control-
- * stripped; scalars are double-quote-escaped, so a title with quotes/newlines can
- * never break the YAML.
+ * SHARED (connector-agnostic) renderer for a committed spec markdown that
+ * spec-parser.ts reads cleanly (see the ROUND-TRIP CONTRACT at the top). Frontmatter:
+ * quoted `title`, bare `status`, a `source` flow map `{ kind: <connector>, ref:
+ * "<id>"[, url: "<url>"] }` (ref QUOTED), quoted `repo`, optional `role`/`skills`, and
+ * a block list of quoted `acceptanceCriteria`. Body: `## Problem / ## Scope / ## Out
+ * of scope`. All untrusted text is control-stripped; scalars are double-quote-escaped,
+ * so a title with quotes/newlines can never break the YAML. Every tracker connector
+ * (GitHub, Jira, …) renders through THIS function — the only per-connector difference
+ * is the `source.kind`/`ref` it passes in.
  */
-export function buildSpecMarkdown(input: BuildSpecMarkdownInput): string {
+export function renderSpecMarkdown(input: RenderSpecMarkdownInput): string {
   const lines: string[] = ["---"];
   lines.push(`title: ${yamlQuote(input.title)}`);
   // status is a server-chosen literal ("ready"|"draft") — safe bare scalar.
   lines.push(`status: ${input.status}`);
 
-  const srcParts = ["kind: github", `ref: ${yamlQuote(String(input.issueNumber))}`];
-  if (input.issueUrl && input.issueUrl.trim().length > 0) {
-    srcParts.push(`url: ${yamlQuote(input.issueUrl)}`);
+  // `kind` is a server literal; bare when it matches SAFE_KIND_RE, else quoted so a
+  // hostile kind can never break the flow map (defence-in-depth — kind is never
+  // attacker-authored today).
+  const kindScalar = SAFE_KIND_RE.test(input.source.kind)
+    ? input.source.kind
+    : yamlQuote(input.source.kind);
+  const srcParts = [`kind: ${kindScalar}`, `ref: ${yamlQuote(input.source.ref)}`];
+  if (input.source.url && input.source.url.trim().length > 0) {
+    srcParts.push(`url: ${yamlQuote(input.source.url)}`);
   }
   lines.push(`source: { ${srcParts.join(", ")} }`);
 
@@ -396,4 +421,39 @@ export function buildSpecMarkdown(input: BuildSpecMarkdownInput): string {
   lines.push("");
 
   return lines.join("\n");
+}
+
+export interface BuildSpecMarkdownInput {
+  title: string;
+  issueNumber: number;
+  issueUrl?: string;
+  repo: string;
+  status: "ready" | "draft";
+  problem: string;
+  scope?: string;
+  outOfScope?: string;
+  criteria: string[];
+  role?: string;
+  skills?: string[];
+}
+
+/**
+ * GitHub-specific thin wrapper over `renderSpecMarkdown` (TRACK-1 compat). Maps the
+ * issue number/url into the shared `source: { kind: github, ref: "<n>" }` provenance.
+ * Output is BYTE-IDENTICAL to the pre-generalisation renderer — issue-spec.test.ts's
+ * round-trip asserts `source.kind === "github"` + `ref === String(n)` unchanged.
+ */
+export function buildSpecMarkdown(input: BuildSpecMarkdownInput): string {
+  return renderSpecMarkdown({
+    title: input.title,
+    source: { kind: "github", ref: String(input.issueNumber), url: input.issueUrl },
+    repo: input.repo,
+    status: input.status,
+    problem: input.problem,
+    scope: input.scope,
+    outOfScope: input.outOfScope,
+    criteria: input.criteria,
+    role: input.role,
+    skills: input.skills,
+  });
 }
