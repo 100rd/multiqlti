@@ -1523,6 +1523,30 @@ export interface TrackerEventTriggerConfig {
   filter?: { label?: string };  // label gate (consent to intake) — required at fire time
   specStatus?: "ready" | "draft";
   pollState?: TrackerPollState;  // owned by the poller (watermark)
+  /**
+   * TRACK-2 (full write-back lifecycle). Per-trigger tuning for the read-only
+   * write-back OBSERVER, which comments the loop's lifecycle transitions back on
+   * the ORIGIN issue (join key = the loop's `triggerProvenance.spec.source`).
+   * Absent ⇒ all defaults ⇒ minimal-by-default (start / PR / terminal only; no
+   * per-verdict noise; closed issues left untouched) — byte-identical to TRACK-1
+   * when the observer master switch (`features.triggers.tracker.writeback`) is off.
+   */
+  writeback?: {
+    /**
+     * Post a progress comment for each decided review round (action-point count).
+     * Default FALSE — signal vs noise. Mandatory rows (start / PR / terminal) are
+     * unaffected by this flag; only the optional per-round verdict is gated here.
+     */
+    verdictComments?: boolean;
+    /**
+     * If the issue was already CLOSED (e.g. a human closed it) and the loop ended
+     * in a NON-converged terminal state (failed / stopped_cap / escalated), reopen
+     * it and post the status-explanation so the remaining work is visible. Default
+     * FALSE — the connector leaves a closed issue as-is (§4: TRACK-2 never
+     * force-closes and, by default, never re-opens).
+     */
+    reopenOnFailure?: boolean;
+  };
 }
 
 export type TriggerConfig =

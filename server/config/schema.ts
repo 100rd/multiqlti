@@ -136,6 +136,22 @@ export const ConfigSchema = z.object({
       tracker: z.object({
         enabled: z.boolean().default(false),
         pollIntervalSec: z.number().int().min(60).max(3600).default(300),
+        /**
+         * TRACK-2 (full write-back lifecycle). A read-only OBSERVER polls consilium
+         * loops that trace back to a tracker issue (join key = the loop's
+         * `triggerProvenance.spec.source`) and comments each lifecycle transition
+         * (start / verdict / PR / terminal) back on the ORIGIN issue. It NEVER
+         * touches the loop controller (SPEC-2's zone) — it only READS loop state.
+         *
+         * Default FALSE ⇒ the observer is never constructed and TRACK-1's pickup
+         * behaviour is byte-identical (no new comments). ALSO requires the tracker
+         * `enabled` switch above (write-back with no intake is meaningless) and the
+         * master `features.triggers.enabled`. `pollIntervalSec` reuses the tracker
+         * interval — the observer rides the same cadence, so it cannot hammer `gh`.
+         */
+        writeback: z.object({
+          enabled: z.boolean().default(false),
+        }).default({}),
       }).default({}),
     }).default({}),
   }).default({}),
