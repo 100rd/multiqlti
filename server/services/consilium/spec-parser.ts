@@ -73,6 +73,13 @@ export interface SpecFrontmatter {
   role?: string;
   skills?: string[];
   acceptanceCriteria: string[];
+  /**
+   * SPEC-4 (spec-as-task.md §2/§7): a path-independent ADR marker. True when the
+   * frontmatter carries an `adr:` (truthy) or `decision:` key — an ADR living outside
+   * `docs/adr/`. Absent for a normal spec (so SPEC-1/2 behavior is byte-identical —
+   * only the SPEC-4 ADR-intake code reads this field).
+   */
+  adr?: boolean;
 }
 
 /** Why a candidate file is NOT a fireable spec (logged, never thrown). */
@@ -128,6 +135,19 @@ function asStringArray(v: unknown): string[] {
     if (s !== undefined) out.push(s);
   }
   return out;
+}
+
+/**
+ * SPEC-4: detect the path-independent ADR marker in raw frontmatter. An `adr:` key
+ * with ANY truthy value (`adr: true`, `adr: "0001"`) or a present `decision:` key
+ * marks the file as an ADR regardless of its path. Returns undefined (field absent)
+ * for a normal spec so the parsed shape is byte-identical for the SPEC-1/2 paths.
+ */
+function asAdrMarker(rec: Record<string, unknown>): boolean | undefined {
+  if (rec.adr === true) return true;
+  if (asString(rec.adr) !== undefined) return true; // e.g. `adr: "0001"`
+  if (rec.decision !== undefined && rec.decision !== null) return true;
+  return undefined;
 }
 
 /** Coerce the `source` field to a SpecSource (best-effort; kind is required). */
@@ -186,6 +206,7 @@ export function parseSpecContent(
     role: asString(rec.role),
     skills: asStringArray(rec.skills),
     acceptanceCriteria: asStringArray(rec.acceptanceCriteria),
+    adr: asAdrMarker(rec),
   };
   return { kind: "spec", frontmatter, body };
 }
@@ -401,4 +422,111 @@ export function pathMatchesSpecGlobs(absPath: string, globs: readonly string[]):
     if (globToRegExp(glob).test(normalized)) return true;
   }
   return false;
+}
+
+// ─── SPEC-3: auto-commit policy (spec-as-task.md §4/§7) ─────────────────────────
+
+/**
+ * The per-repo auto-commit policy (spec-as-task.md §4 "Default = spec PR"). This is
+ * the HIGH-TRUST setting: when enabled for a repo, a connector- or draft-produced spec
+ * may be committed DIRECTLY to the default branch as `status: ready` — SKIPPING GATE 1
+ * (the spec PR where a human reviews the *intent*). Off by default everywhere.
+ */
+export interface SpecAutoCommitConfig {
+  /** Master switch for auto-commit. false (default) ⇒ every spec opens a spec PR. */
+  enabled: boolean;
+  /** The EXPLICIT allowlist of repos trusted to auto-commit. Empty ⇒ nothing trusted. */
+  repos?: string[];
+}
+
+/**
+ * SPEC-3 (spec-as-task.md §4/§5/§7): decide whether a spec destined for `repo` may be
+ * auto-committed directly to the default branch as `status: ready` — skipping GATE 1,
+ * the spec PR (human intent-review). This is the seam a spec PRODUCER (a TRACK-1+
+ * connector, or a `draft`-spec author) consults to choose "open a spec PR" vs
+ * "direct-commit ready". GATE 2 (the code PR merge) is UNAFFECTED — this governs ONLY
+ * whether the *intent* review is skipped.
+ *
+ * FAIL-CLOSED (the safe default is a spec PR). Returns `true` ONLY when auto-commit is
+ * EXPLICITLY enabled AND `repo` is in the EXPLICIT allowlist:
+ *   - config absent / `enabled !== true` ⇒ false (flag off ⇒ spec PR).
+ *   - `repo` undefined / empty            ⇒ false (unknown repo ⇒ spec PR).
+ *   - `repos` absent / empty              ⇒ false (enabled but NOTHING trusted — an
+ *                                           empty allowlist NEVER means "all repos", so
+ *                                           the flag can never widen beyond its list).
+ *   - `repo` not in `repos`               ⇒ false (a repo outside the list ⇒ spec PR).
+ * A caller MUST treat `false` as "open the spec PR" — never as "block".
+ */
+export function shouldAutoCommitSpec(
+  repo: string | undefined,
+  config: SpecAutoCommitConfig | undefined,
+): boolean {
+  if (!config || config.enabled !== true) return false;
+  if (repo === undefined) return false;
+  const target = repo.trim();
+  if (target.length === 0) return false;
+  const repos = config.repos;
+  if (!Array.isArray(repos) || repos.length === 0) return false;
+  return repos.some((r) => typeof r === "string" && r.trim() === target);
+}
+
+// ─── SPEC-4: ADR intake (spec-as-task.md §2/§7) ────────────────────────────────
+
+/**
+ * The implicit Definition-of-Done synthesised for an ADR that declares NO explicit
+ * `acceptanceCriteria` (spec-as-task.md §2: "an ADR is a spec whose acceptanceCriteria
+ * are 'the decision is implemented + …'"). Gives an ADR-fired loop a concrete DoD so it
+ * NEVER fires without criteria to verify against.
+ */
+export const ADR_IMPLICIT_CRITERIA: readonly string[] = [
+  "The decision described in this ADR is implemented in the codebase.",
+  "Automated tests cover the implemented decision.",
+  "Documentation affected by the decision is updated to reflect it.",
+];
+
+/** Anchored `docs/adr/` directory match (the ADR path convention, §2). */
+const ADR_PATH_RE = /(?:^|\/)docs\/adr\//;
+
+/**
+ * SPEC-4: is this candidate an ADR? True when the file lives under `docs/adr/` OR its
+ * frontmatter carries the path-independent `adr:`/`decision:` marker (§2/§7).
+ */
+export function isAdrCandidate(filePath: string, frontmatter: SpecFrontmatter): boolean {
+  if (ADR_PATH_RE.test(filePath.replace(/\\/g, "/"))) return true;
+  return frontmatter.adr === true;
+}
+
+/**
+ * SPEC-4 (spec-as-task.md §2/§7): make an ADR a valid task by producing an ADR-aware
+ * "effective" parse result the SAME ready-gate/dispatch consume — extend, don't
+ * duplicate. A non-ADR result is returned UNCHANGED (byte-identical for SPEC-1/2). For
+ * an ADR:
+ *   - the accepted-state (`status: accepted`) is normalised to the spec ready-state
+ *     (`ready`) so the ONE ready-gate fires it — an ADR is "approved to execute" when
+ *     accepted. Only `accepted` is remapped; `proposed`/`draft`/others stay
+ *     non-firing (the gate rejects them exactly as before).
+ *   - when it declares NO explicit `acceptanceCriteria`, the implicit decision-DoD
+ *     ({@link ADR_IMPLICIT_CRITERIA}) is synthesised so the loop has criteria to verify
+ *     (an ADR NEVER fires with an empty DoD). An explicit criteria set is preserved.
+ * Pure; never throws. `isAdr` lets the caller stamp ADR provenance.
+ */
+export function applyAdrIntake(
+  parsed: SpecParseResult,
+  filePath: string,
+): { parsed: SpecParseResult; isAdr: boolean } {
+  if (parsed.kind !== "spec") return { parsed, isAdr: false };
+  if (!isAdrCandidate(filePath, parsed.frontmatter)) return { parsed, isAdr: false };
+
+  const fm = parsed.frontmatter;
+  const status = fm.status === "accepted" ? "ready" : fm.status;
+  const acceptanceCriteria =
+    fm.acceptanceCriteria.length > 0 ? fm.acceptanceCriteria : [...ADR_IMPLICIT_CRITERIA];
+  return {
+    parsed: {
+      kind: "spec",
+      frontmatter: { ...fm, status, acceptanceCriteria },
+      body: parsed.body,
+    },
+    isAdr: true,
+  };
 }

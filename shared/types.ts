@@ -1498,6 +1498,14 @@ export interface SpecProvenance {
   specPath: string;
   status: string;
   source?: { kind: string; ref?: string; url?: string };
+  /**
+   * SPEC-4 (spec-as-task.md §2/§7): `"adr"` when the unit of work is an ADR (a file
+   * under `docs/adr/**`, or one carrying an `adr:`/`decision:` frontmatter marker) —
+   * so the provenance records that this loop was fired by an ADR, not a `docs/specs`
+   * spec. Absent ⇒ a normal spec (byte-identical provenance for the SPEC-1/2 paths).
+   * Inert provenance metadata; never a prompt/shell sink.
+   */
+  artifact?: "adr";
 }
 
 /**
