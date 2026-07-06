@@ -44,18 +44,13 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { realpathSync } from "fs";
 import { resolve } from "path";
-import type { TriggerRow } from "@shared/schema";
+import type { TriggerRow, StandingRoleRow } from "@shared/schema";
 import type { TrackerEventTriggerConfig, TrackerPollState } from "@shared/types";
 import type { AppConfig } from "../../../config/schema.js";
 import { runGhJson, type ExecFileFn } from "../../github-status.js";
-import {
-  extractSpecFromIssue,
-  specBranchName,
-  specFilePath,
-  type GhIssue,
-} from "./issue-spec.js";
-import { crystallizeTicket } from "./spec-intake.js";
-import { postPickupComment, postNeedCriteriaComment } from "./issue-writeback.js";
+import { extractSpecFromIssue, type GhIssue } from "./issue-spec.js";
+import { crystallizeGithubIssue } from "./github-crystallize.js";
+import { resolveRoleStamp, type RoleStamp } from "./role-stamp.js";
 
 const execFileAsync: ExecFileFn = promisify(execFile);
 
@@ -94,6 +89,13 @@ export interface GithubIssuesPollerDeps {
   config: () => AppConfig;
   /** Fail-closed allowlist of local repo paths (consilium-loop allowlist). */
   allowedRepoPaths: () => string[];
+  /**
+   * TRACK-6 (standing-role.md §5): project-scoped load of a Standing Role — used ONLY
+   * when a tracker_event trigger carries `roleConcern`, to STAMP the role's name +
+   * skills into the crystallised spec. Called INSIDE `runInProject` (project-scoped).
+   * Absent ⇒ role stamping is disabled (an unstamped spec — byte-identical to TRACK-1).
+   */
+  getStandingRole?: (id: string) => Promise<StandingRoleRow | undefined>;
   /** Optional model-backed synthesiser for free-form issues (absent ⇒ normalise-only). */
   synthesizer?: SpecSynthesizer;
   /** Injectable `gh` runner (tests pass a fake — no real `gh`/network). */
@@ -148,16 +150,6 @@ function isAllowedRepoPath(targetRepoPath: string, allowed: readonly string[]): 
     if (target === root || target.startsWith(root + "/")) return true;
   }
   return false;
-}
-
-/** Single-line control-strip + collapse + clamp for the (untrusted) issue title. */
-function sanitizeTitleLine(value: string, max = 160): string {
-  return value
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\u0000-\u001f\u007f]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, max);
 }
 
 /** Keep at most MAX_TRACKED_INTAKE intakes (highest issue numbers win — most recent). */
@@ -285,6 +277,13 @@ export class GithubIssuesPoller {
 
     const projectId = trigger.projectId;
     await this.deps.runInProject(projectId, async () => {
+      // TRACK-6 (standing-role.md §5): if this tracker trigger is the BACKING trigger of
+      // a Standing Role's tracker concern, resolve the role STAMP ONCE for the cycle
+      // (role name + skills → the spec frontmatter). A missing / DISABLED role, or a
+      // disabled / missing concern, yields NO stamp — the poller then produces an
+      // UNSTAMPED spec (byte-identical to TRACK-1), never a disabled role's work.
+      const roleStamp = await this.resolveTriggerRoleStamp(trigger, config);
+
       const state: TrackerPollState = { ...(config.pollState ?? {}) };
       if (!state.intake) state.intake = {};
 
@@ -334,57 +333,28 @@ export class GithubIssuesPoller {
           }
         }
 
-        // Crystallise via the SHARED spec-intake (same renderer + spec-writer + order
-        // as Jira/TRACK-4/5). GitHub supplies only its dialect: the `github` source,
-        // the `spec/gh-issue-<n>` branch/path, the `closes #n` copy, and the pickup /
-        // need-criteria GitHub-comment write-backs. Byte-identical to the original
-        // inline tail (same gh calls, same order) — github-issues-poller.test asserts it.
+        // Crystallise via the SHARED github dialect (`crystallizeGithubIssue` →
+        // spec-intake): the `github` source, the `spec/gh-issue-<n>` branch/path, the
+        // `closes #n` copy, and the pickup / need-criteria write-backs. Byte-identical to
+        // the original inline tail (github-issues-poller.test asserts it) and shared with
+        // the `/spec` command force-intake so the two paths cannot drift. TRACK-6 threads
+        // the role STAMP (undefined ⇒ unstamped, TRACK-1 bytes).
         const specStatus = config.specStatus ?? "ready";
         const title = typeof issue.title === "string" ? issue.title : "";
-        const sanitizedTitle = sanitizeTitleLine(title);
-        const commitMessage = `feat: add spec for issue #${number} (closes #${number})`;
-        const prTitle = `spec: ${sanitizedTitle || `issue #${number}`} (closes #${number})`;
-        const prBody = [
-          `Track-1 auto-produced spec for issue #${number}.`,
-          "",
-          "This spec was generated from the linked GitHub issue by the factory's Track-1 intake.",
-          "Merging it fires the SPEC-1 spec-watch, which launches the review loop off the committed spec.",
-          "",
-          `Closes #${number}`,
-        ].join("\n");
-
-        const result = await crystallizeTicket(
+        const result = await crystallizeGithubIssue(
+          { runGh: this.deps.runGh, gitRemoteUrl: this.gitRemoteUrl, log: this.deps.log },
           {
-            runGh: this.deps.runGh,
-            gitRemoteUrl: this.gitRemoteUrl,
-            log: this.deps.log,
-            writeback: {
-              pickup: (specPrUrl) =>
-                postPickupComment(
-                  { runGh: this.deps.runGh, log: this.deps.log },
-                  { repo, issueNumber: number, specPrUrl },
-                ),
-              needCriteria: () =>
-                postNeedCriteriaComment(
-                  { runGh: this.deps.runGh, log: this.deps.log },
-                  { repo, issueNumber: number },
-                ),
-            },
-          },
-          {
-            source: { kind: "github", ref: String(number), url: issue.url },
+            repo,
             targetRepoPath, // the allowlisted local path → SPEC-1's resolveSpecRepo maps it.
-            branch: specBranchName(number),
-            filePath: specFilePath(number, title),
-            title: title.trim().length > 0 ? title : `Issue #${number}`,
+            number,
+            title,
+            url: issue.url,
             status: specStatus,
             problem: problem ?? title,
             scope,
             outOfScope,
             criteria,
-            commitMessage,
-            prTitle,
-            prBody,
+            roleStamp,
           },
         );
 
@@ -404,6 +374,35 @@ export class GithubIssuesPoller {
       state.lastPolledAt = new Date(this.now()).toISOString();
       await this.persistWatermark(trigger.id, state);
     });
+  }
+
+  /**
+   * TRACK-6: resolve the role STAMP for a tracker trigger, or `null` when the trigger
+   * carries no `roleConcern` (byte-identical TRACK-1) / role stamping is not wired /
+   * the role or concern is missing or DISABLED. MUST be called inside `runInProject`
+   * (the role load is project-scoped). Never throws — a lookup failure logs + degrades
+   * to no stamp (an unstamped spec), never a crash of the poll cycle.
+   */
+  private async resolveTriggerRoleStamp(
+    trigger: TriggerRow,
+    config: TrackerEventTriggerConfig,
+  ): Promise<RoleStamp | null> {
+    const binding = config.roleConcern;
+    if (!binding || !this.deps.getStandingRole) return null;
+    try {
+      const role = await this.deps.getStandingRole(binding.roleId);
+      const res = resolveRoleStamp(role, binding.concernId);
+      if (!res.ok) {
+        this.deps.log(
+          `tracker poll: role stamp skipped for trigger ${trigger.id} — ${res.reason} (role ${binding.roleId})`,
+        );
+        return null;
+      }
+      return res.stamp;
+    } catch (e) {
+      this.deps.log(`tracker poll: role stamp error for trigger ${trigger.id}: ${(e as Error).message}`);
+      return null;
+    }
   }
 
   /** Re-read fresh + write the watermark into `config.pollState` (no migration). */
