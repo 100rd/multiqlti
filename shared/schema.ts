@@ -17,7 +17,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { TriggerConfig, TriggerType, TriggerProvenance, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, ExecutionTrace, ReviewMode, ExperienceScope, ExperienceEvidence, ExperienceVerification, ExperienceProvenance, ExperienceFreshness, ExperienceConfidence } from "./types.js";
+import type { TriggerConfig, TriggerType, TriggerProvenance, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, ExecutionTrace, ReviewMode, ExperienceScope, ExperienceEvidence, ExperienceVerification, ExperienceProvenance, ExperienceFreshness, ExperienceConfidence, ExperienceConsolidation } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -2353,6 +2353,12 @@ export const experienceItems = pgTable(
     provenance: jsonb("provenance").$type<ExperienceProvenance>().notNull(),
     // Freshness/decay descriptor stamped at write (§6); decay machinery is DREAM-3.
     freshness: jsonb("freshness").$type<ExperienceFreshness>().notNull(),
+    // DREAM-3 (§4/§6): the SCHEDULED consolidation pass's durable audit trail (merge
+    // count, contradiction cross-link, decay origin). NULL on a DREAM-1 item; set the
+    // first time the consolidator touches a surviving item. The consolidator writes ONLY
+    // to this table — never state, never SKILL.md. Nullable ⇒ byte-identical for existing
+    // rows and for a consolidate.enabled=false runtime (no pass ⇒ never populated).
+    consolidation: jsonb("consolidation").$type<ExperienceConsolidation>(),
     // Links into Omniscience state (state ≠ experience, §5) — NEVER mutated here.
     relatedComponents: jsonb("related_components").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
     // The single loop this item was distilled from — the idempotency dedup key.

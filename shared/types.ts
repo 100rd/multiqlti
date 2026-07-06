@@ -3823,3 +3823,41 @@ export interface ExperienceFreshness {
   /** e.g. "reuse:5" (drop verified→observed after 5 unconfirmed reuses) — descriptor. */
   decayPolicy: string;
 }
+
+/**
+ * DREAM-3 (§4 consolidating / §6 self-correction) — the durable audit trail the
+ * SCHEDULED consolidation pass stamps onto a SURVIVING Experience item. Null on a
+ * freshly-distilled DREAM-1 item; set the first time the consolidator touches it.
+ *
+ * This is the ONLY new persisted state DREAM-3 adds, and it lives on `experience_items`
+ * (a nullable jsonb column) — the pass writes NOWHERE else (never state, never SKILL.md).
+ * It records WHAT the consolidator did so a merge/decay/contradiction is auditable and
+ * so a re-run can recognise an already-consolidated item (idempotency, no thrash).
+ */
+export interface ExperienceConsolidation {
+  /** ISO-8601 — when the consolidator last processed this surviving item. */
+  lastConsolidatedAt: string;
+  /** The consolidation pass id (one per sweep) that last touched it. */
+  dreamRunId: string;
+  /** How many DISTINCT source loops merged into this survivor (>= 1). */
+  mergedLoopCount: number;
+  /**
+   * A verified↔refuted CONTRADICTION on the SAME (scope, claim): both survivors are
+   * KEPT (never silently overwritten, §6). This flags the conflict and cross-links the
+   * opposing survivor; the fresher-verified side leads at read time. Null when no conflict.
+   */
+  conflict?: {
+    /** The opposing survivor's id (the other side of the contradiction). */
+    withItemId: string;
+    /** The opposing survivor's confidence ('verified' | 'refuted'). */
+    opposingConfidence: ExperienceConfidence;
+    /** Human-readable, inert note ("worked here / failed there"). */
+    note: string;
+  } | null;
+  /**
+   * When DECAY demoted this item (a stale `verified` unconfirmed too long → `observed`,
+   * §6), the confidence it was demoted FROM — an audit trail so the demotion is visible
+   * and never silently reverses a grounded verdict. Null when no decay was applied.
+   */
+  decayedFrom?: ExperienceConfidence | null;
+}

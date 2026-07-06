@@ -50,6 +50,7 @@ import { ClickUpIssuesPoller } from "./services/consilium/trackers/clickup-issue
 import { TrackerWritebackObserver } from "./services/consilium/trackers/writeback-observer";
 import { GithubCommandPoller } from "./services/consilium/trackers/github-command-poller";
 import { ExperienceDistillerObserver } from "./services/consilium/experience/experience-distiller-observer";
+import { ExperienceConsolidatorObserver } from "./services/consilium/experience/experience-consolidator-observer";
 import { buildSynthPrompt, parseSynthOutput } from "./services/consilium/trackers/issue-spec";
 import { DEFAULT_TASK_MODEL } from "./config/schema";
 import { stopRateLimitCleanup } from "./services/webhook-handler";
@@ -272,6 +273,10 @@ export async function registerRoutes(
   // DREAM-1: the Experience-plane distiller observer (read-only, post-loop). KILL-SWITCH
   // default FALSE ⇒ never constructed (byte-identical). Stopped in the cleanup below.
   let experienceDistillerObserver: ExperienceDistillerObserver | null = null;
+  // DREAM-3: the Experience-plane consolidator (scheduled dedup/decay/successDelta). Its
+  // OWN kill-switch (consolidate.enabled), default FALSE ⇒ never constructed (byte-identical:
+  // the store just accumulates + is read). Stopped in the cleanup below.
+  let experienceConsolidatorObserver: ExperienceConsolidatorObserver | null = null;
   // Hoisted to the registerRoutes scope (was a block-local const) so the
   // file-change `fireTrigger` closure below can launch consilium reviews via the
   // SAME controller. Stays null when the kill-switch is off — fireTrigger then
@@ -387,6 +392,31 @@ export async function registerRoutes(
     });
     experienceDistillerObserver.start();
     log("[experience-distiller] enabled — post-loop distiller observer started", "experience-distiller");
+  }
+
+  // DREAM-3 — Experience-plane CONSOLIDATION (the "global profile", §4/§6). When its
+  // OWN kill-switch is on, a background, SCHEDULED consolidator re-reads a bounded window
+  // of recent items and MERGES duplicates, DECAYS stale `verified` items to `observed`
+  // (written back — the store self-corrects, §6), flags verified↔refuted CONTRADICTIONS
+  // (keeps both, fresher-verified leads), and recomputes `successDelta` from any reuse
+  // signal. It NEVER touches the loop controller (off the hot path, like DREAM-1) and
+  // writes ONLY to `experience_items` (never state, never SKILL.md — DREAM-4 owns that).
+  // Default OFF ⇒ NOT constructed ⇒ byte-identical (no merge/decay; the store accumulates).
+  if (appConfigLoader.get().pipeline.consiliumLoop.experiencePlane.consolidate.enabled) {
+    experienceConsolidatorObserver = new ExperienceConsolidatorObserver({
+      // Cross-project reads/writes run under ONE system context per pass (runAsSystem
+      // audits the access; listExperienceItems then returns all projects' rows and the
+      // update/delete resolve cross-project — merges never cross projects: the pure
+      // consolidator keys groups by projectId).
+      runInSystem: (fn) => runAsSystem("experience-consolidator", fn),
+      listExperienceItems: (limit) => storage.listExperienceItems(limit),
+      updateExperienceItem: (id, patch) => storage.updateExperienceItem(id, patch),
+      deleteExperienceItems: (ids) => storage.deleteExperienceItems(ids),
+      config: () => appConfigLoader.get(),
+      log: (m: string) => log(m, "experience-consolidator"),
+    });
+    experienceConsolidatorObserver.start();
+    log("[experience-consolidator] enabled — scheduled consolidation observer started", "experience-consolidator");
   }
 
   // Live Activity observability lens (read-only, owner/admin-scoped, metadata-only).
@@ -1006,6 +1036,7 @@ export async function registerRoutes(
     cronScheduler?.stopAll();
     consiliumLoopPoller?.stop();
     experienceDistillerObserver?.stop();
+    experienceConsolidatorObserver?.stop();
     fileWatcherService?.stopAll();
     githubPoller?.stop();
     githubIssuesPoller?.stop();

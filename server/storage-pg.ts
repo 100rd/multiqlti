@@ -1353,6 +1353,33 @@ export class PgStorage implements IStorage {
       .limit(limit);
   }
 
+  // ─── Experience plane — the "Dream" distillation, CONSOLIDATE side (DREAM-3) ──
+  // The scheduled consolidator merges/decays/recomputes items IN PLACE. withProjectList
+  // lets the system-context pass (runAsSystem) update/delete across all projects; a
+  // project-scoped caller would be confined to its own rows. Writes ONLY this table.
+
+  async updateExperienceItem(
+    id: string,
+    patch: Partial<ExperienceItemRow>,
+  ): Promise<ExperienceItemRow | undefined> {
+    // Never let a patch change identity/lineage columns.
+    const { id: _i, createdAt: _c, sourceLoopId: _s, projectId: _p, ...safe } = patch;
+    if (Object.keys(safe).length === 0) return undefined;
+    const [row] = await db
+      .update(experienceItems)
+      .set(safe)
+      .where(withProjectList(experienceItems, eq(experienceItems.id, id)))
+      .returning();
+    return row;
+  }
+
+  async deleteExperienceItems(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await db
+      .delete(experienceItems)
+      .where(withProjectList(experienceItems, inArray(experienceItems.id, ids)));
+  }
+
   // ─── Triggers (Phase 6.3) ─────────────────────────────────────────────────
 
   async getTriggers(pipelineId: string): Promise<TriggerRow[]> {
