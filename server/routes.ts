@@ -42,6 +42,7 @@ import { FileWatcherService } from "./services/file-watcher";
 import { GitHubPoller } from "./services/github-poller";
 import { GithubIssuesPoller } from "./services/consilium/trackers/github-issues-poller";
 import { TrackerWritebackObserver } from "./services/consilium/trackers/writeback-observer";
+import { ExperienceDistillerObserver } from "./services/consilium/experience/experience-distiller-observer";
 import { buildSynthPrompt, parseSynthOutput } from "./services/consilium/trackers/issue-spec";
 import { DEFAULT_TASK_MODEL } from "./config/schema";
 import { stopRateLimitCleanup } from "./services/webhook-handler";
@@ -261,6 +262,9 @@ export async function registerRoutes(
   // the controller + routes + poller are only wired when explicitly enabled, so
   // a normal boot is fully inert. Mirrors the cron-scheduler bootstrap below.
   let consiliumLoopPoller: ConsiliumLoopPoller | null = null;
+  // DREAM-1: the Experience-plane distiller observer (read-only, post-loop). KILL-SWITCH
+  // default FALSE ⇒ never constructed (byte-identical). Stopped in the cleanup below.
+  let experienceDistillerObserver: ExperienceDistillerObserver | null = null;
   // Hoisted to the registerRoutes scope (was a block-local const) so the
   // file-change `fireTrigger` closure below can launch consilium reviews via the
   // SAME controller. Stays null when the kill-switch is off — fireTrigger then
@@ -354,6 +358,28 @@ export async function registerRoutes(
     );
     consiliumLoopPoller.start();
     log("[consilium-loop] enabled — controller + poller started", "consilium-loop");
+  }
+
+  // DREAM-1 — Experience-plane distiller (WRITE side). When the kill-switch is on, a
+  // background READ-ONLY observer sweeps TERMINAL consilium loops (across all projects)
+  // and distils each one's already-persisted trail into verification-grounded items in
+  // `experience_items`. It NEVER touches the loop controller (observe-only, like TRACK-2)
+  // and is idempotent (a loop distilled once). No read path yet (DREAM-2). Default OFF ⇒
+  // NOT constructed ⇒ byte-identical (no distiller, no rows).
+  if (appConfigLoader.get().pipeline.consiliumLoop.experiencePlane.enabled) {
+    experienceDistillerObserver = new ExperienceDistillerObserver({
+      // Cross-project reads/writes run under ONE system context per pass (runAsSystem
+      // audits the access; getLoops/getLoopRounds then return all projects' rows).
+      runInSystem: (fn) => runAsSystem("experience-distiller", fn),
+      getLoops: () => storage.getLoops(),
+      getLoopRounds: (loopId) => storage.getLoopRounds(loopId),
+      getExperienceItemsBySourceLoop: (loopId) => storage.getExperienceItemsBySourceLoop(loopId),
+      createExperienceItems: (items) => storage.createExperienceItems(items),
+      config: () => appConfigLoader.get(),
+      log: (m: string) => log(m, "experience-distiller"),
+    });
+    experienceDistillerObserver.start();
+    log("[experience-distiller] enabled — post-loop distiller observer started", "experience-distiller");
   }
 
   // Live Activity observability lens (read-only, owner/admin-scoped, metadata-only).
@@ -694,6 +720,7 @@ export async function registerRoutes(
     clearInterval(leaseSweeper);
     cronScheduler?.stopAll();
     consiliumLoopPoller?.stop();
+    experienceDistillerObserver?.stop();
     fileWatcherService?.stopAll();
     githubPoller?.stop();
     githubIssuesPoller?.stop();

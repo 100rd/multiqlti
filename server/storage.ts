@@ -36,6 +36,8 @@ import {
   type ConsiliumLoopRoundRow,
   type InsertConsiliumLoopRound,
   type ConsiliumLoopState,
+  type ExperienceItemRow,
+  type InsertExperienceItem,
   type TaskRow,
   type InsertTask,
   type TaskTraceRow,
@@ -573,6 +575,24 @@ export interface IStorage {
    * is absent. Idempotent / best-effort (observability only; the executor re-normalizes).
    */
   updateLoopRoundActionPoints(loopId: string, round: number, actionPoints: ActionPoint[]): Promise<void>;
+
+  // Experience plane — the "Dream" distillation, WRITE side (DREAM-1).
+  // The distiller observer reads terminal loops read-only and writes verification-grounded
+  // items here. WRITE-ONLY in DREAM-1 (no planner read path — that is DREAM-2).
+  /**
+   * Batch-insert a terminal loop's distilled Experience items in ONE call (atomic per
+   * loop), so a re-observe sees "already distilled" and never writes a duplicate. The
+   * distiller sets each item's `projectId` explicitly (the source loop's), so this insert
+   * does NOT stamp the ambient context — it runs cross-project under runAsSystem.
+   */
+  createExperienceItems(items: InsertExperienceItem[]): Promise<ExperienceItemRow[]>;
+  /**
+   * The idempotency probe: items already distilled from this loop. Non-empty ⇒ the loop
+   * was distilled ⇒ SKIP (no duplicate). Indexed on `source_loop_id`.
+   */
+  getExperienceItemsBySourceLoop(loopId: string): Promise<ExperienceItemRow[]>;
+  /** Inspection: list Experience items, most-recent first (DREAM-1 quality check). */
+  listExperienceItems(limit?: number): Promise<ExperienceItemRow[]>;
 
 
   // Tracker Connections (Issue Tracker Integration)
@@ -1946,6 +1966,44 @@ export class MemStorage implements IStorage {
         return;
       }
     }
+  }
+
+  // ─── Experience plane — the "Dream" distillation, WRITE side (DREAM-1) ─────
+
+  private experienceItemsMap: Map<string, ExperienceItemRow> = new Map();
+
+  async createExperienceItems(items: InsertExperienceItem[]): Promise<ExperienceItemRow[]> {
+    const out: ExperienceItemRow[] = [];
+    for (const data of items) {
+      const row: ExperienceItemRow = {
+        id: randomUUID(),
+        projectId: data.projectId ?? null,
+        scope: data.scope,
+        claim: data.claim,
+        evidence: data.evidence,
+        verification: data.verification,
+        confidence: data.confidence,
+        successDelta: data.successDelta ?? null,
+        provenance: data.provenance,
+        freshness: data.freshness,
+        relatedComponents: data.relatedComponents ?? [],
+        sourceLoopId: data.sourceLoopId,
+        createdAt: new Date(),
+      };
+      this.experienceItemsMap.set(row.id, row);
+      out.push(row);
+    }
+    return out;
+  }
+
+  async getExperienceItemsBySourceLoop(loopId: string): Promise<ExperienceItemRow[]> {
+    return Array.from(this.experienceItemsMap.values()).filter((i) => i.sourceLoopId === loopId);
+  }
+
+  async listExperienceItems(limit = 200): Promise<ExperienceItemRow[]> {
+    return Array.from(this.experienceItemsMap.values())
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, limit);
   }
 
   // ─── Triggers (Phase 6.3) ─────────────────────────────────────────────────
