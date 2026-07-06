@@ -18,6 +18,7 @@ import {
   GitPullRequest,
   ShieldCheck,
   KeyRound,
+  UserCog,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
@@ -55,6 +56,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
 
   const navItems = [
     { icon: Zap, label: "Triggers", href: "/triggers" },
+    { icon: UserCog, label: "Roles", href: "/roles" },
     { icon: Repeat, label: "Consilium Loops", href: "/consilium-loops" },
     { icon: GitPullRequest, label: "PR Queue", href: "/pr-queue" },
     { icon: ShieldCheck, label: "Trust", href: "/trust" },

@@ -76,6 +76,9 @@ import {
 } from "@shared/schema";
 import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace, ActionPoint } from "@shared/types";
 import type { LessonRecallFilter } from "./memory/lessons/types";
+// ROLE-1 (standing-role.md §3/§8): the StandingRole record types. Separate localized
+// import so the shared `@shared/schema` import block above stays a single merge point.
+import type { StandingRoleRow, InsertStandingRole } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { PgStorage } from "./storage-pg";
 import { configLoader } from "./config/loader";
@@ -658,6 +661,16 @@ export interface IStorage {
   getSessionConflicts(sessionId: string): Promise<SessionConflict[]>;
   appendDecisionLog(entry: DecisionLogEntry): Promise<void>;
   getDecisionLog(sessionId?: string): Promise<DecisionLogEntry[]>;
+
+  // ─── Standing Roles (ROLE-1 — standing-role.md §3/§8) ──────────────────────
+  // Project-scoped CRUD for the StandingRole record. All reads/writes are
+  // owner/member-scoped by the caller's ALS project (PgStorage withProject);
+  // MemStorage keeps a flat map for tests/dev parity.
+  getStandingRoles(): Promise<StandingRoleRow[]>;
+  getStandingRole(id: string): Promise<StandingRoleRow | undefined>;
+  createStandingRole(data: InsertStandingRole): Promise<StandingRoleRow>;
+  updateStandingRole(id: string, updates: Partial<InsertStandingRole>): Promise<StandingRoleRow>;
+  deleteStandingRole(id: string): Promise<void>;
 }
 
 /**
@@ -3106,6 +3119,54 @@ export class MemStorage implements IStorage {
       if (tr.iterationId === iterationId && tr.groupId === groupId) return tr;
     }
     return null;
+  }
+
+  // ─── Standing Roles (ROLE-1 — standing-role.md §3/§8) ──────────────────────
+  private standingRolesMap: Map<string, StandingRoleRow> = new Map();
+
+  async getStandingRoles(): Promise<StandingRoleRow[]> {
+    return Array.from(this.standingRolesMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async getStandingRole(id: string): Promise<StandingRoleRow | undefined> {
+    return this.standingRolesMap.get(id);
+  }
+
+  async createStandingRole(data: InsertStandingRole): Promise<StandingRoleRow> {
+    const id = (data.id as string | undefined) ?? randomUUID();
+    const now = new Date();
+    const row: StandingRoleRow = {
+      id,
+      projectId: data.projectId ?? null,
+      name: data.name,
+      persona: data.persona,
+      skills: (data.skills as string[] | undefined) ?? [],
+      loopTemplate: data.loopTemplate,
+      enabled: data.enabled ?? true,
+      createdBy: data.createdBy ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.standingRolesMap.set(id, row);
+    return row;
+  }
+
+  async updateStandingRole(id: string, updates: Partial<InsertStandingRole>): Promise<StandingRoleRow> {
+    const existing = this.standingRolesMap.get(id);
+    if (!existing) throw new Error(`Standing role not found: ${id}`);
+    const updated: StandingRoleRow = {
+      ...existing,
+      ...updates,
+      skills: (updates.skills as string[] | undefined) ?? existing.skills,
+      loopTemplate: updates.loopTemplate ?? existing.loopTemplate,
+      updatedAt: new Date(),
+    };
+    this.standingRolesMap.set(id, updated);
+    return updated;
+  }
+
+  async deleteStandingRole(id: string): Promise<void> {
+    this.standingRolesMap.delete(id);
   }
 
 }

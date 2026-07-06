@@ -414,7 +414,11 @@ export function registerTriggerRoutes(app: Express, triggerService: TriggerServi
             state: l.state,
             prRef: l.prRef ?? null,
             eventSummary: prov.eventSummary ?? null,
-            eventDigest: prov.eventDigest,
+            // `eventDigest` is now optional on TriggerProvenance (a ROLE-1 wake has
+            // none) — but these loops are already filtered to trigger fires
+            // (`triggerId === trigger.id`), which always carry a digest; `?? ""` is
+            // a defensive fallback that keeps the field a string.
+            eventDigest: prov.eventDigest ?? "",
             firedAt: prov.firedAt ?? new Date(l.createdAt).toISOString(),
           };
         });

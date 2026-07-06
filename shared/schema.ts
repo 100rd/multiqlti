@@ -2244,3 +2244,57 @@ export const credentialAccessLog = pgTable(
 
 export type CredentialAccessLogRow = typeof credentialAccessLog.$inferSelect;
 export type InsertCredentialAccessLog = typeof credentialAccessLog.$inferInsert;
+
+// ─── Standing Roles (ROLE-1 — standing-role.md §3/§8) ────────────────────────
+//
+// A StandingRole is a named, persistent identity — a saved COMPOSITION of a persona
+// (standing instruction) + skills + a loop template — that an operator can manually
+// "wake" (POST /api/roles/:id/wake) to spawn ONE ephemeral consilium loop. ROLE-1 is
+// JUST the record + manual wake: NO triggers/concerns (ROLE-2) and NO role-scoped
+// experience (ROLE-3) yet. A role is a DEFINITION, not a running process (§6) — its
+// only runtime footprint is the ephemeral loops a wake spawns (which keep every
+// existing isolation + human-merge gate). Separate import (localized/append-only) so
+// the shared `./types.js` import line stays a single merge point for other teams.
+// eslint-disable-next-line @typescript-eslint/no-duplicate-imports -- localized append
+import type { StandingRoleLoopTemplate } from "./types.js";
+
+export const standingRoles = pgTable(
+  "standing_roles",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    // Project-scoped (owner/member isolation via withProject); cascades with project.
+    projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    // The standing instruction / persona that grounds every wake. Human-authored on
+    // create, but UNTRUSTED at wake time: it (with the wake `focus`) is fed through
+    // the review factory's `untrustedExtraBlock` (control-strip + byte-clamp + a
+    // strictly-longer backtick fence) before it enters the loop objective. Inert in
+    // storage; never a shell/branch/PR sink.
+    persona: text("persona").notNull(),
+    // The role's capability: skill ids (shared `skills.id`). Validated against the
+    // PROJECT-SCOPED skill registry at create/update (fail-closed — an unknown id is
+    // a 400) AND re-resolved project-scoped by the review factory at wake. jsonb string[].
+    skills: jsonb("skills").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    // How the role's ephemeral loops run: { preset, maxRounds?, reviewMode? }. `preset`
+    // + `reviewMode` are server enums; `maxRounds` is bounded 1..6 by the factory.
+    loopTemplate: jsonb("loop_template").$type<StandingRoleLoopTemplate>().notNull(),
+    // A DISABLED role is inert — the wake endpoint refuses it (safety §6): a role can
+    // never spawn work while disabled.
+    enabled: boolean("enabled").notNull().default(true),
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    projectIdIdx: index("standing_roles_project_id_idx").on(table.projectId),
+    createdByIdx: index("standing_roles_created_by_idx").on(table.createdBy),
+  }),
+);
+
+export const insertStandingRoleSchema = createInsertSchema(standingRoles).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+export type InsertStandingRole = typeof standingRoles.$inferInsert;
+export type StandingRoleRow = typeof standingRoles.$inferSelect;
