@@ -40,6 +40,8 @@ function makeItem(p: {
   claim?: string;
   lastConfirmedDaysAgo?: number;
   evidence?: ExperienceItemRow["evidence"];
+  role?: string; // ROLE-3: role-scoped when set (omitted ⇒ role-agnostic / repo-scoped)
+  concern?: string; // ROLE-3: only meaningful alongside role
 }): ExperienceItemRow {
   return {
     id: p.id,
@@ -48,6 +50,8 @@ function makeItem(p: {
       repo: p.repo ?? "widget",
       archetype: p.archetype ?? "repo-assessment",
       criterionClass: p.criterionClass ?? "test-run",
+      ...(p.role ? { role: p.role } : {}),
+      ...(p.concern ? { concern: p.concern } : {}),
     },
     claim: p.claim ?? `On widget, criterion ${p.id} was checked.`,
     evidence: p.evidence ?? [{ loopId: `loop-${p.id}`, round: 1, apTitle: "AP", diffRef: "abc123" }],
@@ -213,5 +217,83 @@ describe("buildPriorExperienceBlock — fenced, byte-bounded, refuted-as-negativ
     // The block opens/closes with a fence strictly longer than any backtick run inside.
     const firstFence = block.split("\n").find((l) => /^`{4,}$/.test(l));
     expect(firstFence).toBeTruthy();
+  });
+});
+
+// ── ROLE-3: role-scoped READ (a Role starts warm; fail-closed) ──────────────────
+// (standing-role.md §3/§6/§8) — a role-fired loop reads its OWN (role, concern) items
+// FIRST (higher rank), PLUS every role-agnostic repo item, and NEVER another role's items.
+
+const DEVOPS_QUERY: ExperienceReadQuery = {
+  repo: "widget",
+  archetype: "repo-assessment",
+  criterionClasses: ["test-run"],
+  role: "role-devops",
+  concern: "concern-iac",
+};
+
+describe("itemMatchesScope — ROLE-3 fail-closed role boundary (§6)", () => {
+  it("a role reads its OWN role-scoped item", () => {
+    const own = makeItem({ id: "own", role: "role-devops", concern: "concern-iac" });
+    expect(itemMatchesScope(own, DEVOPS_QUERY)).toBe(true);
+  });
+
+  it("a role reads role-AGNOSTIC (repo-scoped) items — the shared cross-role baseline", () => {
+    const generic = makeItem({ id: "generic" }); // no scope.role
+    expect(itemMatchesScope(generic, DEVOPS_QUERY)).toBe(true);
+  });
+
+  it("a role does NOT read ANOTHER role's role-scoped item (a DevOps role never inherits Security's lesson)", () => {
+    const otherRole = makeItem({ id: "sec", role: "role-security", concern: "concern-authz" });
+    expect(itemMatchesScope(otherRole, DEVOPS_QUERY)).toBe(false);
+  });
+
+  it("a NON-role loop (query.role null) reads ONLY role-agnostic items, NEVER any role-scoped item", () => {
+    const nonRoleQuery: ExperienceReadQuery = { repo: "widget", archetype: "repo-assessment", criterionClasses: ["test-run"] };
+    expect(itemMatchesScope(makeItem({ id: "roleScoped", role: "role-devops" }), nonRoleQuery)).toBe(false);
+    expect(itemMatchesScope(makeItem({ id: "generic" }), nonRoleQuery)).toBe(true);
+  });
+
+  it("same role, DIFFERENT concern is still readable (the fail-closed boundary is ROLE, not concern)", () => {
+    const sameRoleOtherConcern = makeItem({ id: "otherConcern", role: "role-devops", concern: "concern-k8s" });
+    expect(itemMatchesScope(sameRoleOtherConcern, DEVOPS_QUERY)).toBe(true);
+  });
+});
+
+describe("selectExperienceItems — ROLE-3 a Role starts warm (rank its own first)", () => {
+  it("ranks the role's own (role, concern) VERIFIED item ABOVE a generic verified one of equal freshness", () => {
+    const own = makeItem({ id: "own", role: "role-devops", concern: "concern-iac", confidence: "verified", lastConfirmedDaysAgo: 1 });
+    const generic = makeItem({ id: "generic", confidence: "verified", lastConfirmedDaysAgo: 1 });
+    const out = selectExperienceItems([generic, own], DEVOPS_QUERY, OPTS);
+    expect(out.map((i) => i.id)).toEqual(["own", "generic"]); // the role's own leads
+  });
+
+  it("ranks same-role SAME-concern above same-role OTHER-concern above generic", () => {
+    const sameConcern = makeItem({ id: "sameC", role: "role-devops", concern: "concern-iac", lastConfirmedDaysAgo: 1 });
+    const otherConcern = makeItem({ id: "otherC", role: "role-devops", concern: "concern-k8s", lastConfirmedDaysAgo: 1 });
+    const generic = makeItem({ id: "generic", lastConfirmedDaysAgo: 1 });
+    const out = selectExperienceItems([generic, otherConcern, sameConcern], DEVOPS_QUERY, OPTS);
+    expect(out.map((i) => i.id)).toEqual(["sameC", "otherC", "generic"]);
+  });
+
+  it("a DIFFERENT role's items are DROPPED (fail-closed) but role-agnostic items are KEPT", () => {
+    const own = makeItem({ id: "own", role: "role-devops", concern: "concern-iac" });
+    const foreign = makeItem({ id: "foreign", role: "role-security" });
+    const generic = makeItem({ id: "generic" });
+    const out = selectExperienceItems([foreign, own, generic], DEVOPS_QUERY, OPTS);
+    expect(out.map((i) => i.id).sort()).toEqual(["generic", "own"]);
+    expect(out.map((i) => i.id)).not.toContain("foreign");
+  });
+
+  it("BYTE-IDENTICAL to DREAM-2: a non-role query over role-agnostic items ranks unchanged", () => {
+    // No role on the query, no role on the items ⇒ affinity is 1.0 throughout ⇒ pure
+    // confidence×freshness order, exactly as DREAM-2 (verified > observed > refuted).
+    const items = [
+      makeItem({ id: "refuted", confidence: "refuted", lastConfirmedDaysAgo: 1 }),
+      makeItem({ id: "verified", confidence: "verified", lastConfirmedDaysAgo: 1 }),
+      makeItem({ id: "observed", confidence: "observed", lastConfirmedDaysAgo: 1 }),
+    ];
+    const out = selectExperienceItems(items, QUERY, OPTS); // QUERY has no role
+    expect(out.map((i) => i.id)).toEqual(["verified", "observed", "refuted"]);
   });
 });

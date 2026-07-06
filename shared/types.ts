@@ -3696,6 +3696,24 @@ export interface ExperienceScope {
    * planner match "coverage-gate/test-run patterns on this repo".
    */
   criterionClass: string;
+  /**
+   * ROLE-3 (standing-role.md §3/§6/§8, additive to the DREAM-1/2 tuple): the Standing
+   * Role this item was learned AS, when the source loop was ROLE-FIRED
+   * (`triggerProvenance.role.roleId`). ABSENT on a non-role loop's items — those stay
+   * role-agnostic (repo-scoped) and byte-identical to pre-ROLE-3. Its presence makes an
+   * item FAIL-CLOSED: only the SAME role reads it (a DevOps role never inherits a Security
+   * role's lesson); a role-agnostic item (no `role`) is read by any role. See the reader's
+   * `itemMatchesScope` for the enforcement.
+   */
+  role?: string;
+  /**
+   * ROLE-3: the CONCERN the role was watching when it learned this (`role.concernId`).
+   * Only ever set alongside `role` (a concern is meaningless without its role). Used to
+   * RANK a role's own `(role, concern)` lessons above its other-concern / generic ones —
+   * it is NOT part of the fail-closed boundary (that is `role` alone). Absent on a
+   * ROLE-1 manual wake (which has a role but no concern) and on non-role loops.
+   */
+  concern?: string;
 }
 
 /** One auditable link back to the raw session the claim was distilled from (§2/§3). */

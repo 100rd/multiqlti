@@ -213,3 +213,70 @@ describe("distillLoop — grounding", () => {
     expect(items).toEqual([]);
   });
 });
+
+// ── ROLE-3: role-scoped experience on the WRITE side ────────────────────────────
+// (standing-role.md §3/§6/§8) — a ROLE-FIRED terminal loop stamps (role, concern) onto
+// every item's scope so it records "as THIS role on THIS concern, pattern X was verified".
+// A non-role loop's items are UNCHANGED (repo-scoped, byte-identical to pre-ROLE-3).
+
+describe("distillLoop — ROLE-3 role scope", () => {
+  const roleProv = (roleId: string, concernId?: string) => ({
+    firedAt: "2026-07-01T00:30:00.000Z",
+    role: { roleId, name: "devops-reviewer", ...(concernId ? { concernId } : {}) },
+  });
+
+  it("a ROLE-FIRED terminal loop ⇒ items carry scope.role + scope.concern", () => {
+    const loop = makeLoop({
+      id: "loop-role-1",
+      state: "converged",
+      triggerProvenance: roleProv("role-devops", "concern-iac"),
+    });
+    const items = distillLoop(loop, [round(1, traceWith([crit({ method: "test-run", ran: true, passed: true })]))], OPTS);
+
+    expect(items).toHaveLength(1);
+    expect(items[0].scope).toEqual({
+      repo: "widget",
+      archetype: "repo-assessment",
+      criterionClass: "test-run",
+      role: "role-devops",
+      concern: "concern-iac",
+    });
+  });
+
+  it("a NON-role loop ⇒ NO role/concern scope (unchanged, byte-identical to pre-ROLE-3)", () => {
+    const loop = makeLoop({ id: "loop-role-2", state: "converged" }); // no triggerProvenance.role
+    const items = distillLoop(loop, [round(1, traceWith([crit({ method: "test-run", ran: true, passed: true })]))], OPTS);
+
+    expect(items).toHaveLength(1);
+    expect(items[0].scope).toEqual({ repo: "widget", archetype: "repo-assessment", criterionClass: "test-run" });
+    expect(items[0].scope).not.toHaveProperty("role");
+    expect(items[0].scope).not.toHaveProperty("concern");
+  });
+
+  it("a ROLE-1 MANUAL wake (role, no concern) ⇒ scope.role only, concern absent", () => {
+    const loop = makeLoop({
+      id: "loop-role-3",
+      state: "converged",
+      triggerProvenance: roleProv("role-security"), // wake has a role but no concern
+    });
+    const items = distillLoop(loop, [round(1, traceWith([crit({ method: "test-run", ran: true, passed: true })]))], OPTS);
+
+    expect(items).toHaveLength(1);
+    expect(items[0].scope.role).toBe("role-security");
+    expect(items[0].scope).not.toHaveProperty("concern"); // no concern without a concernId
+  });
+
+  it("a concern WITHOUT a role is never stamped alone (a concern is meaningless without its role)", () => {
+    // Defensive: a malformed provenance with a concernId but no roleId must not leak a concern.
+    const loop = makeLoop({
+      id: "loop-role-4",
+      state: "converged",
+      triggerProvenance: { firedAt: "2026-07-01T00:30:00.000Z", role: { roleId: "", name: "x", concernId: "c" } },
+    });
+    const items = distillLoop(loop, [round(1, traceWith([crit({ method: "test-run", ran: true, passed: true })]))], OPTS);
+
+    expect(items).toHaveLength(1);
+    expect(items[0].scope).not.toHaveProperty("role");
+    expect(items[0].scope).not.toHaveProperty("concern");
+  });
+});
