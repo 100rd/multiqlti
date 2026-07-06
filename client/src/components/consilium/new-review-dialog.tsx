@@ -446,11 +446,11 @@ export function NewConsiliumReviewDialog({
           New consilium review
         </Button>
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>New consilium review</DialogTitle>
         </DialogHeader>
-        <div className="space-y-4 py-4">
+        <div className="min-w-0 space-y-4 py-4">
           {/* PRESET — the review "shape". Prominent, with a one-line description of
               each option in the dropdown AND a live description of the current choice
               below the control, so the operator always sees WHAT they picked. */}
