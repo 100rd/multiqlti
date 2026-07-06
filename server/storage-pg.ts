@@ -66,6 +66,9 @@ import {
   experienceItems,
   type ExperienceItemRow,
   type InsertExperienceItem,
+  skillProposals,
+  type SkillProposalRow,
+  type InsertSkillProposal,
   type ConsiliumLoopRow,
   type InsertConsiliumLoop,
   type ConsiliumLoopRoundRow,
@@ -113,7 +116,7 @@ import {
 // import so the shared `@shared/schema` import block above stays a single merge point.
 import { standingRoles, type StandingRoleRow, type InsertStandingRole } from "@shared/schema";
 import type { LessonRecallFilter } from "./memory/lessons/types";
-import type { TraceSpan, SkillVersionRecord, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace, ActionPoint } from "@shared/types";
+import type { TraceSpan, SkillVersionRecord, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace, ActionPoint, SkillProposalStatus } from "@shared/types";
 
 import { encrypt } from "./crypto";
 // [ADR-001 Wave-2] credentialProvider routes all decrypt() calls through the broker.
@@ -963,6 +966,17 @@ export class PgStorage implements IStorage {
     return row;
   }
 
+  async getSkillIdByName(name: string): Promise<string | null> {
+    // withProjectList: the DREAM-4 proposer resolves the link under a SYSTEM context (all
+    // projects). A READ only — never a write to the skill registry (§5 boundary).
+    const [row] = await db
+      .select({ id: skills.id })
+      .from(skills)
+      .where(withProjectList(skills, eq(skills.name, name)))
+      .limit(1);
+    return row?.id ?? null;
+  }
+
   async createSkill(data: InsertSkill): Promise<Skill> {
     type SkillInsert = Parameters<typeof db.insert<typeof skills>>[0] extends object ? Parameters<ReturnType<typeof db.insert<typeof skills>>["values"]>[0] : never;
     const [row] = await db.insert(skills).values(withProjectInsert(skills, data as unknown as SkillInsert)).returning();
@@ -1378,6 +1392,62 @@ export class PgStorage implements IStorage {
     await db
       .delete(experienceItems)
       .where(withProjectList(experienceItems, inArray(experienceItems.id, ids)));
+  }
+
+  // ─── DREAM-4 — Experience → SKILL.md feedback proposals (§5/§9) ─────────────
+  // The proposer writes ONLY here, ALWAYS `status: 'unverified'` (the ADR-0002 envelope
+  // entry). It reads experience_items (read-only) + the skill registry; it NEVER mutates a
+  // SKILL.md, the `skills` table, experience_items, or the state graph. withProjectList lets
+  // the system-context pass insert/read cross-project; a project-scoped caller (the review
+  // route) sees only its own. Forward status moves are human/CODEOWNERS decisions.
+
+  async createSkillProposals(items: InsertSkillProposal[]): Promise<SkillProposalRow[]> {
+    if (items.length === 0) return [];
+    // ON CONFLICT (dedup_key) DO NOTHING — the unique index is the race backstop so a proven
+    // pattern yields ONE proposal even if two passes overlap. Returns only inserted rows.
+    return db
+      .insert(skillProposals)
+      .values(items)
+      .onConflictDoNothing({ target: skillProposals.dedupKey })
+      .returning();
+  }
+
+  async listSkillProposals(opts?: {
+    status?: SkillProposalStatus;
+    limit?: number;
+  }): Promise<SkillProposalRow[]> {
+    const where = opts?.status
+      ? withProjectList(skillProposals, eq(skillProposals.status, opts.status))
+      : withProjectList(skillProposals);
+    return db
+      .select()
+      .from(skillProposals)
+      .where(where)
+      .orderBy(desc(skillProposals.createdAt))
+      .limit(opts?.limit ?? 200);
+  }
+
+  async listSkillProposalDedupKeys(): Promise<string[]> {
+    const rows = await db
+      .select({ dedupKey: skillProposals.dedupKey })
+      .from(skillProposals)
+      .where(withProjectList(skillProposals));
+    return rows.map((r) => r.dedupKey);
+  }
+
+  async updateSkillProposalStatus(
+    id: string,
+    status: SkillProposalStatus,
+    reviewNote?: string | null,
+  ): Promise<SkillProposalRow | undefined> {
+    const set: Partial<SkillProposalRow> = { status, updatedAt: new Date() };
+    if (reviewNote !== undefined) set.reviewNote = reviewNote;
+    const [row] = await db
+      .update(skillProposals)
+      .set(set)
+      .where(withProjectList(skillProposals, eq(skillProposals.id, id)))
+      .returning();
+    return row;
   }
 
   // ─── Triggers (Phase 6.3) ─────────────────────────────────────────────────

@@ -51,6 +51,8 @@ import { TrackerWritebackObserver } from "./services/consilium/trackers/writebac
 import { GithubCommandPoller } from "./services/consilium/trackers/github-command-poller";
 import { ExperienceDistillerObserver } from "./services/consilium/experience/experience-distiller-observer";
 import { ExperienceConsolidatorObserver } from "./services/consilium/experience/experience-consolidator-observer";
+import { SkillProposerObserver } from "./services/consilium/experience/skill-proposer-observer";
+import { registerSkillProposalRoutes } from "./routes/skill-proposals";
 import { buildSynthPrompt, parseSynthOutput } from "./services/consilium/trackers/issue-spec";
 import { DEFAULT_TASK_MODEL } from "./config/schema";
 import { stopRateLimitCleanup } from "./services/webhook-handler";
@@ -177,6 +179,11 @@ export async function registerRoutes(
   // route is unauthenticated (the /api/pr-queue class of bug). Do not drop it.
   app.use("/api/telemetry", requireAuth, requireProject);
   app.use("/api/consilium-reviews", requireAuth, requireProject);
+  // DREAM-4 (experience-plane-dream §5/§9): Experience → SKILL.md feedback proposals review
+  // surface. Project-scoped — the mount carries auth (the /api/pr-queue 401 lesson); the
+  // routes register inside the experiencePlane.skillFeedback.enabled kill-switch. The PATCH
+  // (the human/CODEOWNERS gate) is additionally requireRole(maintainer/admin) in-route.
+  app.use("/api/skill-proposals", requireAuth, requireProject);
   // ROLE-1 (standing-role.md §3/§8): StandingRole CRUD + manual wake. Project-scoped
   // — the mount carries auth (the /api/pr-queue 401 lesson); the routes register
   // inside the consiliumLoop.enabled kill-switch (wake reuses the review factory).
@@ -277,6 +284,11 @@ export async function registerRoutes(
   // OWN kill-switch (consolidate.enabled), default FALSE ⇒ never constructed (byte-identical:
   // the store just accumulates + is read). Stopped in the cleanup below.
   let experienceConsolidatorObserver: ExperienceConsolidatorObserver | null = null;
+  // DREAM-4: the Experience → SKILL.md feedback proposer (repeatedly-verified patterns →
+  // PROPOSED SKILL.md patches into the ADR-0002 trust envelope as `unverified`). Its OWN
+  // kill-switch (skillFeedback.enabled), default FALSE ⇒ never constructed (byte-identical:
+  // no proposal ever opened). Stopped in the cleanup below.
+  let skillProposerObserver: SkillProposerObserver | null = null;
   // Hoisted to the registerRoutes scope (was a block-local const) so the
   // file-change `fireTrigger` closure below can launch consilium reviews via the
   // SAME controller. Stays null when the kill-switch is off — fireTrigger then
@@ -417,6 +429,35 @@ export async function registerRoutes(
     });
     experienceConsolidatorObserver.start();
     log("[experience-consolidator] enabled — scheduled consolidation observer started", "experience-consolidator");
+  }
+
+  // DREAM-4 — Experience → SKILL.md FEEDBACK (§5 Experience ≠ Skill / §9). When its OWN
+  // kill-switch is on, a background, SCHEDULED proposer re-reads recent Experience items and,
+  // for a pattern REPEATEDLY `verified` across >= minVerifiedLoops independent loops with a
+  // positive MEASURED successDelta on a skill-mapped scope, opens ONE PROPOSED SKILL.md patch
+  // into the ADR-0002 trust envelope as `unverified`. PROPOSE-ONLY: it writes ONLY the
+  // `skill_proposals` table — it NEVER edits a SKILL.md, graduates a patch, writes
+  // experience_items, or touches the state graph. Every forward status move is a human/
+  // CODEOWNERS decision via the review routes (registered here, PATCH gated maintainer/admin).
+  // Default OFF ⇒ NOT constructed + routes NOT registered ⇒ byte-identical (no proposals).
+  if (appConfigLoader.get().pipeline.consiliumLoop.experiencePlane.skillFeedback.enabled) {
+    skillProposerObserver = new SkillProposerObserver({
+      // Cross-project reads/writes run under ONE system context per pass (runAsSystem audits
+      // the access; listExperienceItems returns all projects' rows; the insert resolves
+      // cross-project — the pure proposer keys candidates by projectId).
+      runInSystem: (fn) => runAsSystem("skill-proposer", fn),
+      listExperienceItems: (limit) => storage.listExperienceItems(limit),
+      listSkillProposalDedupKeys: () => storage.listSkillProposalDedupKeys(),
+      createSkillProposals: (items) => storage.createSkillProposals(items),
+      getSkillIdByName: (name) => storage.getSkillIdByName(name),
+      config: () => appConfigLoader.get(),
+      log: (m: string) => log(m, "skill-proposer"),
+    });
+    skillProposerObserver.start();
+    // The human/CODEOWNERS review gate — list + PATCH-status. Registered ONLY inside the
+    // kill-switch (inert otherwise), mounted behind requireAuth + requireProject above.
+    registerSkillProposalRoutes(app, storage);
+    log("[skill-proposer] enabled — scheduled skill-feedback proposer + review routes started", "skill-proposer");
   }
 
   // Live Activity observability lens (read-only, owner/admin-scoped, metadata-only).
@@ -1037,6 +1078,7 @@ export async function registerRoutes(
     consiliumLoopPoller?.stop();
     experienceDistillerObserver?.stop();
     experienceConsolidatorObserver?.stop();
+    skillProposerObserver?.stop();
     fileWatcherService?.stopAll();
     githubPoller?.stop();
     githubIssuesPoller?.stop();

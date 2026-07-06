@@ -990,6 +990,45 @@ export const ConfigSchema = z.object({
            */
           intervalSec: z.coerce.number().int().min(30).max(86_400).default(3_600),
         }).default({}),
+        /**
+         * DREAM-4 — the SKILL FEEDBACK loop (§5 Experience ≠ Skill / §9). When ON, a
+         * background, scheduled proposer re-reads recent Experience items and, for a pattern
+         * that is REPEATEDLY `verified` across >= `minVerifiedLoops` INDEPENDENT loops with a
+         * positive MEASURED `successDelta` >= `minSuccessDelta` on a scope that maps to a KNOWN
+         * skill, opens ONE PROPOSED SKILL.md patch into the ADR-0002 trust envelope as
+         * `unverified`. It is PROPOSE-ONLY: it NEVER edits a SKILL.md in place, NEVER graduates
+         * a patch, NEVER writes experience_items or the state graph — it writes ONLY the
+         * `skill_proposals` table. Every forward status move is a human/CODEOWNERS decision
+         * (the review endpoint, requireRole maintainer/admin). Bounded + deduped (one proposal
+         * per skill+pattern) so it can never spam.
+         *
+         * Kill-switch DEFAULT FALSE ⇒ BYTE-IDENTICAL: the proposer observer + review routes are
+         * NEVER constructed (routes.ts), so no proposal is ever opened — the store just
+         * accumulates + is read/consolidated exactly as in DREAM-1/2/3.
+         */
+        skillFeedback: z.object({
+          /** Kill-switch: false (default) → no proposer + no review routes (inert; no proposals). */
+          enabled: z.boolean().default(false),
+          /**
+           * Scheduled sweep interval (SECONDS) — how often the proposer re-reads recent items
+           * to detect graduatable patterns. Deliberately coarse (off the hot path). 30s..24h;
+           * default 1h. NaN/out-of-range fails load.
+           */
+          intervalSec: z.coerce.number().int().min(30).max(86_400).default(3_600),
+          /**
+           * K — the minimum number of DISTINCT independent loops a pattern must be `verified`
+           * across before it is graduatable to a proposal. Bars a one-off from becoming a
+           * SKILL.md patch. 2..50; default 3.
+           */
+          minVerifiedLoops: z.coerce.number().int().min(2).max(50).default(3),
+          /**
+           * The minimum MEASURED `successDelta` (∈ (0,1]) the pattern's reuse must show — the
+           * consolidator's net-effect metric — before a proposal is opened. Requires a POSITIVE
+           * measured effect (an opinion pattern has null successDelta ⇒ never proposed). 0..1;
+           * default 0.5.
+           */
+          minSuccessDelta: z.coerce.number().min(0).max(1).default(0.5),
+        }).default({}),
       }).default({}),
     }).default({}),
   }).default({}),

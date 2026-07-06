@@ -252,4 +252,30 @@ describe("pipeline.consiliumLoop schema", () => {
     // A non-integer numeric is also rejected (.int()).
     expect(parseLoop({ maxRounds: 2.5 }).success).toBe(false);
   });
+
+  it("DREAM-4: experiencePlane.skillFeedback defaults to OFF (byte-identical) with bounded knobs", () => {
+    const res = ConfigSchema.safeParse({});
+    expect(res.success).toBe(true);
+    if (!res.success) return;
+    const sf = res.data.pipeline.consiliumLoop.experiencePlane.skillFeedback;
+    expect(sf.enabled).toBe(false); // kill-switch off ⇒ no proposer, no proposals.
+    expect(sf.intervalSec).toBe(3_600);
+    expect(sf.minVerifiedLoops).toBe(3);
+    expect(sf.minSuccessDelta).toBe(0.5);
+  });
+
+  it("DREAM-4: skillFeedback accepts valid overrides and enforces bounds", () => {
+    const ok = parseLoop({ experiencePlane: { skillFeedback: { enabled: true, minVerifiedLoops: 5, minSuccessDelta: 0.8 } } });
+    expect(ok.success).toBe(true);
+    if (ok.success) {
+      const sf = ok.data.pipeline.consiliumLoop.experiencePlane.skillFeedback;
+      expect(sf.enabled).toBe(true);
+      expect(sf.minVerifiedLoops).toBe(5);
+      expect(sf.minSuccessDelta).toBe(0.8);
+    }
+    // minVerifiedLoops < 2 rejected; successDelta > 1 rejected; NaN rejected.
+    expect(parseLoop({ experiencePlane: { skillFeedback: { minVerifiedLoops: 1 } } }).success).toBe(false);
+    expect(parseLoop({ experiencePlane: { skillFeedback: { minSuccessDelta: 1.5 } } }).success).toBe(false);
+    expect(parseLoop({ experiencePlane: { skillFeedback: { intervalSec: "abc" } } }).success).toBe(false);
+  });
 });
