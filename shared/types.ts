@@ -1670,36 +1670,39 @@ export interface TrackerPollState {
  * This trigger PRODUCES specs + UPDATES tickets — it never fires a loop directly.
  */
 export interface TrackerEventTriggerConfig {
-  // TRACK-1 = github; TRACK-3 adds jira; TRACK-4 adds gitlab + bitbucket. The poller for
-  // each tracker guards on this discriminant (`config.tracker !== "<kind>"` → skip), so
-  // widening it is ADDITIVE: the github/jira paths are byte-identical and only the new
-  // gitlab/bitbucket pollers read their own fields.
-  tracker: "github" | "jira" | "gitlab" | "bitbucket";
-  repo: string;                 // github: owner/repo to poll issues from. jira/gitlab/bitbucket: owner/repo of the git repo the spec PR lands in.
+  // TRACK-1 = github; TRACK-3 adds jira; TRACK-4 adds gitlab + bitbucket; TRACK-5 adds
+  // linear/azure/clickup. The poller for each tracker guards on this discriminant
+  // (`config.tracker !== "<kind>"` → skip), so widening it is ADDITIVE: the github/jira
+  // paths are byte-identical and only the new poller for each kind reads its own fields.
+  tracker: "github" | "jira" | "gitlab" | "bitbucket" | "linear" | "azure" | "clickup";
+  repo: string;                 // github: owner/repo to poll issues from. other trackers: owner/repo of the git repo the spec PR lands in.
   targetRepoPath: string;       // allowlisted local repo path -> the spec's `repo:` frontmatter + PR target
-  filter?: { label?: string };  // label gate (consent to intake) — required at fire time
+  filter?: { label?: string };  // label/tag gate (consent to intake) — required at fire time (Jira label, Linear label, Azure tag, ClickUp tag)
   specStatus?: "ready" | "draft";
   pollState?: TrackerPollState;  // owned by the poller (watermark)
   // ─── Jira-only (TRACK-3; ignored by the github poller) ──────────────────────
-  /** Jira site base URL, e.g. `https://acme.atlassian.net` (validated https). */
+  /** Jira site base URL, e.g. `https://acme.atlassian.net` (validated https). Also the
+   *  optional API base override for the TRACK-5 connectors (Linear/Azure/ClickUp each
+   *  default to their own public API host when this is absent). */
   baseUrl?: string;
-  /** Jira project key to poll, e.g. `ACME`. */
+  /** Jira project key to poll, e.g. `ACME`. Also the Azure DevOps project name. */
   project?: string;
   /** Optional operator JQL predicate (trusted config) ANDed into the label search. */
   jql?: string;
   /**
    * Optional pickup "transition", interpreted per connector (best-effort): Jira → a
-   * workflow transition name/id; GitLab → a LABEL to add (GitLab has no arbitrary
-   * states); Bitbucket → an issue STATE (`open`/`resolved`/…). Ignored by the github poller.
+   * workflow transition name/id; GitLab → a LABEL to add (no arbitrary states);
+   * Bitbucket → an issue STATE; Linear → a workflow-state name; Azure → `System.State`;
+   * ClickUp → a status. Ignored by the github poller.
    */
   transitionTo?: string;
-  // ─── GitLab-only (TRACK-4; ignored by the github/jira/bitbucket pollers) ─────
+  // ─── GitLab-only (TRACK-4; ignored by other pollers) ─────────────────────────
   /**
    * GitLab project id (`42`) or URL path (`group/project`) whose ISSUES are polled.
    * (`baseUrl` above is reused as the GitLab site base, e.g. `https://gitlab.com`.)
    */
   gitlabProject?: string;
-  // ─── Bitbucket-only (TRACK-4; ignored by the github/jira/gitlab pollers) ─────
+  // ─── Bitbucket-only (TRACK-4; ignored by other pollers) ──────────────────────
   /** Bitbucket Cloud workspace hosting the issue tracker. */
   workspace?: string;
   /**
@@ -1708,6 +1711,17 @@ export interface TrackerEventTriggerConfig {
    * `https://api.bitbucket.org`. `filter.label` is matched against the issue COMPONENT.)
    */
   repoSlug?: string;
+  // ─── Linear-only (TRACK-5; ignored by other pollers) ────────────────────────
+  /** Optional Linear team id to scope the label search to a single team (workspace-wide otherwise). */
+  linearTeamId?: string;
+  // ─── Azure DevOps-only (TRACK-5; ignored by other pollers) ──────────────────
+  /** Azure DevOps organization (the `dev.azure.com/<org>` segment) — REQUIRED for azure. */
+  azureOrg?: string;
+  /** Optional Azure area-path filter ANDed into the WIQL (`[System.AreaPath] UNDER '<path>'`). */
+  azureAreaPath?: string;
+  // ─── ClickUp-only (TRACK-5; ignored by other pollers) ───────────────────────
+  /** ClickUp list id whose tasks are polled (`/list/<id>/task`) — REQUIRED for clickup. */
+  clickupListId?: string;
   /**
    * TRACK-2 (full write-back lifecycle). Per-trigger tuning for the read-only
    * write-back OBSERVER, which comments the loop's lifecycle transitions back on

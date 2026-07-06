@@ -134,11 +134,53 @@ const JiraTrackerConfigSchema = z.object({
   specStatus: z.enum(["ready", "draft"]).optional(),
 });
 
+// TRACK-5 (linear) — GraphQL poll → committed spec PR in `repo` (the git repo) + pickup.
+const LinearTrackerConfigSchema = z.object({
+  tracker: z.literal("linear"),
+  baseUrl: z.string().min(1).max(500).url().startsWith("https://", "Linear baseUrl must be https").optional(),
+  linearTeamId: z.string().min(1).max(200).optional(),
+  transitionTo: z.string().min(1).max(200).optional(),
+  repo: z.string().min(1).max(500).regex(/^[^/]+\/[^/]+$/, "Must be owner/repo (the git repo the spec PR lands in)"),
+  targetRepoPath: z.string().min(1).max(4096),
+  filter: z.object({ label: z.string().min(1).max(200).optional() }).optional(),
+  specStatus: z.enum(["ready", "draft"]).optional(),
+});
+
+// TRACK-5 (azure) — WIQL poll → committed spec PR in `repo` (the git repo) + pickup.
+const AzureTrackerConfigSchema = z.object({
+  tracker: z.literal("azure"),
+  baseUrl: z.string().min(1).max(500).url().startsWith("https://", "Azure baseUrl must be https").optional(),
+  azureOrg: z.string().min(1).max(100),
+  project: z.string().min(1).max(100),
+  azureAreaPath: z.string().min(1).max(400).optional(),
+  transitionTo: z.string().min(1).max(200).optional(),
+  repo: z.string().min(1).max(500).regex(/^[^/]+\/[^/]+$/, "Must be owner/repo (the git repo the spec PR lands in)"),
+  targetRepoPath: z.string().min(1).max(4096),
+  filter: z.object({ label: z.string().min(1).max(200).optional() }).optional(),
+  specStatus: z.enum(["ready", "draft"]).optional(),
+});
+
+// TRACK-5 (clickup) — REST poll → committed spec PR in `repo` (the git repo) + pickup.
+const ClickUpTrackerConfigSchema = z.object({
+  tracker: z.literal("clickup"),
+  baseUrl: z.string().min(1).max(500).url().startsWith("https://", "ClickUp baseUrl must be https").optional(),
+  clickupListId: z.string().min(1).max(64).regex(/^[A-Za-z0-9._-]+$/, "ClickUp list id: alnum/._-"),
+  transitionTo: z.string().min(1).max(200).optional(),
+  repo: z.string().min(1).max(500).regex(/^[^/]+\/[^/]+$/, "Must be owner/repo (the git repo the spec PR lands in)"),
+  targetRepoPath: z.string().min(1).max(4096),
+  filter: z.object({ label: z.string().min(1).max(200).optional() }).optional(),
+  specStatus: z.enum(["ready", "draft"]).optional(),
+});
+
 // Discriminated on `tracker` so a bad/absent kind yields a precise 400 (additive: the
-// github arm is unchanged, so existing github trigger creation validates identically).
+// github + jira arms are unchanged, so existing trigger creation validates identically;
+// TRACK-5 adds the linear/azure/clickup arms).
 const TrackerConfigSchema = z.discriminatedUnion("tracker", [
   GithubTrackerConfigSchema,
   JiraTrackerConfigSchema,
+  LinearTrackerConfigSchema,
+  AzureTrackerConfigSchema,
+  ClickUpTrackerConfigSchema,
 ]);
 
 type TriggerTypeValue = "webhook" | "schedule" | "github_event" | "file_change" | "tracker_event";
