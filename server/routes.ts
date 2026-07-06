@@ -41,6 +41,7 @@ import { CronScheduler } from "./services/cron-scheduler";
 import { FileWatcherService } from "./services/file-watcher";
 import { GitHubPoller } from "./services/github-poller";
 import { GithubIssuesPoller } from "./services/consilium/trackers/github-issues-poller";
+import { TrackerWritebackObserver } from "./services/consilium/trackers/writeback-observer";
 import { buildSynthPrompt, parseSynthOutput } from "./services/consilium/trackers/issue-spec";
 import { DEFAULT_TASK_MODEL } from "./config/schema";
 import { stopRateLimitCleanup } from "./services/webhook-handler";
@@ -333,6 +334,7 @@ export async function registerRoutes(
   let fileWatcherService: FileWatcherService | null = null;
   let githubPoller: GitHubPoller | null = null;
   let githubIssuesPoller: GithubIssuesPoller | null = null;
+  let trackerWritebackObserver: TrackerWritebackObserver | null = null;
 
   try {
     triggerService = new TriggerService(storage);
@@ -532,6 +534,30 @@ export async function registerRoutes(
       githubIssuesPoller.start();
     }
 
+    // TRACK-2 (full write-back lifecycle). When the write-back sub-switch is on (and
+    // the tracker switch above), a READ-ONLY observer polls consilium loops that
+    // trace back to a tracker issue (join = the loop's `triggerProvenance.spec.source`)
+    // and comments each lifecycle transition (start / verdict / PR / terminal) back on
+    // the ORIGIN issue. It NEVER touches the loop controller (SPEC-2's zone) — it only
+    // READS loop state via `storage.getLoops` (the Triggers page's own path) and writes
+    // COMMENTS via `gh`. Default OFF -> not constructed (TRACK-1 pickup byte-identical).
+    if (
+      appConfigLoader.get().features.triggers.tracker.enabled &&
+      appConfigLoader.get().features.triggers.tracker.writeback.enabled
+    ) {
+      trackerWritebackObserver = new TrackerWritebackObserver({
+        // The ONLY cross-project read — under runAsSystem (unscopedSystemQuery).
+        getEnabledTriggersByType: (type) =>
+          runAsSystem("tracker-writeback-bootstrap", () => storage.getAllEnabledTriggersByType(type)),
+        // Per-trigger loop reads run INSIDE runAsProject(trigger.projectId).
+        runInProject: runAsProject,
+        getLoops: () => storage.getLoops(),
+        config: () => appConfigLoader.get(),
+        log: (m: string) => log(m, "tracker-writeback"),
+      });
+      trackerWritebackObserver.start();
+    }
+
     log("[triggers] Trigger subsystem started", "triggers");
   } catch (e) {
     // TriggerCrypto throws if TRIGGER_SECRET_KEY is absent — subsystem is disabled.
@@ -606,6 +632,7 @@ export async function registerRoutes(
     fileWatcherService?.stopAll();
     githubPoller?.stop();
     githubIssuesPoller?.stop();
+    trackerWritebackObserver?.stop();
     getRefreshScheduler()?.stop();
     stopRateLimitCleanup();
     await remoteAgentManager?.shutdown();
