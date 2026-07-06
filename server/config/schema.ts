@@ -960,6 +960,36 @@ export const ConfigSchema = z.object({
           /** A `verified` item unconfirmed longer than this (days) is down-weighted to `observed`. 1..365; default 60. */
           staleVerifiedDays: z.coerce.number().min(1).max(365).default(60),
         }).default({}),
+        /**
+         * DREAM-3 — the CONSOLIDATION pass (§4 consolidating / §6 self-correction). When
+         * ON, a background, scheduled consolidator re-reads recent Experience items and:
+         *   - MERGES duplicates (same scope + claim) into one — union evidence, keep the
+         *     STRONGEST verification (verified > observed > refuted), union relatedComponents;
+         *   - DECAYS a stale `verified` item (unconfirmed too long, per `read.staleVerifiedDays`)
+         *     to `observed`, WRITTEN BACK so the store self-corrects (not just the read, §6);
+         *   - flags a verified↔refuted CONTRADICTION on the same scope — keeps BOTH, fresher-
+         *     verified leads, never silently overwrites (§6);
+         *   - recomputes `successDelta` from any available reuse signal (the pattern recurred
+         *     across independent loops and was re-verified/refuted).
+         *
+         * It runs OFF the hot path (its own interval, like the DREAM-1 distiller / the
+         * tracker poller), is idempotent + bounded (batched — a large store never OOMs the
+         * pass), and writes ONLY to `experience_items`. It NEVER blocks or races a loop.
+         *
+         * Kill-switch DEFAULT FALSE ⇒ BYTE-IDENTICAL: the consolidator observer is NEVER
+         * constructed (routes.ts), so no item is ever merged/decayed/updated — the store
+         * just ACCUMULATES exactly as in DREAM-1/DREAM-2.
+         */
+        consolidate: z.object({
+          /** Kill-switch: false (default) → no consolidator constructed (inert; store only accumulates). */
+          enabled: z.boolean().default(false),
+          /**
+           * Scheduled sweep interval (SECONDS) — how often the consolidator re-reads recent
+           * items to merge/decay/recompute. Deliberately coarse (off the hot path). 30s..24h;
+           * default 1h. NaN/out-of-range fails load.
+           */
+          intervalSec: z.coerce.number().int().min(30).max(86_400).default(3_600),
+        }).default({}),
       }).default({}),
     }).default({}),
   }).default({}),

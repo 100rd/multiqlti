@@ -593,6 +593,20 @@ export interface IStorage {
   getExperienceItemsBySourceLoop(loopId: string): Promise<ExperienceItemRow[]>;
   /** Inspection: list Experience items, most-recent first (DREAM-1 quality check). */
   listExperienceItems(limit?: number): Promise<ExperienceItemRow[]>;
+  // DREAM-3 (consolidation) write seams — the SCHEDULED consolidator merges/decays/
+  // recomputes items in place. It writes ONLY to experience_items (never state, never
+  // SKILL.md) and only these two mutators exist so the surface is auditable.
+  /**
+   * Apply a field-level patch to ONE surviving Experience item (merge result / decay /
+   * successDelta / conflict flag). Partial: only the provided fields change. Returns the
+   * updated row, or undefined if the id is gone (a concurrent delete — safe no-op).
+   */
+  updateExperienceItem(id: string, patch: Partial<ExperienceItemRow>): Promise<ExperienceItemRow | undefined>;
+  /**
+   * Delete merged-away DUPLICATE items by id (their evidence is already folded into a
+   * survivor). Idempotent: unknown ids are ignored. Bounded batch (the consolidator caps it).
+   */
+  deleteExperienceItems(ids: string[]): Promise<void>;
 
 
   // Tracker Connections (Issue Tracker Integration)
@@ -1986,6 +2000,7 @@ export class MemStorage implements IStorage {
         successDelta: data.successDelta ?? null,
         provenance: data.provenance,
         freshness: data.freshness,
+        consolidation: data.consolidation ?? null,
         relatedComponents: data.relatedComponents ?? [],
         sourceLoopId: data.sourceLoopId,
         createdAt: new Date(),
@@ -2004,6 +2019,24 @@ export class MemStorage implements IStorage {
     return Array.from(this.experienceItemsMap.values())
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
       .slice(0, limit);
+  }
+
+  // DREAM-3 — consolidation write seams (merge/decay/successDelta in place).
+  async updateExperienceItem(
+    id: string,
+    patch: Partial<ExperienceItemRow>,
+  ): Promise<ExperienceItemRow | undefined> {
+    const existing = this.experienceItemsMap.get(id);
+    if (!existing) return undefined; // concurrent delete — safe no-op.
+    // Never let a patch change identity/lineage columns.
+    const { id: _i, createdAt: _c, sourceLoopId: _s, projectId: _p, ...safe } = patch;
+    const updated: ExperienceItemRow = { ...existing, ...safe };
+    this.experienceItemsMap.set(id, updated);
+    return updated;
+  }
+
+  async deleteExperienceItems(ids: string[]): Promise<void> {
+    for (const id of ids) this.experienceItemsMap.delete(id);
   }
 
   // ─── Triggers (Phase 6.3) ─────────────────────────────────────────────────
