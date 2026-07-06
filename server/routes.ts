@@ -64,7 +64,7 @@ import { registerConsiliumLoopRoutes } from "./routes/consilium-loops";
 import { registerConsiliumReviewRoutes } from "./routes/consilium-reviews";
 import { registerStandingRoleRoutes } from "./routes/standing-roles";
 import { createConsiliumReview } from "./services/consilium/review-factory";
-import { maybeLaunchConsiliumReview, maybeLaunchGitHubReview, resolveSpecWatchConfig, deriveRepoRoot } from "./services/consilium/trigger-dispatch";
+import { maybeLaunchConsiliumReview, maybeLaunchGitHubReview, maybeLaunchRoleWake, resolveSpecWatchConfig, deriveRepoRoot } from "./services/consilium/trigger-dispatch";
 import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consilium/consilium-loop-controller";
 import {
   writeSpecStatusRemote,
@@ -449,14 +449,21 @@ export async function registerRoutes(
         await storage.updateTrigger(trigger.id, { lastTriggeredAt: new Date() });
         log(`[triggers] Fired trigger ${trigger.id} (type ${trigger.type})`, "triggers");
 
-        // T1 KILL-SWITCH (loop-triggers.md §4.5): a SCHEDULE or GITHUB_EVENT trigger
-        // only fires a loop when `features.triggers.enabled` is on — a running server
-        // never silently starts firing scheduled OR github-event loops (a github
-        // webhook could otherwise start disputing PRs the moment it is wired). The
-        // pre-existing file_change binding is NOT gated here (it stays under
-        // consiliumLoop.enabled), so the one live prototype binding is unchanged.
+        // ROLE-2: is this the BACKING trigger of a Standing Role's concern? (config
+        // carries `roleConcern`). A role wake is a NEW autonomous behaviour → it is
+        // gated by the SAME master switch as schedule/github below, regardless of the
+        // underlying trigger class (so a role-bound file_change also requires the
+        // switch — default-off until an operator both defines a concern AND flips it).
+        const roleBinding = (trigger.config as { roleConcern?: unknown } | null)?.roleConcern;
+
+        // T1 KILL-SWITCH (loop-triggers.md §4.5): a SCHEDULE / GITHUB_EVENT trigger, or
+        // ANY role-bound trigger (ROLE-2), only fires a loop when
+        // `features.triggers.enabled` is on — a running server never silently starts
+        // firing scheduled / github-event / role-wake loops. The pre-existing NON-role
+        // file_change binding is NOT gated here (it stays under consiliumLoop.enabled),
+        // so the one live prototype binding is unchanged.
         if (
-          (trigger.type === "schedule" || trigger.type === "github_event") &&
+          (trigger.type === "schedule" || trigger.type === "github_event" || roleBinding) &&
           !appConfigLoader.get().features.triggers.enabled
         ) {
           log(`[triggers] ${trigger.type} trigger ${trigger.id} not fired — features.triggers.enabled is off`, "triggers");
@@ -518,15 +525,21 @@ export async function registerRoutes(
           log: (m: string) => log(m, "triggers"),
         };
 
-        const result =
-          trigger.type === "github_event"
+        // ROLE-2: a role-bound trigger WAKES the role (compose the loop from the role)
+        // instead of the legacy action — a single new seam that reuses the SAME
+        // dedup/owner/factory core. A trigger with NO role binding is byte-identical to
+        // before (the roleBinding branch is never taken).
+        const result = roleBinding
+          ? await maybeLaunchRoleWake(dispatchDeps, trigger, payload)
+          : trigger.type === "github_event"
             ? await maybeLaunchGitHubReview(dispatchDeps, trigger, payload)
             : await maybeLaunchConsiliumReview(dispatchDeps, trigger, payload);
 
-        // T1 policy rail (§4): a fire suppressed by dedup bumps the trigger's
+        // T1 policy rail (§4): a fire suppressed by a rail bumps the trigger's
         // suppressed counter (surfaced on the triggers page) instead of blindly
-        // creating a second active loop for the same repo.
-        if (result === "skipped-dedup") {
+        // creating a second active loop. ROLE-2 adds the per-role budget/cascade rails
+        // alongside dedup — all three count as suppressed.
+        if (result === "skipped-dedup" || result === "skipped-budget" || result === "skipped-cascade") {
           await storage.incrementTriggerSuppressed(trigger.id);
         }
         // The github POLLER reads this result to decide whether to advance its

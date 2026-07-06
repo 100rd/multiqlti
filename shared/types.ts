@@ -1377,6 +1377,14 @@ export interface GitHubEventTriggerConfig {
    * still receives + records events but launches nothing (record-only, back-compat).
    */
   action?: ConsiliumReviewTriggerAction;
+  /**
+   * ROLE-2 (standing-role.md §8): when present, this github trigger is the BACKING
+   * trigger of a Standing Role's concern. On fire the dispatch WAKES the named role
+   * (compose the loop from the role) instead of the legacy `action` — see
+   * trigger-dispatch.ts `maybeLaunchRoleWake`. Absent ⇒ the legacy github path is
+   * BYTE-IDENTICAL.
+   */
+  roleConcern?: RoleConcernBinding;
 }
 
 export interface FileChangeTriggerConfig {
@@ -1392,6 +1400,14 @@ export interface FileChangeTriggerConfig {
    * `createConsiliumReview` under `runAsProject(trigger.projectId)`.
    */
   action?: ConsiliumReviewTriggerAction;
+  /**
+   * ROLE-2 (standing-role.md §8): when present, this file_change trigger is the
+   * BACKING trigger of a Standing Role's concern. On fire the dispatch WAKES the
+   * named role (compose the loop from the role) instead of the legacy `action` — see
+   * trigger-dispatch.ts `maybeLaunchRoleWake`. Absent ⇒ the legacy file_change path
+   * is BYTE-IDENTICAL.
+   */
+  roleConcern?: RoleConcernBinding;
 }
 
 /**
@@ -1441,6 +1457,86 @@ export interface StandingRoleLoopTemplate {
 }
 
 /**
+ * ROLE-2 (standing-role.md §3): a CONCERN a Standing Role watches — "WHAT it watches
+ * + WHERE + the wake focus". A concern binds ONE trigger (file_change | github_event)
+ * on ONE `repoPath` to a `focus` that is folded into the wake instruction. It is a
+ * DECLARATION on the role; the actual runtime footprint is a BACKING trigger row
+ * (materialised in the existing trigger runtime — file-watcher / github poller) whose
+ * `config.roleConcern` names `{ roleId, concernId }`. When that trigger fires, the
+ * dispatch WAKES the role instead of running a legacy action (trigger-dispatch.ts).
+ *
+ * `tracker_event` concerns are a documented follow-up (TRACK-6) — ROLE-2 covers only
+ * the two mechanics that already have a runtime + a review mapping.
+ *
+ * `focus`/`repoPath` are UNTRUSTED at wake: the focus is fenced by the review factory
+ * (untrustedExtraBlock), the repoPath is re-validated fail-closed against the
+ * allowlist inside the factory. Neither is trusted from the stored role config.
+ */
+export interface StandingRoleConcern {
+  /** Stable id (server-generated) — the dedup key half `(role, concern)` + the UI key. */
+  id: string;
+  /** Target repo — MUST resolve inside the allowlist (re-validated INSIDE the factory). */
+  repoPath: string;
+  /** WHEN it wakes — a file_change or github_event trigger + its filter. */
+  trigger: StandingRoleConcernTrigger;
+  /** WHAT to look at — folded into the wake instruction (UNTRUSTED; factory-fenced). */
+  focus: string;
+  /** Per-concern kill (default true). A disabled concern's backing trigger never wakes. */
+  enabled?: boolean;
+  /** The backing trigger row id materialised for this concern (lifecycle bookkeeping). */
+  triggerId?: string;
+}
+
+/** A concern's trigger: the class (file_change | github_event) + its filter shape. */
+export interface StandingRoleConcernTrigger {
+  type: "file_change" | "github_event";
+  filter: FileChangeConcernFilter | GitHubConcernFilter;
+}
+
+/** file_change concern filter — the path watched + optional glob patterns. */
+export interface FileChangeConcernFilter {
+  watchPath: string;
+  patterns?: string[];
+}
+
+/** github_event concern filter — the repo polled + the event set + optional ref filter. */
+export interface GitHubConcernFilter {
+  repository: string;
+  events?: string[];
+  refFilter?: string;
+}
+
+/**
+ * ROLE-2 (standing-role.md §6, loop-triggers.md §4): the per-ROLE rails. Bind at the
+ * ROLE level so a MISFIRING concern cannot spawn unbounded loops. All OPTIONAL — an
+ * absent field falls back to the server default constant (role-wake.ts). `enabled`
+ * stays the role's top-level column (the primary kill-switch); this block is the
+ * quantitative rails only.
+ */
+export interface StandingRolePolicy {
+  /** Max trigger-born loops this role may launch per trailing 24h (budget rail §4.3). */
+  budgetPerDay?: number;
+  /**
+   * Cascade ceiling — the max number of SIMULTANEOUSLY-ACTIVE (non-terminal) loops a
+   * role may hold across ALL its concerns (§4.4). Bounds a burst of concurrent fires
+   * / a role-loop that re-fires its own concern. Distinct from per-(role,concern)
+   * dedup (which caps ONE active loop per concern).
+   */
+  cascadeDepth?: number;
+}
+
+/**
+ * ROLE-2: the binding a BACKING trigger carries in its `config.roleConcern` to name
+ * the role + concern it wakes. When the dispatch sees this on a firing trigger it
+ * routes to the role-wake path (compose the loop from the role) INSTEAD of the legacy
+ * action — so a role-bound trigger and a legacy trigger never cross paths.
+ */
+export interface RoleConcernBinding {
+  roleId: string;
+  concernId: string;
+}
+
+/**
  * A file-change trigger ACTION that launches a consilium review. Embedded in the
  * trigger's `config` JSONB. `repoPath`, when present, MUST resolve inside the
  * consilium-loop allowlist (re-validated INSIDE the factory — never trusted from
@@ -1480,6 +1576,18 @@ export interface ConsiliumReviewTriggerAction {
 export interface RoleProvenance {
   roleId: string;
   name: string;
+  /**
+   * ROLE-2: the concern that woke the role (present on a trigger-fired role wake;
+   * absent on a ROLE-1 manual wake). It is the SECOND half of the per-(role,concern)
+   * dedup key and drives the budget/cascade rails (role-wake.ts). Inert audit data.
+   */
+  concernId?: string;
+  /**
+   * ROLE-2 (§6, loop-triggers.md §4.4): the cascade depth of this loop — a
+   * trigger-born role wake is depth 1. Recorded so the cascade rail is auditable and
+   * a future loop-lifecycle trigger (depth ≥ 1 never re-fires) can read it. Inert.
+   */
+  cascadeDepth?: number;
 }
 
 /**

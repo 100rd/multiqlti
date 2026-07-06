@@ -2256,7 +2256,7 @@ export type InsertCredentialAccessLog = typeof credentialAccessLog.$inferInsert;
 // existing isolation + human-merge gate). Separate import (localized/append-only) so
 // the shared `./types.js` import line stays a single merge point for other teams.
 // eslint-disable-next-line @typescript-eslint/no-duplicate-imports -- localized append
-import type { StandingRoleLoopTemplate } from "./types.js";
+import type { StandingRoleLoopTemplate, StandingRoleConcern, StandingRolePolicy } from "./types.js";
 
 export const standingRoles = pgTable(
   "standing_roles",
@@ -2278,8 +2278,19 @@ export const standingRoles = pgTable(
     // How the role's ephemeral loops run: { preset, maxRounds?, reviewMode? }. `preset`
     // + `reviewMode` are server enums; `maxRounds` is bounded 1..6 by the factory.
     loopTemplate: jsonb("loop_template").$type<StandingRoleLoopTemplate>().notNull(),
+    // ROLE-2 (standing-role.md §3, migration 0048): the concerns this role WATCHES —
+    // each `{ id, repoPath, trigger:{type,filter}, focus, enabled?, triggerId? }`. A
+    // concern is a DECLARATION; its runtime footprint is a BACKING trigger row whose
+    // `config.roleConcern` names `{ roleId, concernId }`. Additive default '[]' so
+    // every ROLE-1 row reads back as "no concerns" (byte-identical). jsonb array.
+    concerns: jsonb("concerns").$type<StandingRoleConcern[]>().notNull().default(sql`'[]'::jsonb`),
+    // ROLE-2 (§6, loop-triggers.md §4): the per-ROLE rails { budgetPerDay?, cascadeDepth? }.
+    // Nullable ⇒ the server default constants apply (role-wake.ts). `enabled` (below)
+    // stays the primary kill-switch; this is the quantitative budget/cascade rails.
+    policy: jsonb("policy").$type<StandingRolePolicy>(),
     // A DISABLED role is inert — the wake endpoint refuses it (safety §6): a role can
-    // never spawn work while disabled.
+    // never spawn work while disabled. ROLE-2: a disabled role's backing triggers also
+    // never wake it (the dispatch enabled-gate is the authoritative check).
     enabled: boolean("enabled").notNull().default(true),
     createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),

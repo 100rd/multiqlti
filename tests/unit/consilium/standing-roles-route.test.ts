@@ -40,6 +40,9 @@ interface FakeRole {
   persona: string;
   skills: string[];
   loopTemplate: { preset: string; maxRounds?: number; reviewMode?: string };
+  // ROLE-2: additive.
+  concerns?: unknown[];
+  policy?: unknown;
   enabled: boolean;
   createdBy: string | null;
   createdAt: Date;
@@ -50,7 +53,9 @@ function makeStorage(seed: FakeRole[] = [], knownSkills: string[] = []) {
   const roles = new Map<string, FakeRole>();
   seed.forEach((r) => roles.set(r.id, r));
   const skillSet = new Set(knownSkills);
+  const triggers = new Map<string, { id: string; type: string; config: unknown; enabled: boolean }>();
   let seq = seed.length;
+  let trigSeq = 0;
   return {
     getStandingRoles: vi.fn(async () => Array.from(roles.values())),
     getStandingRole: vi.fn(async (id: string) => roles.get(id)),
@@ -63,6 +68,8 @@ function makeStorage(seed: FakeRole[] = [], knownSkills: string[] = []) {
         persona: data.persona ?? "",
         skills: data.skills ?? [],
         loopTemplate: data.loopTemplate ?? { preset: "sdlc-cross-review" },
+        concerns: data.concerns ?? [],
+        policy: data.policy ?? null,
         enabled: data.enabled ?? true,
         createdBy: data.createdBy ?? null,
         createdAt: new Date(),
@@ -82,7 +89,19 @@ function makeStorage(seed: FakeRole[] = [], knownSkills: string[] = []) {
       roles.delete(id);
     }),
     getSkill: vi.fn(async (id: string) => (skillSet.has(id) ? { id, name: id } : undefined)),
+    // ROLE-2: the concern endpoints materialise / tear down a backing trigger + read loops.
+    createTrigger: vi.fn(async (data: { type: string; config: unknown; enabled?: boolean }) => {
+      trigSeq += 1;
+      const row = { id: `trig-${trigSeq}`, type: data.type, config: data.config, enabled: data.enabled ?? true };
+      triggers.set(row.id, row);
+      return row;
+    }),
+    deleteTrigger: vi.fn(async (id: string) => {
+      triggers.delete(id);
+    }),
+    getLoops: vi.fn(async () => [] as unknown[]),
     _roles: roles,
+    _triggers: triggers,
   };
 }
 
@@ -282,5 +301,91 @@ describe("POST /api/roles/:id/wake", () => {
       .send({ repoPath: "/repos/iac", focus: "f" });
     expect(res.status).toBe(404);
     expect(mockedCreate).not.toHaveBeenCalled();
+  });
+});
+
+// ─── ROLE-2: concern endpoints (bind a trigger to a role's concern) ───────────
+
+describe("ROLE-2 concern endpoints", () => {
+  const FILE_CONCERN = {
+    repoPath: "/repos/iac",
+    focus: "a new Terraform module version",
+    trigger: { type: "file_change", filter: { watchPath: "/repos/iac/modules", patterns: ["**/*.tf"] } },
+  };
+
+  it("POST /api/roles/:id/concerns adds a concern AND materialises a backing trigger", async () => {
+    const storage = makeStorage([seedRole()], ["sk-1"]);
+    const res = await request(makeApp(storage)).post("/api/roles/role-1/concerns").send(FILE_CONCERN);
+
+    expect(res.status).toBe(201);
+    // The backing trigger was created with the roleConcern binding + the concern filter.
+    expect(storage.createTrigger).toHaveBeenCalledTimes(1);
+    const trig = storage.createTrigger.mock.calls[0][0] as { type: string; config: Record<string, unknown> };
+    expect(trig.type).toBe("file_change");
+    expect(trig.config.watchPath).toBe("/repos/iac/modules");
+    expect(trig.config.roleConcern).toMatchObject({ roleId: "role-1" });
+    // The concern is appended to the role, carrying the backing triggerId.
+    const concerns = res.body.concerns as Array<Record<string, unknown>>;
+    expect(concerns).toHaveLength(1);
+    expect(concerns[0]).toMatchObject({ repoPath: "/repos/iac", focus: "a new Terraform module version" });
+    expect(typeof concerns[0].id).toBe("string");
+    expect(concerns[0].triggerId).toBe((storage.createTrigger.mock.results[0].value as { id: string } | undefined)?.id ?? concerns[0].triggerId);
+    // The roleConcern binding names the SAME concern id that was stored.
+    expect((trig.config.roleConcern as { concernId: string }).concernId).toBe(concerns[0].id);
+  });
+
+  it("POST a github_event concern builds a github backing trigger", async () => {
+    const storage = makeStorage([seedRole()], ["sk-1"]);
+    const res = await request(makeApp(storage)).post("/api/roles/role-1/concerns").send({
+      repoPath: "/repos/iac",
+      focus: "review the PR",
+      trigger: { type: "github_event", filter: { repository: "owner/repo", events: ["pull_request"] } },
+    });
+    expect(res.status).toBe(201);
+    const trig = storage.createTrigger.mock.calls[0][0] as { type: string; config: Record<string, unknown> };
+    expect(trig.type).toBe("github_event");
+    expect(trig.config.repository).toBe("owner/repo");
+    expect(trig.config.roleConcern).toBeTruthy();
+  });
+
+  it("POST a concern with an invalid trigger type (tracker_event → TRACK-6) → 400", async () => {
+    const storage = makeStorage([seedRole()], ["sk-1"]);
+    const res = await request(makeApp(storage)).post("/api/roles/role-1/concerns").send({
+      repoPath: "/repos/iac",
+      focus: "f",
+      trigger: { type: "tracker_event", filter: {} },
+    });
+    expect(res.status).toBe(400);
+    expect(storage.createTrigger).not.toHaveBeenCalled();
+  });
+
+  it("POST a concern to an unknown role → 404 (no trigger created)", async () => {
+    const storage = makeStorage([], []);
+    const res = await request(makeApp(storage)).post("/api/roles/ghost/concerns").send(FILE_CONCERN);
+    expect(res.status).toBe(404);
+    expect(storage.createTrigger).not.toHaveBeenCalled();
+  });
+
+  it("DELETE /api/roles/:id/concerns/:concernId removes the concern AND its backing trigger", async () => {
+    const storage = makeStorage([seedRole()], ["sk-1"]);
+    const add = await request(makeApp(storage)).post("/api/roles/role-1/concerns").send(FILE_CONCERN);
+    const concernId = (add.body.concerns as Array<{ id: string }>)[0].id;
+
+    const del = await request(makeApp(storage)).delete(`/api/roles/role-1/concerns/${concernId}`);
+    expect(del.status).toBe(200);
+    expect(storage.deleteTrigger).toHaveBeenCalledTimes(1);
+    expect((del.body.concerns as unknown[]).length).toBe(0);
+  });
+
+  it("GET /api/roles/:id/woken-loops returns loops whose provenance names the role", async () => {
+    const storage = makeStorage([seedRole()], ["sk-1"]);
+    storage.getLoops.mockResolvedValueOnce([
+      { id: "loop-a", triggerProvenance: { role: { roleId: "role-1", name: "x" } } },
+      { id: "loop-b", triggerProvenance: { role: { roleId: "other", name: "y" } } },
+      { id: "loop-c", triggerProvenance: { triggerId: "t" } },
+    ]);
+    const res = await request(makeApp(storage)).get("/api/roles/role-1/woken-loops");
+    expect(res.status).toBe(200);
+    expect(res.body.map((l: { id: string }) => l.id)).toEqual(["loop-a"]);
   });
 });

@@ -76,15 +76,21 @@ import {
   CONSILIUM_LOOP_TERMINAL_STATES,
   type TriggerRow,
   type ConsiliumLoopRow,
+  type StandingRoleRow,
 } from "@shared/schema";
 import type {
   ConsiliumReviewTriggerAction,
   ConsiliumReviewPreset,
   GitHubEventTriggerConfig,
   TriggerProvenance,
+  RoleProvenance,
   SpecProvenance,
+  ReviewMode,
+  RoleConcernBinding,
+  StandingRoleConcern,
 } from "@shared/types";
 import { mapGitHubEventToReview } from "./github-event-map.js";
+import { composeRoleTriggerInstruction } from "./role-compose.js";
 import {
   readSpecFile,
   evaluateReadyGate,
@@ -201,9 +207,20 @@ export type ConsiliumDispatchResult =
   | "launched"
   | "skipped"
   | "skipped-dedup"
+  // ROLE-2 rails (loop-triggers.md §4): a role wake suppressed by the per-role daily
+  // budget / concurrent-loop cascade ceiling. Both are counted as suppressed on the
+  // trigger row (like dedup) and factory is NOT called.
+  | "skipped-budget"
+  | "skipped-cascade"
   | "noop"
   | "noop-event"
   | "failed";
+
+/** ROLE-2: the per-role rails, defaulted from `role.policy` (role-wake path). */
+export const DEFAULT_ROLE_BUDGET_PER_DAY = 20;
+export const DEFAULT_ROLE_CASCADE_CEILING = 3;
+/** The trailing window the per-role/day budget counts over. */
+const ROLE_BUDGET_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The value `fireTrigger` (server/routes.ts) resolves with. It is the dispatch
@@ -604,6 +621,26 @@ export interface ReviewLaunchPlan {
   specDedupKey?: string;
   /** SPEC-1: spec origin folded into the loop's provenance (`{specPath,source,status}`). */
   specProvenance?: SpecProvenance;
+  /**
+   * ROLE-2: when a Standing Role wake launched this loop — folded into the loop's
+   * provenance as `role: { roleId, name, concernId, cascadeDepth }`. Absent for every
+   * legacy/spec/github fire (byte-identical). Its presence ALSO selects the role dedup
+   * key (per-(role,concern), see `roleRails`) over the historical per-repoPath dedup.
+   */
+  roleProvenance?: RoleProvenance;
+  /**
+   * ROLE-2 (loop-triggers.md §4): the per-role rails evaluated in the dedup block —
+   * one active loop per (role, concern) [dedup], a concurrent-loop ceiling [cascade],
+   * and a trailing-24h launch cap [budget]. Present IFF `roleProvenance` is — a role
+   * wake always carries both. Absent ⇒ the legacy repo/spec dedup is unchanged.
+   */
+  roleRails?: { roleId: string; concernId: string; budgetPerDay: number; cascadeCeiling: number };
+  /**
+   * ROLE-2: the role's `loopTemplate.reviewMode` (server enum), passed through to the
+   * factory so a role wake's re-review rounds honour the role template. Undefined for
+   * every non-role path (byte-identical — the factory resolves the operator default).
+   */
+  reviewMode?: ReviewMode;
   payload: unknown;
 }
 
@@ -643,6 +680,9 @@ export async function launchReviewWithDedup(
     // SPEC-1 (§3): carry the spec origin so the per-spec dedup below and a future
     // write-back can find it. Inert jsonb; never a prompt/shell sink.
     ...(plan.specProvenance ? { spec: plan.specProvenance } : {}),
+    // ROLE-2: a role wake also stamps WHICH role + concern woke the loop — the second
+    // half of the (role, concern) dedup key and the launch-passport identity. Inert.
+    ...(plan.roleProvenance ? { role: plan.roleProvenance } : {}),
   };
 
   // T5: dedup key — match against the CANONICAL path the factory persists.
@@ -655,6 +695,9 @@ export async function launchReviewWithDedup(
   // (a real `users.id`). Inside the try so a lookup throw is caught (T4) rather
   // than crashing the watcher/webhook loop.
   let dedupLoopId: string | undefined;
+  // ROLE-2: which per-role rail suppressed the launch (dedup | budget | cascade), set
+  // inside the runInProject block so the post-block branch returns the right result.
+  let roleSuppress: "dedup" | "budget" | "cascade" | undefined;
   try {
     const createdBy = await deps.resolveOwnerId(plan.projectId);
     if (!createdBy) {
@@ -671,33 +714,51 @@ export async function launchReviewWithDedup(
       // a spec-write burst) must not fan out into unbounded heavy-model disputes.
       // (The explicit UI endpoint calls the factory directly and is NOT deduped.)
       const existing = await reviewDeps.storage.getLoops();
-      const active = existing.find((l) => {
-        if (TERMINAL_LOOP_STATES.has(l.state)) return false;
-        // SPEC-1: a spec fire dedups PURELY on the spec path (a distinct spec, even
-        // in the same repo, is a DIFFERENT unit of work → its own loop). A non-spec
-        // fire keeps the historical per-repoPath dedup.
-        if (specDedupKey !== undefined) {
-          return l.triggerProvenance?.spec?.specPath === specDedupKey;
+
+      // ROLE-2 (loop-triggers.md §4): the per-role rails REPLACE the repo/spec dedup
+      // when this is a role wake — dedup on (role, concern), then a concurrent-loop
+      // cascade ceiling, then a trailing-24h budget. Evaluated over the SAME
+      // project-scoped loop list so a misfiring concern can never spawn unbounded loops.
+      if (plan.roleRails) {
+        const rail = evaluateRoleRails(existing, plan.roleRails, firedAt);
+        if (rail.suppress) {
+          roleSuppress = rail.suppress;
+          dedupLoopId = rail.loopId;
+          return null; // signal: a rail suppressed, do NOT launch the factory
         }
-        return l.repoPath === resolvedRepo || l.repoPath === plan.repoPath;
-      });
-      if (active) {
-        dedupLoopId = active.id;
-        return null; // signal: deduped, do NOT launch the factory
+      } else {
+        const active = existing.find((l) => {
+          if (TERMINAL_LOOP_STATES.has(l.state)) return false;
+          // SPEC-1: a spec fire dedups PURELY on the spec path (a distinct spec, even
+          // in the same repo, is a DIFFERENT unit of work → its own loop). A non-spec
+          // fire keeps the historical per-repoPath dedup.
+          if (specDedupKey !== undefined) {
+            return l.triggerProvenance?.spec?.specPath === specDedupKey;
+          }
+          return l.repoPath === resolvedRepo || l.repoPath === plan.repoPath;
+        });
+        if (active) {
+          dedupLoopId = active.id;
+          return null; // signal: deduped, do NOT launch the factory
+        }
       }
 
       return deps.createReview(reviewDeps, {
         projectId: plan.projectId,
         repoPath: plan.repoPath,
         preset: plan.preset,
-        // SPEC-1: spec-selected skills (resolved project-scoped in the factory);
-        // undefined for every non-spec path (byte-identical).
+        // SPEC-1 / ROLE-2: spec- or role-selected skills (resolved project-scoped in
+        // the factory); undefined for every non-spec/non-role path (byte-identical).
         skillIds: plan.skillIds,
         // FK FIX: real `users.id` (project owner), NOT the literal "system".
         createdBy,
-        // T6 (FIX MED-2): FORCE review-only on EVERY trigger path. An unattended,
-        // automatically-fired run must NEVER reach DEVELOPING / the SDLC coder.
+        // T6 (FIX MED-2): FORCE review-only on EVERY trigger path — INCLUDING a role
+        // wake. An unattended, automatically-fired run must NEVER reach DEVELOPING /
+        // the SDLC coder; escalation to develop is a human (UI / manual-wake) action.
         maxRounds: 1,
+        // ROLE-2: honour the role template's reviewMode (moot at maxRounds=1, but kept
+        // faithful + forward-compatible); undefined elsewhere (factory resolves default).
+        reviewMode: plan.reviewMode,
         // github diff-pr-review targets the PR head vs the PR base; absent for the
         // action path (working-tree HEAD). Both re-validated at the factory.
         ref: plan.ref,
@@ -705,16 +766,28 @@ export async function launchReviewWithDedup(
         // Exactly one of these is set (engineerInstruction wins in the factory).
         engineerInstruction: plan.engineerInstruction,
         objectiveExtra: plan.objectiveExtra,
-        // §6: record which trigger + event started the loop.
+        // §6: record which trigger + event (+ role) started the loop.
         triggerProvenance: provenance,
       });
     });
 
     if (loop === null) {
+      // ROLE-2: a per-role rail suppressed the launch — return the specific result so
+      // the caller can surface it (all three count as suppressed on the trigger row).
+      if (roleSuppress === "budget") {
+        deps.log(`role wake skipped-budget for trigger ${trigger.id} — role ${plan.roleRails?.roleId} over daily budget`);
+        return "skipped-budget";
+      }
+      if (roleSuppress === "cascade") {
+        deps.log(`role wake skipped-cascade for trigger ${trigger.id} — role ${plan.roleRails?.roleId} at concurrent-loop ceiling`);
+        return "skipped-cascade";
+      }
       deps.log(
-        specDedupKey !== undefined
-          ? `review skipped-dedup:spec for trigger ${trigger.id} — active loop ${dedupLoopId} already running for spec ${specDedupKey}`
-          : `review skipped-dedup for trigger ${trigger.id} — active loop ${dedupLoopId} already running for ${resolvedRepo}`,
+        plan.roleRails
+          ? `role wake skipped-dedup for trigger ${trigger.id} — active loop ${dedupLoopId} already running for (role ${plan.roleRails.roleId}, concern ${plan.roleRails.concernId})`
+          : specDedupKey !== undefined
+            ? `review skipped-dedup:spec for trigger ${trigger.id} — active loop ${dedupLoopId} already running for spec ${specDedupKey}`
+            : `review skipped-dedup for trigger ${trigger.id} — active loop ${dedupLoopId} already running for ${resolvedRepo}`,
       );
       // WATERMARK DISCIPLINE: a dedup-suppressed fire must NOT touch lastFiredAt /
       // firedCount — the caller counts it via `incrementTriggerSuppressed` instead.
@@ -838,6 +911,198 @@ export async function maybeLaunchGitHubReview(
     objectiveExtra,
     // §6: a human passport label so #457 shows "fired by github trigger: PR #N".
     eventSummary: eventLabel,
+    payload,
+  });
+}
+
+// ─── ROLE-2: Standing Role wake (standing-role.md §3/§8, loop-triggers.md §4) ───
+//
+// A BACKING trigger whose `config.roleConcern = { roleId, concernId }` FIRES → instead
+// of the legacy action, WAKE the role: compose the loop FROM THE ROLE (persona +
+// concern.focus + the fired event, the role's skills + loop template) on the CONCERN's
+// repoPath, and stamp `role` provenance. Reuses the SAME `launchReviewWithDedup` core
+// (owner FK, factory, T4 catch, recordFire) and the SAME `createConsiliumReview` factory
+// as every other path — NO reimplemented loop creation, and the controller is untouched.
+//
+// SECURITY (flagged for the adversarial reviewer):
+//   R1. A role wake CANNOT bypass the allowlist — `concern.repoPath` is re-validated
+//       fail-closed INSIDE the factory (never trusted from the stored concern), same
+//       gate as the manual wake / UI review button. A bad repoPath → factory throw → T4
+//       "failed", never a review of an unallowed repo.
+//   R2. A DISABLED role never wakes (checked BEFORE the factory is touched — §6), and a
+//       disabled concern is skipped. The role's `enabled` column is the authoritative gate.
+//   R3. The per-role RAILS (evaluateRoleRails) bound a misfiring concern: one active loop
+//       per (role, concern) [dedup], a concurrent-loop ceiling [cascade], a trailing-24h
+//       cap [budget] — all read over the project-scoped loop list, so a burst of fires or
+//       a role-loop that re-fires its own concern can never spawn unbounded loops.
+//   R4. persona + concern.focus are UNTRUSTED at wake: composed here (join only) and
+//       fenced/clamped by the factory (untrustedExtraBlock) before entering the objective.
+//   R5. `skillIds = role.skills` is re-resolved PROJECT-SCOPED by the factory (a foreign
+//       id throws → T4 "failed", no cross-tenant leak).
+//   R6. maxRounds is FORCED to 1 (review-only, T6) — an unattended fire never reaches the
+//       SDLC coder; escalation to develop is a human action (manual wake / UI).
+
+/**
+ * Evaluate the per-role rails over the (project-scoped) loop list. PURE + unit-testable.
+ * Order: DEDUP (one active loop per (role, concern)) → CASCADE (concurrent active loops
+ * across ALL the role's concerns ≥ ceiling) → BUDGET (loops launched by the role in the
+ * trailing 24h ≥ budgetPerDay). Returns the first rail that suppresses (with the blocking
+ * loop id for dedup), else `{}` (launch permitted).
+ */
+export function evaluateRoleRails(
+  existing: readonly ConsiliumLoopRow[],
+  rails: { roleId: string; concernId: string; budgetPerDay: number; cascadeCeiling: number },
+  now: Date,
+): { suppress?: "dedup" | "budget" | "cascade"; loopId?: string } {
+  const roleLoops = existing.filter((l) => l.triggerProvenance?.role?.roleId === rails.roleId);
+
+  // DEDUP: an active loop already running for this EXACT (role, concern).
+  const dup = roleLoops.find(
+    (l) => !TERMINAL_LOOP_STATES.has(l.state) && l.triggerProvenance?.role?.concernId === rails.concernId,
+  );
+  if (dup) return { suppress: "dedup", loopId: dup.id };
+
+  // CASCADE: too many concurrent active loops for this role across ALL its concerns.
+  const activeCount = roleLoops.filter((l) => !TERMINAL_LOOP_STATES.has(l.state)).length;
+  if (activeCount >= rails.cascadeCeiling) return { suppress: "cascade" };
+
+  // BUDGET: too many launched by this role in the trailing 24h (LLM cost is real money).
+  const windowStart = now.getTime() - ROLE_BUDGET_WINDOW_MS;
+  const recent = roleLoops.filter((l) => {
+    const t = l.createdAt instanceof Date ? l.createdAt.getTime() : new Date(l.createdAt as unknown as string).getTime();
+    return Number.isFinite(t) && t >= windowStart;
+  }).length;
+  if (recent >= rails.budgetPerDay) return { suppress: "budget" };
+
+  return {};
+}
+
+/** Read the role-concern binding off any trigger config without trusting its shape. */
+function readRoleConcernBinding(config: unknown): RoleConcernBinding | undefined {
+  if (typeof config !== "object" || config === null) return undefined;
+  const rc = (config as Record<string, unknown>).roleConcern;
+  if (typeof rc !== "object" || rc === null) return undefined;
+  const { roleId, concernId } = rc as Record<string, unknown>;
+  if (typeof roleId === "string" && roleId.length > 0 && typeof concernId === "string" && concernId.length > 0) {
+    return { roleId, concernId };
+  }
+  return undefined;
+}
+
+/** Locate a concern on a role by id (defensive — the stored array is jsonb). */
+function findConcern(role: StandingRoleRow, concernId: string): StandingRoleConcern | undefined {
+  const concerns = (role.concerns ?? []) as StandingRoleConcern[];
+  return concerns.find((c) => c && c.id === concernId);
+}
+
+/**
+ * WAKE a Standing Role because its concern's BACKING trigger fired. The route calls
+ * this (instead of `maybeLaunchConsiliumReview` / `maybeLaunchGitHubReview`) when the
+ * trigger config carries `roleConcern`. Discriminants mirror the other dispatch paths:
+ *   - "noop"          → the trigger carries no role binding (defensive; route pre-checks)
+ *   - "noop-event"    → a github concern whose event does not map to a review
+ *   - "skipped"       → subsystem off / no project / role missing / role or concern
+ *                       DISABLED / concern missing / no resolvable owner — logged, safe
+ *   - "skipped-dedup" / "skipped-budget" / "skipped-cascade" → a per-role rail suppressed
+ *   - "launched"      → the factory was invoked (role loop, review-only)
+ *   - "failed"        → the factory threw (allowlist/workspace/skill rejection) — T4 caught
+ */
+export async function maybeLaunchRoleWake(
+  deps: ConsiliumTriggerDispatchDeps,
+  trigger: TriggerRow,
+  payload: unknown,
+): Promise<ConsiliumDispatchResult> {
+  const binding = readRoleConcernBinding(trigger.config);
+  if (!binding) return "noop"; // not a role-bound trigger (route only routes here when it is)
+
+  const reviewDeps = deps.reviewDeps;
+  if (!reviewDeps) {
+    deps.log(`role wake skipped for trigger ${trigger.id} — consilium loop disabled`);
+    return "skipped";
+  }
+  const projectId = trigger.projectId;
+  if (!projectId) {
+    deps.log(`role wake skipped for trigger ${trigger.id} — trigger has no projectId`);
+    return "skipped";
+  }
+
+  // Load the role PROJECT-SCOPED (same ALS the dedup read uses). A role/concern lookup
+  // that fails is a safe skip, never a throw.
+  const role = await deps.runInProject(projectId, () => reviewDeps.storage.getStandingRole(binding.roleId));
+  if (!role) {
+    deps.log(`role wake skipped for trigger ${trigger.id} — role ${binding.roleId} not found`);
+    return "skipped";
+  }
+  // R2 (§6): a DISABLED role can never spawn work — refuse BEFORE the factory is touched.
+  if (!role.enabled) {
+    deps.log(`role wake skipped for trigger ${trigger.id} — role ${role.id} is disabled`);
+    return "skipped";
+  }
+  const concern = findConcern(role, binding.concernId);
+  if (!concern) {
+    deps.log(`role wake skipped for trigger ${trigger.id} — concern ${binding.concernId} not on role ${role.id}`);
+    return "skipped";
+  }
+  // Per-concern kill (default on): a disabled concern's backing trigger never wakes.
+  if (concern.enabled === false) {
+    deps.log(`role wake skipped for trigger ${trigger.id} — concern ${concern.id} is disabled`);
+    return "skipped";
+  }
+
+  // Resolve WHAT the fired event is, per trigger class. For github_event we reuse the
+  // PURE event→review mapping to target the PR head (ref/baseline); the review SHAPE
+  // (preset/rounds/mode) still comes from the ROLE template, not the mapping.
+  let ref: string | null | undefined;
+  let baselineCommit: string | undefined;
+  let eventDescription: string;
+  if (trigger.type === "github_event") {
+    const eventType = payloadString(payload, "event") ?? "";
+    const mapped = mapGitHubEventToReview(eventType, githubBody(payload));
+    if (mapped.kind === "noop") {
+      deps.log(`role wake no-op for trigger ${trigger.id} — github ${eventType || "?"}: ${mapped.reason}`);
+      return "noop-event";
+    }
+    ref = mapped.mapping.ref;
+    baselineCommit = mapped.mapping.baselineCommit;
+    eventDescription = mapped.mapping.eventLabel;
+  } else {
+    // file_change (and any other concern class riding the file/schedule runtime).
+    eventDescription = describeEvent(trigger, payload);
+  }
+
+  // Compose the loop payload FROM THE ROLE (§3): persona + concern.focus + the event.
+  const engineerInstruction = composeRoleTriggerInstruction(role.persona, concern.focus, eventDescription);
+  const policy = role.policy ?? {};
+  const roleProvenance: RoleProvenance = {
+    roleId: role.id,
+    name: role.name,
+    concernId: concern.id,
+    cascadeDepth: 1, // a trigger-born role wake is depth 1 (loop-triggers.md §4.4)
+  };
+
+  return launchReviewWithDedup(deps, trigger, {
+    projectId,
+    // R1: the concern's repoPath — re-validated fail-closed against the allowlist +
+    // the project's workspaces INSIDE the factory (never trusted from the stored config).
+    repoPath: concern.repoPath,
+    preset: role.loopTemplate.preset,
+    ref,
+    baselineCommit,
+    // R4: persona + focus + event, fenced by the factory.
+    engineerInstruction,
+    // R5: role skills, re-resolved project-scoped by the factory.
+    skillIds: role.skills && role.skills.length > 0 ? role.skills : undefined,
+    reviewMode: role.loopTemplate.reviewMode,
+    roleProvenance,
+    // R3: the per-role rails (defaults from server constants when policy omits them).
+    roleRails: {
+      roleId: role.id,
+      concernId: concern.id,
+      budgetPerDay: policy.budgetPerDay ?? DEFAULT_ROLE_BUDGET_PER_DAY,
+      cascadeCeiling: policy.cascadeDepth ?? DEFAULT_ROLE_CASCADE_CEILING,
+    },
+    // §6: a human passport label (e.g. "PR #12: …" / "file change at …").
+    eventSummary: eventDescription,
     payload,
   });
 }

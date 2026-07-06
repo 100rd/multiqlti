@@ -3200,6 +3200,9 @@ export class MemStorage implements IStorage {
       persona: data.persona,
       skills: (data.skills as string[] | undefined) ?? [],
       loopTemplate: data.loopTemplate,
+      // ROLE-2: additive — default to no concerns / no policy overrides.
+      concerns: (data.concerns as StandingRoleRow["concerns"] | undefined) ?? [],
+      policy: (data.policy as StandingRoleRow["policy"] | undefined) ?? null,
       enabled: data.enabled ?? true,
       createdBy: data.createdBy ?? null,
       createdAt: now,
@@ -3217,6 +3220,10 @@ export class MemStorage implements IStorage {
       ...updates,
       skills: (updates.skills as string[] | undefined) ?? existing.skills,
       loopTemplate: updates.loopTemplate ?? existing.loopTemplate,
+      // ROLE-2: concerns/policy are additive — an update that omits them preserves the
+      // existing value (a PATCH that sets `policy: null` explicitly still clears it).
+      concerns: (updates.concerns as StandingRoleRow["concerns"] | undefined) ?? existing.concerns,
+      policy: updates.policy !== undefined ? (updates.policy as StandingRoleRow["policy"]) : existing.policy,
       updatedAt: new Date(),
     };
     this.standingRolesMap.set(id, updated);
