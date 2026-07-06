@@ -36,9 +36,11 @@
  *     them (untrustedExtraBlock) before they enter the objective — no injection seam.
  *   - A DISABLED role cannot wake (409 before the factory is ever called — §6).
  */
+import { randomUUID } from "node:crypto";
 import type { Express, Request, Response } from "express";
 import { z } from "zod";
 import { CONSILIUM_REVIEW_PRESETS, REVIEW_MODES } from "@shared/types";
+import type { StandingRoleConcern, TriggerConfig, TriggerType } from "@shared/types";
 import type { IStorage } from "../storage.js";
 import type { InsertStandingRole } from "@shared/schema";
 import { validateBody } from "../middleware/validate.js";
@@ -46,6 +48,11 @@ import {
   createConsiliumReview,
   type CreateConsiliumReviewDeps,
 } from "../services/consilium/review-factory.js";
+// ROLE-2: the compose seam moved to a shared pure helper (role-compose.ts) so the
+// manual wake (here) and the trigger wake (trigger-dispatch.ts) cannot drift. Re-export
+// keeps `composeWakeInstruction`'s existing import path/tests intact.
+import { composeWakeInstruction } from "../services/consilium/role-compose.js";
+export { composeWakeInstruction };
 
 /** Max skills a role may carry — mirrors the review factory's MAX_REVIEW_SKILLS. */
 const MAX_ROLE_SKILLS = 5;
@@ -55,6 +62,16 @@ const LoopTemplateSchema = z.object({
   preset: z.enum(CONSILIUM_REVIEW_PRESETS),
   maxRounds: z.coerce.number().int().min(1).max(6).optional(),
   reviewMode: z.enum(REVIEW_MODES).optional(),
+});
+
+/**
+ * ROLE-2 (standing-role.md §6, loop-triggers.md §4): the per-role rails. Bounds only —
+ * an omitted field falls back to the server default constant in role-wake.ts. `enabled`
+ * (below) stays the primary kill-switch; this is the quantitative budget/cascade rails.
+ */
+const PolicySchema = z.object({
+  budgetPerDay: z.coerce.number().int().min(1).max(1000).optional(),
+  cascadeDepth: z.coerce.number().int().min(1).max(20).optional(),
 });
 
 const CreateRoleSchema = z.object({
@@ -67,7 +84,40 @@ const CreateRoleSchema = z.object({
   // in the handler (fail-closed); the zod cap keeps a >5 body a clean 400.
   skills: z.array(z.string().min(1).max(200)).max(MAX_ROLE_SKILLS).default([]),
   loopTemplate: LoopTemplateSchema,
+  // ROLE-2: the per-role rails. Concerns are NOT set here — they are managed via the
+  // dedicated concern endpoints (which also materialise the backing trigger).
+  policy: PolicySchema.optional(),
   enabled: z.boolean().default(true),
+});
+
+/** file_change concern filter — the watched path + optional glob patterns. */
+const FileChangeConcernFilterSchema = z.object({
+  watchPath: z.string().min(1).max(4096),
+  patterns: z.array(z.string().min(1).max(500)).max(50).optional(),
+});
+
+/** github_event concern filter — the polled repo + event set + optional ref filter. */
+const GitHubConcernFilterSchema = z.object({
+  repository: z.string().min(1).max(200),
+  events: z.array(z.string().min(1).max(50)).max(20).optional(),
+  refFilter: z.string().min(1).max(300).optional(),
+});
+
+/**
+ * ROLE-2 (standing-role.md §3/§8): a concern to ADD to a role. `repoPath` is
+ * re-validated fail-closed by the factory at wake (not here). `focus` is UNTRUSTED —
+ * fenced by the factory. The `trigger` is a file_change | github_event discriminated
+ * union; tracker_event is a documented follow-up (TRACK-6) so it is intentionally NOT
+ * accepted here.
+ */
+const AddConcernSchema = z.object({
+  repoPath: z.string().min(1).max(4096),
+  focus: z.string().min(1).max(8000),
+  enabled: z.boolean().optional(),
+  trigger: z.discriminatedUnion("type", [
+    z.object({ type: z.literal("file_change"), filter: FileChangeConcernFilterSchema }),
+    z.object({ type: z.literal("github_event"), filter: GitHubConcernFilterSchema }),
+  ]),
 });
 
 /** PATCH is a partial of create (every field optional). */
@@ -82,18 +132,6 @@ const WakeSchema = z.object({
   repoPath: z.string().min(1).max(4096),
   focus: z.string().min(1).max(8000),
 });
-
-/**
- * Compose the wake's engineer instruction from the role's persona + the wake focus.
- * PURE (unit-testable). We ONLY JOIN here — the review factory does ALL sanitization:
- * it control-strips + byte-clamps + wraps the whole string in a strictly-longer
- * backtick fence (untrustedExtraBlock) before it enters the objective, so neither the
- * stored persona nor the per-wake focus can break out to inject instructions. The
- * fencing is a SINGLE seam (the factory), not re-done here.
- */
-export function composeWakeInstruction(persona: string, focus: string): string {
-  return `${persona}\n\n## Focus\n${focus}`;
-}
 
 /**
  * Validate that every skill id exists in the PROJECT-SCOPED registry (fail-closed).
@@ -135,6 +173,40 @@ function mapFactoryError(err: unknown, repoPath: string, res: Response): boolean
   return false;
 }
 
+/**
+ * ROLE-2: build the BACKING trigger's `config` for a concern — the concern's filter
+ * fields (so the existing file-watcher / github poller runtime picks it up) PLUS the
+ * `roleConcern` binding the dispatch reads to route the fire to the role-wake path. No
+ * `action` is set — a role-bound trigger's behaviour comes ENTIRELY from the role.
+ */
+function buildConcernTriggerConfig(
+  concern: StandingRoleConcern,
+  roleId: string,
+): { type: TriggerType; config: TriggerConfig } {
+  const binding = { roleId, concernId: concern.id };
+  if (concern.trigger.type === "file_change") {
+    const f = concern.trigger.filter as { watchPath: string; patterns?: string[] };
+    return {
+      type: "file_change",
+      config: {
+        watchPath: f.watchPath,
+        patterns: f.patterns ?? [],
+        roleConcern: binding,
+      } as TriggerConfig,
+    };
+  }
+  const f = concern.trigger.filter as { repository: string; events?: string[]; refFilter?: string };
+  return {
+    type: "github_event",
+    config: {
+      repository: f.repository,
+      events: f.events ?? [],
+      ...(f.refFilter ? { refFilter: f.refFilter } : {}),
+      roleConcern: binding,
+    } as TriggerConfig,
+  };
+}
+
 export function registerStandingRoleRoutes(app: Express, deps: CreateConsiliumReviewDeps): void {
   const { storage } = deps;
 
@@ -164,6 +236,9 @@ export function registerStandingRoleRoutes(app: Express, deps: CreateConsiliumRe
       persona: body.persona,
       skills: body.skills,
       loopTemplate: body.loopTemplate,
+      // ROLE-2: concerns start empty (added via the concern endpoints); policy optional.
+      concerns: [],
+      policy: body.policy ?? null,
       enabled: body.enabled,
       createdBy: req.user.id,
     } as InsertStandingRole);
@@ -253,5 +328,84 @@ export function registerStandingRoleRoutes(app: Express, deps: CreateConsiliumRe
       console.error("[roles] wake failed:", err instanceof Error ? err.message : String(err));
       return res.status(500).json({ error: "Failed to wake the role" });
     }
+  });
+
+  // ─── ROLE-2: ADD a concern — materialises a BACKING trigger ────────────────
+  // A concern is WHAT the role watches + WHERE + the wake focus. Adding one creates a
+  // backing trigger (config carries `roleConcern={roleId,concernId}`) in the EXISTING
+  // trigger runtime; when it fires the dispatch wakes the role. No new runtime is added
+  // (§6). The concern is appended to the role's `concerns` (the durable declaration).
+  app.post("/api/roles/:id/concerns", validateBody(AddConcernSchema), async (req: Request, res: Response) => {
+    if (!req.user?.id) return res.status(401).json({ error: "Authentication required" });
+    if (!req.projectId) return res.status(400).json({ error: "x-project-id header is required" });
+    const body = req.body as z.infer<typeof AddConcernSchema>;
+
+    const role = await storage.getStandingRole(String(req.params.id));
+    if (!role) return res.status(404).json({ error: "Role not found" });
+
+    const concern: StandingRoleConcern = {
+      id: randomUUID(),
+      repoPath: body.repoPath,
+      focus: body.focus,
+      trigger: body.trigger as StandingRoleConcern["trigger"],
+      ...(body.enabled !== undefined ? { enabled: body.enabled } : {}),
+    };
+
+    // Materialise the backing trigger FIRST so its id can be stored on the concern for
+    // lifecycle (delete concern → delete trigger). createTrigger sets projectId from the
+    // request ALS (project-scoped). enabled mirrors the concern (default on).
+    const { type, config } = buildConcernTriggerConfig(concern, role.id);
+    const trigger = await storage.createTrigger({
+      pipelineId: null,
+      type,
+      config,
+      enabled: concern.enabled !== false,
+    } as Parameters<IStorage["createTrigger"]>[0]);
+    concern.triggerId = trigger.id;
+
+    const concerns = [...((role.concerns ?? []) as StandingRoleConcern[]), concern];
+    const updated = await storage.updateStandingRole(String(req.params.id), {
+      concerns,
+    } as Partial<InsertStandingRole>);
+    return res.status(201).json(updated);
+  });
+
+  // ─── ROLE-2: DELETE a concern — tears down its backing trigger ─────────────
+  app.delete("/api/roles/:id/concerns/:concernId", async (req: Request, res: Response) => {
+    if (!req.user?.id) return res.status(401).json({ error: "Authentication required" });
+    if (!req.projectId) return res.status(400).json({ error: "x-project-id header is required" });
+
+    const role = await storage.getStandingRole(String(req.params.id));
+    if (!role) return res.status(404).json({ error: "Role not found" });
+    const concerns = (role.concerns ?? []) as StandingRoleConcern[];
+    const concern = concerns.find((c) => c.id === String(req.params.concernId));
+    if (!concern) return res.status(404).json({ error: "Concern not found" });
+
+    // Best-effort tear down the backing trigger so a removed concern stops firing.
+    if (concern.triggerId) {
+      try {
+        await storage.deleteTrigger(concern.triggerId);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[roles] backing trigger delete failed:", err instanceof Error ? err.message : String(err));
+      }
+    }
+    const updated = await storage.updateStandingRole(String(req.params.id), {
+      concerns: concerns.filter((c) => c.id !== concern.id),
+    } as Partial<InsertStandingRole>);
+    return res.json(updated);
+  });
+
+  // ─── ROLE-2: the loops this role has WOKEN (trigger wakes + manual wakes) ───
+  // Reads the project-scoped loop list and returns those whose provenance names this
+  // role — so the UI can show "which triggers are bound and the loops a role has woken".
+  app.get("/api/roles/:id/woken-loops", async (req: Request, res: Response) => {
+    if (!req.user?.id) return res.status(401).json({ error: "Authentication required" });
+    if (!req.projectId) return res.status(400).json({ error: "x-project-id header is required" });
+    const role = await storage.getStandingRole(String(req.params.id));
+    if (!role) return res.status(404).json({ error: "Role not found" });
+    const loops = await storage.getLoops();
+    const woken = loops.filter((l) => l.triggerProvenance?.role?.roleId === role.id);
+    return res.json(woken);
   });
 }

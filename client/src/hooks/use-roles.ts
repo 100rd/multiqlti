@@ -7,7 +7,11 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/hooks/use-pipeline";
 import type { StandingRoleRow } from "@shared/schema";
-import type { StandingRoleLoopTemplate } from "@shared/types";
+import type {
+  StandingRoleLoopTemplate,
+  StandingRolePolicy,
+  StandingRoleConcernTrigger,
+} from "@shared/types";
 
 const ROLES_KEY = ["/api/roles"] as const;
 
@@ -18,6 +22,16 @@ export interface CreateRolePayload {
   persona: string;
   skills: string[];
   loopTemplate: StandingRoleLoopTemplate;
+  policy?: StandingRolePolicy;
+  enabled?: boolean;
+}
+
+/** ROLE-2: a concern to add to a role (materialises a backing trigger server-side). */
+export interface AddConcernPayload {
+  roleId: string;
+  repoPath: string;
+  focus: string;
+  trigger: StandingRoleConcernTrigger;
   enabled?: boolean;
 }
 
@@ -78,5 +92,39 @@ export function useWakeRole() {
         { id?: string } & Record<string, unknown>
       >,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/consilium-loops"] }),
+  });
+}
+
+// ─── ROLE-2: concern hooks ────────────────────────────────────────────────────
+
+/** Add a concern to a role → binds a trigger; a firing wakes the role. */
+export function useAddConcern() {
+  const qc = useQueryClient();
+  return useMutation<StandingRoleRow, Error, AddConcernPayload>({
+    mutationFn: ({ roleId, ...body }) =>
+      apiRequest("POST", `/api/roles/${roleId}/concerns`, body) as Promise<StandingRoleRow>,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ROLES_KEY }),
+  });
+}
+
+/** Remove a concern from a role → tears down its backing trigger. */
+export function useDeleteConcern() {
+  const qc = useQueryClient();
+  return useMutation<StandingRoleRow, Error, { roleId: string; concernId: string }>({
+    mutationFn: ({ roleId, concernId }) =>
+      apiRequest("DELETE", `/api/roles/${roleId}/concerns/${concernId}`) as Promise<StandingRoleRow>,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ROLES_KEY }),
+  });
+}
+
+/** The loops a role has woken (trigger wakes + manual wakes) — for the role card. */
+export function useWokenLoops(roleId: string, enabled = true) {
+  return useQuery<Array<{ id: string; state?: string; repoPath?: string }>>({
+    queryKey: ["/api/roles", roleId, "woken-loops"],
+    queryFn: () =>
+      apiRequest("GET", `/api/roles/${roleId}/woken-loops`) as Promise<
+        Array<{ id: string; state?: string; repoPath?: string }>
+      >,
+    enabled,
   });
 }
