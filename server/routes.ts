@@ -44,6 +44,9 @@ import { GithubIssuesPoller } from "./services/consilium/trackers/github-issues-
 import { JiraIssuesPoller } from "./services/consilium/trackers/jira-issues-poller";
 import { GitlabIssuesPoller } from "./services/consilium/trackers/gitlab-issues-poller";
 import { BitbucketIssuesPoller } from "./services/consilium/trackers/bitbucket-issues-poller";
+import { LinearIssuesPoller } from "./services/consilium/trackers/linear-issues-poller";
+import { AzureIssuesPoller } from "./services/consilium/trackers/azure-issues-poller";
+import { ClickUpIssuesPoller } from "./services/consilium/trackers/clickup-issues-poller";
 import { TrackerWritebackObserver } from "./services/consilium/trackers/writeback-observer";
 import { ExperienceDistillerObserver } from "./services/consilium/experience/experience-distiller-observer";
 import { buildSynthPrompt, parseSynthOutput } from "./services/consilium/trackers/issue-spec";
@@ -425,6 +428,9 @@ export async function registerRoutes(
   let jiraIssuesPoller: JiraIssuesPoller | null = null;
   let gitlabIssuesPoller: GitlabIssuesPoller | null = null;
   let bitbucketIssuesPoller: BitbucketIssuesPoller | null = null;
+  let linearIssuesPoller: LinearIssuesPoller | null = null;
+  let azureIssuesPoller: AzureIssuesPoller | null = null;
+  let clickupIssuesPoller: ClickUpIssuesPoller | null = null;
   let trackerWritebackObserver: TrackerWritebackObserver | null = null;
 
   try {
@@ -774,6 +780,68 @@ export async function registerRoutes(
         log: (m: string) => log(m, "bitbucket-tracker-poller"),
       });
       bitbucketIssuesPoller.start();
+      // TRACK-5 (linear / azure / clickup -> committed spec PR). Each is the same spec
+      // PRODUCER + ticket UPDATER as github/jira — a labelled/tagged ticket becomes a
+      // committed-spec PR (in the TARGET git repo) + a pickup comment, firing NO loop
+      // itself. They share the SAME kill-switch (features.triggers.tracker.enabled) and
+      // the SAME crystallise pipeline; only the watch/read/write-back dialect differs
+      // (Linear GraphQL / Azure WIQL / ClickUp REST). Tokens are read from LINEAR_API_KEY
+      // / AZURE_DEVOPS_PAT / CLICKUP_API_TOKEN at call time (fail-closed). A trigger is a
+      // no-op in each poller until its `tracker: "<kind>"` config exists. The synthesiser
+      // is connector-agnostic (title+body only), so all three share ONE instance.
+      const track5Synthesizer = {
+        synthesize: async (ticket: { title: string; body: string }) => {
+          try {
+            const { system, user } = buildSynthPrompt({ number: 0, title: ticket.title, body: ticket.body });
+            const res = await gateway.completeStreaming(
+              {
+                modelSlug: DEFAULT_TASK_MODEL,
+                messages: [
+                  { role: "system", content: system },
+                  { role: "user", content: user },
+                ],
+                temperature: 0.2,
+                maxTokens: 2048,
+              },
+              undefined,
+              undefined,
+              { overallTimeoutMs: 60_000 },
+            );
+            return parseSynthOutput(res.content);
+          } catch {
+            return { criteria: [] };
+          }
+        },
+      };
+      const track5CommonDeps = {
+        getEnabledTriggersByType: (type: "tracker_event") =>
+          runAsSystem("track5-tracker-poller-bootstrap", () => storage.getAllEnabledTriggersByType(type)),
+        runInProject: runAsProject,
+        getTrigger: (id: string) => storage.getTrigger(id),
+        updateTrigger: (id: string, updates: Partial<import("@shared/schema").TriggerRow>) =>
+          storage.updateTrigger(id, updates),
+        config: () => appConfigLoader.get(),
+        allowedRepoPaths: () => appConfigLoader.get().pipeline.consiliumLoop.allowedRepoPaths,
+        synthesizer: track5Synthesizer,
+      };
+
+      linearIssuesPoller = new LinearIssuesPoller({
+        ...track5CommonDeps,
+        log: (m: string) => log(m, "linear-tracker-poller"),
+      });
+      linearIssuesPoller.start();
+
+      azureIssuesPoller = new AzureIssuesPoller({
+        ...track5CommonDeps,
+        log: (m: string) => log(m, "azure-tracker-poller"),
+      });
+      azureIssuesPoller.start();
+
+      clickupIssuesPoller = new ClickUpIssuesPoller({
+        ...track5CommonDeps,
+        log: (m: string) => log(m, "clickup-tracker-poller"),
+      });
+      clickupIssuesPoller.start();
     }
 
     // TRACK-2 (full write-back lifecycle). When the write-back sub-switch is on (and
@@ -878,6 +946,9 @@ export async function registerRoutes(
     jiraIssuesPoller?.stop();
     gitlabIssuesPoller?.stop();
     bitbucketIssuesPoller?.stop();
+    linearIssuesPoller?.stop();
+    azureIssuesPoller?.stop();
+    clickupIssuesPoller?.stop();
     trackerWritebackObserver?.stop();
     getRefreshScheduler()?.stop();
     stopRateLimitCleanup();

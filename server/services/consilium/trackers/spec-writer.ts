@@ -44,11 +44,15 @@ import { runGhCapture } from "./gh-exec.js";
  *   - Jira      (TRACK-3): `spec/jira-<KEY>`     (KEY = `PROJ-123`, uppercased)
  *   - GitLab    (TRACK-4): `spec/gitlab-<iid>`   (iid = project-internal issue id)
  *   - Bitbucket (TRACK-4): `spec/bitbucket-<id>` (id = issue id)
+ *   - Linear    (TRACK-5): `spec/linear-<ID>`    (ID = identifier, e.g. `ENG-123`)
+ *   - Azure     (TRACK-5): `spec/azure-<n>`      (n = work-item id)
+ *   - ClickUp   (TRACK-5): `spec/clickup-<ID>`   (ID = task id, alnum)
  * Every alternative is SERVER-DERIVED from a validated ticket id, so nothing
  * attacker-shaped (a leading dash, a path separator, a `..`) can reach `gh`. New
- * connectors (TRACK-5) add their own alternative here — the writer stays generic.
+ * connectors add their own alternative here — the writer stays generic.
  */
-export const SPEC_BRANCH_RE = /^spec\/(gh-issue-[0-9]+|jira-[A-Za-z0-9._-]+|gitlab-[0-9]+|bitbucket-[0-9]+)$/;
+export const SPEC_BRANCH_RE =
+  /^spec\/(gh-issue-[0-9]+|jira-[A-Za-z0-9._-]+|gitlab-[0-9]+|bitbucket-[0-9]+|linear-[A-Za-z0-9._-]+|azure-[0-9]+|clickup-[A-Za-z0-9._-]+)$/;
 
 /** True iff `branch` is a server-derived tracker spec branch (any connector). */
 export function isValidSpecBranch(branch: string): boolean {
