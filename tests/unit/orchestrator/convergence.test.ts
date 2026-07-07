@@ -373,6 +373,16 @@ describe("readJudgeVerdict — bounded, fail-soft rich judge verdict", () => {
     expect(r!.pros[0].length).toBe(MAX_FIELD_LEN); // each entry clamped
   });
 
+  it("SLICES pros/cons to the cap BEFORE filtering (Security L-2) — bounds work on a padded array", () => {
+    // A hostile array padded with MAX_PROS_CONS non-strings then a trailing string. Slicing
+    // to the cap BEFORE the type-filter bounds the work to MAX_PROS_CONS entries, so the
+    // trailing string (beyond the cap) is dropped ⇒ []. The pre-fix scan-past-non-strings
+    // impl walked the WHOLE array and collected ["late-string"] — so this is a real guard.
+    const padded = [...Array.from({ length: MAX_PROS_CONS }, () => 0), "late-string"];
+    const r = readJudgeVerdict({ verdict: "v", pros: padded });
+    expect(r!.pros).toEqual([]);
+  });
+
   it("bounds a huge action-point list (parity with extractActionPoints)", () => {
     const many = Array.from({ length: 500 }, (_, i) => ({ title: `ap${i}`, priority: "P1" }));
     const r = readJudgeVerdict({ output: { verdict: "v", action_points: many } });

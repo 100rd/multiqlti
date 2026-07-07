@@ -2785,14 +2785,18 @@ export class ConsiliumLoopController {
       // detail page shows it — but NEVER rethrow: the FSM state transition already
       // committed and must not be undone by a best-effort audit write. The nested
       // catch keeps recordRound total even if the error-persist itself fails.
-      this.log(loop.id, `recordRound: appendLoopRound failed for round ${loop.round}: ${message}`);
+      // Security L1: the raw exception `message` goes to the LOGS ONLY, scrubbed (fs
+      // paths stripped) — a model/exception-derived string must never reach the
+      // PERSISTED, UI-rendered `loop.error`.
+      this.log(loop.id, `recordRound: appendLoopRound failed for round ${loop.round}: ${scrubErr(message)}`);
       // Write ONLY when the (committed) row's error is still empty — `loop` is the
       // post-commit `won` row at every call site, so this is the freshest value.
       // Never clobber a terminal explanation the transition itself just set (e.g. a
-      // cancel note); the log line above records the audit failure regardless.
+      // cancel note). Security L1: a FIXED GENERIC — the scrubbed detail is in the log
+      // above, never on the row (which the loop detail page renders verbatim).
       if (!loop.error) {
         await this.storage
-          .updateLoop(loop.id, { error: `round ${loop.round} audit write failed: ${message}` })
+          .updateLoop(loop.id, { error: `round ${loop.round} audit write failed` })
           .catch(() => undefined);
       }
     }
