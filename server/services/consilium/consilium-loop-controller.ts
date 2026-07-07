@@ -52,7 +52,7 @@ import { runAsSystem, runAsProject } from "../../context.js";
 import type { ConsiliumLoopRow, ConsiliumLoopRoundRow, ConsiliumLoopState, TaskGroupIterationRow, InsertTask } from "@shared/schema";
 import { ARCHETYPES } from "@shared/types";
 import type { Archetype } from "@shared/types";
-import type { ActionPoint, ConvergenceVerdict, RoundVerdict, ReviewMode } from "@shared/types";
+import type { ActionPoint, ConvergenceVerdict, RoundVerdict, RoundParticipant, ReviewMode } from "@shared/types";
 import { P0_PRIORITY } from "@shared/types";
 import type { TaskOrchestrator } from "../task-orchestrator.js";
 import type { AppConfig } from "../../config/schema.js";
@@ -436,9 +436,49 @@ interface SdlcRun {
   viaCommand?: boolean;
 }
 
+/**
+ * The settled result of a direct review run (Phase 2, mirrors DevCloseoutResult).
+ * Carries BOTH the FSM-facing convergence (converged/openP0/openActionPoints — what
+ * `deriveReviewEvent` reduces on) AND the rich round-audit payload (verdict +
+ * participants — what recordRound persists). A DEGRADED run (gateway/model failure)
+ * settles with `error` set + `verdict`/`participants` NULL + a conservative
+ * NOT-CONVERGED convergence, exactly like a no-PR degraded SDLC close-out.
+ */
+export interface ReviewRunResult {
+  converged: boolean;
+  openP0: number;
+  openActionPoints: ActionPoint[];
+  verdict: RoundVerdict | null;
+  participants: RoundParticipant[] | null;
+  error?: string;
+}
+
+/**
+ * H-2 (Phase 2): process-local registry entry for an in-flight/settled BACKGROUND
+ * review run, keyed by loopId — the direct-review peer of {@link SdlcRun}. The
+ * review-runner runs OFF the tick path (N LLM calls, ~minutes), so a tick never
+ * blocks the poller; `deriveReviewEvent` reads the settled result here (Round-2 B5)
+ * and `reviewRuns` is the AUTHORITATIVE in-flight gate for the reviewing redrive
+ * (Round-2 B4) — exactly as `sdlcRuns` is for developing.
+ */
+interface ReviewRun {
+  round: number;
+  done: boolean;
+  result?: ReviewRunResult;
+}
+
 /** Minimal error scrub (strip fs paths) for the background-run catch. */
 function scrubErr(raw: string): string {
   return raw.replace(/\/[^\s'"]+/g, "<path>").replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+/**
+ * A DEGRADED (errored) review settle (Phase 2): a conservative NOT-CONVERGED
+ * convergence + NO verdict/participants to render, carrying the scrubbed error —
+ * the review peer of a no-PR degraded DevCloseoutResult on an SDLC close-out throw.
+ */
+function degradedReviewResult(error: string): ReviewRunResult {
+  return { converged: false, openP0: 0, openActionPoints: [], verdict: null, participants: null, error };
 }
 
 /**
@@ -656,6 +696,14 @@ export interface ConsiliumLoopControllerDeps {
    */
   readJudgeOutput?: (loop: ConsiliumLoopRow) => Promise<unknown | undefined>;
   /**
+   * Phase 2 (direct review-runner): the review executor `dispatchReview` fires as a
+   * BACKGROUND job. Injectable so unit tests drive the `reviewRuns` registry with a
+   * fake runner (mirrors `runSdlc?`/`runResearch?`), never touching a real gateway/
+   * model. Defaults to the real `review-runner.ts` executor (Round-2 B2). Absent in
+   * Round 1 ⇒ `dispatchReview` settles a degraded "no runner configured" result.
+   */
+  runReview?: (loop: ConsiliumLoopRow) => Promise<ReviewRunResult>;
+  /**
    * Resolve the repo HEAD sha for audit / the merge-gate baseline. Injectable so
    * tests never touch real `process.cwd()` git (the default routes through A2's
    * buildDiffContext). Returns "" when unreadable (caller treats it as best-effort).
@@ -724,6 +772,16 @@ export class ConsiliumLoopController {
    * settled result here and the developing->awaiting_merge CAS consumes it.
    */
   private readonly sdlcRuns = new Map<string, SdlcRun>();
+
+  /**
+   * H-2 (Phase 2): process-local registry of in-flight/settled BACKGROUND review
+   * runs, keyed by loopId — the direct-review peer of `sdlcRuns`. `dispatchReview`
+   * sets the entry SYNCHRONOUSLY before the async runner so a concurrent tick sees
+   * it in-flight; `deriveReviewEvent` (Round-2 B5) consumes the settle. In Round 1
+   * this registry + its methods are ISOLATED — nothing in the live FSM path calls
+   * `dispatchReview` yet (that's Round-2 B4), so the reviewing path is byte-identical.
+   */
+  private readonly reviewRuns = new Map<string, ReviewRun>();
   /** MED-2: emit the "verification ignored" gate warning at most once per instance. */
   private warnedVerificationGate = false;
 
@@ -2376,6 +2434,66 @@ export class ConsiliumLoopController {
       run.result = existing.result;
       run.done = true;
       this.sdlcRuns.set(loopId, existing); // keep the good-PR entry authoritative
+      return;
+    }
+    run.result = result;
+    run.done = true;
+  }
+
+  /**
+   * Phase 2 (H-2, direct review-runner): dispatch a background review run — the
+   * review peer of `dispatchSdlc`. Registers the `reviewRuns` entry SYNCHRONOUSLY
+   * (before the await) so a concurrent tick sees it in-flight, then fires the runner
+   * FIRE-AND-FORGET: non-blocking, and it NEVER throws out (a runner rejection is
+   * caught and settled as a degraded, error-carrying result). Does NOT mutate the
+   * loop — the ONLY marker of an in-flight runner review is the `reviewRuns` entry;
+   * `currentIterationNumber` stays NULL (mirrors dispatchSdlc leaving devGroupId null
+   * for developing), so the null-ref stranded check (Round-2 B4) still recognises an
+   * in-flight runner review and the client never mounts a broken iteration view.
+   */
+  private dispatchReview(loop: ConsiliumLoopRow): void {
+    const run: ReviewRun = { round: loop.round, done: false };
+    this.reviewRuns.set(loop.id, run);
+    const runner = this.deps.runReview;
+    if (!runner) {
+      // Round-1 isolation: the real review-runner.ts is not wired yet (B2). Settle a
+      // degraded result rather than leave the entry in-flight forever.
+      this.settleReviewRun(loop.id, run, degradedReviewResult("no review runner configured"));
+      return;
+    }
+    void runner(loop)
+      .then((result) => this.settleReviewRun(loop.id, run, result))
+      .catch((err: unknown) =>
+        this.settleReviewRun(
+          loop.id,
+          run,
+          degradedReviewResult(scrubErr(err instanceof Error ? err.message : String(err))),
+        ),
+      );
+  }
+
+  /**
+   * Idempotent settle of a BACKGROUND review run into `reviewRuns` — the review peer
+   * of `settleSdlcRun`. A late/duplicate DEGRADED settle (a redrive that lost the
+   * race but still resolved with an error) must NEVER clobber an already-recorded
+   * GOOD (error-free) result for the SAME round: the good entry stays authoritative
+   * and the late run mirrors it, so `deriveReviewEvent` (B5) only ever observes the
+   * good verdict (mirrors settleSdlcRun's null-prRef-can't-clobber-a-good-PR guard).
+   */
+  private settleReviewRun(loopId: string, run: ReviewRun, result: ReviewRunResult): void {
+    const existing = this.reviewRuns.get(loopId);
+    if (
+      existing &&
+      existing.done &&
+      existing.round === run.round &&
+      existing.result &&
+      !existing.result.error &&
+      result.error
+    ) {
+      this.log(loopId, `idempotent settle: degraded review result IGNORED — keeping the recorded verdict (round ${run.round})`);
+      run.result = existing.result;
+      run.done = true;
+      this.reviewRuns.set(loopId, existing); // keep the good entry authoritative
       return;
     }
     run.result = result;
