@@ -167,6 +167,11 @@ describe.each(PRESETS)("preset coverage: %s", (preset) => {
     expect(round.converged).toBe(false);
     expect(round.openP0).toBe(2);
     expect(round.openActionPoints).toEqual(verdict.openActionPoints);
+    // No task_executions were seeded for this iteration, so the rich judge verdict
+    // (Phase 1, items 1-3) has nothing to read and stays null — the RoundVerdictPanel
+    // correctly omits itself rather than rendering a hollow shell (see the E2E spec's
+    // null-verdict assertion).
+    expect(round.verdict ?? null).toBeNull();
     // Self-sufficient payload — no follow-up call to any task-group endpoint needed.
     expect(round).not.toHaveProperty("devGroupId");
     expect(round).not.toHaveProperty("taskGroupId");
@@ -223,5 +228,73 @@ describe("research archetype — the develop-phase report surfaces on the SAME r
     expect(res.body.rounds).toHaveLength(1);
     expect(res.body.rounds[0].report).toEqual(report);
     expect(res.body.rounds[0].openActionPoints).toEqual(verdict.openActionPoints);
+  });
+});
+
+describe("verdict column (Phase 1, items 1-3) — the FULL judge verdict surfaces on the round", () => {
+  it("a real judge execution's verdict/pros/cons/full action-point list persists to the round and surfaces via GET", async () => {
+    const ctx = await setup();
+    const group = await ctx.storage.createTaskGroup({
+      name: "[consilium-review:sdlc-cross-review] myrepo",
+      description: "d",
+      input: "objective",
+      createdBy: OWNER_USER.id,
+    } as never);
+    const created = await ctx.post("/api/consilium-loops", { groupId: group.id, repoPath: REPO_ROOT });
+    const id = created.body.id as string;
+
+    // Seed a REAL iteration + judge execution (unlike the other tests in this file,
+    // no `readIterationVerdict` is injected here — recordRound's `readRoundVerdict`
+    // reads the raw judge output via `getExecutionsByIteration` UNCONDITIONALLY,
+    // regardless of whether the ConvergenceVerdict summary is injected or resolved
+    // the default way, so this exercises both resolution paths against real storage.
+    const iteration = await ctx.storage.createIteration({
+      groupId: group.id,
+      iterationNumber: 1,
+      status: "completed",
+      input: "objective",
+    });
+    await ctx.storage.createExecution({
+      iterationId: iteration.id,
+      groupId: group.id,
+      status: "completed",
+      output: {
+        verdict: "Solid overall, one blocking issue.",
+        pros: ["Good test coverage", "Clear naming"],
+        cons: ["Missing null check"],
+        action_points: [
+          { title: "Fix null check", priority: "P0" },
+          { title: "Add a doc note", priority: "P2" },
+        ],
+        convergence: { converged: false, open_p0: 1 },
+      },
+    });
+
+    await ctx.storage.updateLoop(id, { state: "deciding", round: 1, currentIterationNumber: 1 });
+
+    const controller = ctx.makeController({ runCloseout: async () => ({ prRef: null, headCommit: "" }) });
+    const tickRes = await controller.tick(id);
+    expect(tickRes?.state).toBe("developing"); // 1 open P0, room left
+
+    const res = await ctx.get(`/api/consilium-loops/${id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.rounds).toHaveLength(1);
+    const round = res.body.rounds[0];
+
+    // Summary fields resolved the DEFAULT way (no readIterationVerdict injected).
+    expect(round.converged).toBe(false);
+    expect(round.openP0).toBe(1);
+
+    // The rich verdict — prose + pros/cons + the FULL ranked action-point list
+    // (both P0 AND P2, not just the still-open subset in openActionPoints).
+    expect(round.verdict).toEqual({
+      verdict: "Solid overall, one blocking issue.",
+      pros: ["Good test coverage", "Clear naming"],
+      cons: ["Missing null check"],
+      actionPoints: [
+        { title: "Fix null check", priority: "P0" },
+        { title: "Add a doc note", priority: "P2" },
+      ],
+    });
   });
 });
