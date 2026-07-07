@@ -757,9 +757,10 @@ function RoundParticipantsView({
               {p.role}
             </Badge>
           </div>
-          {/* INERT model-authored transcript text */}
+          {/* INERT model-authored transcript text. Capped with a max-height +
+              scroll so a long review stays a bounded card instead of a wall. */}
           {p.text && p.text.trim() !== "" && (
-            <p className="whitespace-pre-wrap break-words text-xs text-foreground/80">
+            <p className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-xs text-foreground/80">
               {p.text}
             </p>
           )}
