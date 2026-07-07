@@ -26,6 +26,7 @@ import {
   Terminal,
   Link2,
   Info,
+  ShieldCheck,
 } from "lucide-react";
 import {
   useModels,
@@ -42,6 +43,7 @@ import { cn } from "@/lib/utils";
 import { useQueryClient, useMutation, useQuery } from "@tanstack/react-query";
 import { ArgocdSettings } from "@/components/settings/ArgocdSettings";
 import { SettingsSection } from "@/components/settings/SettingsSection";
+import { PrivacySection } from "@/components/settings/PrivacySection";
 import { VersionInfoPanel } from "@/components/settings/VersionInfoPanel";
 import { LocalModelsSection } from "@/components/settings/LocalModelsSection";
 
@@ -1080,6 +1082,17 @@ export default function Settings() {
                 </div>
               </div>
             </div>
+          </SettingsSection>
+
+          {/* ── Privacy & Compliance ───────────────────────── */}
+          <SettingsSection
+            title="Privacy & Compliance"
+            icon={<ShieldCheck className="h-4 w-4" />}
+            shortDescription="Pseudonymize sensitive identifiers before they reach public LLM APIs."
+            longDescription="Configure the privacy proxy: test the anonymizer against sample text at off/standard/strict levels, and manage custom detection patterns. Real values are never stored in the audit log; the in-memory vault is cleared after the session TTL."
+            defaultOpen={false}
+          >
+            <PrivacySection />
           </SettingsSection>
 
           {/* ── 8. ArgoCD ──────────────────────────────────── */}

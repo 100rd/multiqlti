@@ -13,7 +13,6 @@ import { useAuth } from "@/hooks/use-auth";
 import MainLayout from "@/components/layout/MainLayout";
 import TriggersPage from "@/pages/TriggersPage";
 import Settings from "@/pages/Settings";
-import Privacy from "@/pages/Privacy";
 import Statistics from "@/pages/Statistics";
 import KnowledgeBase from "@/pages/KnowledgeBase";
 import WorkspaceList from "@/pages/WorkspaceList";
@@ -113,9 +112,8 @@ function ProtectedRouter() {
         <Route path="/settings/users" component={() => (
           <ErrorBoundary><UserManagement /></ErrorBoundary>
         )} />
-        <Route path="/privacy" component={() => (
-          <ErrorBoundary><Privacy /></ErrorBoundary>
-        )} />
+        {/* Privacy moved into Settings ("Privacy & Compliance" section) — redirect legacy bookmarks. */}
+        <Route path="/privacy" component={() => <Redirect to="/settings" />} />
         <Route path="/contour" component={() => (
           <ErrorBoundary><ContourObservability /></ErrorBoundary>
         )} />

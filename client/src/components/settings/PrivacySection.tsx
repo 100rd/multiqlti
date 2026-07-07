@@ -1,3 +1,17 @@
+/**
+ * PrivacySection — the Privacy & Compliance controls, rendered as the body of a
+ * Settings "Privacy & Compliance" SettingsSection.
+ *
+ * Extracted verbatim from the former standalone `pages/Privacy.tsx` (route
+ * `/privacy`, which had no nav entry and no inbound links). The page chrome
+ * (header + ScrollArea) is dropped here because the SettingsSection wrapper
+ * provides the collapsible card; only the functional panels move.
+ *
+ * NOTE (copy): the opt-in wording below is a pre-retirement vestige ("per
+ * pipeline stage" / "Agent Node's Advanced settings"). It is carried over
+ * unchanged in this move — the correct post-retirement scope is a separate
+ * copy pass, pending a caller-trace of the anonymizer.
+ */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,7 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ShieldCheck, Trash2, Plus, Play, AlertTriangle, Lock } from "lucide-react";
+import { Trash2, Plus, Play, AlertTriangle, Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { apiRequest } from "@/lib/queryClient";
 
@@ -365,41 +379,26 @@ function PatternsTable() {
   );
 }
 
-export default function Privacy() {
+export function PrivacySection() {
   return (
-    <div className="flex flex-col h-full overflow-hidden">
-      <div className="px-6 py-4 border-b border-border">
-        <div className="flex items-center gap-2">
-          <ShieldCheck className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-semibold">Privacy &amp; Compliance</h1>
-        </div>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          Configure the Privacy Proxy Layer to pseudonymize sensitive identifiers before they reach public LLM APIs.
-          Disabled by default — opt-in per pipeline stage.
-        </p>
-      </div>
+    <div className="p-4 space-y-4">
+      <Card className="border-amber-500/30 bg-amber-500/5">
+        <CardContent className="pt-4 pb-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+            <div className="text-xs text-amber-700 dark:text-amber-400 space-y-1">
+              <p className="font-medium">Privacy proxy is opt-in per pipeline stage</p>
+              <p className="text-muted-foreground">
+                Enable it in each Agent Node's Advanced settings. Real values are never stored in the audit log.
+                In-memory vault is cleared after the session TTL (default 1 hour).
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
-      <ScrollArea className="flex-1">
-        <div className="p-6 space-y-6 max-w-3xl">
-          <Card className="border-amber-500/30 bg-amber-500/5">
-            <CardContent className="pt-4 pb-4">
-              <div className="flex items-start gap-3">
-                <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
-                <div className="text-xs text-amber-700 dark:text-amber-400 space-y-1">
-                  <p className="font-medium">Privacy proxy is opt-in per pipeline stage</p>
-                  <p className="text-muted-foreground">
-                    Enable it in each Agent Node's Advanced settings. Real values are never stored in the audit log.
-                    In-memory vault is cleared after the session TTL (default 1 hour).
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <TestPanel />
-          <PatternsTable />
-        </div>
-      </ScrollArea>
+      <TestPanel />
+      <PatternsTable />
     </div>
   );
 }
