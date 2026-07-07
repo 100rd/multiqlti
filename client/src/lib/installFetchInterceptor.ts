@@ -1,7 +1,7 @@
 /**
  * Global `x-project-id` fetch interceptor (project-isolation safety net).
  *
- * The shared transport helpers (lib/queryClient.ts, hooks/use-pipeline.ts,
+ * The shared transport helpers (lib/queryClient.ts, hooks/use-api.ts,
  * hooks/use-task-groups.ts, pages/Costs.tsx, …) attach `x-project-id` via the
  * canonical `buildAuthHeaders` in projectHeaders.ts. But a number of legacy hooks
  * and pages still build their own headers inline and would 400 on project-scoped

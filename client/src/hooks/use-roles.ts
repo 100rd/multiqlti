@@ -1,11 +1,11 @@
 /**
  * use-roles.ts — React Query hooks for the ROLE-1 StandingRole surface
  * (standing-role.md §3/§8). Mirrors use-skills.ts but goes through the shared
- * `apiRequest` transport (use-pipeline) so every call carries auth + `x-project-id`
+ * `apiRequest` transport (use-api) so every call carries auth + `x-project-id`
  * (the project-scoped `/api/roles` mount returns 401/400 without them).
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/hooks/use-pipeline";
+import { apiRequest } from "@/hooks/use-api";
 import type { StandingRoleRow } from "@shared/schema";
 import type {
   StandingRoleLoopTemplate,

@@ -307,7 +307,6 @@ async function materializeConcern(
   };
   const { type, config } = buildConcernTriggerConfig(concern, roleId);
   const trigger = await storage.createTrigger({
-    pipelineId: null,
     type,
     config,
     enabled: concern.enabled !== false,

@@ -5,18 +5,18 @@
  *   1.  projectId-mismatch throws ForbiddenError on every public method.
  *   2.  Plan-time methods (listCredentials, getCredentialMetadata) never return
  *       secret material.
- *   3.  issueLease throws ForbiddenError when stage is not approved.
- *   4.  issueLease throws ForbiddenError when pipeline run is not 'running'.
- *   5.  issueLease succeeds (approved + running) and returns a CredentialLease
- *       with the decrypted secret.
- *   6.  Rate limit: issueLease throws after RATE_LIMIT_MAX requests in one window.
- *   7.  revokeLease marks the lease revoked (idempotent on already-revoked).
- *   8.  revokeRunLeases marks all active leases for the run revoked; no-op when
+ *   3.  revokeLease marks the lease revoked (idempotent on already-revoked).
+ *   4.  revokeRunLeases marks all active leases for the run revoked; no-op when
  *       no active leases exist.
- *   9.  expireStaleLeases marks active leases past their expiresAt as 'expired'.
- *   10. Audit rows are written with correct action on each operation.
- *   11. accessSecret (Wave-2): project-scope, system-context, audit, no-context throw.
- *   12. No direct crypto.decrypt() import outside the broker (grep-style assertion).
+ *   5.  expireStaleLeases marks active leases past their expiresAt as 'expired'.
+ *   6.  Audit rows are written with correct action on each operation.
+ *   7.  accessSecret (Wave-2): project-scope, system-context, audit, no-context throw.
+ *   8.  No direct crypto.decrypt() import outside the broker (grep-style assertion).
+ *
+ * issueLease (the pipeline-run/stage-approval-gated lease path) was retired along
+ * with the pipeline engine — the gate read stage_executions.approvalStatus and
+ * pipeline_runs.status, both dropped tables. Never defanged into an ungated
+ * lease; the whole method + its DB reads were removed instead.
  *
  * Strategy:
  *   - `server/db.js` is fully mocked: each test controls what the DB returns via
@@ -35,8 +35,6 @@ const MOCK_DB = vi.hoisted(() => ({
   // Tables that SELECT queries resolve from.
   workspaceConnectionsRows: [] as Record<string, unknown>[],
   workspacesRows: [] as Record<string, unknown>[],
-  pipelineRunsRows: [] as Record<string, unknown>[],
-  stageExecutionsRows: [] as Record<string, unknown>[],
   credentialLeasesRows: [] as Record<string, unknown>[],
 
   // Spy arrays for write operations.
@@ -112,8 +110,6 @@ vi.mock("../../../server/db.js", () => {
           // ── Simple SELECT paths ─────────────────────────────────────────
           const rowsForTable = () => {
             if (tableName === "workspaces")           return MOCK_DB.workspacesRows;
-            if (tableName === "pipeline_runs")        return MOCK_DB.pipelineRunsRows;
-            if (tableName === "stage_executions")     return MOCK_DB.stageExecutionsRows;
             if (tableName === "credential_leases")    return MOCK_DB.credentialLeasesRows;
             return [];
           };
@@ -221,11 +217,9 @@ import {
   DbCryptoCredentialProvider,
   expireStaleLeases,
   markLeaseUsed,
-  _resetRateLimitStore,
 } from "../../../server/credentials/db-crypto-provider.js";
 import { ForbiddenError } from "../../../server/credentials/types.js";
 import { runAsProject, runAsSystem } from "../../../server/context.js";
-import type { CredentialLease } from "../../../server/credentials/types.js";
 
 // ─── Test fixtures ────────────────────────────────────────────────────────────
 
@@ -254,30 +248,6 @@ function makeConn(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
-function makeApprovedStageExec(overrides: Partial<Record<string, unknown>> = {}) {
-  return {
-    id: STAGE_ID,
-    runId: RUN_ID,
-    projectId: PROJECT_A,
-    approvalStatus: "approved",
-    stageIndex: 0,
-    ...overrides,
-  };
-}
-
-function makeRunningPipelineRun(overrides: Partial<Record<string, unknown>> = {}) {
-  return {
-    id: RUN_ID,
-    projectId: PROJECT_A,
-    status: "running",
-    pipelineId: "pipe-1",
-    input: "",
-    currentStageIndex: 0,
-    dagMode: false,
-    ...overrides,
-  };
-}
-
 function makeLease(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: "lease-uuid-1",
@@ -299,13 +269,10 @@ function makeLease(overrides: Partial<Record<string, unknown>> = {}) {
 function resetMock() {
   MOCK_DB.workspaceConnectionsRows = [];
   MOCK_DB.workspacesRows = [];
-  MOCK_DB.pipelineRunsRows = [];
-  MOCK_DB.stageExecutionsRows = [];
   MOCK_DB.credentialLeasesRows = [];
   MOCK_DB.inserted = [];
   MOCK_DB.updated = [];
   MOCK_DB.nextLeaseId = "lease-uuid-1";
-  _resetRateLimitStore();
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -333,20 +300,6 @@ describe("DbCryptoCredentialProvider", () => {
       await runAsProject(PROJECT_A, async () => {
         await expect(
           provider.getCredentialMetadata(PROJECT_B, CONN_ID),
-        ).rejects.toThrow(ForbiddenError);
-      });
-    });
-
-    it("issueLease throws ForbiddenError when projectId !== context", async () => {
-      await runAsProject(PROJECT_A, async () => {
-        await expect(
-          provider.issueLease({
-            projectId: PROJECT_B,
-            credentialId: CONN_ID,
-            runId: RUN_ID,
-            stageId: STAGE_ID,
-            requestedBy: USER,
-          }),
         ).rejects.toThrow(ForbiddenError);
       });
     });
@@ -421,336 +374,7 @@ describe("DbCryptoCredentialProvider", () => {
     });
   });
 
-  // ── 3. issueLease throws on unapproved stage ──────────────────────────────────
-
-  describe("issueLease — approval gate", () => {
-    it("throws ForbiddenError when stage not found", async () => {
-      MOCK_DB.stageExecutionsRows = [];
-      MOCK_DB.pipelineRunsRows = [makeRunningPipelineRun()];
-
-      await runAsProject(PROJECT_A, async () => {
-        await expect(
-          provider.issueLease({
-            projectId: PROJECT_A,
-            credentialId: CONN_ID,
-            runId: RUN_ID,
-            stageId: STAGE_ID,
-            requestedBy: USER,
-          }),
-        ).rejects.toThrow(ForbiddenError);
-      });
-    });
-
-    it("throws ForbiddenError when approvalStatus is pending", async () => {
-      MOCK_DB.stageExecutionsRows = [
-        makeApprovedStageExec({ approvalStatus: "pending" }),
-      ];
-      MOCK_DB.pipelineRunsRows = [makeRunningPipelineRun()];
-
-      await runAsProject(PROJECT_A, async () => {
-        await expect(
-          provider.issueLease({
-            projectId: PROJECT_A,
-            credentialId: CONN_ID,
-            runId: RUN_ID,
-            stageId: STAGE_ID,
-            requestedBy: USER,
-          }),
-        ).rejects.toThrow(ForbiddenError);
-      });
-    });
-
-    it("throws ForbiddenError when approvalStatus is rejected", async () => {
-      MOCK_DB.stageExecutionsRows = [
-        makeApprovedStageExec({ approvalStatus: "rejected" }),
-      ];
-      MOCK_DB.pipelineRunsRows = [makeRunningPipelineRun()];
-
-      await runAsProject(PROJECT_A, async () => {
-        await expect(
-          provider.issueLease({
-            projectId: PROJECT_A,
-            credentialId: CONN_ID,
-            runId: RUN_ID,
-            stageId: STAGE_ID,
-            requestedBy: USER,
-          }),
-        ).rejects.toThrow(ForbiddenError);
-      });
-    });
-
-    it("throws ForbiddenError when approvalStatus is null", async () => {
-      MOCK_DB.stageExecutionsRows = [
-        makeApprovedStageExec({ approvalStatus: null }),
-      ];
-      MOCK_DB.pipelineRunsRows = [makeRunningPipelineRun()];
-
-      await runAsProject(PROJECT_A, async () => {
-        await expect(
-          provider.issueLease({
-            projectId: PROJECT_A,
-            credentialId: CONN_ID,
-            runId: RUN_ID,
-            stageId: STAGE_ID,
-            requestedBy: USER,
-          }),
-        ).rejects.toThrow(ForbiddenError);
-      });
-    });
-  });
-
-  // ── 4. issueLease throws on non-running run ───────────────────────────────────
-
-  describe("issueLease — run-state gate", () => {
-    it("throws ForbiddenError when pipeline run not found", async () => {
-      MOCK_DB.stageExecutionsRows = [makeApprovedStageExec()];
-      MOCK_DB.pipelineRunsRows = [];
-
-      await runAsProject(PROJECT_A, async () => {
-        await expect(
-          provider.issueLease({
-            projectId: PROJECT_A,
-            credentialId: CONN_ID,
-            runId: RUN_ID,
-            stageId: STAGE_ID,
-            requestedBy: USER,
-          }),
-        ).rejects.toThrow(ForbiddenError);
-      });
-    });
-
-    it("throws ForbiddenError when pipeline run status is paused", async () => {
-      MOCK_DB.stageExecutionsRows = [makeApprovedStageExec()];
-      MOCK_DB.pipelineRunsRows = [makeRunningPipelineRun({ status: "paused" })];
-
-      await runAsProject(PROJECT_A, async () => {
-        await expect(
-          provider.issueLease({
-            projectId: PROJECT_A,
-            credentialId: CONN_ID,
-            runId: RUN_ID,
-            stageId: STAGE_ID,
-            requestedBy: USER,
-          }),
-        ).rejects.toThrow(ForbiddenError);
-      });
-    });
-
-    it("throws ForbiddenError when pipeline run status is completed", async () => {
-      MOCK_DB.stageExecutionsRows = [makeApprovedStageExec()];
-      MOCK_DB.pipelineRunsRows = [
-        makeRunningPipelineRun({ status: "completed" }),
-      ];
-
-      await runAsProject(PROJECT_A, async () => {
-        await expect(
-          provider.issueLease({
-            projectId: PROJECT_A,
-            credentialId: CONN_ID,
-            runId: RUN_ID,
-            stageId: STAGE_ID,
-            requestedBy: USER,
-          }),
-        ).rejects.toThrow(ForbiddenError);
-      });
-    });
-
-    it("throws ForbiddenError when pipeline run status is failed", async () => {
-      MOCK_DB.stageExecutionsRows = [makeApprovedStageExec()];
-      MOCK_DB.pipelineRunsRows = [makeRunningPipelineRun({ status: "failed" })];
-
-      await runAsProject(PROJECT_A, async () => {
-        await expect(
-          provider.issueLease({
-            projectId: PROJECT_A,
-            credentialId: CONN_ID,
-            runId: RUN_ID,
-            stageId: STAGE_ID,
-            requestedBy: USER,
-          }),
-        ).rejects.toThrow(ForbiddenError);
-      });
-    });
-  });
-
-  // ── 5. issueLease succeeds on approved + running ──────────────────────────────
-
-  describe("issueLease — happy path", () => {
-    it("returns a CredentialLease with static secret on approved+running", async () => {
-      MOCK_DB.stageExecutionsRows = [makeApprovedStageExec()];
-      MOCK_DB.pipelineRunsRows = [makeRunningPipelineRun()];
-      MOCK_DB.workspaceConnectionsRows = [makeConn()];
-
-      const lease = await runAsProject(PROJECT_A, () =>
-        provider.issueLease({
-          projectId: PROJECT_A,
-          credentialId: CONN_ID,
-          runId: RUN_ID,
-          stageId: STAGE_ID,
-          requestedBy: USER,
-        }),
-      );
-
-      expect(lease.leaseId).toBe("lease-uuid-1");
-      expect(lease.credentialId).toBe(CONN_ID);
-      expect(lease.projectId).toBe(PROJECT_A);
-      expect(lease.runId).toBe(RUN_ID);
-      expect(lease.stageId).toBe(STAGE_ID);
-      expect(lease.secret.type).toBe("static");
-      // Secret value is the JSON-serialised secrets map.
-      expect(JSON.parse((lease.secret as { type: "static"; value: string }).value)).toEqual({
-        API_TOKEN: "secret-value-123",
-      });
-    });
-
-    it("respects custom ttlSeconds (capped at 900)", async () => {
-      MOCK_DB.stageExecutionsRows = [makeApprovedStageExec()];
-      MOCK_DB.pipelineRunsRows = [makeRunningPipelineRun()];
-      MOCK_DB.workspaceConnectionsRows = [makeConn()];
-
-      const before = Date.now();
-      const lease = await runAsProject(PROJECT_A, () =>
-        provider.issueLease({
-          projectId: PROJECT_A,
-          credentialId: CONN_ID,
-          runId: RUN_ID,
-          stageId: STAGE_ID,
-          requestedBy: USER,
-          ttlSeconds: 600,
-        }),
-      );
-      const after = Date.now();
-
-      const ttlMs = lease.expiresAt.getTime() - lease.issuedAt.getTime();
-      expect(ttlMs).toBe(600_000);
-      expect(lease.expiresAt.getTime()).toBeGreaterThanOrEqual(before + 600_000);
-      expect(lease.expiresAt.getTime()).toBeLessThanOrEqual(after + 600_000 + 100);
-    });
-
-    it("caps ttlSeconds at 900 when provided value exceeds max", async () => {
-      MOCK_DB.stageExecutionsRows = [makeApprovedStageExec()];
-      MOCK_DB.pipelineRunsRows = [makeRunningPipelineRun()];
-      MOCK_DB.workspaceConnectionsRows = [makeConn()];
-
-      const lease = await runAsProject(PROJECT_A, () =>
-        provider.issueLease({
-          projectId: PROJECT_A,
-          credentialId: CONN_ID,
-          runId: RUN_ID,
-          stageId: STAGE_ID,
-          requestedBy: USER,
-          ttlSeconds: 9999,
-        }),
-      );
-
-      const ttlMs = lease.expiresAt.getTime() - lease.issuedAt.getTime();
-      expect(ttlMs).toBe(900_000);
-    });
-
-    it("writes lease_issued audit log row", async () => {
-      MOCK_DB.stageExecutionsRows = [makeApprovedStageExec()];
-      MOCK_DB.pipelineRunsRows = [makeRunningPipelineRun()];
-      MOCK_DB.workspaceConnectionsRows = [makeConn()];
-
-      await runAsProject(PROJECT_A, () =>
-        provider.issueLease({
-          projectId: PROJECT_A,
-          credentialId: CONN_ID,
-          runId: RUN_ID,
-          stageId: STAGE_ID,
-          requestedBy: USER,
-          justification: "deploy-job",
-        }),
-      );
-
-      const auditInserts = MOCK_DB.inserted.filter(
-        (i) => i.table === "credential_access_log",
-      );
-      expect(auditInserts).toHaveLength(1);
-      const log = auditInserts[0].values;
-      expect(log.action).toBe("lease_issued");
-      expect(log.credentialId).toBe(CONN_ID);
-      expect(log.projectId).toBe(PROJECT_A);
-      expect(log.runId).toBe(RUN_ID);
-      expect(log.stageId).toBe(STAGE_ID);
-      expect(log.success).toBe(true);
-      expect(log.justification).toBe("deploy-job");
-      expect(log.ttlSeconds).toBe(300); // default
-    });
-
-    it("writes lease row to credential_leases", async () => {
-      MOCK_DB.stageExecutionsRows = [makeApprovedStageExec()];
-      MOCK_DB.pipelineRunsRows = [makeRunningPipelineRun()];
-      MOCK_DB.workspaceConnectionsRows = [makeConn()];
-
-      await runAsProject(PROJECT_A, () =>
-        provider.issueLease({
-          projectId: PROJECT_A,
-          credentialId: CONN_ID,
-          runId: RUN_ID,
-          stageId: STAGE_ID,
-          requestedBy: USER,
-        }),
-      );
-
-      const leaseInserts = MOCK_DB.inserted.filter(
-        (i) => i.table === "credential_leases",
-      );
-      expect(leaseInserts).toHaveLength(1);
-      const row = leaseInserts[0].values;
-      expect(row.credentialId).toBe(CONN_ID);
-      expect(row.projectId).toBe(PROJECT_A);
-      expect(row.status).toBe("active");
-    });
-  });
-
-  // ── 6. Rate limiting ──────────────────────────────────────────────────────────
-
-  describe("issueLease — rate limiting", () => {
-    it("allows up to RATE_LIMIT_MAX requests then throws ForbiddenError", async () => {
-      // We can't reach the DB check easily without a full happy-path setup.
-      // Instead test that ForbiddenError is thrown after the limit.
-      // Use a unique runId per test suite to avoid cross-test contamination.
-      const RUN = "rate-limit-run";
-
-      MOCK_DB.stageExecutionsRows = [makeApprovedStageExec({ runId: RUN })];
-      MOCK_DB.pipelineRunsRows = [makeRunningPipelineRun({ id: RUN })];
-      MOCK_DB.workspaceConnectionsRows = [makeConn()];
-
-      // Send 10 successful requests (the limit).
-      const results: CredentialLease[] = [];
-      for (let i = 0; i < 10; i++) {
-        MOCK_DB.nextLeaseId = `lease-rate-${i}`;
-        MOCK_DB.inserted = [];
-        const r = await runAsProject(PROJECT_A, () =>
-          provider.issueLease({
-            projectId: PROJECT_A,
-            credentialId: CONN_ID,
-            runId: RUN,
-            stageId: STAGE_ID,
-            requestedBy: USER,
-          }),
-        );
-        results.push(r);
-      }
-      expect(results).toHaveLength(10);
-
-      // The 11th request must throw ForbiddenError.
-      await runAsProject(PROJECT_A, async () => {
-        await expect(
-          provider.issueLease({
-            projectId: PROJECT_A,
-            credentialId: CONN_ID,
-            runId: RUN,
-            stageId: STAGE_ID,
-            requestedBy: USER,
-          }),
-        ).rejects.toThrow(ForbiddenError);
-      });
-    });
-  });
-
-  // ── 7. revokeLease ────────────────────────────────────────────────────────────
+  // ── 3. revokeLease ────────────────────────────────────────────────────────────
 
   describe("revokeLease", () => {
     it("marks lease revoked and writes audit log", async () => {
@@ -794,7 +418,7 @@ describe("DbCryptoCredentialProvider", () => {
     });
   });
 
-  // ── 8. revokeRunLeases ───────────────────────────────────────────────────────
+  // ── 4. revokeRunLeases ───────────────────────────────────────────────────────
 
   describe("revokeRunLeases", () => {
     it("marks all active leases for the run revoked", async () => {
@@ -852,7 +476,7 @@ describe("DbCryptoCredentialProvider", () => {
     });
   });
 
-  // ── 9. expireStaleLeases sweeper ─────────────────────────────────────────────
+  // ── 5. expireStaleLeases sweeper ─────────────────────────────────────────────
 
   describe("expireStaleLeases", () => {
     it("returns 0 when no leases to expire", async () => {
@@ -901,7 +525,7 @@ describe("DbCryptoCredentialProvider", () => {
     });
   });
 
-  // ── 10. markLeaseUsed ────────────────────────────────────────────────────────
+  // ── 6. markLeaseUsed ────────────────────────────────────────────────────────
 
   describe("markLeaseUsed", () => {
     it("writes a lease_used audit log row", async () => {
@@ -927,7 +551,7 @@ describe("DbCryptoCredentialProvider", () => {
     });
   });
 
-  // ── 11. accessSecret — Wave-2 non-lease direct access ────────────────────────
+  // ── 7. accessSecret — Wave-2 non-lease direct access ────────────────────────
   //
   // accessSecret is the SYSTEM/non-run analogue of issueLease.  It routes ALL
   // remaining crypto.decrypt() calls through the broker with project-scope +
@@ -1057,7 +681,7 @@ describe("DbCryptoCredentialProvider", () => {
     });
   });
 
-  // ── 12. No direct crypto.decrypt() import outside the broker ─────────────────
+  // ── 8. No direct crypto.decrypt() import outside the broker ─────────────────
   //
   // Enforcement test: verifies that no server/ TypeScript file outside the
   // credential broker (and a short allowlist of legitimately different decrypt

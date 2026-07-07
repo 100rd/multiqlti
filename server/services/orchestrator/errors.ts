@@ -6,7 +6,6 @@
  * The route layer maps each to an HTTP status:
  *   RunActiveError / IterationCapError      → 409
  *   NoReadyTasksError / InvalidTaskGraphError → 400
- *   MissingPipelineError                    → surfaces as a failed execution
  */
 
 /**
@@ -51,19 +50,6 @@ export class NoReadyTasksError extends Error {
   constructor(groupId: string) {
     super(`TaskGroup ${groupId} has no ready tasks to start`);
     this.name = "NoReadyTasksError";
-  }
-}
-
-/**
- * Thrown when a `pipeline_run` task carries a null `pipelineId` (L1). Previously
- * such a task silently fell through to `executeDirectLlm`; now it fails the
- * execution explicitly with a clear cause instead of running the wrong mode.
- */
-export class MissingPipelineError extends Error {
-  readonly code = "MISSING_PIPELINE" as const;
-  constructor(taskName: string) {
-    super(`Task "${taskName}" is pipeline_run but has no pipelineId`);
-    this.name = "MissingPipelineError";
   }
 }
 

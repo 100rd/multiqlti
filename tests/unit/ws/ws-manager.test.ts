@@ -52,11 +52,10 @@ function makeEvent(runId: string) {
   };
 }
 
-/** A storage double exposing only getPipelineRun for ownership checks. */
-function storageWithRun(triggeredBy: string | null): IStorage {
+/** A storage double exposing only getTaskGroup for ownership checks. */
+function storageWithRun(createdBy: string | null): IStorage {
   return {
-    getPipelineRun: vi.fn(async () => ({ id: "r", triggeredBy })),
-    getTaskGroup: vi.fn(async () => undefined),
+    getTaskGroup: vi.fn(async () => ({ id: "r", createdBy })),
   } as unknown as IStorage;
 }
 
@@ -261,7 +260,6 @@ describe("WsManager.authorizeAndSubscribe — ownership gate", () => {
 
   it("REJECTS subscribing to a missing run", async () => {
     const storage = {
-      getPipelineRun: vi.fn(async () => undefined),
       getTaskGroup: vi.fn(async () => undefined),
     } as unknown as IStorage;
     const { manager } = await createManager(storage);

@@ -9,8 +9,8 @@
  *
  * Seeding: a real Judge run needs a live model gateway, which is non-deterministic
  * and slow for E2E. Task group + consilium-loop CREATION goes through the real
- * HTTP API (`page.request`, matching the convention in run-execution.spec.ts /
- * pipeline-crud.spec.ts); fast-forwarding the loop's FSM state and inserting the
+ * HTTP API (`page.request`, the same direct-API-seeding convention used
+ * elsewhere in this suite); fast-forwarding the loop's FSM state and inserting the
  * two round rows goes through a direct `pg` connection, mirroring the seeding
  * precedent in tests/e2e/global-setup.ts (idempotent, scoped to rows this test
  * itself creates — never a broad UPDATE/DELETE).

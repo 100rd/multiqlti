@@ -12,14 +12,10 @@
  *  - Every call must carry a valid `mcp_client` token in the request context.
  *  - Scope checked per call: workspace access + tool allow-list + concurrency.
  *
- * Tools exposed (7):
+ * Tools exposed (3):
  *  1. list_workspaces          — workspace metadata (scoped to token)
- *  2. list_pipelines           — pipeline definitions for a workspace
- *  3. run_pipeline             — async; returns run_id immediately
- *  4. get_run                  — status, output, stage trace events
- *  5. cancel_run               — cancel a running pipeline
- *  6. list_connections         — connection metadata only (NO secrets)
- *  7. query_connection_usage   — usage metrics for a connection
+ *  2. list_connections         — connection metadata only (NO secrets)
+ *  3. query_connection_usage   — usage metrics for a connection
  *
  * Security invariants:
  *  - Secrets never appear in any tool response.
@@ -29,33 +25,18 @@
  */
 
 import type { IStorage } from "../../storage";
-import { runAsSystem } from "../../context";
-import type { PipelineController } from "../../controller/pipeline-controller";
 import { recordToolCall } from "../../tools/audit";
-import {
-  checkWorkspaceAccess,
-  checkToolAccess,
-  acquireRunSlot,
-  releaseRunSlot,
-} from "./auth";
+import { checkWorkspaceAccess, checkToolAccess } from "./auth";
 import type { McpTokenScope } from "@shared/types";
 
 // ─── Tool name constants ───────────────────────────────────────────────────────
 
 export const TOOL_LIST_WORKSPACES = "list_workspaces";
-export const TOOL_LIST_PIPELINES = "list_pipelines";
-export const TOOL_RUN_PIPELINE = "run_pipeline";
-export const TOOL_GET_RUN = "get_run";
-export const TOOL_CANCEL_RUN = "cancel_run";
 export const TOOL_LIST_CONNECTIONS = "list_connections";
 export const TOOL_QUERY_CONNECTION_USAGE = "query_connection_usage";
 
 export const ALL_TOOLS = [
   TOOL_LIST_WORKSPACES,
-  TOOL_LIST_PIPELINES,
-  TOOL_RUN_PIPELINE,
-  TOOL_GET_RUN,
-  TOOL_CANCEL_RUN,
   TOOL_LIST_CONNECTIONS,
   TOOL_QUERY_CONNECTION_USAGE,
 ] as const;
@@ -63,23 +44,6 @@ export const ALL_TOOLS = [
 export type McpToolName = (typeof ALL_TOOLS)[number];
 
 // ─── Tool input types ──────────────────────────────────────────────────────────
-
-interface ListPipelinesInput {
-  workspace_id: string;
-}
-
-interface RunPipelineInput {
-  pipeline_id: string;
-  input: string;
-}
-
-interface GetRunInput {
-  run_id: string;
-}
-
-interface CancelRunInput {
-  run_id: string;
-}
 
 interface ListConnectionsInput {
   workspace_id: string;
@@ -129,10 +93,7 @@ export class McpToolNotFoundError extends Error {
 // ─── MCP Server ───────────────────────────────────────────────────────────────
 
 export class MultiqltiMcpServer {
-  constructor(
-    private readonly storage: IStorage,
-    private readonly controller: PipelineController,
-  ) {}
+  constructor(private readonly storage: IStorage) {}
 
   // ── Tool dispatch ────────────────────────────────────────────────────────────
 
@@ -197,14 +158,6 @@ export class MultiqltiMcpServer {
     switch (toolName) {
       case TOOL_LIST_WORKSPACES:
         return this.listWorkspaces(ctx);
-      case TOOL_LIST_PIPELINES:
-        return this.listPipelines(validateListPipelines(args), ctx);
-      case TOOL_RUN_PIPELINE:
-        return this.runPipeline(validateRunPipeline(args), ctx);
-      case TOOL_GET_RUN:
-        return this.getRun(validateGetRun(args));
-      case TOOL_CANCEL_RUN:
-        return this.cancelRun(validateCancelRun(args));
       case TOOL_LIST_CONNECTIONS:
         return this.listConnections(validateListConnections(args), ctx);
       case TOOL_QUERY_CONNECTION_USAGE:
@@ -224,136 +177,6 @@ export class MultiqltiMcpServer {
         status: ws.status,
         createdAt: ws.createdAt,
       }));
-  }
-
-  /** list_pipelines — returns pipelines for a workspace the token may access. */
-  private async listPipelines(args: ListPipelinesInput, ctx: McpCallContext) {
-    if (!checkWorkspaceAccess(ctx.scope, args.workspace_id)) {
-      throw new McpScopeError(
-        `Token does not have access to workspace "${args.workspace_id}".`,
-      );
-    }
-    // MCP self-server listing is workspace-token scoped, not project-scoped, so it
-    // reads cross-project under an audited system context. FLAG: consider scoping
-    // to the token's project/workspace once MCP token->project mapping is defined.
-    const pipelines = await runAsSystem("mcp-self-list-pipelines", () =>
-      this.storage.getPipelines(),
-    );
-    return pipelines
-      .filter((p) => !p.isTemplate)
-      .map((p) => ({
-        id: p.id,
-        name: p.name,
-        description: p.description ?? null,
-        stageCount: Array.isArray(p.stages) ? (p.stages as unknown[]).length : 0,
-        isTemplate: p.isTemplate,
-        createdAt: p.createdAt,
-      }));
-  }
-
-  /**
-   * run_pipeline — starts the pipeline via the controller (same path as the
-   * REST API) and returns the run ID immediately. Execution is asynchronous.
-   */
-  private async runPipeline(args: RunPipelineInput, ctx: McpCallContext) {
-    // Concurrency gate
-    if (!acquireRunSlot(ctx.tokenId, ctx.scope.maxRunConcurrency)) {
-      throw new McpConcurrencyError(ctx.tokenId, ctx.scope.maxRunConcurrency);
-    }
-
-    let runId: string;
-    try {
-      // startRun creates the run record AND kicks off execution asynchronously
-      const run = await this.controller.startRun(
-        args.pipeline_id,
-        args.input,
-        undefined,
-        `mcp_client:${ctx.tokenId}`,
-      );
-      runId = run.id;
-    } catch (err) {
-      // Release slot immediately if startup failed
-      releaseRunSlot(ctx.tokenId);
-      throw err;
-    }
-
-    // Release slot when the run reaches a terminal state
-    void this.waitForRunCompletion(runId, ctx.tokenId);
-
-    const run = await this.storage.getPipelineRun(runId);
-    return {
-      runId,
-      status: run?.status ?? "running",
-      startedAt: run?.startedAt ?? null,
-    };
-  }
-
-  /** Poll storage until run reaches terminal state, then release the slot. */
-  private async waitForRunCompletion(runId: string, tokenId: string): Promise<void> {
-    const POLL_INTERVAL_MS = 2_000;
-    const MAX_POLLS = 3_600; // ~2 hours at 2s intervals
-    const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "rejected"]);
-
-    for (let i = 0; i < MAX_POLLS; i++) {
-      await sleep(POLL_INTERVAL_MS);
-      try {
-        const run = await this.storage.getPipelineRun(runId);
-        if (!run || TERMINAL_STATUSES.has(run.status)) {
-          releaseRunSlot(tokenId);
-          return;
-        }
-      } catch {
-        releaseRunSlot(tokenId);
-        return;
-      }
-    }
-
-    // Timed out — release anyway
-    releaseRunSlot(tokenId);
-  }
-
-  /** get_run — returns run status, output, and stage trace events. */
-  private async getRun(args: GetRunInput) {
-    const run = await this.storage.getPipelineRun(args.run_id);
-    if (!run) {
-      throw new Error(`Run not found: "${args.run_id}"`);
-    }
-
-    const stages = await this.storage.getStageExecutions(args.run_id);
-
-    return {
-      id: run.id,
-      pipelineId: run.pipelineId,
-      status: run.status,
-      input: run.input,
-      output: run.output ?? null,
-      currentStageIndex: run.currentStageIndex,
-      startedAt: run.startedAt ?? null,
-      completedAt: run.completedAt ?? null,
-      stages: stages.map((s) => ({
-        id: s.id,
-        teamId: s.teamId,
-        status: s.status,
-        startedAt: s.startedAt ?? null,
-        completedAt: s.completedAt ?? null,
-      })),
-    };
-  }
-
-  /** cancel_run — cancels a running pipeline run. */
-  private async cancelRun(args: CancelRunInput) {
-    const run = await this.storage.getPipelineRun(args.run_id);
-    if (!run) {
-      throw new Error(`Run not found: "${args.run_id}"`);
-    }
-
-    const terminalStatuses = ["completed", "failed", "cancelled", "rejected"] as const;
-    if (terminalStatuses.includes(run.status as (typeof terminalStatuses)[number])) {
-      return { runId: args.run_id, cancelled: false };
-    }
-
-    await this.controller.cancelRun(args.run_id);
-    return { runId: args.run_id, cancelled: true };
   }
 
   /** list_connections — returns connection metadata only; NO secrets ever returned. */
@@ -407,25 +230,6 @@ function requireString(args: Record<string, unknown>, key: string): string {
   return val.trim();
 }
 
-function validateListPipelines(args: Record<string, unknown>): ListPipelinesInput {
-  return { workspace_id: requireString(args, "workspace_id") };
-}
-
-function validateRunPipeline(args: Record<string, unknown>): RunPipelineInput {
-  return {
-    pipeline_id: requireString(args, "pipeline_id"),
-    input: requireString(args, "input"),
-  };
-}
-
-function validateGetRun(args: Record<string, unknown>): GetRunInput {
-  return { run_id: requireString(args, "run_id") };
-}
-
-function validateCancelRun(args: Record<string, unknown>): CancelRunInput {
-  return { run_id: requireString(args, "run_id") };
-}
-
 function validateListConnections(args: Record<string, unknown>): ListConnectionsInput {
   return { workspace_id: requireString(args, "workspace_id") };
 }
@@ -434,12 +238,6 @@ function validateQueryConnectionUsage(
   args: Record<string, unknown>,
 ): QueryConnectionUsageInput {
   return { connection_id: requireString(args, "connection_id") };
-}
-
-// ─── Utility ──────────────────────────────────────────────────────────────────
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ─── MCP Wire Protocol helpers ────────────────────────────────────────────────
@@ -459,52 +257,6 @@ export const MCP_TOOL_DEFINITIONS: McpToolDefinition[] = [
     name: TOOL_LIST_WORKSPACES,
     description: "List all workspaces accessible by this MCP token.",
     inputSchema: { type: "object", properties: {}, required: [] },
-  },
-  {
-    name: TOOL_LIST_PIPELINES,
-    description: "List pipeline definitions for a workspace.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        workspace_id: { type: "string", description: "The workspace ID." },
-      },
-      required: ["workspace_id"],
-    },
-  },
-  {
-    name: TOOL_RUN_PIPELINE,
-    description:
-      "Start a pipeline run asynchronously. Returns run_id immediately; poll get_run for status.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        pipeline_id: { type: "string", description: "The pipeline ID to run." },
-        input: { type: "string", description: "The user input for the pipeline." },
-      },
-      required: ["pipeline_id", "input"],
-    },
-  },
-  {
-    name: TOOL_GET_RUN,
-    description: "Get the current status, output, and stage trace for a pipeline run.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        run_id: { type: "string", description: "The pipeline run ID." },
-      },
-      required: ["run_id"],
-    },
-  },
-  {
-    name: TOOL_CANCEL_RUN,
-    description: "Cancel a running pipeline.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        run_id: { type: "string", description: "The pipeline run ID to cancel." },
-      },
-      required: ["run_id"],
-    },
   },
   {
     name: TOOL_LIST_CONNECTIONS,
@@ -644,12 +396,9 @@ export async function processStdioLines(
 let _server: MultiqltiMcpServer | null = null;
 
 /** Get or create the singleton MCP server. Used by the route handler. */
-export function getMultiqltiMcpServer(
-  storage: IStorage,
-  controller: PipelineController,
-): MultiqltiMcpServer {
+export function getMultiqltiMcpServer(storage: IStorage): MultiqltiMcpServer {
   if (!_server) {
-    _server = new MultiqltiMcpServer(storage, controller);
+    _server = new MultiqltiMcpServer(storage);
   }
   return _server;
 }

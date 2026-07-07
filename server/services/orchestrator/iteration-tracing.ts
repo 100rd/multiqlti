@@ -3,8 +3,8 @@
  * TaskOrchestrator (L3 — keep the orchestrator file <800 lines).
  *
  * Owns the optional `TaskTracer` and the per-group active-trace context map, and
- * exposes thin span helpers (iteration / task / llm-call / pipeline-run / group
- * completion). EVERY method is non-fatal: a tracer-less deployment or a tracer
+ * exposes thin span helpers (iteration / task / llm-call / group completion).
+ * EVERY method is non-fatal: a tracer-less deployment or a tracer
  * throw must NEVER block or fail execution. Liveness tracking
  * (`getActiveGroupIds`) lives in the orchestrator, INDEPENDENTLY of this (M1).
  */
@@ -106,38 +106,6 @@ export class IterationTracing {
         inputSizeBytes: new TextEncoder().encode(meta.inputContent).length,
         outputSizeBytes: new TextEncoder().encode(meta.response.content).length,
       });
-    } catch {
-      // Non-fatal
-    }
-  }
-
-  /** Open a pipeline-run span under the task's span; "" if tracing off. */
-  startPipelineSpan(groupId: string, taskId: string, runId: string): string {
-    const ctx = this.active.get(groupId);
-    const taskSpanId = ctx?.taskSpanIds.get(taskId) ?? "";
-    if (!this.tracer || !ctx || !taskSpanId) return "";
-    try {
-      return this.tracer.startPipelineRunSpan(ctx.traceId, taskSpanId, runId);
-    } catch {
-      return "";
-    }
-  }
-
-  completePipelineSpan(groupId: string, spanId: string, runId: string): void {
-    const ctx = this.active.get(groupId);
-    if (!this.tracer || !ctx || !spanId) return;
-    try {
-      this.tracer.completeSpan(ctx.traceId, spanId, { pipelineRunId: runId });
-    } catch {
-      // Non-fatal
-    }
-  }
-
-  failPipelineSpan(groupId: string, spanId: string, error: string): void {
-    const ctx = this.active.get(groupId);
-    if (!this.tracer || !ctx || !spanId) return;
-    try {
-      this.tracer.failSpan(ctx.traceId, spanId, error);
     } catch {
       // Non-fatal
     }

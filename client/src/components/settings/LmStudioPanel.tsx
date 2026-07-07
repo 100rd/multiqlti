@@ -13,7 +13,7 @@ import {
   Cpu,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/hooks/use-pipeline";
+import { apiRequest } from "@/hooks/use-api";
 
 interface LmStudioModel {
   id: string;

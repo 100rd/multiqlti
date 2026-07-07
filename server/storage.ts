@@ -3,26 +3,16 @@ import {
   type InsertUser,
   type Model,
   type InsertModel,
-  type Pipeline,
-  type InsertPipeline,
-  type PipelineRun,
-  type InsertPipelineRun,
-  type StageExecution,
-  type InsertStageExecution,
   type Question,
   type InsertQuestion,
   type ChatMessage,
   type InsertChatMessage,
   type LlmRequest,
-  type InsertDelegationRequest,
-  type DelegationRequestRow,
   type InsertLlmRequest,
   type InsertSpecializationProfile,
   type SpecializationProfileRow,
   type Skill,
   type InsertSkill,
-  type InsertManagerIteration,
-  type ManagerIterationRow,
   type TriggerRow,
   type InsertTrace,
   type TraceRow,
@@ -78,7 +68,7 @@ import {
   type PracticeCardReviewState,
   type PracticeCardStatus,
 } from "@shared/schema";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace, ActionPoint, SkillProposalStatus } from "@shared/types";
+import type { McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace, ActionPoint, SkillProposalStatus } from "@shared/types";
 import type { LessonRecallFilter } from "./memory/lessons/types";
 // ROLE-1 (standing-role.md §3/§8): the StandingRole record types. Separate localized
 // import so the shared `@shared/schema` import block above stays a single merge point.
@@ -216,17 +206,6 @@ export interface RunHistoryQuery {
   cursor?: { completedAt: string; id: string };
 }
 
-/** One row of pipeline-family run history (terminal). Metadata is classified by the route. */
-export interface PipelineRunHistoryRow {
-  id: string;
-  status: string;
-  workspaceId: string | null;
-  triggeredBy: string | null;
-  startedAt: Date | null;
-  completedAt: Date | null;
-  currentStageIndex: number;
-}
-
 /** One row of task-group history (terminal). */
 export interface TaskGroupHistoryRow {
   id: string;
@@ -274,28 +253,6 @@ export interface IStorage {
   updateModel(id: string, updates: Partial<InsertModel>): Promise<Model>;
   deleteModel(id: string): Promise<void>;
 
-  // Pipelines
-  getPipelines(): Promise<Pipeline[]>;
-  getPipeline(id: string): Promise<Pipeline | undefined>;
-  getTemplates(): Promise<Pipeline[]>;
-  createPipeline(pipeline: InsertPipeline): Promise<Pipeline>;
-  updatePipeline(id: string, updates: Partial<InsertPipeline>): Promise<Pipeline>;
-  deletePipeline(id: string): Promise<void>;
-
-  // Pipeline Runs
-  getPipelineRuns(pipelineId?: string): Promise<PipelineRun[]>;
-  /** Terminal-status pipeline-family runs, owner-filtered, keyset-paginated (completedAt desc, id desc). */
-  listPipelineRunHistory(query: RunHistoryQuery): Promise<PipelineRunHistoryRow[]>;
-  getPipelineRun(id: string): Promise<PipelineRun | undefined>;
-  createPipelineRun(run: InsertPipelineRun): Promise<PipelineRun>;
-  updatePipelineRun(id: string, updates: Partial<PipelineRun>): Promise<PipelineRun>;
-
-  // Stage Executions
-  getStageExecutions(runId: string): Promise<StageExecution[]>;
-  getStageExecution(id: string): Promise<StageExecution | undefined>;
-  createStageExecution(execution: InsertStageExecution): Promise<StageExecution>;
-  updateStageExecution(id: string, updates: Partial<StageExecution>): Promise<StageExecution>;
-
   // Lessons (agent-experience memory — Track B)
   createLesson(lesson: InsertLesson): Promise<Lesson>;
   recallLessons(filter: LessonRecallFilter): Promise<Lesson[]>;
@@ -324,15 +281,6 @@ export interface IStorage {
   getLlmStatsByWorkspace(): Promise<LlmStatsByWorkspace[]>;
   getLlmTimeline(from: Date, to: Date, granularity: 'day' | 'week'): Promise<LlmTimelinePoint[]>;
 
-  // Memories
-  getMemories(scope: MemoryScope, scopeId?: string | null, type?: MemoryType): Promise<Memory[]>;
-  searchMemories(query: string, scope?: MemoryScope): Promise<Memory[]>;
-  upsertMemory(memory: InsertMemory): Promise<Memory>;
-  deleteMemory(id: number): Promise<void>;
-  decayMemories(excludeRunId: number, decayAmount: number): Promise<number>;
-  deleteStaleMemories(threshold: number): Promise<number>;
-  updateMemoryPublished(id: number, published: boolean): Promise<Memory | null>;
-
   // MCP Servers
   getMcpServers(): Promise<McpServerConfig[]>;
   getMcpServer(id: number): Promise<McpServerConfig | undefined>;
@@ -340,10 +288,6 @@ export interface IStorage {
   updateMcpServer(id: number, updates: Partial<McpServerConfig>): Promise<McpServerConfig>;
   deleteMcpServer(id: number): Promise<void>;
 
-  // Delegation Requests (Phase 6.4)
-  createDelegationRequest(data: InsertDelegationRequest): Promise<DelegationRequestRow>;
-  getDelegationRequests(runId: string): Promise<DelegationRequestRow[]>;
-  updateDelegationRequest(id: string, updates: Partial<DelegationRequestRow>): Promise<DelegationRequestRow>;
   // Specialization Profiles (Phase 5)
   getSpecializationProfiles(): Promise<SpecializationProfileRow[]>;
   createSpecializationProfile(profile: InsertSpecializationProfile): Promise<SpecializationProfileRow>;
@@ -368,18 +312,7 @@ export interface IStorage {
 
   incrementSkillUsage(id: string): Promise<number>;
 
-  // Manager Iterations (Phase 6.6)
-  createManagerIteration(data: InsertManagerIteration): Promise<ManagerIterationRow>;
-  updateManagerIteration(
-    runId: string,
-    iterationNumber: number,
-    updates: Partial<Pick<ManagerIterationRow, "teamResult" | "teamDurationMs">>,
-  ): Promise<void>;
-  getManagerIterations(runId: string, offset?: number, limit?: number): Promise<ManagerIterationRow[]>;
-  countManagerIterations(runId: string): Promise<number>;
-
   // Triggers (Phase 6.3)
-  getTriggers(pipelineId: string): Promise<TriggerRow[]>;
   /** T1: all triggers in the current project ALS (pipeline-based AND pipeline-less). */
   getProjectTriggers(): Promise<TriggerRow[]>;
   getTrigger(id: string): Promise<TriggerRow | undefined>;
@@ -754,39 +687,26 @@ function requireIngesterId(value: string | null | undefined): string {
 export class MemStorage implements IStorage {
   private usersMap: Map<string, UserRow>;
   private models: Map<string, Model>;
-  private pipelinesMap: Map<string, Pipeline>;
-  private runs: Map<string, PipelineRun>;
-  private stages: Map<string, StageExecution>;
   private lessonsMap: Map<string, Lesson>;
   private questionsMap: Map<string, Question>;
   private messages: Map<string, ChatMessage>;
   private llmRequestsMap: Map<number, LlmRequest>;
   private llmRequestIdSeq: number;
-  private memoriesMap: Map<number, Memory>;
-  private nextMemoryId: number;
   private mcpServersMap: Map<number, McpServerConfig>;
   private nextMcpServerId: number;
-  private delegationsMap: Map<string, DelegationRequestRow>;
-  private managerIterationsMap: Map<string, ManagerIterationRow> = new Map();
   private specializationProfilesMap: Map<string, SpecializationProfileRow>;
   private workspaceSettingsMap: Map<string, Record<string, unknown>> = new Map();
 
   constructor() {
     this.usersMap = new Map();
     this.models = new Map();
-    this.pipelinesMap = new Map();
-    this.runs = new Map();
-    this.stages = new Map();
     this.lessonsMap = new Map();
     this.questionsMap = new Map();
     this.messages = new Map();
     this.llmRequestsMap = new Map();
     this.llmRequestIdSeq = 1;
-    this.memoriesMap = new Map();
-    this.nextMemoryId = 1;
     this.mcpServersMap = new Map();
     this.nextMcpServerId = 1;
-    this.delegationsMap = new Map();
     this.specializationProfilesMap = new Map();
   }
 
@@ -870,173 +790,6 @@ export class MemStorage implements IStorage {
   async deleteModel(id: string): Promise<void> {
     if (!this.models.has(id)) throw new Error(`Model not found: ${id}`);
     this.models.delete(id);
-  }
-
-  // ─── Pipelines ──────────────────────────────────
-
-  async getPipelines(): Promise<Pipeline[]> {
-    return Array.from(this.pipelinesMap.values());
-  }
-
-  async getPipeline(id: string): Promise<Pipeline | undefined> {
-    return this.pipelinesMap.get(id);
-  }
-
-  async getTemplates(): Promise<Pipeline[]> {
-    return Array.from(this.pipelinesMap.values()).filter((p) => p.isTemplate);
-  }
-
-  async createPipeline(insert: InsertPipeline): Promise<Pipeline> {
-    const id = randomUUID();
-    const now = new Date();
-    const pipeline: Pipeline = {
-      projectId: insert.projectId ?? null,
-      id,
-      name: insert.name,
-      description: insert.description ?? null,
-      stages: insert.stages ?? [],
-      dag: insert.dag ?? null,
-      createdBy: insert.createdBy ?? null,
-      ownerId: insert.ownerId ?? null,
-      isTemplate: insert.isTemplate ?? false,
-      managerConfig: ((insert as { managerConfig?: unknown }).managerConfig ?? null) as import("@shared/types").ManagerConfig | null,
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.pipelinesMap.set(id, pipeline);
-    return pipeline;
-  }
-
-  async updatePipeline(
-    id: string,
-    updates: Partial<InsertPipeline>,
-  ): Promise<Pipeline> {
-    const pipeline = this.pipelinesMap.get(id);
-    if (!pipeline) throw new Error(`Pipeline not found: ${id}`);
-    const updated = { ...pipeline, ...updates, updatedAt: new Date() };
-    this.pipelinesMap.set(id, updated);
-    return updated;
-  }
-
-  async deletePipeline(id: string): Promise<void> {
-    this.pipelinesMap.delete(id);
-  }
-
-  // ─── Pipeline Runs ──────────────────────────────
-
-  async getPipelineRuns(pipelineId?: string): Promise<PipelineRun[]> {
-    const all = Array.from(this.runs.values());
-    if (pipelineId) return all.filter((r) => r.pipelineId === pipelineId);
-    return all;
-  }
-
-  async listPipelineRunHistory(query: RunHistoryQuery): Promise<PipelineRunHistoryRow[]> {
-    const terminal = new Set(["completed", "failed", "cancelled", "rejected"]);
-    const rows = Array.from(this.runs.values())
-      .filter((r) => terminal.has(r.status))
-      .filter((r) => (query.ownerId == null ? true : r.triggeredBy === query.ownerId))
-      .map((r) => ({
-        id: r.id,
-        status: r.status,
-        workspaceId: r.workspaceId ?? null,
-        triggeredBy: r.triggeredBy ?? null,
-        startedAt: r.startedAt ?? null,
-        completedAt: r.completedAt ?? null,
-        currentStageIndex: r.currentStageIndex ?? 0,
-      }));
-    return keysetPage(rows, query);
-  }
-
-  async getPipelineRun(id: string): Promise<PipelineRun | undefined> {
-    return this.runs.get(id);
-  }
-
-  async createPipelineRun(insert: InsertPipelineRun): Promise<PipelineRun> {
-    const id = randomUUID();
-    const run: PipelineRun = {
-      projectId: insert.projectId ?? null,
-      id,
-      pipelineId: insert.pipelineId,
-      workspaceId: insert.workspaceId ?? null,
-      status: insert.status ?? "pending",
-      input: insert.input,
-      output: insert.output ?? null,
-      currentStageIndex: insert.currentStageIndex ?? 0,
-      startedAt: insert.startedAt ?? null,
-      completedAt: insert.completedAt ?? null,
-      triggeredBy: insert.triggeredBy ?? null,
-      dagMode: insert.dagMode ?? false,
-      createdAt: new Date(),
-    };
-    this.runs.set(id, run);
-    return run;
-  }
-
-  async updatePipelineRun(
-    id: string,
-    updates: Partial<PipelineRun>,
-  ): Promise<PipelineRun> {
-    const run = this.runs.get(id);
-    if (!run) throw new Error(`Run not found: ${id}`);
-    const updated = { ...run, ...updates };
-    this.runs.set(id, updated);
-    return updated;
-  }
-
-  // ─── Stage Executions ───────────────────────────
-
-  async getStageExecutions(runId: string): Promise<StageExecution[]> {
-    return Array.from(this.stages.values())
-      .filter((s) => s.runId === runId)
-      .sort((a, b) => a.stageIndex - b.stageIndex);
-  }
-
-  async getStageExecution(id: string): Promise<StageExecution | undefined> {
-    return this.stages.get(id);
-  }
-
-  async createStageExecution(
-    insert: InsertStageExecution,
-  ): Promise<StageExecution> {
-    const id = randomUUID();
-    const stage: StageExecution = {
-      projectId: insert.projectId ?? null,
-      id,
-      runId: insert.runId,
-      stageIndex: insert.stageIndex,
-      teamId: insert.teamId,
-      modelSlug: insert.modelSlug,
-      status: insert.status ?? "pending",
-      input: insert.input,
-      output: insert.output ?? null,
-      tokensUsed: insert.tokensUsed ?? 0,
-      startedAt: insert.startedAt ?? null,
-      completedAt: insert.completedAt ?? null,
-      sandboxResult: insert.sandboxResult ?? null,
-      thoughtTree: insert.thoughtTree ?? null,
-      approvalStatus: insert.approvalStatus ?? null,
-      approvedAt: insert.approvedAt ?? null,
-      approvedBy: insert.approvedBy ?? null,
-      rejectionReason: insert.rejectionReason ?? null,
-      error: insert.error ?? null,
-      dagStageId: insert.dagStageId ?? null,
-      swarmCloneResults: insert.swarmCloneResults ?? null,
-      swarmMeta: insert.swarmMeta ?? null,
-      createdAt: new Date(),
-    };
-    this.stages.set(id, stage);
-    return stage;
-  }
-
-  async updateStageExecution(
-    id: string,
-    updates: Partial<StageExecution>,
-  ): Promise<StageExecution> {
-    const stage = this.stages.get(id);
-    if (!stage) throw new Error(`Stage execution not found: ${id}`);
-    const updated = { ...stage, ...updates };
-    this.stages.set(id, updated);
-    return updated;
   }
 
   // ─── Lessons (agent-experience memory — Track B) ──
@@ -1395,105 +1148,6 @@ export class MemStorage implements IStorage {
     return Array.from(buckets.values()).sort((a, b) => a.date.localeCompare(b.date));
   }
 
-  // ─── Memories ───────────────────────────────────
-
-  async getMemories(scope: MemoryScope, scopeId?: string | null, type?: MemoryType): Promise<Memory[]> {
-    return Array.from(this.memoriesMap.values()).filter((m) => {
-      if (m.scope !== scope) return false;
-      if (scopeId !== undefined && m.scopeId !== scopeId) return false;
-      if (type && m.type !== type) return false;
-      return true;
-    });
-  }
-
-  async searchMemories(query: string, scope?: MemoryScope): Promise<Memory[]> {
-    const lower = query.toLowerCase();
-    return Array.from(this.memoriesMap.values()).filter((m) => {
-      if (scope && m.scope !== scope) return false;
-      return (
-        m.key.toLowerCase().includes(lower) ||
-        m.content.toLowerCase().includes(lower)
-      );
-    });
-  }
-
-  async upsertMemory(insert: InsertMemory): Promise<Memory> {
-    const existing = Array.from(this.memoriesMap.values()).find(
-      (m) =>
-        m.scope === insert.scope &&
-        m.scopeId === (insert.scopeId ?? null) &&
-        m.key === insert.key,
-    );
-
-    if (existing) {
-      const updated: Memory = {
-        ...existing,
-        content: insert.content,
-        confidence: insert.confidence ?? existing.confidence,
-        source: insert.source ?? existing.source,
-        updatedAt: new Date(),
-      };
-      this.memoriesMap.set(existing.id, updated);
-      return updated;
-    }
-
-    const id = this.nextMemoryId++;
-    const now = new Date();
-    const memory: Memory = {
-      id,
-      scope: insert.scope,
-      scopeId: insert.scopeId ?? null,
-      type: insert.type,
-      key: insert.key,
-      content: insert.content,
-      source: insert.source ?? null,
-      confidence: insert.confidence ?? 1.0,
-      tags: insert.tags ?? [],
-      createdAt: now,
-      updatedAt: now,
-      expiresAt: insert.expiresAt ?? null,
-      createdByRunId: insert.createdByRunId ?? null,
-      published: insert.published ?? false,
-    };
-    this.memoriesMap.set(id, memory);
-    return memory;
-  }
-
-  async deleteMemory(id: number): Promise<void> {
-    this.memoriesMap.delete(id);
-  }
-
-  async decayMemories(excludeRunId: number, decayAmount: number): Promise<number> {
-    let count = 0;
-    for (const [id, m] of this.memoriesMap) {
-      if (m.createdByRunId !== excludeRunId) {
-        const updated = { ...m, confidence: m.confidence - decayAmount, updatedAt: new Date() };
-        this.memoriesMap.set(id, updated);
-        count++;
-      }
-    }
-    return count;
-  }
-
-  async deleteStaleMemories(threshold: number): Promise<number> {
-    let count = 0;
-    for (const [id, m] of this.memoriesMap) {
-      if (m.confidence < threshold) {
-        this.memoriesMap.delete(id);
-        count++;
-      }
-    }
-    return count;
-  }
-
-  async updateMemoryPublished(id: number, published: boolean): Promise<Memory | null> {
-    const m = this.memoriesMap.get(id);
-    if (!m) return null;
-    const updated = { ...m, published, updatedAt: new Date() };
-    this.memoriesMap.set(id, updated);
-    return updated;
-  }
-
   // ─── MCP Servers ───────────────────────────────
 
   async getMcpServers(): Promise<McpServerConfig[]> {
@@ -1526,50 +1180,6 @@ export class MemStorage implements IStorage {
 
   async deleteMcpServer(id: number): Promise<void> {
     this.mcpServersMap.delete(id);
-  }
-
-  // ─── Delegation Requests (Phase 6.4) ────────────────────────────────────
-
-  async createDelegationRequest(data: InsertDelegationRequest): Promise<DelegationRequestRow> {
-    const id = randomUUID();
-    const now = new Date();
-    const row: DelegationRequestRow = {
-      projectId: data.projectId ?? null,
-      id,
-      runId: data.runId,
-      fromStage: data.fromStage,
-      toStage: data.toStage,
-      task: data.task,
-      context: (data.context ?? {}) as Record<string, unknown>,
-      priority: data.priority ?? "blocking",
-      timeout: data.timeout ?? 30000,
-      depth: data.depth ?? 0,
-      status: data.status ?? "pending",
-      result: (data.result ?? null) as Record<string, unknown> | null,
-      errorMessage: data.errorMessage ?? null,
-      startedAt: data.startedAt ?? now,
-      completedAt: data.completedAt ?? null,
-      createdAt: now,
-    };
-    this.delegationsMap.set(id, row);
-    return row;
-  }
-
-  async getDelegationRequests(runId: string): Promise<DelegationRequestRow[]> {
-    return Array.from(this.delegationsMap.values())
-      .filter((d) => d.runId === runId)
-      .sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0));
-  }
-
-  async updateDelegationRequest(
-    id: string,
-    updates: Partial<DelegationRequestRow>,
-  ): Promise<DelegationRequestRow> {
-    const row = this.delegationsMap.get(id);
-    if (!row) throw new Error(`Delegation request not found: ${id}`);
-    const updated = { ...row, ...updates };
-    this.delegationsMap.set(id, updated);
-    return updated;
   }
 
   // ─── Specialization Profiles ──────────────────
@@ -1726,61 +1336,6 @@ export class MemStorage implements IStorage {
     const updated = { ...skill, usageCount: currentCount + 1 };
     this.skillsMap.set(id, updated as Skill);
     return currentCount + 1;
-  }
-
-  // ─── Manager Iterations (Phase 6.6) ────────────────────────────────────────
-
-  async createManagerIteration(data: InsertManagerIteration): Promise<ManagerIterationRow> {
-    const id = crypto.randomUUID();
-    const now = new Date();
-    const row: ManagerIterationRow = {
-      id,
-      runId: data.runId,
-      iterationNumber: data.iterationNumber,
-      decision: data.decision as ManagerIterationRow["decision"],
-      teamResult: data.teamResult ?? null,
-      tokensUsed: data.tokensUsed ?? 0,
-      decisionDurationMs: data.decisionDurationMs ?? 0,
-      teamDurationMs: data.teamDurationMs ?? null,
-      createdAt: now,
-    };
-    if (!this.managerIterationsMap) {
-      this.managerIterationsMap = new Map();
-    }
-    this.managerIterationsMap.set(id, row);
-    return row;
-  }
-
-  async updateManagerIteration(
-    runId: string,
-    iterationNumber: number,
-    updates: Partial<Pick<ManagerIterationRow, "teamResult" | "teamDurationMs">>,
-  ): Promise<void> {
-    if (!this.managerIterationsMap) return;
-    for (const [id, row] of this.managerIterationsMap) {
-      if (row.runId === runId && row.iterationNumber === iterationNumber) {
-        this.managerIterationsMap.set(id, { ...row, ...updates });
-        return;
-      }
-    }
-  }
-
-  async getManagerIterations(
-    runId: string,
-    offset = 0,
-    limit = 50,
-  ): Promise<ManagerIterationRow[]> {
-    if (!this.managerIterationsMap) return [];
-    const rows = Array.from(this.managerIterationsMap.values())
-      .filter((r) => r.runId === runId)
-      .sort((a, b) => a.iterationNumber - b.iterationNumber);
-    return rows.slice(offset, offset + limit);
-  }
-
-  async countManagerIterations(runId: string): Promise<number> {
-    if (!this.managerIterationsMap) return 0;
-    return Array.from(this.managerIterationsMap.values()).filter((r) => r.runId === runId)
-      .length;
   }
 
   // ─── Consilium Loops (Phase B — auto-versioned FSM) ───────────────────────
@@ -2157,10 +1712,6 @@ export class MemStorage implements IStorage {
 
   private triggersMap: Map<string, TriggerRow> = new Map();
 
-  async getTriggers(pipelineId: string): Promise<TriggerRow[]> {
-    return Array.from(this.triggersMap.values()).filter((t) => t.pipelineId === pipelineId);
-  }
-
   async getProjectTriggers(): Promise<TriggerRow[]> {
     // MemStorage has no project isolation — return all triggers.
     return Array.from(this.triggersMap.values());
@@ -2188,7 +1739,6 @@ export class MemStorage implements IStorage {
     const row: TriggerRow = {
       id,
       projectId: null, // MemStorage has no project context; projectId is null in-memory
-      pipelineId: data.pipelineId ?? null, // T1: loop-template triggers carry no pipeline
       type: data.type as TriggerRow["type"],
       config: (data.config ?? {}) as TriggerRow["config"],
       secretEncrypted: data.secretEncrypted ?? null,
@@ -2258,19 +1808,20 @@ export class MemStorage implements IStorage {
     return row;
   }
 
-  async getTraceByRunId(runId: string): Promise<TraceRow | null> {
-    return this.tracesByRunId.get(runId) ?? null;
+  async getTraceByRunId(_runId: string): Promise<TraceRow | null> {
+    // Mirrors PgStorage: traces has no project_id column, and its only
+    // scoping mechanism (a subquery through pipeline_runs) is retired along
+    // with the pipelines engine — return null rather than an unscoped row.
+    return null;
   }
 
   async getTraceByTraceId(traceId: string): Promise<TraceRow | null> {
     return this.tracesById.get(traceId) ?? null;
   }
 
-  async getTraces(limit = 50, offset = 0): Promise<TraceRow[]> {
-    const all = Array.from(this.tracesById.values()).sort(
-      (a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0),
-    );
-    return all.slice(offset, offset + limit);
+  async getTraces(_limit = 50, _offset = 0): Promise<TraceRow[]> {
+    // Mirrors PgStorage: return [] rather than the unscoped rows.
+    return [];
   }
 
   async updateTraceSpans(traceId: string, spans: TraceSpan[]): Promise<void> {

@@ -67,7 +67,8 @@ function makeStorage(instanceId: string): IStorage & {
       pipelines.clear();
       appliedEvents.splice(0);
     },
-    // Pipeline stubs used by defaultApplyOne
+    // IStorage stubs only — this harness's own applyOneFn (below) drives
+    // `pipelines`/`appliedEvents` directly and does not call defaultApplyOne.
     getPipelines: async () => Array.from(pipelines.values()) as Parameters<IStorage["getPipelines"]>[0] extends undefined ? Awaited<ReturnType<IStorage["getPipelines"]>> : never,
     createPipeline: async (data: { name: string; description?: string | null; stages?: unknown; dag?: unknown; isTemplate?: boolean }) => {
       const id = crypto.randomUUID();

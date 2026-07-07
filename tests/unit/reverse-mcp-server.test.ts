@@ -6,17 +6,13 @@
  *  2. Scope enforcement — workspace access, tool allow-list, wildcard
  *  3. Concurrency limiting — acquire/release run slots
  *  4. Tool: list_workspaces — scoped to token workspaces
- *  5. Tool: list_pipelines — scoped to workspace, excludes templates
- *  6. Tool: run_pipeline — returns run_id; concurrency gate
- *  7. Tool: get_run — status + stage trace
- *  8. Tool: cancel_run — running vs. terminal runs
- *  9. Tool: list_connections — no secrets in output
- * 10. Tool: query_connection_usage — workspace scope check
- * 11. Audit log — recordToolCall called per invocation
- * 12. JSON-RPC protocol — tools/list, tools/call, unknown method
- * 13. stdio transport — processStdioLines, parse errors
- * 14. streamable-http transport — POST /mcp endpoint
- * 15. Token management HTTP endpoints — CRUD
+ *  5. Tool: list_connections — no secrets in output
+ *  6. Tool: query_connection_usage — workspace scope check
+ *  7. Audit log — recordToolCall called per invocation
+ *  8. JSON-RPC protocol — tools/list, tools/call, unknown method
+ *  9. stdio transport — processStdioLines, parse errors
+ * 10. streamable-http transport — POST /mcp endpoint
+ * 11. Token management HTTP endpoints — CRUD
  */
 
 
@@ -50,17 +46,12 @@ import {
 import {
   MultiqltiMcpServer,
   McpScopeError,
-  McpConcurrencyError,
   McpToolNotFoundError,
   handleMcpRequest,
   processStdioLines,
   MCP_TOOL_DEFINITIONS,
   ALL_TOOLS,
   TOOL_LIST_WORKSPACES,
-  TOOL_LIST_PIPELINES,
-  TOOL_RUN_PIPELINE,
-  TOOL_GET_RUN,
-  TOOL_CANCEL_RUN,
   TOOL_LIST_CONNECTIONS,
   TOOL_QUERY_CONNECTION_USAGE,
   _resetMultiqltiMcpServer,
@@ -93,14 +84,6 @@ function makeCtx(overrides: Partial<McpCallContext> = {}): McpCallContext {
     tokenId: "tok-1",
     scope: makeScope(),
     ...overrides,
-  };
-}
-
-/** Build a minimal mock PipelineController. */
-function makeMockController() {
-  return {
-    startRun: vi.fn(),
-    cancelRun: vi.fn(),
   };
 }
 
@@ -255,18 +238,21 @@ describe("checkToolAccess()", () => {
   });
 
   it("allows a named tool in the list", () => {
-    const scope = makeScope({ allowedTools: ["list_workspaces", "get_run"] });
+    const scope = makeScope({ allowedTools: ["list_workspaces", "list_connections"] });
     expect(checkToolAccess(scope, "list_workspaces")).toBe(true);
-    expect(checkToolAccess(scope, "get_run")).toBe(true);
+    expect(checkToolAccess(scope, "list_connections")).toBe(true);
   });
 
   it("blocks a tool not in the list", () => {
     const scope = makeScope({ allowedTools: ["list_workspaces"] });
-    expect(checkToolAccess(scope, "run_pipeline")).toBe(false);
+    expect(checkToolAccess(scope, "query_connection_usage")).toBe(false);
   });
 });
 
 // ─── 3. Concurrency limiting ──────────────────────────────────────────────────
+// (acquireRunSlot/releaseRunSlot are no longer called by any production tool
+// handler post-pipeline-removal, but the primitives themselves remain in
+// mcp-servers/multiqlti-self/auth.ts — kept exercised here.)
 
 describe("acquireRunSlot / releaseRunSlot", () => {
   beforeEach(() => _resetConcurrency());
@@ -307,12 +293,8 @@ describe("acquireRunSlot / releaseRunSlot", () => {
 
 function makeServer() {
   const storage = new MemStorage();
-  const controller = makeMockController();
-  const server = new MultiqltiMcpServer(
-    storage as IStorage,
-    controller as unknown as import("../../server/controller/pipeline-controller").PipelineController,
-  );
-  return { storage, controller, server };
+  const server = new MultiqltiMcpServer(storage as IStorage);
+  return { storage, server };
 }
 
 // ─── 4. list_workspaces ───────────────────────────────────────────────────────
@@ -351,249 +333,12 @@ describe("MultiqltiMcpServer.callTool — list_workspaces", () => {
 
   it("throws McpScopeError when tool is not in allow-list", async () => {
     const { server } = makeServer();
-    const ctx = makeCtx({ scope: makeScope({ allowedTools: ["get_run"] }) });
+    const ctx = makeCtx({ scope: makeScope({ allowedTools: ["list_connections"] }) });
     await expect(server.callTool(TOOL_LIST_WORKSPACES, {}, ctx)).rejects.toThrow(McpScopeError);
   });
 });
 
-// ─── 5. list_pipelines ────────────────────────────────────────────────────────
-
-describe("MultiqltiMcpServer.callTool — list_pipelines", () => {
-  beforeEach(() => _resetConcurrency());
-
-  it("returns pipelines for an allowed workspace", async () => {
-    const { storage, server } = makeServer();
-    const ws = await storage.createWorkspace({ name: "WS", type: "local", path: "/w", branch: "main", status: "active", indexStatus: "idle" });
-    await storage.createPipeline({ name: "Pipeline A", stages: [], isTemplate: false });
-    await storage.createPipeline({ name: "Template", stages: [], isTemplate: true });
-
-    const ctx = makeCtx({ scope: makeScope({ workspaceIds: [ws.id] }) });
-    const result = await server.callTool(TOOL_LIST_PIPELINES, { workspace_id: ws.id }, ctx) as Array<{ name: string; isTemplate: boolean }>;
-
-    // Should exclude template
-    expect(result.every((p) => !p.isTemplate)).toBe(true);
-    expect(result.some((p) => p.name === "Pipeline A")).toBe(true);
-  });
-
-  it("throws McpScopeError for workspace not in token scope", async () => {
-    const { storage, server } = makeServer();
-    const ws = await storage.createWorkspace({ name: "W", type: "local", path: "/", branch: "main", status: "active", indexStatus: "idle" });
-    const ctx = makeCtx({ scope: makeScope({ workspaceIds: ["other-ws"] }) });
-
-    await expect(
-      server.callTool(TOOL_LIST_PIPELINES, { workspace_id: ws.id }, ctx),
-    ).rejects.toThrow(McpScopeError);
-  });
-
-  it("throws Error when workspace_id arg is missing", async () => {
-    const { server } = makeServer();
-    await expect(
-      server.callTool(TOOL_LIST_PIPELINES, {}, makeCtx()),
-    ).rejects.toThrow(/workspace_id/);
-  });
-});
-
-// ─── 6. run_pipeline ─────────────────────────────────────────────────────────
-
-describe("MultiqltiMcpServer.callTool — run_pipeline", () => {
-  beforeEach(() => _resetConcurrency());
-
-  it("returns run_id and pending status on success", async () => {
-    const { storage, controller, server } = makeServer();
-    const pipeline = await storage.createPipeline({ name: "P", stages: [], isTemplate: false });
-
-    const mockRun = {
-      id: "run-abc",
-      pipelineId: pipeline.id,
-      status: "running",
-      input: "hello",
-      startedAt: new Date(),
-      output: null,
-      currentStageIndex: 0,
-      completedAt: null,
-      triggeredBy: null,
-      dagMode: false,
-      createdAt: new Date(),
-    };
-    controller.startRun.mockResolvedValue(mockRun);
-
-    // Add to storage so get_run can find it
-    await storage.createPipelineRun({
-      pipelineId: pipeline.id,
-      input: "hello",
-      status: "running",
-      currentStageIndex: 0,
-      startedAt: new Date(),
-      dagMode: false,
-      triggeredBy: null,
-    });
-
-    const ctx = makeCtx();
-    const result = await server.callTool(
-      TOOL_RUN_PIPELINE,
-      { pipeline_id: pipeline.id, input: "hello" },
-      ctx,
-    ) as { runId: string; status: string };
-
-    expect(controller.startRun).toHaveBeenCalledOnce();
-    expect(result.runId).toBe(mockRun.id);
-  });
-
-  it("throws McpConcurrencyError when at capacity", async () => {
-    const { storage, controller, server } = makeServer();
-    const pipeline = await storage.createPipeline({ name: "P2", stages: [], isTemplate: false });
-    controller.startRun.mockResolvedValue({ id: "run-x", status: "running", startedAt: new Date() });
-
-    const ctx = makeCtx({ scope: makeScope({ maxRunConcurrency: 1 }) });
-
-    // Acquire the single slot manually
-    acquireRunSlot(ctx.tokenId, 1);
-
-    await expect(
-      server.callTool(TOOL_RUN_PIPELINE, { pipeline_id: pipeline.id, input: "go" }, ctx),
-    ).rejects.toThrow(McpConcurrencyError);
-  });
-
-  it("releases slot if startRun throws", async () => {
-    const { storage, controller, server } = makeServer();
-    const pipeline = await storage.createPipeline({ name: "P3", stages: [], isTemplate: false });
-    controller.startRun.mockRejectedValue(new Error("controller error"));
-
-    const ctx = makeCtx({ tokenId: "tok-err", scope: makeScope({ maxRunConcurrency: 2 }) });
-
-    try {
-      await server.callTool(
-        TOOL_RUN_PIPELINE,
-        { pipeline_id: pipeline.id, input: "go" },
-        ctx,
-      );
-    } catch {
-      // expected
-    }
-
-    // Slot should have been released
-    expect(getActiveRunCount("tok-err")).toBe(0);
-  });
-});
-
-// ─── 7. get_run ───────────────────────────────────────────────────────────────
-
-describe("MultiqltiMcpServer.callTool — get_run", () => {
-  beforeEach(() => _resetConcurrency());
-
-  it("returns run details with stage list", async () => {
-    const { storage, server } = makeServer();
-    const pipeline = await storage.createPipeline({ name: "P", stages: [], isTemplate: false });
-    const run = await storage.createPipelineRun({
-      pipelineId: pipeline.id,
-      input: "hello",
-      status: "running",
-      currentStageIndex: 0,
-      startedAt: new Date(),
-      dagMode: false,
-      triggeredBy: null,
-    });
-
-    const result = await server.callTool(TOOL_GET_RUN, { run_id: run.id }, makeCtx()) as {
-      id: string;
-      status: string;
-      stages: unknown[];
-    };
-
-    expect(result.id).toBe(run.id);
-    expect(result.status).toBe("running");
-    expect(Array.isArray(result.stages)).toBe(true);
-  });
-
-  it("throws Error for unknown run_id", async () => {
-    const { server } = makeServer();
-    await expect(
-      server.callTool(TOOL_GET_RUN, { run_id: "no-such-run" }, makeCtx()),
-    ).rejects.toThrow(/Run not found/);
-  });
-
-  it("throws Error when run_id arg is missing", async () => {
-    const { server } = makeServer();
-    await expect(server.callTool(TOOL_GET_RUN, {}, makeCtx())).rejects.toThrow(/run_id/);
-  });
-});
-
-// ─── 8. cancel_run ───────────────────────────────────────────────────────────
-
-describe("MultiqltiMcpServer.callTool — cancel_run", () => {
-  beforeEach(() => _resetConcurrency());
-
-  it("cancels a running run", async () => {
-    const { storage, controller, server } = makeServer();
-    const pipeline = await storage.createPipeline({ name: "P", stages: [], isTemplate: false });
-    const run = await storage.createPipelineRun({
-      pipelineId: pipeline.id,
-      input: "go",
-      status: "running",
-      currentStageIndex: 0,
-      startedAt: new Date(),
-      dagMode: false,
-      triggeredBy: null,
-    });
-    controller.cancelRun.mockResolvedValue(undefined);
-
-    const result = await server.callTool(TOOL_CANCEL_RUN, { run_id: run.id }, makeCtx()) as {
-      runId: string;
-      cancelled: boolean;
-    };
-
-    expect(result.cancelled).toBe(true);
-    expect(controller.cancelRun).toHaveBeenCalledWith(run.id);
-  });
-
-  it("returns cancelled: false for already completed run", async () => {
-    const { storage, controller, server } = makeServer();
-    const pipeline = await storage.createPipeline({ name: "P", stages: [], isTemplate: false });
-    const run = await storage.createPipelineRun({
-      pipelineId: pipeline.id,
-      input: "go",
-      status: "completed",
-      currentStageIndex: 0,
-      startedAt: new Date(),
-      dagMode: false,
-      triggeredBy: null,
-    });
-
-    const result = await server.callTool(TOOL_CANCEL_RUN, { run_id: run.id }, makeCtx()) as {
-      cancelled: boolean;
-    };
-
-    expect(result.cancelled).toBe(false);
-    expect(controller.cancelRun).not.toHaveBeenCalled();
-  });
-
-  it("returns cancelled: false for failed run", async () => {
-    const { storage, controller, server } = makeServer();
-    const pipeline = await storage.createPipeline({ name: "P", stages: [], isTemplate: false });
-    const run = await storage.createPipelineRun({
-      pipelineId: pipeline.id,
-      input: "go",
-      status: "failed",
-      currentStageIndex: 0,
-      startedAt: new Date(),
-      dagMode: false,
-      triggeredBy: null,
-    });
-    const result = await server.callTool(TOOL_CANCEL_RUN, { run_id: run.id }, makeCtx()) as {
-      cancelled: boolean;
-    };
-    expect(result.cancelled).toBe(false);
-  });
-
-  it("throws Error for unknown run_id", async () => {
-    const { server } = makeServer();
-    await expect(
-      server.callTool(TOOL_CANCEL_RUN, { run_id: "no-such" }, makeCtx()),
-    ).rejects.toThrow(/Run not found/);
-  });
-});
-
-// ─── 9. list_connections — no secrets ────────────────────────────────────────
+// ─── 5. list_connections — no secrets ────────────────────────────────────────
 
 describe("MultiqltiMcpServer.callTool — list_connections", () => {
   beforeEach(() => _resetConcurrency());
@@ -664,7 +409,7 @@ describe("MultiqltiMcpServer.callTool — list_connections", () => {
   });
 });
 
-// ─── 10. query_connection_usage ───────────────────────────────────────────────
+// ─── 6. query_connection_usage ───────────────────────────────────────────────
 
 describe("MultiqltiMcpServer.callTool — query_connection_usage", () => {
   beforeEach(() => _resetConcurrency());
@@ -715,7 +460,7 @@ describe("MultiqltiMcpServer.callTool — query_connection_usage", () => {
   });
 });
 
-// ─── 11. Audit log ────────────────────────────────────────────────────────────
+// ─── 7. Audit log ─────────────────────────────────────────────────────────────
 
 describe("Audit log per tool call", () => {
   beforeEach(() => _resetConcurrency());
@@ -741,14 +486,14 @@ describe("Audit log per tool call", () => {
     const ctx = makeCtx();
 
     try {
-      await server.callTool(TOOL_GET_RUN, { run_id: "missing" }, ctx);
+      await server.callTool(TOOL_QUERY_CONNECTION_USAGE, { connection_id: "missing" }, ctx);
     } catch {
       // expected
     }
 
     expect(spy).toHaveBeenCalledOnce();
     const call = spy.mock.calls[0][1];
-    expect(call.error).toMatch(/Run not found/);
+    expect(call.error).toMatch(/Connection not found/);
     spy.mockRestore();
   });
 
@@ -770,7 +515,7 @@ describe("Audit log per tool call", () => {
   });
 });
 
-// ─── 12. JSON-RPC protocol ────────────────────────────────────────────────────
+// ─── 8. JSON-RPC protocol ─────────────────────────────────────────────────────
 
 describe("handleMcpRequest()", () => {
   beforeEach(() => _resetConcurrency());
@@ -818,7 +563,7 @@ describe("handleMcpRequest()", () => {
 
   it("tools/call with scope violation returns -32001 error", async () => {
     const { server } = makeServer();
-    const ctx = makeCtx({ scope: makeScope({ allowedTools: ["get_run"] }) });
+    const ctx = makeCtx({ scope: makeScope({ allowedTools: ["list_connections"] }) });
     const resp = await handleMcpRequest(
       {
         jsonrpc: "2.0",
@@ -869,7 +614,7 @@ describe("handleMcpRequest()", () => {
   });
 });
 
-// ─── 13. stdio transport ─────────────────────────────────────────────────────
+// ─── 9. stdio transport ───────────────────────────────────────────────────────
 
 describe("processStdioLines()", () => {
   beforeEach(() => _resetConcurrency());
@@ -942,7 +687,7 @@ describe("processStdioLines()", () => {
   });
 });
 
-// ─── 14. streamable-http transport ───────────────────────────────────────────
+// ─── 10. streamable-http transport ────────────────────────────────────────────
 
 describe("streamable-http transport (POST /mcp)", () => {
   let app: express.Express;
@@ -960,12 +705,11 @@ describe("streamable-http transport (POST /mcp)", () => {
     app = express();
     app.use(express.json());
 
-    const mockController = makeMockController();
     const router = Router();
 
     // Swap in our test store by patching the singleton (via module-level mock)
     // We build the app fresh each time so the MCP server uses testStorage.
-    registerMcpRoutes(router, testStorage as IStorage, mockController as unknown as import("../../server/controller/pipeline-controller").PipelineController);
+    registerMcpRoutes(router, testStorage as IStorage);
     app.use(router);
   });
 
@@ -1011,7 +755,7 @@ describe("streamable-http transport (POST /mcp)", () => {
   });
 });
 
-// ─── 15. Token management HTTP endpoints ─────────────────────────────────────
+// ─── 11. Token management HTTP endpoints ─────────────────────────────────────
 
 describe("Token management endpoints", () => {
   let app: express.Express;
@@ -1038,13 +782,8 @@ describe("Token management endpoints", () => {
     });
 
     const storage = new MemStorage();
-    const mockController = makeMockController();
     const router = Router();
-    registerMcpRoutes(
-      router,
-      storage as IStorage,
-      mockController as unknown as import("../../server/controller/pipeline-controller").PipelineController,
-    );
+    registerMcpRoutes(router, storage as IStorage);
     app.use(router);
   });
 
@@ -1118,11 +857,11 @@ describe("Token management endpoints", () => {
   });
 });
 
-// ─── 16. MCP_TOOL_DEFINITIONS completeness ────────────────────────────────────
+// ─── 12. MCP_TOOL_DEFINITIONS completeness ───────────────────────────────────
 
 describe("MCP_TOOL_DEFINITIONS", () => {
-  it("contains exactly 7 tools", () => {
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(7);
+  it("contains exactly 3 tools", () => {
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(3);
   });
 
   it("every ALL_TOOLS entry has a definition", () => {

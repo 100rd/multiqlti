@@ -37,7 +37,6 @@ import type { FederationMessage, PeerInfo } from "./types.js";
 import type { ConfigEventOperation } from "@shared/schema";
 import type { TriggerType, TriggerConfig } from "@shared/types";
 import type { IStorage } from "../storage.js";
-import { runAsSystem } from "../context.js";
 import type { PeerQueueService, SendEventFn } from "./peer-queue.js";
 import type { ConflictDetector } from "./config-conflict.js";
 
@@ -59,7 +58,7 @@ const HEARTBEAT_MSG_TYPE = "peer:heartbeat";
 
 /** Payload transmitted in each `config:event` federation message. */
 export interface ConfigEventPayload {
-  /** Entity kind — mirrors `entity_kind` column (e.g. "pipeline", "trigger"). */
+  /** Entity kind — mirrors `entity_kind` column (e.g. "trigger", "skill"). */
   entityKind: string;
   /** Stable entity identifier (usually the entity's primary key). */
   entityId: string;
@@ -174,10 +173,6 @@ export async function defaultApplyOne(
   storage: IStorage,
 ): Promise<void> {
   switch (entityKind) {
-    case "pipeline":
-      await applyPipelineEvent(entityId, operation, payload, storage);
-      break;
-
     case "trigger":
       await applyTriggerEvent(entityId, operation, payload, storage);
       break;
@@ -485,52 +480,6 @@ export class ConfigSyncService {
 
 // ─── Per-entity apply helpers ─────────────────────────────────────────────────
 
-async function applyPipelineEvent(
-  _entityId: string,
-  operation: ConfigEventOperation,
-  payload: Record<string, unknown>,
-  storage: IStorage,
-): Promise<void> {
-  if (operation === "delete") {
-    return;
-  }
-
-  const name = typeof payload["name"] === "string" ? payload["name"] : null;
-  if (!name) return;
-
-  // Federation peer sync is cross-project system work: read all pipelines under
-  // an audited system context. (The create/update writes below are unchanged.)
-  const pipelines = await runAsSystem("federation-apply-pipeline-event", () =>
-    storage.getPipelines(),
-  );
-  const existing = pipelines.find((p) => p.name === name);
-
-  if (operation === "create" || (!existing && operation === "update")) {
-    await storage.createPipeline({
-      name,
-      description: typeof payload["description"] === "string" ? payload["description"] : null,
-      stages: Array.isArray(payload["stages"])
-        ? (payload["stages"] as import("@shared/schema").InsertPipeline["stages"])
-        : [],
-      dag: (payload["dag"] as import("@shared/schema").InsertPipeline["dag"]) ?? null,
-      isTemplate: typeof payload["isTemplate"] === "boolean" ? payload["isTemplate"] : false,
-    });
-    return;
-  }
-
-  if (operation === "update" && existing) {
-    await storage.updatePipeline(existing.id, {
-      name,
-      description: typeof payload["description"] === "string" ? payload["description"] : null,
-      stages: Array.isArray(payload["stages"])
-        ? (payload["stages"] as import("@shared/schema").InsertPipeline["stages"])
-        : existing.stages as import("@shared/schema").InsertPipeline["stages"],
-      dag: (payload["dag"] as import("@shared/schema").InsertPipeline["dag"]) ?? null,
-      isTemplate: typeof payload["isTemplate"] === "boolean" ? payload["isTemplate"] : existing.isTemplate,
-    });
-  }
-}
-
 async function applyTriggerEvent(
   _entityId: string,
   operation: ConfigEventOperation,
@@ -538,9 +487,6 @@ async function applyTriggerEvent(
   storage: IStorage,
 ): Promise<void> {
   if (operation === "delete") return;
-
-  const pipelineId = typeof payload["pipelineId"] === "string" ? payload["pipelineId"] : null;
-  if (!pipelineId) return;
 
   const triggerId = typeof payload["id"] === "string" ? payload["id"] : null;
 
@@ -551,7 +497,6 @@ async function applyTriggerEvent(
         ? (triggerConfig as Record<string, unknown>)["type"] as TriggerType
         : "webhook";
     await storage.createTrigger({
-      pipelineId,
       type: triggerType,
       enabled: typeof payload["enabled"] === "boolean" ? payload["enabled"] : true,
       config: triggerConfig,
@@ -617,8 +562,8 @@ async function applySkillEvent(
  * Example:
  * ```ts
  * const enqueue = makeEnqueuer(configSyncService);
- * // inside storage.createPipeline():
- * await enqueue("pipeline", newPipeline.id, "create", { ...newPipeline });
+ * // inside storage.createTrigger():
+ * await enqueue("trigger", newTrigger.id, "create", { ...newTrigger });
  * ```
  */
 export function makeEnqueuer(

@@ -1,5 +1,5 @@
 /**
- * Federation Routes -- issues #224 + #225 + #226 + #233 + #230
+ * Federation Routes -- issues #224 + #226 + #230
  *
  * Session Sharing (issue #224):
  *   POST   /api/federation/sessions/share      -- share a run
@@ -9,32 +9,10 @@
  *   POST   /api/federation/sessions/subscribe   -- subscribe to remote session
  *   GET    /api/federation/peers                -- list federation peers
  *
- * Memory Federation (issue #225):
- *   GET    /api/federation/memories/search      -- federated memory search
- *   PATCH  /api/memories/:id/publish            -- toggle published flag
- *
- * Pipeline Sync (issue #225):
- *   POST   /api/federation/pipelines/:id/export -- export pipeline as JSON
- *   POST   /api/federation/pipelines/import     -- import from JSON
- *   POST   /api/federation/pipelines/:id/offer  -- broadcast to peers
- *   GET    /api/federation/pipelines/offers      -- list received offers
- *   POST   /api/federation/pipelines/offers/:offerId/accept -- accept offer
- *
- * Async Handoff + Presence (issue #226):
- *   POST   /api/federation/sessions/:id/handoff   -- send handoff to peer
- *   POST   /api/federation/sessions/handoff/accept -- accept incoming handoff
- *   GET    /api/federation/sessions/handoffs       -- list pending handoffs
+ * Presence (issue #226):
  *   GET    /api/federation/sessions/:id/presence   -- get session presence
  *   POST   /api/federation/sessions/:id/presence   -- record presence heartbeat
  *
- * Cross-Instance Delegation (issue #233):
- *   POST   /api/federation/delegation/request     -- delegate a stage to peer
- *   GET    /api/federation/delegation/active       -- list active delegations
- *   GET    /api/federation/delegation/:id          -- get delegation status
- *   DELETE /api/federation/delegation/:id          -- cancel delegation
- *   GET    /api/federation/delegation/policy       -- get delegation policy
- *
-
  * CRDT P2P Collaboration (issue #230):
  *   GET    /api/sessions/:id/crdt-state       -- current CRDT document state
  *   POST   /api/sessions/:id/crdt-merge       -- receive remote CRDT state and merge
@@ -47,11 +25,7 @@
 import type { Router, Request, Response } from "express";
 import { z } from "zod";
 import type { SessionSharingService } from "../federation/session-sharing";
-import type { MemoryFederationService, FederatedMemoryResult } from "../federation/memory-federation";
-import type { PipelineSyncService } from "../federation/pipeline-sync";
 import type { FederationManager } from "../federation/index";
-import type { CrossInstanceDelegationService } from "../federation/delegation";
-import type { IStorage } from "../storage";
 import type { ConflictResolutionService } from "../federation/conflict-resolution";
 import type { CRDTPeerSyncService } from "../federation/crdt/peer-sync";
 
@@ -64,50 +38,6 @@ const ShareRunSchema = z.object({
 
 const SubscribeSchema = z.object({
   shareToken: z.string().min(1),
-});
-
-const MemorySearchSchema = z.object({
-  q: z.string().min(1).max(1000),
-  timeout: z.coerce.number().int().min(100).max(30000).optional(),
-});
-
-const PublishToggleSchema = z.object({
-  published: z.boolean(),
-});
-
-const PipelineImportSchema = z.object({
-  name: z.string().min(1).max(255),
-  description: z.string().max(2000).nullable(),
-  stages: z.array(z.unknown()).min(1),
-  exportedFrom: z.string().min(1),
-  exportedAt: z.string().min(1),
-});
-
-const HandoffSchema = z.object({
-  targetPeerId: z.string().min(1),
-  notes: z.string().min(1).max(2000),
-});
-
-const HandoffAcceptSchema = z.object({
-  bundleToken: z.string().min(1),
-});
-
-const DelegationRequestSchema = z.object({
-  runId: z.string().min(1),
-  stageIndex: z.number().int().min(0),
-  targetPeerId: z.string().min(1),
-  stage: z.object({
-    teamId: z.string().min(1),
-    modelSlug: z.string().min(1),
-    enabled: z.boolean(),
-    systemPromptOverride: z.string().optional(),
-    temperature: z.number().optional(),
-    maxTokens: z.number().optional(),
-    approvalRequired: z.boolean().optional(),
-  }).passthrough(),
-  input: z.string(),
-  variables: z.record(z.string()).default({}),
-  timeoutMs: z.number().int().positive().optional(),
 });
 
 const VALID_STRATEGIES = [
@@ -156,17 +86,15 @@ const UpdateExperimentBranchSchema = z.object({
 
 // ─── Route registration ───────────────────────────────────────────────────────
 
-export function registerFederationRoutes(
-  app: Router,
-  sessionSharing: SessionSharingService | null,
-  federationManager: FederationManager | null,
-  memoryFederation?: MemoryFederationService | null,
-  pipelineSync?: PipelineSyncService | null,
-  storage?: IStorage | null,
-  crossDelegation?: CrossInstanceDelegationService | null,
-  conflictResolution?: ConflictResolutionService | null,
-  crdtPeerSync?: CRDTPeerSyncService | null,
-): void {
+export function registerFederationRoutes(opts: {
+  app: Router;
+  sessionSharing: SessionSharingService | null;
+  federationManager: FederationManager | null;
+  conflictResolution?: ConflictResolutionService | null;
+  crdtPeerSync?: CRDTPeerSyncService | null;
+}): void {
+  const { app, sessionSharing, federationManager, conflictResolution, crdtPeerSync } = opts;
+  void crdtPeerSync; // reserved: registerCRDTRoutes is registered separately by the caller
   const federationDisabledResponse = (res: Response) =>
     res.status(503).json({
       error: "Federation is not enabled on this instance",
@@ -195,13 +123,6 @@ export function registerFederationRoutes(
     } catch (err) {
       return res.status(500).json({ error: (err as Error).message });
     }
-  });
-
-  // GET /api/federation/sessions/handoffs -- list pending incoming handoffs (issue #226)
-  // NOTE: this must come before the :id wildcard route
-  app.get("/api/federation/sessions/handoffs", (_req: Request, res: Response) => {
-    if (!sessionSharing) return federationDisabledResponse(res);
-    return res.json(sessionSharing.getPendingHandoffs());
   });
 
   // GET /api/federation/sessions -- list active sessions
@@ -266,46 +187,6 @@ export function registerFederationRoutes(
     }
   });
 
-  // ─── Async Handoff (issue #226) ────────────────────────────────────────────
-
-  // POST /api/federation/sessions/:id/handoff -- send handoff to peer
-  app.post("/api/federation/sessions/:id/handoff", async (req: Request, res: Response) => {
-    if (!sessionSharing) return federationDisabledResponse(res);
-
-    const parsed = HandoffSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid request", issues: parsed.error.flatten() });
-    }
-
-    try {
-      const bundleToken = await sessionSharing.sendHandoff(
-        String(req.params.id),
-        parsed.data.targetPeerId,
-        parsed.data.notes,
-      );
-      return res.status(200).json({ bundleToken });
-    } catch (err) {
-      return res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  // POST /api/federation/sessions/handoff/accept -- accept incoming handoff
-  app.post("/api/federation/sessions/handoff/accept", async (req: Request, res: Response) => {
-    if (!sessionSharing) return federationDisabledResponse(res);
-
-    const parsed = HandoffAcceptSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid request", issues: parsed.error.flatten() });
-    }
-
-    try {
-      const result = await sessionSharing.acceptHandoff(parsed.data.bundleToken);
-      return res.status(201).json(result);
-    } catch (err) {
-      return res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
   // POST /api/federation/sessions/:id/presence -- record presence heartbeat
   app.post("/api/federation/sessions/:id/presence", (req: Request, res: Response) => {
     if (!sessionSharing) return federationDisabledResponse(res);
@@ -325,221 +206,6 @@ export function registerFederationRoutes(
 
     const peers = federationManager.getPeers();
     return res.json(peers);
-  });
-
-  // ─── Memory Federation (issue #225) ───────────────────────────────────────
-
-  // GET /api/federation/memories/search -- federated memory search
-  app.get("/api/federation/memories/search", async (req: Request, res: Response) => {
-    if (!memoryFederation || !storage) return federationDisabledResponse(res);
-
-    const parsed = MemorySearchSchema.safeParse(req.query);
-    if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid query parameters", issues: parsed.error.flatten() });
-    }
-
-    try {
-      const localMatches = await storage.searchMemories(parsed.data.q);
-      const publishedLocal = localMatches.filter((m) => m.published);
-      const localResults: FederatedMemoryResult[] = publishedLocal.map((m) => ({
-        id: String(m.id),
-        content: m.content,
-        tags: (m.tags ?? []) as string[],
-        sourceInstance: "local",
-        sourceInstanceName: "local",
-        relevance: m.confidence,
-      }));
-
-      const result = await memoryFederation.federatedSearch(
-        parsed.data.q,
-        localResults,
-        parsed.data.timeout,
-      );
-
-      return res.json(result);
-    } catch (err) {
-      return res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  // PATCH /api/memories/:id/publish -- toggle published flag (admin/maintainer only)
-  app.patch("/api/memories/:id/publish", async (req: Request, res: Response) => {
-    if (!storage) {
-      return res.status(503).json({ error: "Storage not available" });
-    }
-
-    const user = (req as unknown as { user?: { id?: string; role?: string } }).user;
-    if (!user || (user.role !== "admin" && user.role !== "maintainer")) {
-      return res.status(403).json({ error: "Only admin or maintainer can publish memories" });
-    }
-
-    const memoryId = Number(req.params.id);
-    if (!Number.isFinite(memoryId) || memoryId < 1) {
-      return res.status(400).json({ error: "Invalid memory ID" });
-    }
-
-    const parsed = PublishToggleSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid request body", issues: parsed.error.flatten() });
-    }
-
-    try {
-      const updated = await storage.updateMemoryPublished(memoryId, parsed.data.published);
-      if (!updated) {
-        return res.status(404).json({ error: "Memory not found" });
-      }
-      return res.json(updated);
-    } catch (err) {
-      return res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  // ─── Pipeline Sync (issue #225) ───────────────────────────────────────────
-
-  // POST /api/federation/pipelines/:id/export -- export pipeline as JSON
-  app.post("/api/federation/pipelines/:id/export", async (req: Request, res: Response) => {
-    if (!pipelineSync) return federationDisabledResponse(res);
-
-    try {
-      const exported = await pipelineSync.exportPipeline(String(req.params.id));
-      return res.json(exported);
-    } catch (err) {
-      const message = (err as Error).message;
-      if (message === "Pipeline not found") {
-        return res.status(404).json({ error: message });
-      }
-      return res.status(500).json({ error: message });
-    }
-  });
-
-  // POST /api/federation/pipelines/import -- import from JSON
-  app.post("/api/federation/pipelines/import", async (req: Request, res: Response) => {
-    if (!pipelineSync) return federationDisabledResponse(res);
-
-    const parsed = PipelineImportSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid pipeline data", issues: parsed.error.flatten() });
-    }
-
-    try {
-      const newId = await pipelineSync.importPipeline(parsed.data);
-      return res.status(201).json({ id: newId });
-    } catch (err) {
-      return res.status(500).json({ error: (err as Error).message });
-    }
-  });
-
-  // POST /api/federation/pipelines/:id/offer -- broadcast to peers
-  app.post("/api/federation/pipelines/:id/offer", async (req: Request, res: Response) => {
-    if (!pipelineSync) return federationDisabledResponse(res);
-
-    try {
-      const exported = await pipelineSync.exportPipeline(String(req.params.id));
-      pipelineSync.offerPipeline(exported);
-      return res.json({ offered: true, pipeline: exported });
-    } catch (err) {
-      const message = (err as Error).message;
-      if (message === "Pipeline not found") {
-        return res.status(404).json({ error: message });
-      }
-      return res.status(500).json({ error: message });
-    }
-  });
-
-  // GET /api/federation/pipelines/offers -- list received offers
-  app.get("/api/federation/pipelines/offers", (_req: Request, res: Response) => {
-    if (!pipelineSync) return federationDisabledResponse(res);
-
-    const offers = pipelineSync.getReceivedOffers();
-    return res.json(offers);
-  });
-
-  // POST /api/federation/pipelines/offers/:offerId/accept -- accept offer
-  app.post("/api/federation/pipelines/offers/:offerId/accept", async (req: Request, res: Response) => {
-    if (!pipelineSync) return federationDisabledResponse(res);
-
-    try {
-      const newId = await pipelineSync.acceptOffer(String(req.params.offerId));
-      return res.status(201).json({ id: newId });
-    } catch (err) {
-      const message = (err as Error).message;
-      if (message === "Offer not found or expired") {
-        return res.status(404).json({ error: message });
-      }
-      return res.status(500).json({ error: message });
-    }
-  });
-
-  // ─── Cross-Instance Delegation (issue #233) ───────────────────────────────
-
-  // POST /api/federation/delegation/request -- delegate a stage to a peer
-  app.post("/api/federation/delegation/request", async (req: Request, res: Response) => {
-    if (!crossDelegation) return federationDisabledResponse(res);
-
-    const parsed = DelegationRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid request", issues: parsed.error.flatten() });
-    }
-
-    try {
-      const { runId, stageIndex, targetPeerId, stage, input, variables, timeoutMs } = parsed.data;
-      const result = await crossDelegation.delegateAndWait(
-        runId,
-        stageIndex,
-        targetPeerId,
-        stage as import("@shared/types").PipelineStageConfig,
-        input,
-        variables,
-        timeoutMs,
-      );
-      return res.status(200).json(result);
-    } catch (err) {
-      const message = (err as Error).message;
-      if (message.startsWith("Delegation denied:")) {
-        return res.status(403).json({ error: message });
-      }
-      if (message.includes("max concurrent limit")) {
-        return res.status(429).json({ error: message });
-      }
-      return res.status(500).json({ error: message });
-    }
-  });
-
-  // GET /api/federation/delegation/active -- list active delegations
-  app.get("/api/federation/delegation/active", (_req: Request, res: Response) => {
-    if (!crossDelegation) return federationDisabledResponse(res);
-    return res.json(crossDelegation.getActiveDelegations());
-  });
-
-  // GET /api/federation/delegation/policy -- get delegation policy
-  app.get("/api/federation/delegation/policy", (_req: Request, res: Response) => {
-    if (!crossDelegation) return federationDisabledResponse(res);
-    return res.json(crossDelegation.getPolicy());
-  });
-
-  // GET /api/federation/delegation/:id -- get delegation status
-  app.get("/api/federation/delegation/:id", (_req: Request, res: Response) => {
-    if (!crossDelegation) return federationDisabledResponse(res);
-
-    const delegationId = String(_req.params.id);
-    const active = crossDelegation.getActiveDelegations();
-    const found = active.find((d) => d.delegationId === delegationId);
-    if (!found) {
-      return res.status(404).json({ error: "Delegation not found or already completed" });
-    }
-    return res.json(found);
-  });
-
-  // DELETE /api/federation/delegation/:id -- cancel delegation
-  app.delete("/api/federation/delegation/:id", (_req: Request, res: Response) => {
-    if (!crossDelegation) return federationDisabledResponse(res);
-
-    const delegationId = String(_req.params.id);
-    const cancelled = crossDelegation.cancelDelegation(delegationId);
-    if (!cancelled) {
-      return res.status(404).json({ error: "Delegation not found or already completed" });
-    }
-    return res.status(200).json({ cancelled: true, delegationId });
   });
 
   // ─── Conflict Resolution (issue #229) ────────────────────────────────────────

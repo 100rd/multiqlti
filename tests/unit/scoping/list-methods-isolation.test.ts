@@ -11,9 +11,11 @@
  * `.toSQL()` (pure serialisation — no connection). The presence of the
  * project_id column reference + the bound projectId param in the generated SQL
  * is the structural proof that project A's query cannot match project B's rows.
- * For the two tables that have NO project_id column (traces, consilium_loops),
- * we prove the SCOPED SUB-QUERY (through pipeline_runs / task_groups) carries
- * the filter.
+ * consilium_loops has NO project_id column of its own; we prove the SCOPED
+ * SUB-QUERY (through task_groups) carries the filter. traces is NOT covered
+ * here — its own sub-query scoping (through pipeline_runs) was retired
+ * alongside the pipelines engine; getTraces()/getTraceByRunId() now return
+ * empty unconditionally rather than reconstruct scoping (see storage-pg.ts).
  *
  * Mirrors the harness in db-layer-isolation.test.ts.
  */
@@ -45,12 +47,9 @@ import { db, withProject, withProjectList, withProjectOrGlobal } from "../../../
 import { runAsProject, runAsSystem } from "../../../server/context.js";
 import {
   models,
-  pipelines,
-  pipelineRuns,
   skills,
   taskGroups,
   consiliumLoops,
-  traces,
   llmRequests,
   mcpServers,
   specializationProfiles,
@@ -72,8 +71,6 @@ const OTHER = "proj-iso-B";
 describe("Scoped list methods embed the current project_id filter", () => {
   // table, the column-qualified regex we expect in the generated SQL
   const cases: Array<[string, any, RegExp]> = [
-    ["getPipelines -> pipelines", pipelines, /"pipelines"\."project_id"/],
-    ["getPipelineRuns -> pipeline_runs", pipelineRuns, /"pipeline_runs"\."project_id"/],
     ["getSkills -> skills", skills, /"skills"\."project_id"/],
     ["getTaskGroups -> task_groups", taskGroups, /"task_groups"\."project_id"/],
     ["getLlmStats* -> llm_requests", llmRequests, /"llm_requests"\."project_id"/],
@@ -101,46 +98,11 @@ describe("Scoped list methods embed the current project_id filter", () => {
       expect(qa.params).not.toContain(OTHER);
     });
   }
-
-  it("getPipelineRuns(pipelineId): both the run filter AND the project filter are present", async () => {
-    const q = await runAsProject(PROJ, async () =>
-      db
-        .select()
-        .from(pipelineRuns)
-        .where(withProject(pipelineRuns, eq(pipelineRuns.pipelineId, "pipe-7")))
-        .toSQL(),
-    );
-    expect(q.sql).toMatch(/"pipeline_runs"\."project_id"/);
-    expect(q.params).toContain(PROJ);
-    expect(q.params).toContain("pipe-7");
-  });
 });
 
 // ─── Group 2: subquery scoping for tables WITHOUT a project_id column ─────────
 
-describe("Subquery scoping: traces and consilium_loops scope through a project-scoped parent", () => {
-  it("getTraces: filters traces.run_id IN (project-scoped pipeline_runs)", async () => {
-    const q = await runAsProject(PROJ, async () =>
-      db
-        .select()
-        .from(traces)
-        .where(
-          inArray(
-            traces.runId,
-            db.select({ id: pipelineRuns.id }).from(pipelineRuns).where(withProject(pipelineRuns)),
-          ),
-        )
-        .orderBy(desc(traces.createdAt))
-        .toSQL(),
-    );
-    // The inner subquery must carry pipeline_runs.project_id + the project param.
-    expect(q.sql).toMatch(/"traces"\."run_id" in \(select/i);
-    expect(q.sql).toMatch(/"pipeline_runs"\."project_id"/);
-    expect(q.params).toContain(PROJ);
-    // traces itself has no project_id column — make sure we did NOT invent one.
-    expect(q.sql).not.toMatch(/"traces"\."project_id"/);
-  });
-
+describe("Subquery scoping: consilium_loops scopes through a project-scoped parent", () => {
   it("getLoops: filters consilium_loops.group_id IN (project-scoped task_groups)", async () => {
     const q = await runAsProject(PROJ, async () =>
       db
@@ -159,10 +121,6 @@ describe("Subquery scoping: traces and consilium_loops scope through a project-s
     expect(q.sql).toMatch(/"task_groups"\."project_id"/);
     expect(q.params).toContain(PROJ);
     expect(q.sql).not.toMatch(/"consilium_loops"\."project_id"/);
-  });
-
-  it("traces genuinely has NO project_id column (justifies the subquery scoping)", () => {
-    expect((traces as Record<string, unknown>).projectId).toBeUndefined();
   });
 
   it("consilium_loops now carries a project_id column (scoped on its own)", () => {

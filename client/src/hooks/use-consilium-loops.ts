@@ -2,7 +2,7 @@
  * use-consilium-loops.ts — react-query surface for the Consilium Loop (design §7,
  * HTTP routes in server/routes/consilium-loops.ts).
  *
- * Mirrors use-pipeline.ts: shared `apiRequest`, URL-keyed query keys, mutations
+ * Mirrors use-api.ts: shared `apiRequest`, URL-keyed query keys, mutations
  * that invalidate the relevant queries. Live state is observed with a LIGHT poll
  * (the loop FSM advances server-side via the background poller — there is no WS
  * channel for loops yet), gated off once the loop reaches a terminal state.
@@ -13,7 +13,7 @@
  * be rendered as INERT React text by the consuming components.
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/hooks/use-pipeline";
+import { apiRequest } from "@/hooks/use-api";
 import type {
   ConsiliumLoopState,
   ConsiliumLoopRow,

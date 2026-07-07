@@ -2,11 +2,10 @@ import crypto from "crypto";
 import type { FederationManager } from "./index.js";
 import type { FederationMessage, PeerInfo } from "./types.js";
 import type { IStorage } from "../storage.js";
-import type { SharedSession, HandoffBundle, PresenceEntry, ShareRole } from "@shared/types";
+import type { SharedSession, PresenceEntry, ShareRole } from "@shared/types";
 import { filterEvent } from "./permissions.js";
 
 const PRESENCE_TIMEOUT_MS = 10_000;
-const MAX_PENDING_HANDOFFS = 50;
 const MAX_REMOTE_OFFERS = 200;
 const MAX_PRESENCE_SESSIONS = 500;
 
@@ -23,8 +22,6 @@ const MAX_PRESENCE_SESSIONS = 500;
  *   session:unsubscribe  -- sent when a subscriber leaves
  *   session:event        -- forwarded WsEvent from owner to subscribers
  *   session:presence     -- heartbeat for active user tracking
- *   session:handoff      -- full context transfer to target peer
- *   session:handoff:accept -- target acknowledges handoff
  */
 export class SessionSharingService {
   /** runId -> Set<instanceId> of subscribing peers */
@@ -38,9 +35,6 @@ export class SessionSharingService {
     string,
     { sessionId: string; runId: string; shareToken: string; ownerInstanceId: string; ownerName: string }
   >();
-
-  /** Pending handoff bundles keyed by a one-time token */
-  private pendingHandoffs = new Map<string, HandoffBundle>();
 
   /** sessionId -> Map<compositeKey, PresenceEntry> */
   private presenceMap = new Map<string, Map<string, PresenceEntry>>();
@@ -61,8 +55,6 @@ export class SessionSharingService {
     this.federation.on("session:unsubscribe", this.handleUnsubscribe.bind(this));
     this.federation.on("session:event", this.handleRemoteEvent.bind(this));
     this.federation.on("session:presence", this.handlePresence.bind(this));
-    this.federation.on("session:handoff", this.handleHandoffReceived.bind(this));
-    this.federation.on("session:handoff:accept", this.handleHandoffAccepted.bind(this));
 
     this.startPresenceSweep();
   }
@@ -186,126 +178,6 @@ export class SessionSharingService {
     ownerName: string;
   }> {
     return Array.from(this.remoteOffers.values());
-  }
-
-  // ── Handoff API (issue #226) ───────────────────────────────────────────────
-
-  /** Assemble a full context bundle from storage for a given run. */
-  async createHandoffBundle(runId: string, notes: string): Promise<HandoffBundle> {
-    const run = await this.storage.getPipelineRun(runId);
-    if (!run) throw new Error(`Run ${runId} not found`);
-
-    const pipeline = await this.storage.getPipeline(run.pipelineId);
-    if (!pipeline) throw new Error(`Pipeline ${run.pipelineId} not found`);
-
-    const [stages, chatHistory, memories, llmResult] = await Promise.all([
-      this.storage.getStageExecutions(runId),
-      this.storage.getChatMessages(runId),
-      this.storage.getMemories("run", runId),
-      this.storage.getLlmRequests({ runId, limit: 500 }),
-    ]);
-
-    return {
-      run: this.sanitizeRecord(run),
-      pipeline: this.sanitizeRecord(pipeline),
-      stages: stages.map((s) => this.sanitizeRecord(s)),
-      chatHistory: chatHistory.map((c) => this.sanitizeRecord(c)),
-      memories: memories.map((m) => this.sanitizeRecord(m)),
-      llmRequests: llmResult.rows.map((r) => this.sanitizeRecord(r)),
-      notes,
-    };
-  }
-
-  /** Send a handoff bundle to a target peer via federation. */
-  async sendHandoff(
-    sessionId: string,
-    targetPeerId: string,
-    notes: string,
-  ): Promise<string> {
-    const session = await this.storage.getSharedSession(sessionId);
-    if (!session) throw new Error(`Session ${sessionId} not found`);
-
-    const bundle = await this.createHandoffBundle(session.runId, notes);
-    const bundleToken = crypto.randomBytes(24).toString("hex");
-
-    this.federation.send("session:handoff", {
-      bundleToken,
-      sessionId,
-      bundle,
-      fromInstanceId: this.instanceId,
-    }, targetPeerId);
-
-    return bundleToken;
-  }
-
-  /** Accept an incoming handoff bundle and create a new run from it. */
-  async acceptHandoff(bundleToken: string): Promise<{ runId: string }> {
-    const bundle = this.pendingHandoffs.get(bundleToken);
-    if (!bundle) throw new Error("Handoff bundle not found or expired");
-
-    this.pendingHandoffs.delete(bundleToken);
-
-    const originalRun = bundle.run as Record<string, unknown>;
-    const newRun = await this.storage.createPipelineRun({
-      pipelineId: originalRun.pipelineId as string,
-      status: "pending",
-      input: `[Handoff] ${bundle.notes}\n\nOriginal input: ${originalRun.input as string}`,
-      currentStageIndex: 0,
-    });
-
-    // Mark original run as handed off
-    const originalRunId = originalRun.id as string;
-    await this.storage.updatePipelineRun(originalRunId, {
-      status: "handed_off",
-      completedAt: new Date(),
-    });
-
-    // Re-create chat history in new run
-    for (const msg of bundle.chatHistory) {
-      await this.storage.createChatMessage({
-        runId: newRun.id,
-        role: msg.role as string,
-        content: `[Handoff context] ${msg.content as string}`,
-        agentTeam: (msg.agentTeam as string) ?? null,
-        modelSlug: (msg.modelSlug as string) ?? null,
-        metadata: msg.metadata ?? null,
-      });
-    }
-
-    // Notify the original owner
-    this.federation.send("session:handoff:accept", {
-      bundleToken,
-      newRunId: newRun.id,
-      acceptedBy: this.instanceId,
-    });
-
-    return { runId: newRun.id };
-  }
-
-  /** List pending incoming handoff bundles. */
-  getPendingHandoffs(): Array<{
-    bundleToken: string;
-    notes: string;
-    originalRunId: string;
-    pipelineId: string;
-  }> {
-    const result: Array<{
-      bundleToken: string;
-      notes: string;
-      originalRunId: string;
-      pipelineId: string;
-    }> = [];
-
-    for (const [token, bundle] of this.pendingHandoffs) {
-      result.push({
-        bundleToken: token,
-        notes: bundle.notes,
-        originalRunId: (bundle.run as Record<string, unknown>).id as string,
-        pipelineId: (bundle.pipeline as Record<string, unknown>).id as string,
-      });
-    }
-
-    return result;
   }
 
   // ── Presence API (issue #226) ──────────────────────────────────────────────
@@ -472,58 +344,7 @@ export class SessionSharingService {
     }
   }
 
-  private handleHandoffReceived(msg: FederationMessage, _peer: PeerInfo): void {
-    const payload = msg.payload as {
-      bundleToken: string;
-      sessionId: string;
-      bundle: HandoffBundle;
-      fromInstanceId: string;
-    };
-    if (this.pendingHandoffs.size >= MAX_PENDING_HANDOFFS) {
-      const oldest = this.pendingHandoffs.keys().next().value;
-      if (oldest !== undefined) this.pendingHandoffs.delete(oldest);
-    }
-    this.pendingHandoffs.set(payload.bundleToken, payload.bundle);
-  }
-
-  private handleHandoffAccepted(msg: FederationMessage, _peer: PeerInfo): void {
-    // The sender receives confirmation that the handoff was accepted.
-    // This could trigger local UI updates via the wsEventCallback.
-    const payload = msg.payload as {
-      bundleToken: string;
-      newRunId: string;
-      acceptedBy: string;
-    };
-    if (this.wsEventCallback) {
-      this.wsEventCallback("", {
-        type: "federation:handoff:accepted",
-        payload: {
-          bundleToken: payload.bundleToken,
-          newRunId: payload.newRunId,
-          acceptedBy: payload.acceptedBy,
-        },
-        timestamp: new Date().toISOString(),
-      });
-    }
-  }
-
   // ── Private helpers ────────────────────────────────────────────────────────
-
-  /** Remove sensitive fields from records before including in handoff bundles. */
-  private sanitizeRecord(record: object): Record<string, unknown> {
-    const sanitized: Record<string, unknown> = { ...(record as Record<string, unknown>) };
-    const sensitiveKeys = ["apiKey", "secretKey", "password", "token", "secret"];
-    for (const key of sensitiveKeys) {
-      if (key in sanitized) {
-        delete sanitized[key];
-      }
-    }
-    return sanitized;
-  }
-
-
-
-
 
 
 
@@ -585,11 +406,6 @@ export class SessionSharingService {
   /** Visible for testing -- returns the internal subscribers map. */
   _getSubscribers(): Map<string, Set<string>> {
     return this.subscribers;
-  }
-
-  /** Visible for testing -- returns the pending handoffs map. */
-  _getPendingHandoffs(): Map<string, HandoffBundle> {
-    return this.pendingHandoffs;
   }
 
   /** Visible for testing -- returns the presence map. */

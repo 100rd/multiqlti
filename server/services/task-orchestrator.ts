@@ -1,6 +1,5 @@
 import type { IStorage } from "../storage";
 import type { WsManager } from "../ws/manager";
-import type { PipelineController } from "../controller/pipeline-controller";
 import type { Gateway, GatewayLoggingOptions } from "../gateway/index";
 import type {
   TaskGroupRow,
@@ -28,7 +27,6 @@ import {
   RunActiveError,
   IterationCapError,
   NoReadyTasksError,
-  MissingPipelineError,
   InvalidTaskGraphError,
 } from "./orchestrator/errors.js";
 import {
@@ -40,8 +38,6 @@ import {
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const MAX_CONCURRENT_TASKS = 5;
-const PIPELINE_POLL_INTERVAL_MS = 2000;
-const PIPELINE_POLL_TIMEOUT_MS = 600_000; // 10 min
 
 // ─── Errors ───────────────────────────────────────────────────────────────────
 
@@ -51,7 +47,6 @@ export {
   RunActiveError,
   IterationCapError,
   NoReadyTasksError,
-  MissingPipelineError,
   InvalidTaskGraphError,
 } from "./orchestrator/errors.js";
 
@@ -61,7 +56,7 @@ export {
 export interface CreateTaskParam {
   name: string;
   description: string;
-  executionMode?: "pipeline_run" | "direct_llm";
+  executionMode?: "direct_llm";
   dependsOn?: string[]; // task names within this group
   pipelineId?: string;
   modelSlug?: string;
@@ -99,7 +94,7 @@ export interface StartGroupOptions {
 
 /** The resolved fields a definition row is created with. */
 interface ResolvedTaskFields {
-  executionMode: "pipeline_run" | "direct_llm";
+  executionMode: "direct_llm";
   pipelineId: string | null;
   modelSlug: string | null;
   teamId: string | null;
@@ -204,7 +199,6 @@ export class TaskOrchestrator {
   constructor(
     private storage: IStorage,
     private wsManager: WsManager,
-    private pipelineController: PipelineController,
     private gateway: Gateway,
   ) {
     this.tracing = new IterationTracing(storage);
@@ -646,11 +640,6 @@ export class TaskOrchestrator {
     }
   }
 
-  /**
-   * Dispatch one execution to its mode. L1: a `pipeline_run` task with a null
-   * `pipelineId` is an explicit MissingPipelineError — it must NOT silently fall
-   * through to direct_llm (which would run the wrong mode at cost).
-   */
   private async runExecutionBody(
     execution: TaskExecutionRow,
     task: TaskRow,
@@ -658,10 +647,6 @@ export class TaskOrchestrator {
     iteration: TaskGroupIterationRow,
     definitions: TaskRow[],
   ): Promise<TaskResult> {
-    if (task.executionMode === "pipeline_run") {
-      if (!task.pipelineId) throw new MissingPipelineError(task.name);
-      return this.executePipelineRun(execution, task, group);
-    }
     return this.executeDirectLlm(execution, task, group, iteration, definitions);
   }
 
@@ -774,82 +759,6 @@ export class TaskOrchestrator {
       response,
       retry: { cause, fallbackModel: cfg.fallbackModel ?? null, retriedModel },
     };
-  }
-
-  private async executePipelineRun(
-    execution: TaskExecutionRow,
-    task: TaskRow,
-    group: TaskGroupRow,
-  ): Promise<TaskResult> {
-    const inputText = typeof task.input === "string" ? task.input : JSON.stringify(task.input);
-    // §14.3: thread the task's workspace (if any) so the pipeline run is recorded
-    // against it and its read tools default to it. undefined = today's behaviour.
-    const run = await this.pipelineController.startRun(
-      task.pipelineId!,
-      inputText,
-      undefined,
-      undefined,
-      task.workspaceId ?? undefined,
-    );
-
-    await this.storage.updateExecution(execution.id, { pipelineRunId: run.id });
-
-    const pipelineSpanId = this.tracing.startPipelineSpan(group.id, task.id, run.id);
-    try {
-      const result = await this.pollRunCompletion(run.id);
-      this.tracing.completePipelineSpan(group.id, pipelineSpanId, run.id);
-      return {
-        summary: typeof result === "string" ? result.slice(0, 200) : JSON.stringify(result).slice(0, 200),
-        output: typeof result === "object" && result !== null ? result as Record<string, unknown> : { raw: result },
-      };
-    } catch (err) {
-      this.tracing.failPipelineSpan(group.id, pipelineSpanId, err instanceof Error ? err.message : String(err));
-      throw err;
-    }
-  }
-
-  private pollRunCompletion(runId: string): Promise<unknown> {
-    return new Promise((resolve, reject) => {
-      const startTime = Date.now();
-
-      // H2: the poll body is fully wrapped in try/catch so a THROW from
-      // storage.getPipelineRun (transient error) rejects the promise instead of
-      // escaping as an unhandled rejection — which previously left the execution
-      // `running` forever (the timeout never tripped, the promise never settled).
-      // Each setTimeout(poll) re-entry runs through this same guard.
-      const poll = async (): Promise<void> => {
-        try {
-          const run = await this.storage.getPipelineRun(runId);
-          if (!run) {
-            reject(new Error(`Pipeline run ${runId} not found`));
-            return;
-          }
-
-          if (run.status === "completed") {
-            resolve(run.output);
-            return;
-          }
-          if (run.status === "failed" || run.status === "cancelled" || run.status === "rejected") {
-            reject(new Error(`Pipeline run ${runId} ended with status: ${run.status}`));
-            return;
-          }
-
-          if (Date.now() - startTime > PIPELINE_POLL_TIMEOUT_MS) {
-            reject(new Error(`Pipeline run ${runId} timed out after ${PIPELINE_POLL_TIMEOUT_MS}ms`));
-            return;
-          }
-
-          // Re-arm; catch a synchronous scheduling throw defensively.
-          setTimeout(() => {
-            void poll();
-          }, PIPELINE_POLL_INTERVAL_MS);
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)));
-        }
-      };
-
-      void poll();
-    });
   }
 
   // ─── Private: dependency resolution (EXECUTION-scoped, active iteration) ────

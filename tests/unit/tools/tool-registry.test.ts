@@ -52,10 +52,6 @@ vi.mock("../../../server/federation/manager-state.js", () => ({
   getFederationManager: vi.fn().mockReturnValue(null),
 }));
 
-vi.mock("../../../server/federation/memory-federation.js", () => ({
-  MemoryFederationService: vi.fn(),
-}));
-
 vi.mock("../../../server/memory/vector-store.js", () => ({
   VectorStore: class MockVectorStore {
     async search() { return []; }

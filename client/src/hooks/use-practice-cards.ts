@@ -1,7 +1,7 @@
 /**
  * React-query hooks for the Active Knowledge Base (Terraform practice cards).
  *
- * Mirrors the style of use-pipeline.ts: typed queries/mutations over the REST
+ * Mirrors the style of use-api.ts: typed queries/mutations over the REST
  * surface at /api/workspaces/:id/knowledge/practice-cards, invalidating the
  * relevant query keys on every mutation.
  *

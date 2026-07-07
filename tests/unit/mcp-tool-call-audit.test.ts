@@ -1,5 +1,5 @@
 /**
- * Tests for MCP tool call audit log, usage metrics, redaction, OTel spans,
+ * Tests for MCP tool call audit log, usage metrics, redaction,
  * orphan detection, and RBAC on the usage endpoint (issue #271).
  */
 
@@ -528,9 +528,9 @@ describe("usage endpoint RBAC (integration-style)", () => {
   });
 });
 
-// ─── OTel span attributes ─────────────────────────────────────────────────────
+// ─── recordToolCall traceId/parentSpanId fields (vestigial, no OTel emission) ──
 
-describe("OTel span attributes via recordToolCall", () => {
+describe("recordToolCall traceId/parentSpanId fields", () => {
   it("does not crash when traceId is set but no active trace exists", async () => {
     const storage = {
       recordMcpToolCall: vi.fn().mockResolvedValue({ id: "1" }),

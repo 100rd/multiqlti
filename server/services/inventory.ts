@@ -3,12 +3,18 @@
  *
  * Builds a workspace-scoped dependency graph from storage data.
  *
- * Node types: connection, pipeline, stage, skill, model
- * Edge types:
- *   pipeline → stage  (contains)
- *   stage → connection (uses)
- *   stage → skill      (uses)
- *   stage → model      (uses)
+ * INTERIM STATE (pipelines engine retirement, migration 0053): the graph is
+ * connection-nodes only. It previously also derived pipeline/stage nodes
+ * (from the now-removed `pipelines` table) plus skill/model nodes and
+ * stage→{connection,skill,model} edges — all of which were sourced SOLELY
+ * via a pipeline stage's config, with no other data source in this function.
+ * `InventoryNodeType`/the FE legend (client/src/pages/Inventory.tsx) still
+ * list "pipeline"/"stage"/"skill"/"model" — deliberately left broad so the
+ * FE compiles untouched; those types simply never appear in a graph today.
+ * Follow-up #54 repoints skill/model nodes to the skill/model registry and
+ * connection-usage edges to a KEPT dependents source (consilium loops /
+ * workspaces), then narrows the type and cleans the FE legend — mirroring
+ * the WorkspaceTraces write-less-then-repoint pattern (task #29).
  *
  * Orphan detection: a connection node is flagged as an orphan when it has had
  * zero MCP tool-call activity in the last ORPHAN_DAYS days.
@@ -19,60 +25,28 @@ import type {
   InventoryNode,
   InventoryEdge,
   InventoryGraph,
-  ConnectionDependent,
-  PipelineStageConfig,
 } from "@shared/types";
-import type { Pipeline } from "@shared/schema";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 export const ORPHAN_DAYS = 30;
 
-// ─── Helper: unique ID for synthetic stage nodes ─────────────────────────────
-
-function stageNodeId(pipelineId: string, stageIndex: number): string {
-  return `stage:${pipelineId}:${stageIndex}`;
-}
-
 // ─── Build dependency graph ───────────────────────────────────────────────────
 
 /**
- * Builds a full dependency graph for all entities in the given workspace.
- *
- * The graph is built from:
- *   - workspace connections
- *   - all pipelines (scoped to workspace via the connection membership)
- *   - skills / models referenced by pipeline stages
- *
- * Because pipelines are not directly scoped to a workspace in the current
- * data model, we include every pipeline whose stages reference at least one
- * connection in this workspace. Additionally, all other pipelines are included
- * so the graph always contains the full set of pipelines in the system.
+ * Builds a connection-only dependency graph for the given workspace.
+ * See the file-level INTERIM STATE note for why pipeline/stage/skill/model
+ * nodes are absent for now.
  */
 export async function buildInventoryGraph(
   storage: IStorage,
   workspaceId: string,
   nowMs = Date.now(),
 ): Promise<InventoryGraph> {
-  const [connections, pipelines, skills, models] = await Promise.all([
-    storage.getWorkspaceConnections(workspaceId),
-    storage.getPipelines(),
-    storage.getSkills(),
-    storage.getModels(),
-  ]);
+  const connections = await storage.getWorkspaceConnections(workspaceId);
 
   const nodes: InventoryNode[] = [];
   const edges: InventoryEdge[] = [];
-
-  // ── Index lookups ─────────────────────────────────────────────────────────
-
-  const connectionIdSet = new Set(connections.map((c) => c.id));
-  const skillMap = new Map(skills.map((s) => [s.id, s]));
-  const modelMap = new Map(models.map((m) => [m.slug, m]));
-
-  // Used to avoid duplicate model/skill nodes
-  const addedSkillNodes = new Set<string>();
-  const addedModelNodes = new Set<string>();
 
   // ── Orphan detection: fetch usage metrics for each connection ─────────────
 
@@ -103,132 +77,7 @@ export async function buildInventoryGraph(
     });
   }
 
-  // ── Pipeline + stage nodes + edges ────────────────────────────────────────
-
-  for (const pipeline of pipelines) {
-    const rawStages = (pipeline.stages ?? []) as unknown[];
-    const stageConfigs = rawStages as Record<string, unknown>[];
-
-    nodes.push({
-      id: pipeline.id,
-      type: "pipeline",
-      label: pipeline.name,
-      metadata: {
-        stageCount: stageConfigs.length,
-        isTemplate: pipeline.isTemplate,
-        createdAt: pipeline.createdAt,
-      },
-    });
-
-    for (let idx = 0; idx < stageConfigs.length; idx++) {
-      const stage = stageConfigs[idx] as Partial<PipelineStageConfig>;
-      const sId = stageNodeId(pipeline.id, idx);
-
-      nodes.push({
-        id: sId,
-        type: "stage",
-        label: stage.teamId ?? `Stage ${idx}`,
-        metadata: {
-          teamId: stage.teamId,
-          modelSlug: stage.modelSlug,
-          skillId: stage.skillId,
-          stageIndex: idx,
-          pipelineId: pipeline.id,
-        },
-      });
-
-      // pipeline → stage (contains)
-      edges.push({ source: pipeline.id, target: sId, relation: "contains" });
-
-      // stage → connection (uses)
-      if (Array.isArray(stage.allowedConnections)) {
-        for (const connId of stage.allowedConnections) {
-          if (connectionIdSet.has(connId)) {
-            edges.push({ source: sId, target: connId, relation: "uses" });
-          }
-        }
-      }
-
-      // stage → skill (uses)
-      if (stage.skillId && skillMap.has(stage.skillId)) {
-        if (!addedSkillNodes.has(stage.skillId)) {
-          const skill = skillMap.get(stage.skillId)!;
-          nodes.push({
-            id: `skill:${skill.id}`,
-            type: "skill",
-            label: skill.name,
-            metadata: { skillId: skill.id, teamId: skill.teamId },
-          });
-          addedSkillNodes.add(stage.skillId);
-        }
-        edges.push({ source: sId, target: `skill:${stage.skillId}`, relation: "uses" });
-      }
-
-      // stage → model (uses)
-      if (stage.modelSlug) {
-        const modelKey = `model:${stage.modelSlug}`;
-        if (!addedModelNodes.has(stage.modelSlug)) {
-          const model = modelMap.get(stage.modelSlug);
-          nodes.push({
-            id: modelKey,
-            type: "model",
-            label: model ? model.name : stage.modelSlug,
-            metadata: {
-              slug: stage.modelSlug,
-              provider: model?.provider ?? null,
-            },
-          });
-          addedModelNodes.add(stage.modelSlug);
-        }
-        edges.push({ source: sId, target: modelKey, relation: "uses" });
-      }
-    }
-  }
-
   return { nodes, edges };
-}
-
-// ─── Dependents query ─────────────────────────────────────────────────────────
-
-/**
- * Returns all pipelines/stages that reference the given connection via
- * `allowedConnections`.
- */
-export async function getConnectionDependents(
-  storage: IStorage,
-  connectionId: string,
-): Promise<ConnectionDependent[]> {
-  const pipelines = await storage.getPipelines();
-  const result: ConnectionDependent[] = [];
-
-  for (const pipeline of pipelines) {
-    const rawStages = (pipeline.stages ?? []) as unknown[];
-    const stageConfigs = rawStages as Partial<PipelineStageConfig>[];
-    let pipelineAdded = false;
-
-    for (let idx = 0; idx < stageConfigs.length; idx++) {
-      const stage = stageConfigs[idx];
-      if (Array.isArray(stage.allowedConnections) && stage.allowedConnections.includes(connectionId)) {
-        if (!pipelineAdded) {
-          result.push({
-            kind: "pipeline",
-            pipelineId: pipeline.id,
-            pipelineName: pipeline.name,
-          });
-          pipelineAdded = true;
-        }
-        result.push({
-          kind: "stage",
-          pipelineId: pipeline.id,
-          pipelineName: pipeline.name,
-          stageIndex: idx,
-          stageTeamId: stage.teamId,
-        });
-      }
-    }
-  }
-
-  return result;
 }
 
 // ─── Orphan query ─────────────────────────────────────────────────────────────

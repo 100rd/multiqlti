@@ -20,15 +20,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ─── Mock storage before any imports ─────────────────────────────────────────
 
-const { mockGetLlmRequests, mockSearchMemories } = vi.hoisted(() => ({
+const { mockGetLlmRequests } = vi.hoisted(() => ({
   mockGetLlmRequests: vi.fn(),
-  mockSearchMemories: vi.fn(),
 }));
 
 vi.mock("../../../server/storage.js", () => ({
   storage: {
     getLlmRequests: mockGetLlmRequests,
-    searchMemories: mockSearchMemories,
   },
 }));
 
@@ -62,10 +60,6 @@ vi.mock("../../../server/db.js", () => ({
 
 vi.mock("../../../server/federation/manager-state.js", () => ({
   getFederationManager: vi.fn().mockReturnValue(null),
-}));
-
-vi.mock("../../../server/federation/memory-federation.js", () => ({
-  MemoryFederationService: vi.fn(),
 }));
 
 // ─── Mock vector-store (no pgvector in tests) ────────────────────────────────
@@ -222,6 +216,9 @@ describe("knowledge_search — execute()", () => {
 
 // ─── memory-search ────────────────────────────────────────────────────────────
 
+// Full vector-search behavior coverage (results found, top_k clamping, error
+// degradation) lives in tests/unit/rag/memory-search-tool.test.ts, which uses a
+// controllable VectorStore mock. This file keeps only a definition + smoke check.
 describe("memory_search — tool definition", () => {
   it("has name 'memory_search' and source 'builtin'", () => {
     expect(memorySearchHandler.definition.name).toBe("memory_search");
@@ -239,119 +236,15 @@ describe("memory_search — execute()", () => {
     vi.clearAllMocks();
   });
 
-  it("returns formatted memories when results are found", async () => {
-    mockSearchMemories.mockResolvedValueOnce([
-      {
-        id: 1,
-        type: "fact",
-        key: "preferred_language",
-        content: "TypeScript is preferred",
-        confidence: 0.95,
-        scope: "global",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        runId: null,
-        expiresAt: null,
-      },
-    ]);
-
-    const result = await memorySearchHandler.execute({ query: "language" });
-
-    expect(typeof result).toBe("string");
-    expect(result).toContain("fact");
-    expect(result).toContain("preferred_language");
-    expect(result).toContain("TypeScript is preferred");
-  });
-
-  it("returns empty-match message when no memories found — not null/undefined", async () => {
-    mockSearchMemories.mockResolvedValueOnce([]);
-
-    const result = await memorySearchHandler.execute({ query: "unknown topic" });
-
-    expect(result).toBeDefined();
-    expect(typeof result).toBe("string");
-    expect(result.length).toBeGreaterThan(0);
-    expect(result).toMatch(/no memories found/i);
-  });
-
   it("returns 'cannot be empty' message for empty query", async () => {
     const result = await memorySearchHandler.execute({ query: "" });
-
     expect(result).toMatch(/cannot be empty/i);
-    expect(mockSearchMemories).not.toHaveBeenCalled();
   });
 
-  it("does not call storage when query is empty", async () => {
-    await memorySearchHandler.execute({ query: "" });
-
-    expect(mockSearchMemories).not.toHaveBeenCalled();
-  });
-
-  it("returns fallback message when storage throws", async () => {
-    mockSearchMemories.mockRejectedValueOnce(new Error("Postgres connection error"));
-
-    const result = await memorySearchHandler.execute({ query: "test" });
-
+  it("returns 'no memories found' when no workspace_id is given (vector search skipped)", async () => {
+    const result = await memorySearchHandler.execute({ query: "unknown topic" });
     expect(typeof result).toBe("string");
-    expect(result).toMatch(/unavailable|failed/i);
-  });
-
-  it("formats confidence to 2 decimal places", async () => {
-    mockSearchMemories.mockResolvedValueOnce([
-      {
-        id: 2,
-        type: "pattern",
-        key: "retry_logic",
-        content: "Always retry on 503",
-        confidence: 0.888888,
-        scope: "global",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        runId: null,
-        expiresAt: null,
-      },
-    ]);
-
-    const result = await memorySearchHandler.execute({ query: "retry" });
-
-    // confidence.toFixed(2) = "0.89"
-    expect(result).toContain("0.89");
-  });
-
-  it("returns result for multiple memories without crashing", async () => {
-    mockSearchMemories.mockResolvedValueOnce([
-      {
-        id: 1,
-        type: "fact",
-        key: "key1",
-        content: "content1",
-        confidence: 0.8,
-        scope: "global",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        runId: null,
-        expiresAt: null,
-      },
-      {
-        id: 2,
-        type: "preference",
-        key: "key2",
-        content: "content2",
-        confidence: 0.9,
-        scope: "global",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        runId: null,
-        expiresAt: null,
-      },
-    ]);
-
-    const result = await memorySearchHandler.execute({ query: "key" });
-
-    // Updated: memory-search now prepends a section header, so both memories
-    // plus the header appear in output. Verify both memories are present.
-    expect(result).toContain("key1");
-    expect(result).toContain("key2");
+    expect(result).toMatch(/no memories found/i);
   });
 });
 

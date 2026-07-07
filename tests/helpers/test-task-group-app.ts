@@ -5,9 +5,9 @@
  * Mirrors test-consensus-app: an injectable authenticated user (id/role), a
  * header to force the unauth path, and the ability to seed groups owned by other
  * users so the owner/admin/ownerless authz paths are exercised. The orchestrator
- * is constructed with no-op WS + pipeline-controller + gateway doubles because
- * the route tests never drive real task execution — they exercise authz, edit
- * guards, and the edit orchestration.
+ * is constructed with no-op WS + gateway doubles because the route tests never
+ * drive real task execution — they exercise authz, edit guards, and the edit
+ * orchestration.
  */
 import express from "express";
 import type { Router } from "express";
@@ -17,7 +17,6 @@ import { registerTaskGroupRoutes } from "../../server/routes/task-groups.js";
 import { registerTaskIterationRoutes } from "../../server/routes/task-iterations.js";
 import { registerTaskTraceRoutes } from "../../server/routes/task-traces.js";
 import type { WsManager } from "../../server/ws/manager.js";
-import type { PipelineController } from "../../server/controller/pipeline-controller.js";
 import type { Gateway } from "../../server/gateway/index.js";
 import type { User, UserRole } from "../../shared/types.js";
 
@@ -40,11 +39,6 @@ function makeWsManager(): WsManager {
   return { broadcastToRun: () => {} } as unknown as WsManager;
 }
 
-/** Inert pipeline controller — never invoked by the authz/edit route tests. */
-function makePipelineController(): PipelineController {
-  return {} as unknown as PipelineController;
-}
-
 /** Inert gateway — never invoked by the authz/edit route tests. */
 function makeGateway(): Gateway {
   return {} as unknown as Gateway;
@@ -55,12 +49,7 @@ export function createTaskGroupTestApp(opts: TaskGroupTestAppOptions = {}): Task
   const userId = opts.userId ?? "test-user-id";
 
   const storage = new MemStorage();
-  const orchestrator = new TaskOrchestrator(
-    storage,
-    makeWsManager(),
-    makePipelineController(),
-    makeGateway(),
-  );
+  const orchestrator = new TaskOrchestrator(storage, makeWsManager(), makeGateway());
 
   const user: User = {
     id: opts.noUserId ? (undefined as unknown as string) : userId,

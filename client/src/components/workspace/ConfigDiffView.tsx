@@ -11,7 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { ProjectConfigResponse, ConfigDiffEntry } from "@shared/types";
-import { apiRequest } from "@/hooks/use-pipeline";
+import { apiRequest } from "@/hooks/use-api";
 
 interface Props {
   workspaceId: string;

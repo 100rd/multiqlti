@@ -26,7 +26,7 @@ const TaskFieldsSchema = z
   .object({
     name: z.string().min(1).max(200),
     description: z.string().min(1).max(5000),
-    executionMode: z.enum(["pipeline_run", "direct_llm"]).optional(),
+    executionMode: z.enum(["direct_llm"]).optional(),
     dependsOn: z.array(z.string().max(200)).max(50).optional(),
     pipelineId: z.string().max(100).optional(),
     modelSlug: z.string().max(100).optional(),
@@ -59,7 +59,7 @@ const UpdateTaskSchema = z
   .object({
     name: z.string().min(1).max(200).optional(),
     description: z.string().min(1).max(5000).optional(),
-    executionMode: z.enum(["pipeline_run", "direct_llm"]).optional(),
+    executionMode: z.enum(["direct_llm"]).optional(),
     dependsOn: z.array(z.string().max(200)).max(50).optional(),
     pipelineId: z.string().max(100).optional(),
     modelSlug: z.string().max(100).optional(),

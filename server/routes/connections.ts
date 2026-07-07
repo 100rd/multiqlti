@@ -21,7 +21,6 @@ import { validateConnectionConfig, CONNECTION_TYPES } from "@shared/schema";
 import type { IStorage } from "../storage";
 import { requireRole } from "../auth/middleware";
 import { log } from "../index";
-import { getConnectionDependents } from "../services/inventory";
 
 // ─── Zod request schemas ──────────────────────────────────────────────────────
 
@@ -252,8 +251,6 @@ export function registerConnectionRoutes(app: Express, storage: IStorage): void 
         return res.status(400).json({ error: params.error.message });
       }
 
-      const force = req.body?.force === true;
-
       try {
         const existing = await storage.getWorkspaceConnection(params.data.cid);
         if (!existing) {
@@ -261,21 +258,6 @@ export function registerConnectionRoutes(app: Express, storage: IStorage): void 
         }
         if (existing.workspaceId !== params.data.id) {
           return res.status(404).json({ error: "Connection not found" });
-        }
-
-        // Impact analysis: check for dependents before deleting.
-        if (!force) {
-          const dependents = await getConnectionDependents(storage, params.data.cid);
-          if (dependents.length > 0) {
-            const affectedPipelines = [
-              ...new Set(dependents.map((d) => d.pipelineName)),
-            ];
-            return res.status(409).json({
-              error: "Connection has dependents. Pass force=true to override.",
-              affectedPipelines,
-              dependents,
-            });
-          }
         }
 
         await storage.deleteWorkspaceConnection(params.data.cid);

@@ -1,9 +1,9 @@
 /**
  * Unit tests for the MemStorage history finders + deleteTask (Phase 0).
  *   - deleteTask removes a single task without disturbing siblings;
- *   - listPipelineRunHistory / listTaskGroupHistory return terminal-status rows
- *     only, owner-filtered when ownerId is set, ordered (completedAt desc, id
- *     desc), bounded by limit, and keyset-paged via the cursor.
+ *   - listTaskGroupHistory returns terminal-status rows only, owner-filtered
+ *     when ownerId is set, ordered (completedAt desc, id desc), bounded by
+ *     limit, and keyset-paged via the cursor.
  */
 import { describe, it, expect, beforeEach } from "vitest";
 import { MemStorage } from "../../server/storage.js";
@@ -13,19 +13,6 @@ let storage: MemStorage;
 beforeEach(() => {
   storage = new MemStorage();
 });
-
-async function pipeRun(triggeredBy: string | null, status: string, completedAt: Date | null) {
-  return storage.createPipelineRun({
-    pipelineId: "p",
-    status,
-    input: "x",
-    currentStageIndex: 0,
-    startedAt: new Date(0),
-    completedAt,
-    triggeredBy,
-    dagMode: false,
-  });
-}
 
 async function group(createdBy: string | null, status: string, completedAt: Date | null) {
   return storage.createTaskGroup({
@@ -65,52 +52,6 @@ describe("MemStorage.deleteTask", () => {
     await storage.deleteTask(a.id);
     const remaining = await storage.getTasksByGroup(g.id);
     expect(remaining.map((t) => t.id)).toEqual([b.id]);
-  });
-});
-
-describe("MemStorage.listPipelineRunHistory", () => {
-  it("returns terminal-status rows only", async () => {
-    await pipeRun("u", "running", null);
-    await pipeRun("u", "pending", null);
-    await pipeRun("u", "completed", new Date("2026-01-01T00:00:00Z"));
-    await pipeRun("u", "failed", new Date("2026-01-02T00:00:00Z"));
-    await pipeRun("u", "rejected", new Date("2026-01-03T00:00:00Z"));
-
-    const rows = await storage.listPipelineRunHistory({ limit: 100 });
-    expect(rows).toHaveLength(3);
-    expect(rows.map((r) => r.status).sort()).toEqual(["completed", "failed", "rejected"]);
-  });
-
-  it("filters by ownerId when set", async () => {
-    await pipeRun("me", "completed", new Date("2026-01-01T00:00:00Z"));
-    await pipeRun("other", "completed", new Date("2026-01-02T00:00:00Z"));
-    const mine = await storage.listPipelineRunHistory({ ownerId: "me", limit: 100 });
-    expect(mine).toHaveLength(1);
-    expect(mine[0].triggeredBy).toBe("me");
-  });
-
-  it("orders by completedAt desc then id desc and bounds by limit", async () => {
-    await pipeRun("u", "completed", new Date("2026-01-01T00:00:00Z"));
-    await pipeRun("u", "completed", new Date("2026-01-03T00:00:00Z"));
-    await pipeRun("u", "completed", new Date("2026-01-02T00:00:00Z"));
-    const rows = await storage.listPipelineRunHistory({ limit: 2 });
-    expect(rows).toHaveLength(2);
-    expect(rows[0].completedAt!.getTime()).toBeGreaterThan(rows[1].completedAt!.getTime());
-  });
-
-  it("paginates with the keyset cursor (no overlap, no gap)", async () => {
-    for (let i = 1; i <= 4; i++) {
-      await pipeRun("u", "completed", new Date(`2026-01-0${i}T00:00:00Z`));
-    }
-    const first = await storage.listPipelineRunHistory({ limit: 2 });
-    const last = first[first.length - 1];
-    const second = await storage.listPipelineRunHistory({
-      limit: 2,
-      cursor: { completedAt: last.completedAt!.toISOString(), id: last.id },
-    });
-    const firstIds = new Set(first.map((r) => r.id));
-    for (const r of second) expect(firstIds.has(r.id)).toBe(false);
-    expect(first.length + second.length).toBe(4);
   });
 });
 

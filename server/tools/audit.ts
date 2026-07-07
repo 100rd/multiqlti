@@ -16,8 +16,6 @@
 
 import type { IStorage } from "../storage";
 import type { RecordMcpToolCallInput } from "@shared/types";
-import { tracer } from "../tracing/tracer";
-import { exportTrace } from "../tracing/otlp-exporter";
 
 // ─── Redaction ────────────────────────────────────────────────────────────────
 
@@ -148,11 +146,6 @@ export async function recordToolCall(
       err instanceof Error ? err.message : err,
     );
   }
-
-  // ── OTel span ───────────────────────────────────────────────────────────────
-  if (input.traceId) {
-    emitOtelSpan(input);
-  }
 }
 
 /**
@@ -163,76 +156,3 @@ function sanitizeErrorMessage(msg: string): string {
   return msg.replace(SECRET_VALUE_PATTERN, "[REDACTED]");
 }
 
-/**
- * Emit an OTel span for the tool call as a child of the pipeline run span.
- * Uses the existing in-process Tracer + OTLP exporter.
- * Errors are swallowed — observability must not affect correctness.
- */
-function emitOtelSpan(input: AuditCallInput): void {
-  try {
-    const traceId = input.traceId!;
-    const spanId = tracer.startSpan(
-      traceId,
-      `mcp.tool_call/${input.toolName}`,
-      input.parentSpanId,
-    );
-
-    const attributes: Record<string, string | number> = {
-      "connection.id": input.connectionId,
-      "tool.name": input.toolName,
-      "duration_ms": input.durationMs,
-    };
-    if (input.connectionType) {
-      attributes["connection.type"] = input.connectionType;
-    }
-    if (input.stageId) {
-      attributes["stage.id"] = input.stageId;
-    }
-
-    const status = input.error ? "error" : "ok";
-
-    if (input.error) {
-      // Use the already-sanitized error message
-      attributes["error"] = sanitizeErrorMessage(input.error);
-    }
-
-    tracer.endSpan(spanId, status, attributes);
-
-    // Export the single span via the same OTLP exporter used for pipeline spans.
-    // We build a minimal PipelineTrace wrapping just this span.
-    const span = buildMinimalSpan(spanId, traceId, input);
-
-    void exportTrace({
-      traceId,
-      runId: input.pipelineRunId ?? "",
-      spans: [span],
-    });
-  } catch (err) {
-    console.warn(
-      "[audit] Failed to emit OTel span:",
-      err instanceof Error ? err.message : err,
-    );
-  }
-}
-
-/** Build a minimal TraceSpan-compatible object for a single tool-call span. */
-function buildMinimalSpan(spanId: string, traceId: string, input: AuditCallInput) {
-  const startMs = input.startedAt.getTime();
-  return {
-    spanId,
-    parentSpanId: input.parentSpanId,
-    name: `mcp.tool_call/${input.toolName}`,
-    startTime: startMs,
-    endTime: startMs + input.durationMs,
-    attributes: {
-      "connection.id": input.connectionId,
-      ...(input.connectionType ? { "connection.type": input.connectionType } : {}),
-      "tool.name": input.toolName,
-      duration_ms: input.durationMs,
-      ...(input.stageId ? { "stage.id": input.stageId } : {}),
-      ...(input.error ? { error: sanitizeErrorMessage(input.error) } : {}),
-    },
-    events: [],
-    status: input.error ? ("error" as const) : ("ok" as const),
-  };
-}

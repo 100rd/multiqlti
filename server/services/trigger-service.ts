@@ -46,7 +46,6 @@ export class TriggerService {
   toPublic(row: TriggerRow): PipelineTrigger {
     const trigger: PipelineTrigger = {
       id: row.id,
-      pipelineId: row.pipelineId,
       type: row.type as TriggerType,
       config: row.config as TriggerConfig,
       hasSecret: row.secretEncrypted !== null && row.secretEncrypted !== undefined,
@@ -68,11 +67,6 @@ export class TriggerService {
 
   // ─── CRUD ─────────────────────────────────────────────────────────────────
 
-  async getTriggers(pipelineId: string): Promise<PipelineTrigger[]> {
-    const rows = await this.storage.getTriggers(pipelineId);
-    return rows.map((r) => this.toPublic(r));
-  }
-
   /** T1: all triggers in the current project ALS (pipeline-based AND pipeline-less). */
   async getProjectTriggers(): Promise<PipelineTrigger[]> {
     const rows = await this.storage.getProjectTriggers();
@@ -87,8 +81,6 @@ export class TriggerService {
   async createTrigger(data: InsertTrigger): Promise<PipelineTrigger> {
     const secretEncrypted = data.secret ? this.crypto.encrypt(data.secret) : undefined;
     const row = await this.storage.createTrigger({
-      // T1: nullable — a loop-template trigger carries no pipeline.
-      pipelineId: data.pipelineId ?? null,
       type: data.type,
       config: data.config,
       secretEncrypted: secretEncrypted ?? null,

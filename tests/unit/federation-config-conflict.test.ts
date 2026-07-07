@@ -802,16 +802,16 @@ describe("ConfigSyncService + ConflictDetector integration", () => {
     const peer = makePeer();
     await fm._simulateIncoming("config:event", {
       event: {
-        entityKind: "pipeline",
-        entityId: "p1",
+        entityKind: "trigger",
+        entityId: "t1",
         operation: "create",
-        payload: { name: "My Pipeline" },
+        payload: { pipelineId: "pipe-1", enabled: true, config: { type: "webhook" } },
         version: "v1",
         issuedAt: new Date().toISOString(),
       },
     }, peer);
 
-    expect(storage.createPipeline).toHaveBeenCalled();
+    expect(storage.createTrigger).toHaveBeenCalled();
   });
 
   it("blocks event for human strategy (connection)", async () => {

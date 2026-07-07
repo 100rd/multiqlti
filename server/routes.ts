@@ -2,20 +2,14 @@ import type { Express, Router } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
 import { Gateway } from "./gateway/index";
-import { reconcileModelCatalog, reconcileExistingPipelineStages } from "./gateway/catalog-sync";
-import { TeamRegistry } from "./teams/registry";
-import { PipelineController } from "./controller/pipeline-controller";
+import { reconcileModelCatalog } from "./gateway/catalog-sync";
 import { WsManager } from "./ws/manager";
 import { registerModelRoutes } from "./routes/models";
-import { registerPipelineRoutes } from "./routes/pipelines";
-import { registerRunRoutes } from "./routes/runs";
 import { registerChatRoutes } from "./routes/chat";
 import { registerGatewayRoutes } from "./routes/gateway";
-import { registerStrategyRoutes } from "./routes/strategies";
 import { registerPrivacyRoutes } from "./routes/privacy";
 import { registerStatsRoutes } from "./routes/stats";
 import { registerTelemetryRoutes } from "./routes/telemetry";
-import { registerMemoryRoutes } from "./routes/memory";
 import { registerLessonRoutes } from "./routes/lessons";
 import { registerToolRoutes } from "./routes/tools";
 import { registerWorkspaceRoutes } from "./routes/workspaces";
@@ -25,13 +19,7 @@ import { registerSettingsRoutes } from "./routes/settings";
 import { registerSpecializationRoutes } from "./routes/specialization";
 import { registerContourObservabilityRoutes } from "./routes/observability";
 import { registerSkillRoutes } from "./routes/skills";
-import { registerGuardrailRoutes } from "./routes/guardrails";
-import { registerDelegationRoutes } from "./routes/delegations";
-import { DelegationService } from "./pipeline/delegation-service";
-import { ManagerAgent } from "./pipeline/manager-agent";
 import { registerActivityRoutes } from "./routes/activity";
-import { registerDAGRoutes } from "./routes/dag";
-import { registerTraceRoutes } from "./routes/traces";
 import { registerTriggerRoutes } from "./routes/triggers";
 import { registerWebhookRoutes } from "./routes/webhooks";
 import { registerHealthRoutes } from "./routes/health";
@@ -58,9 +46,8 @@ import { DEFAULT_TASK_MODEL } from "./config/schema";
 import { stopRateLimitCleanup } from "./services/webhook-handler";
 import { requireAuth } from "./auth/middleware";
 import { requireProject } from "./middleware/project";
-import { tracer } from "./tracing/tracer";
-import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "@shared/constants";
-import { CONSILIUM_LOOP_TERMINAL_STATES, projects } from "@shared/schema";
+import { DEFAULT_MODELS } from "@shared/constants";
+import { projects } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { db } from "./db";
 import { log } from "./index";
@@ -107,8 +94,6 @@ import { seedExampleTerraformCards, resolveFirstAdminUserId } from "./knowledge/
 import { SessionSharingService } from "./federation/session-sharing";
 import { InMemoryConflictStore } from "./federation/config-conflict";
 import { ConflictResolutionService } from "./federation/conflict-resolution";
-import { MemoryFederationService } from "./federation/memory-federation";
-import { PipelineSyncService } from "./federation/pipeline-sync";
 import { getFederationManager } from "./federation/manager-state";
 import { runAsSystem, runAsProject } from "./context";
 
@@ -120,10 +105,6 @@ export async function registerRoutes(
   // Pass storage so WsManager.subscribe can enforce per-run ownership (IDOR fix).
   const wsManager = new WsManager(httpServer, storage);
   const gateway = new Gateway(storage);
-  const teamRegistry = new TeamRegistry(gateway, wsManager);
-  const delegationService = new DelegationService(storage, teamRegistry, wsManager, gateway);
-  const managerAgent = new ManagerAgent(storage, teamRegistry, wsManager, gateway, delegationService);
-  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway, delegationService, managerAgent, tracer, undefined);
 
   // Register public routes (no auth required) — must come before requireAuth middleware
   registerHealthRoutes(app);
@@ -144,12 +125,9 @@ export async function registerRoutes(
   //   /api/models    — models have optional projectId; global catalog seeded without project
   //   /api/gateway   — uses project-specific provider keys after PR-0c
   //   /api/lessons   — workspace-scoped (workspaceId), not directly project-scoped
-  //   /api/traces    — indirectly scoped via runId → pipelineRuns.projectId
   //   /api/lmstudio  — local server config; import creates project-scoped models
 
   // ── Project-scoped (requireAuth + requireProject) ──────────────────────────
-  app.use("/api/pipelines", requireAuth, requireProject);
-  app.use("/api/runs", requireAuth, requireProject);
   app.use("/api/activity", requireAuth, requireProject);
   app.use("/api/models", requireAuth, requireProject);         // UNCERTAIN — see note above
   app.use("/api/gateway", requireAuth, requireProject);        // UNCERTAIN — see note above
@@ -158,19 +136,14 @@ export async function registerRoutes(
   app.use("/api/chat", requireAuth, requireProject);
   app.use("/api/questions", requireAuth, requireProject);
   app.use("/api/stats", requireAuth, requireProject);
-  app.use("/api/strategies", requireAuth, requireProject);
   app.use("/api/privacy", requireAuth, requireProject);
-  app.use("/api/memory", requireAuth, requireProject);
-  app.use("/api/memories", requireAuth, requireProject);
   app.use("/api/lessons", requireAuth, requireProject);        // UNCERTAIN — see note above
   app.use("/api/tools", requireAuth, requireProject);
   app.use("/api/mcp", requireAuth, requireProject);
   app.use("/api/providers", requireAuth, requireProject);
   app.use("/api/specialization-profiles", requireAuth, requireProject);
   app.use("/api/skills", requireAuth, requireProject);
-  app.use("/api/guardrails", requireAuth, requireProject);
   app.use("/api/triggers", requireAuth, requireProject);
-  app.use("/api/traces", requireAuth, requireProject);         // UNCERTAIN — see note above
   app.use("/api/task-groups", requireAuth, requireProject);
   app.use("/api/consilium-loops", requireAuth, requireProject);
   app.use("/api/pr-queue", requireAuth, requireProject);
@@ -206,20 +179,13 @@ export async function registerRoutes(
   app.use("/api/federation", requireAuth);
   app.use("/api/observability", requireAuth);
 
-  // /api/pipeline-run-stats — was entirely unprotected (bug); add both guards now.
-  // This inline endpoint reads pipeline runs (project-scoped data).
-  app.use("/api/pipeline-run-stats", requireAuth, requireProject);
   // Register route implementations
   registerModelRoutes(app, storage);
-  registerPipelineRoutes(app, storage, gateway);
-  registerRunRoutes(app, storage, controller);
   registerChatRoutes(app, storage, gateway, wsManager);
   registerGatewayRoutes(app, gateway);
-  registerStrategyRoutes(app, storage);
   registerPrivacyRoutes(app);
   registerStatsRoutes(app, storage);
   registerTelemetryRoutes(app, storage);
-  registerMemoryRoutes(app, storage);
   registerLessonRoutes(app, storage);
   registerToolRoutes(app, storage);
   registerWorkspaceRoutes(app, gateway, wsManager, storage);
@@ -230,7 +196,7 @@ export async function registerRoutes(
   registerWorkspaceTraceRoutes(app, storage);
   registerCostRoutes(app, storage);
   registerWorkspaceToolRoutes(app, storage);
-  registerMcpRoutes(app as unknown as Router, storage, controller);
+  registerMcpRoutes(app as unknown as Router, storage);
   registerKnowledgeRoutes(app as unknown as Router, storage);  // Bug #309: was imported but not called; #358: workspace-scoped
   const knowledgeRefreshScheduler = initRefreshScheduler(storage);
   registerPracticeCardRoutes(
@@ -246,10 +212,6 @@ export async function registerRoutes(
   registerSpecializationRoutes(app, storage);
   registerModelSkillBindingRoutes(app, storage);
   registerSkillRoutes(app, storage);
-  registerGuardrailRoutes(app, storage, gateway);
-  registerDelegationRoutes(app, storage);
-  registerDAGRoutes(app, storage);
-  registerTraceRoutes(app, storage);
   registerArgoCdSettingsRoutes(app as unknown as Router, storage);
   registerLmStudioRoutes(app as unknown as Router, storage, gateway);
 
@@ -267,7 +229,7 @@ export async function registerRoutes(
 
   // Task Orchestrator + Tracer
   const taskTracer = new TaskTracer(storage, wsManager);
-  const taskOrchestrator = new TaskOrchestrator(storage, wsManager, controller, gateway);
+  const taskOrchestrator = new TaskOrchestrator(storage, wsManager, gateway);
   taskOrchestrator.setTracer(taskTracer);
   registerTaskGroupRoutes(app, storage, taskOrchestrator);
   registerTaskGroupResolveRoute(app);
@@ -464,7 +426,6 @@ export async function registerRoutes(
   // Registered AFTER the task orchestrator so task-groups can join the live snapshot
   // (and the History tab).
   registerActivityRoutes(app, storage, {
-    pipelineController: controller,
     taskOrchestrator,
   });
   registerTaskTraceRoutes(app, storage);
@@ -1013,9 +974,6 @@ export async function registerRoutes(
     app.get("/api/triggers", (_req, res) => {
       res.status(503).json({ error: "Trigger subsystem is disabled (TRIGGER_SECRET_KEY not configured)", disabled: true });
     });
-    app.get("/api/pipelines/:pipelineId/triggers", (_req, res) => {
-      res.status(503).json({ error: "Trigger subsystem is disabled (TRIGGER_SECRET_KEY not configured)", disabled: true });
-    });
     app.use("/api/triggers/:id", (_req, res) => {
       res.status(503).json({ error: "Trigger subsystem is disabled (TRIGGER_SECRET_KEY not configured)", disabled: true });
     });
@@ -1030,10 +988,8 @@ export async function registerRoutes(
     registerWebhookRoutes(app, storage, {} as TriggerService, noOpFire);
   }
 
-  // Federation services (issues #224 + #225)
+  // Federation services (issue #224)
   let sessionSharing: SessionSharingService | null = null;
-  let memoryFederation: MemoryFederationService | null = null;
-  let pipelineSync: PipelineSyncService | null = null;
   const fm = getFederationManager();
   if (fm && fm.isEnabled()) {
     const instanceId = fm.getPeers().length > 0 ? "local" : "primary";
@@ -1043,23 +999,16 @@ export async function registerRoutes(
     } catch (e) {
       log(`[federation] Session sharing disabled: ${(e as Error).message}`, "federation");
     }
-    try {
-      memoryFederation = new MemoryFederationService(fm, storage, instanceId, instanceId);
-      log("[federation] Memory federation service initialized", "federation");
-    } catch (e) {
-      log(`[federation] Memory federation disabled: ${(e as Error).message}`, "federation");
-    }
-    try {
-      pipelineSync = new PipelineSyncService(fm, storage, instanceId);
-      log("[federation] Pipeline sync service initialized", "federation");
-    } catch (e) {
-      log(`[federation] Pipeline sync disabled: ${(e as Error).message}`, "federation");
-    }
   }
   // Bug #312: ConflictResolutionService works without federation (manages in-memory state).
   // Always initialize so that session validation runs before the service-availability check.
   const conflictResolution = new ConflictResolutionService(null);
-  registerFederationRoutes(app as unknown as Router, sessionSharing, fm, memoryFederation, pipelineSync, storage, undefined, conflictResolution);
+  registerFederationRoutes({
+    app: app as unknown as Router,
+    sessionSharing,
+    federationManager: fm,
+    conflictResolution,
+  });
   // Bug #310: Register CRDT routes — returns 503 gracefully when crdtPeerSync is null.
   registerCRDTRoutes(app as unknown as Router, null);
   // Issue #323: Config-sync conflict management API
@@ -1122,21 +1071,6 @@ export async function registerRoutes(
     log(`Model catalog reconcile skipped: ${(e as Error).message}`);
   }
 
-  // Best-effort: re-point any EXISTING pipeline stage that still references a now
-  // inactive/dead model slug onto a working default. Never throws / never blocks boot.
-  try {
-    await runAsSystem("startup-reconcile-pipeline-stages", async () => {
-      const stageRecon = await reconcileExistingPipelineStages(storage);
-      if (stageRecon.stagesRepointed > 0) {
-        log(
-          `Re-pointed dead pipeline stages: ${stageRecon.stagesRepointed} stages across ${stageRecon.pipelinesUpdated} pipelines`,
-        );
-      }
-    });
-  } catch (e) {
-    log(`Pipeline stage reconcile skipped: ${(e as Error).message}`);
-  }
-
   // Active Knowledge Base — optional example dataset (off by default; opt in via
   // KB_SEED_EXAMPLE=true). Idempotent; projection is best-effort.
   if (process.env.KB_SEED_EXAMPLE === "true") {
@@ -1153,172 +1087,9 @@ export async function registerRoutes(
     }
   }
 
-  // Seed default pipeline template. getPipelines() reads cross-project
-  // under the system context; createPipeline() uses withProjectInsert which sets
-  // projectId=null (a global template visible to every project).
-  await runAsSystem("startup-seed-default-pipeline", async () => {
-    const existingPipelines = await storage.getPipelines();
-    if (existingPipelines.length === 0) {
-      await storage.createPipeline({
-        name: "Full SDLC Pipeline",
-        description:
-          "Complete software development lifecycle: Planning → Architecture → Development → Testing → Code Review → Deployment → Monitoring",
-        stages: DEFAULT_PIPELINE_STAGES,
-        isTemplate: true,
-      });
-      log("Seeded default SDLC pipeline template");
-    }
-  });
-
   // Global pending questions endpoint (protected by /api/questions middleware above)
   app.get("/api/questions/pending", async (_req, res) => {
-    const pending = await storage.getPendingQuestions();
-    if (pending.length === 0) {
-      res.json(pending);
-      return;
-    }
-    // Enrich each question with the pipeline it belongs to (question → run →
-    // pipeline) so the UI can say WHICH pipeline is waiting, not just a count.
-    const [runs, pipelines] = await Promise.all([
-      storage.getPipelineRuns(),
-      storage.getPipelines(),
-    ]);
-    const runToPipeline = new Map(runs.map((r) => [r.id, r.pipelineId]));
-    const pipelineName = new Map(pipelines.map((p) => [p.id, p.name]));
-    const enriched = pending.map((q) => {
-      const pid = q.runId ? runToPipeline.get(q.runId) : undefined;
-      return {
-        ...q,
-        pipelineId: pid ?? null,
-        pipelineName: pid ? pipelineName.get(pid) ?? null : null,
-      };
-    });
-    res.json(enriched);
-  });
-
-  // Per-pipeline run-status counts for the Pipelines list (succeeded / failed /
-  // running / queued), so each pipeline card can show its run health at a glance.
-  app.get("/api/pipeline-run-stats", async (_req, res) => {
-    const runs = await storage.getPipelineRuns();
-    const stats: Record<
-      string,
-      { succeeded: number; failed: number; running: number; queued: number; total: number }
-    > = {};
-    for (const r of runs) {
-      const s = (stats[r.pipelineId] ??= {
-        succeeded: 0,
-        failed: 0,
-        running: 0,
-        queued: 0,
-        total: 0,
-      });
-      s.total++;
-      if (r.status === "completed") s.succeeded++;
-      else if (r.status === "failed") s.failed++;
-      else if (r.status === "running") s.running++;
-      else if (r.status === "pending" || r.status === "paused") s.queued++;
-      // "cancelled" counts only toward total.
-    }
-    res.json(stats);
-  });
-
-  // Stats summary endpoint (protected by /api/stats middleware above —
-  // requireAuth + requireProject, so every storage read is project-scoped via
-  // the request ALS context). Surfaces the home dashboard's headline counts:
-  // active models, task groups, and consilium loops for the CURRENT project.
-  app.get("/api/stats/summary", async (_req, res) => {
-    const [allModels, allGroups, allLoops] = await Promise.all([
-      storage.getModels(),
-      storage.getTaskGroups(),
-      storage.getLoops(),
-    ]);
-
-    const modelsConfigured = allModels.filter((m) => m.isActive).length;
-
-    // Task groups: total + how many are currently running. "Running" is read
-    // from the LATEST ITERATION's status (the authoritative run state — the
-    // same source the /api/task-groups list route uses), not the task
-    // definitions which stay blocked/ready. One latest-iteration read per
-    // group — bounded by the project's group count, no executions fetch.
-    const taskGroupsTotal = allGroups.length;
-    const latestIterations = await Promise.all(
-      allGroups.map((g) => storage.getLatestIteration(g.id)),
-    );
-    const taskGroupsActive = latestIterations.filter(
-      (it) => it?.status === "running",
-    ).length;
-
-    // Consilium loops: total + non-terminal (still ticking). Terminal set is
-    // the shared source of truth (converged/stopped_cap/escalated/failed/
-    // cancelled).
-    const consiliumLoopsTotal = allLoops.length;
-    const consiliumLoopsActive = allLoops.filter(
-      (l) =>
-        !CONSILIUM_LOOP_TERMINAL_STATES.includes(
-          l.state as (typeof CONSILIUM_LOOP_TERMINAL_STATES)[number],
-        ),
-    ).length;
-
-    // Consilium loops: 24h status breakdown. Bucket each loop by a coarse status
-    // derived from its FSM `state`, counting ONLY loops whose relevant timestamp
-    // falls in the last 24h: completedAt for terminal loops (the moment they
-    // settled), updatedAt for still-active ones (their last tick). Buckets:
-    //   passed   = converged
-    //   broke    = failed + escalated
-    //   stopped  = stopped_cap + cancelled
-    //   waiting  = awaiting_merge   (the human merge gate)
-    //   running  = pending + building_context + reviewing + deciding + developing
-    // Reuses the same single `allLoops` read above — no extra fetch, bounded by
-    // the project's loop count and project-scoped via the request ALS context.
-    const DAY_MS = 24 * 60 * 60 * 1000;
-    const since = Date.now() - DAY_MS;
-    const LOOP_STATE_BUCKET: Record<
-      string,
-      "passed" | "broke" | "stopped" | "waiting" | "running"
-    > = {
-      converged: "passed",
-      failed: "broke",
-      escalated: "broke",
-      stopped_cap: "stopped",
-      cancelled: "stopped",
-      awaiting_merge: "waiting",
-      pending: "running",
-      building_context: "running",
-      reviewing: "running",
-      deciding: "running",
-      developing: "running",
-    };
-    const loops24h = {
-      passed: 0,
-      broke: 0,
-      stopped: 0,
-      waiting: 0,
-      running: 0,
-      total: 0,
-    };
-    for (const l of allLoops) {
-      const isTerminal = CONSILIUM_LOOP_TERMINAL_STATES.includes(
-        l.state as (typeof CONSILIUM_LOOP_TERMINAL_STATES)[number],
-      );
-      // Terminal loops carry completedAt; fall back to updatedAt if (defensively)
-      // unset. Active loops are dated by their last tick (updatedAt).
-      const ts = isTerminal ? (l.completedAt ?? l.updatedAt) : l.updatedAt;
-      if (!ts) continue;
-      if (new Date(ts).getTime() < since) continue;
-      const bucket = LOOP_STATE_BUCKET[l.state];
-      if (!bucket) continue;
-      loops24h[bucket] += 1;
-      loops24h.total += 1;
-    }
-
-    res.json({
-      modelsConfigured,
-      taskGroupsTotal,
-      taskGroupsActive,
-      consiliumLoopsTotal,
-      consiliumLoopsActive,
-      loops24h,
-    });
+    res.json(await storage.getPendingQuestions());
   });
 
   return httpServer;

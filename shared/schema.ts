@@ -17,7 +17,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { TriggerConfig, TriggerType, TriggerProvenance, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, RoundVerdict, RoundParticipant, ExecutionTrace, ReviewMode, ExperienceScope, ExperienceEvidence, ExperienceVerification, ExperienceProvenance, ExperienceFreshness, ExperienceConfidence, ExperienceConsolidation, SkillProposalStatus, SkillProposalProvenance, SkillProposalEvidence } from "./types.js";
+import type { TriggerConfig, TriggerType, TriggerProvenance, TraceSpan, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, RoundVerdict, RoundParticipant, ExecutionTrace, ReviewMode, ExperienceScope, ExperienceEvidence, ExperienceVerification, ExperienceProvenance, ExperienceFreshness, ExperienceConfidence, ExperienceConsolidation, SkillProposalStatus, SkillProposalProvenance, SkillProposalEvidence } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -128,119 +128,6 @@ export const insertModelSchema = createInsertSchema(models).omit({
 
 export type InsertModel = z.infer<typeof insertModelSchema>;
 export type Model = typeof models.$inferSelect;
-
-// ─── Pipelines ──────────────────────────────────────
-
-export const pipelines = pgTable("pipelines", {
-  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-  id: varchar("id")
-    .primaryKey()
-    .default(sql`gen_random_uuid()`),
-  name: text("name").notNull(),
-  description: text("description"),
-  stages: jsonb("stages").notNull().default(sql`'[]'::jsonb`),
-  dag: jsonb("dag"),
-  createdBy: varchar("created_by"),
-  ownerId: text("owner_id").references(() => users.id, { onDelete: "set null" }),
-  isTemplate: boolean("is_template").notNull().default(false),
-  /** Manager mode configuration. If non-null, pipeline runs in manager mode. */
-  managerConfig: jsonb("manager_config").$type<ManagerConfig>(),
-  createdAt: timestamp("created_at").defaultNow(),
-  updatedAt: timestamp("updated_at").defaultNow(),
-});
-
-export const insertPipelineSchema = createInsertSchema(pipelines).omit({
-  id: true,
-  createdAt: true,
-  updatedAt: true,
-});
-
-export type InsertPipeline = z.infer<typeof insertPipelineSchema>;
-export type Pipeline = typeof pipelines.$inferSelect;
-
-// ─── Pipeline Runs ──────────────────────────────────
-
-export const pipelineRuns = pgTable("pipeline_runs", {
-  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-  id: varchar("id")
-    .primaryKey()
-    .default(sql`gen_random_uuid()`),
-  pipelineId: varchar("pipeline_id").notNull(),
-  // Optional link to the workspace the run is operating against. Pipelines are
-  // workspace-agnostic templates; binding happens per-run. NULL means the run
-  // is not tied to any workspace (legacy / unbound runs). FK uses ON DELETE
-  // SET NULL so deleting a workspace doesn't cascade-destroy run history.
-  workspaceId: varchar("workspace_id"),
-  status: text("status").notNull().default("pending"),
-  input: text("input").notNull(),
-  output: jsonb("output"),
-  currentStageIndex: integer("current_stage_index").notNull().default(0),
-  startedAt: timestamp("started_at"),
-  completedAt: timestamp("completed_at"),
-  triggeredBy: text("triggered_by").references(() => users.id, { onDelete: "set null" }),
-  dagMode: boolean("dag_mode").notNull().default(false),
-  createdAt: timestamp("created_at").defaultNow(),
-});
-
-export const insertPipelineRunSchema = createInsertSchema(pipelineRuns).omit({
-  id: true,
-  createdAt: true,
-});
-
-export type InsertPipelineRun = z.infer<typeof insertPipelineRunSchema>;
-export type PipelineRun = typeof pipelineRuns.$inferSelect;
-
-// ─── Stage Executions ───────────────────────────────
-
-export const stageExecutions = pgTable("stage_executions", {
-  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-  id: varchar("id")
-    .primaryKey()
-    .default(sql`gen_random_uuid()`),
-  runId: varchar("run_id").notNull(),
-  stageIndex: integer("stage_index").notNull(),
-  teamId: text("team_id").notNull(),
-  modelSlug: text("model_slug").notNull(),
-  status: text("status").notNull().default("pending"),
-  input: jsonb("input").notNull(),
-  output: jsonb("output"),
-  tokensUsed: integer("tokens_used").default(0),
-  startedAt: timestamp("started_at"),
-  completedAt: timestamp("completed_at"),
-  sandboxResult: jsonb("sandbox_result"),
-  thoughtTree: jsonb("thought_tree"),
-  // ─── Approval Gate Fields ───────────────────────
-  approvalStatus: text("approval_status"),  // 'pending' | 'approved' | 'rejected'
-  approvedAt: timestamp("approved_at"),
-  approvedBy: text("approved_by"),
-  rejectionReason: text("rejection_reason"),
-  // Persisted failure reason for a `failed` stage. Written in the controller
-  // catch blocks so the run UI can surface *why* a stage failed after a page
-  // reload (WS `stage:failed` events are not replayable). See issue #342.
-  error: text("error"),
-  dagStageId: text("dag_stage_id"),
-  swarmCloneResults: jsonb("swarm_clone_results").$type<SwarmCloneResult[]>(),
-  swarmMeta: jsonb("swarm_meta").$type<{
-    cloneCount: number;
-    succeededCount: number;
-    failedCount: number;
-    mergerUsed: SwarmMerger;
-    splitterUsed: SwarmSplitter;
-    totalTokensUsed: number;
-    durationMs: number;
-  }>(),
-  createdAt: timestamp("created_at").defaultNow(),
-});
-
-export const insertStageExecutionSchema = createInsertSchema(
-  stageExecutions,
-).omit({
-  id: true,
-  createdAt: true,
-});
-
-export type InsertStageExecution = z.infer<typeof insertStageExecutionSchema>;
-export type StageExecution = typeof stageExecutions.$inferSelect;
 
 // ─── Questions ──────────────────────────────────────
 
@@ -388,30 +275,6 @@ export const insertLlmRequestSchema = createInsertSchema(llmRequests).omit({
 export type InsertLlmRequest = z.infer<typeof insertLlmRequestSchema>;
 export type LlmRequest = typeof llmRequests.$inferSelect;
 
-// ─── Memories ────────────────────────────────────────────────────────────────
-
-export const memories = pgTable("memories", {
-  id: serial("id").primaryKey(),
-  scope: text("scope").notNull(),
-  scopeId: text("scope_id"),
-  type: text("type").notNull(),
-  key: text("key").notNull(),
-  content: text("content").notNull(),
-  source: text("source"),
-  confidence: real("confidence").notNull().default(1.0),
-  tags: text("tags").array().default(sql`'{}'::text[]`),
-  createdAt: timestamp("created_at").defaultNow(),
-  updatedAt: timestamp("updated_at").defaultNow(),
-  expiresAt: timestamp("expires_at"),
-  createdByRunId: integer("created_by_run_id"),
-  published: boolean("published").notNull().default(false),
-}, (table) => ({
-  scopeKeyUnique: unique().on(table.scope, table.scopeId, table.key),
-  publishedIdx: index("memories_published_idx").on(table.published).where(sql`published = true`),
-}));
-
-export type MemoryRow = typeof memories.$inferSelect;
-
 // ─── MCP Servers ─────────────────────────────────────────────────────────────
 
 export const mcpServers = pgTable("mcp_servers", {
@@ -518,36 +381,6 @@ export const insertWorkspaceSchema = createInsertSchema(workspaces).omit({
 export type InsertWorkspace = z.infer<typeof insertWorkspaceSchema>;
 export type WorkspaceRow = typeof workspaces.$inferSelect;
 
-// ─── Delegation Requests (Phase 6.4) ─────────────────────────────────────────
-
-export const delegationRequests = pgTable("delegation_requests", {
-  projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-  id: varchar("id")
-    .primaryKey()
-    .default(sql`gen_random_uuid()`),
-  runId: varchar("run_id").notNull(),
-  fromStage: text("from_stage").notNull(),
-  toStage: text("to_stage").notNull(),
-  task: text("task").notNull(),
-  context: jsonb("context").notNull().default(sql`'{}'::jsonb`),
-  priority: text("priority").notNull().default("blocking"),
-  timeout: integer("timeout").notNull().default(30000),
-  depth: integer("depth").notNull().default(0),
-  status: text("status").notNull().default("pending"),
-  result: jsonb("result"),
-  errorMessage: text("error_message"),
-  startedAt: timestamp("started_at").notNull().defaultNow(),
-  completedAt: timestamp("completed_at"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
-
-export const insertDelegationRequestSchema = createInsertSchema(delegationRequests).omit({
-  id: true,
-  createdAt: true,
-});
-
-export type InsertDelegationRequest = z.infer<typeof insertDelegationRequestSchema>;
-export type DelegationRequestRow = typeof delegationRequests.$inferSelect;
 // ─── Specialization Profiles (Phase 5) ───────────────────────────────────────
 
 export const specializationProfiles = pgTable("specialization_profiles", {
@@ -643,11 +476,6 @@ export const triggers = pgTable(
       .default(sql`gen_random_uuid()`),
     // Denormalized from pipelines.projectId for direct query scoping: ADR-001 PR-0c §3.1(e)
     projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-    // T1 RETARGET (loop-triggers.md): a trigger fires a CONSILIUM LOOP, not a
-    // (deleted) pipeline run. `pipeline_id` is now NULLABLE — new project-scoped
-    // triggers carry no pipeline. Kept (nullable FK) for pre-existing rows.
-    pipelineId: varchar("pipeline_id")
-      .references(() => pipelines.id, { onDelete: "cascade" }),
     type: text("type").notNull().$type<TriggerType>(),
     config: jsonb("config").notNull().default(sql`'{}'::jsonb`).$type<TriggerConfig>(),
     secretEncrypted: text("secret_encrypted"),
@@ -668,7 +496,6 @@ export const triggers = pgTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => ({
-    pipelineIdIdx: index("triggers_pipeline_id_idx").on(table.pipelineId),
     enabledTypeIdx: index("triggers_enabled_type_idx").on(table.enabled, table.type),
     projectIdIdx: index("triggers_project_id_idx").on(table.projectId),
   }),
@@ -689,42 +516,6 @@ export const insertTriggerSchema = createInsertSchema(triggers).omit({
 export type TriggerRow = typeof triggers.$inferSelect;
 export type InsertTriggerRow = z.infer<typeof insertTriggerSchema>;
 
-// ─── Manager Iterations (Phase 6.6) ─────────────────────────────────────────
-
-export const managerIterations = pgTable(
-  "manager_iterations",
-  {
-    id: varchar("id")
-      .primaryKey()
-      .default(sql`gen_random_uuid()`),
-    runId: varchar("run_id")
-      .notNull()
-      .references(() => pipelineRuns.id, { onDelete: "cascade" }),
-    iterationNumber: integer("iteration_number").notNull(),
-    decision: jsonb("decision").notNull().$type<ManagerDecision>(),
-    teamResult: text("team_result"),
-    tokensUsed: integer("tokens_used").notNull().default(0),
-    decisionDurationMs: integer("decision_duration_ms").notNull().default(0),
-    teamDurationMs: integer("team_duration_ms"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-  },
-  (table) => ({
-    runIdIdx: index("manager_iterations_run_id_idx").on(table.runId),
-    runIterationUnique: unique("manager_iterations_run_iteration_unique").on(
-      table.runId,
-      table.iterationNumber,
-    ),
-  }),
-);
-
-export const insertManagerIterationSchema = createInsertSchema(managerIterations).omit({
-  id: true,
-  createdAt: true,
-});
-
-export type InsertManagerIteration = z.infer<typeof insertManagerIterationSchema>;
-export type ManagerIterationRow = typeof managerIterations.$inferSelect;
-
 // ─── Traces (Phase 6.5) ──────────────────────────────────────────────────────
 
 export const traces = pgTable(
@@ -734,9 +525,12 @@ export const traces = pgTable(
       .primaryKey()
       .default(sql`gen_random_uuid()`),
     traceId: text("trace_id").notNull().unique(),
-    runId: varchar("run_id")
-      .notNull()
-      .references(() => pipelineRuns.id, { onDelete: "cascade" }),
+    // The pipelines engine is retired (migration 0053): the FK to pipeline_runs
+    // is detached (column kept, plain varchar). traces is write-less going
+    // forward (see task #29) — getTraces()/getTraceByRunId() now return
+    // empty/null unconditionally rather than reconstruct scoping through a
+    // dropped table (server/storage-pg.ts).
+    runId: varchar("run_id").notNull(),
     spans: jsonb("spans").notNull().default(sql`'[]'::jsonb`).$type<TraceSpan[]>(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -835,7 +629,7 @@ export type TaskGroupRow = typeof taskGroups.$inferSelect;
 export const TASK_STATUSES = ["pending", "blocked", "ready", "running", "completed", "failed", "cancelled"] as const;
 export type TaskStatus = typeof TASK_STATUSES[number];
 
-export const TASK_EXECUTION_MODES = ["pipeline_run", "direct_llm"] as const;
+export const TASK_EXECUTION_MODES = ["direct_llm"] as const;
 export type TaskExecutionMode = typeof TASK_EXECUTION_MODES[number];
 
 export const tasks = pgTable(
@@ -1484,7 +1278,7 @@ export type WorkspaceSettingsRow = typeof workspaceSettings.$inferSelect;
 // Dimensions default to 1536 (OpenAI/Voyage); Ollama nomic-embed-text uses 768.
 // The actual model dimension is stored in metadata.dim.
 
-export const CHUNK_SOURCE_TYPES = ["code", "pipeline_run", "document", "memory_entry", "practice_card", "news_item"] as const;
+export const CHUNK_SOURCE_TYPES = ["code", "document", "memory_entry", "practice_card", "news_item"] as const;
 export type ChunkSourceType = typeof CHUNK_SOURCE_TYPES[number];
 
 export const memoryChunks = pgTable(

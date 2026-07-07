@@ -135,54 +135,6 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { envKey: "MULTI_MEMORY_RETRIEVAL_OMNISCIENCE_STRATEGY",     configPath: ["memory", "retrieval", "omniscience", "retrievalStrategy"], kind: "string"  },
   { envKey: "MULTI_MEMORY_RETRIEVAL_OMNISCIENCE_TIMEOUT_MS",   configPath: ["memory", "retrieval", "omniscience", "timeoutMs"],         kind: "number"  },
 
-  // Pipeline stage streaming (streaming-stage-execution).
-  { envKey: "PIPELINE_STREAMING_ENABLED",              configPath: ["pipeline", "streaming", "enabled"],          kind: "boolean" },
-  { envKey: "PIPELINE_STREAMING_IDLE_TIMEOUT_MS",      configPath: ["pipeline", "streaming", "idleTimeoutMs"],    kind: "number"  },
-  { envKey: "PIPELINE_STREAMING_OVERALL_TIMEOUT_MS",   configPath: ["pipeline", "streaming", "overallTimeoutMs"], kind: "number"  },
-  { envKey: "PIPELINE_STREAMING_MAX_OUTPUT_BYTES",     configPath: ["pipeline", "streaming", "maxOutputBytes"],   kind: "number"  },
-  { envKey: "PIPELINE_STREAMING_WS_PROGRESS_FLUSH_MS", configPath: ["pipeline", "streaming", "wsProgressFlushMs"],kind: "number"  },
-  { envKey: "MULTI_PIPELINE_STREAMING_ENABLED",              configPath: ["pipeline", "streaming", "enabled"],          kind: "boolean" },
-  { envKey: "MULTI_PIPELINE_STREAMING_IDLE_TIMEOUT_MS",      configPath: ["pipeline", "streaming", "idleTimeoutMs"],    kind: "number"  },
-  { envKey: "MULTI_PIPELINE_STREAMING_OVERALL_TIMEOUT_MS",   configPath: ["pipeline", "streaming", "overallTimeoutMs"], kind: "number"  },
-  { envKey: "MULTI_PIPELINE_STREAMING_MAX_OUTPUT_BYTES",     configPath: ["pipeline", "streaming", "maxOutputBytes"],   kind: "number"  },
-  { envKey: "MULTI_PIPELINE_STREAMING_WS_PROGRESS_FLUSH_MS", configPath: ["pipeline", "streaming", "wsProgressFlushMs"],kind: "number"  },
-
-  // Debate-research orchestrator (additive 3rd run mode).
-  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_ENABLED",                  configPath: ["pipeline", "orchestrator", "enabled"],                kind: "boolean" },
-  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_MAX_STEPS",                configPath: ["pipeline", "orchestrator", "maxSteps"],               kind: "number"  },
-  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_MAX_DEBATE_ROUNDS",        configPath: ["pipeline", "orchestrator", "maxDebateRounds"],        kind: "number"  },
-  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_MAX_RESEARCH_SOURCES",     configPath: ["pipeline", "orchestrator", "maxResearchSources"],     kind: "number"  },
-  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_MAX_RESEARCH_CONCURRENCY", configPath: ["pipeline", "orchestrator", "maxResearchConcurrency"], kind: "number"  },
-  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_MAX_RESEARCH_SOURCE_BYTES",configPath: ["pipeline", "orchestrator", "maxResearchSourceBytes"], kind: "number"  },
-  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_MAX_RESEARCH_TOTAL_BYTES", configPath: ["pipeline", "orchestrator", "maxResearchTotalBytes"],  kind: "number"  },
-  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_MAX_TOTAL_TOKENS",         configPath: ["pipeline", "orchestrator", "maxTotalTokens"],         kind: "number"  },
-  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_OVERALL_TIMEOUT_MS",       configPath: ["pipeline", "orchestrator", "overallTimeoutMs"],       kind: "number"  },
-  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_STEP_OUTPUT_MAX_BYTES",    configPath: ["pipeline", "orchestrator", "stepOutputMaxBytes"],     kind: "number"  },
-  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_GEMINI_TURN_TIMEOUT_MS",   configPath: ["pipeline", "orchestrator", "geminiTurnTimeoutMs"],    kind: "number"  },
-  { envKey: "MULTI_PIPELINE_ORCHESTRATOR_DEBATE_NOVELTY_PATIENCE",  configPath: ["pipeline", "orchestrator", "debateNoveltyPatience"], kind: "number"  },
-
-  // Adaptive-stability deliberation engine (shared min-rounds floor).
-  { envKey: "PIPELINE_DELIBERATION_MIN_ROUNDS",        configPath: ["pipeline", "deliberation", "minRounds"], kind: "number" },
-  { envKey: "MULTI_PIPELINE_DELIBERATION_MIN_ROUNDS",  configPath: ["pipeline", "deliberation", "minRounds"], kind: "number" },
-
-  // /consensus run mode (decision verdict). Kill-switch default FALSE.
-  { envKey: "MULTI_PIPELINE_CONSENSUS_ENABLED",            configPath: ["pipeline", "consensus", "enabled"],          kind: "boolean" },
-  { envKey: "MULTI_PIPELINE_CONSENSUS_MAX_ROUNDS",         configPath: ["pipeline", "consensus", "maxRounds"],        kind: "number"  },
-  { envKey: "MULTI_PIPELINE_CONSENSUS_VOTER_COUNT",        configPath: ["pipeline", "consensus", "voterCount"],       kind: "number"  },
-  { envKey: "MULTI_PIPELINE_CONSENSUS_MAX_TOTAL_TOKENS",   configPath: ["pipeline", "consensus", "maxTotalTokens"],   kind: "number"  },
-  { envKey: "MULTI_PIPELINE_CONSENSUS_OVERALL_TIMEOUT_MS", configPath: ["pipeline", "consensus", "overallTimeoutMs"], kind: "number"  },
-  { envKey: "MULTI_PIPELINE_CONSENSUS_VOTER_TIMEOUT_MS",   configPath: ["pipeline", "consensus", "voterTimeoutMs"],   kind: "number"  },
-
-  // Opt-in streaming for orchestrator debate turns (debate-streaming-termination).
-  { envKey: "PIPELINE_DEBATE_STREAMING_ENABLED",              configPath: ["pipeline", "debateStreaming", "enabled"],          kind: "boolean" },
-  { envKey: "PIPELINE_DEBATE_STREAMING_IDLE_TIMEOUT_MS",      configPath: ["pipeline", "debateStreaming", "idleTimeoutMs"],    kind: "number"  },
-  { envKey: "PIPELINE_DEBATE_STREAMING_OVERALL_TIMEOUT_MS",   configPath: ["pipeline", "debateStreaming", "overallTimeoutMs"], kind: "number"  },
-  { envKey: "PIPELINE_DEBATE_STREAMING_MAX_OUTPUT_BYTES",     configPath: ["pipeline", "debateStreaming", "maxOutputBytes"],   kind: "number"  },
-  { envKey: "MULTI_PIPELINE_DEBATE_STREAMING_ENABLED",              configPath: ["pipeline", "debateStreaming", "enabled"],          kind: "boolean" },
-  { envKey: "MULTI_PIPELINE_DEBATE_STREAMING_IDLE_TIMEOUT_MS",      configPath: ["pipeline", "debateStreaming", "idleTimeoutMs"],    kind: "number"  },
-  { envKey: "MULTI_PIPELINE_DEBATE_STREAMING_OVERALL_TIMEOUT_MS",   configPath: ["pipeline", "debateStreaming", "overallTimeoutMs"], kind: "number"  },
-  { envKey: "MULTI_PIPELINE_DEBATE_STREAMING_MAX_OUTPUT_BYTES",     configPath: ["pipeline", "debateStreaming", "maxOutputBytes"],   kind: "number"  },
-
   // Consilium loop (design §8). `allowedRepoPaths` is NOT env-mapped — the
   // allowlist is config.yaml-only (fail-closed) so it cannot be widened from the
   // environment (Security H-1).

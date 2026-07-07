@@ -28,7 +28,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { apiRequest } from "@/hooks/use-pipeline";
+import { apiRequest } from "@/hooks/use-api";
 
 // ─── Wire types (subset of server TrustTelemetry) ──────────────────────────────
 
