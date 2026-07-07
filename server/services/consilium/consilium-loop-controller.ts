@@ -72,7 +72,9 @@ import {
 } from "./experience/experience-reader.js";
 import { assertAllowedRepoPath } from "./repo-allowlist.js";
 import { buildBranchName } from "./pr-wrapper.js";
-import { assertRepoIsProjectWorkspace, backtickFence, stripControlMultiline, buildSingleVerifierTask, VERIFIER_TASK_NAME } from "./review-factory.js";
+import { assertRepoIsProjectWorkspace, backtickFence, stripControlMultiline, buildSingleVerifierTask, VERIFIER_TASK_NAME, buildCrossReviewTasks, PRESET_PANELS, JUDGE_TASK_NAME } from "./review-factory.js";
+import { parseConsiliumPreset } from "./composition.js";
+import { runReviewTasks } from "./review-runner.js";
 
 // ─── FSM events (design §3 "Event / guard" column) ──────────────────────────
 
@@ -1490,6 +1492,22 @@ export class ConsiliumLoopController {
       }
     }
 
+    // Phase 2 (B4) — the reviewing peer of the developing gate above. A runner review
+    // ALWAYS keeps currentIterationNumber NULL, so the null-ref check treats it as
+    // stranded; the `reviewRuns` registry is AUTHORITATIVE — an entry for this
+    // loop+round means NOT stranded (in-flight ⇒ wait; settled ⇒ deriveReviewEvent
+    // advances it). Re-dispatch ONLY when the registry has NO entry (a genuine
+    // crash/restart that lost it), gated by the grace + claimRedrive below — exactly
+    // the developing discipline. INERT in legacy mode: reviewRuns is empty (dispatchReview
+    // never ran), so this never fires and the legacy stranded-review redrive runs unchanged.
+    if (loop.state === "reviewing") {
+      const run = this.reviewRuns.get(loop.id);
+      if (run && run.round === loop.round) {
+        this.log(loop.id, `reviewing has a registered review run (round ${run.round}, done=${run.done}) — not stranded, no re-drive`);
+        return null;
+      }
+    }
+
     const ageMs = Date.now() - new Date(loop.updatedAt).getTime();
     if (ageMs < this.redriveGraceMs(loop.state)) {
       this.log(loop.id, `null child ref in ${loop.state} but within grace (${ageMs}ms) — assume in-flight, no re-drive`);
@@ -2124,6 +2142,21 @@ export class ConsiliumLoopController {
     opts?: { relaunch?: boolean },
   ): Promise<Record<string, unknown>> {
     const cfg = this.loopConfig();
+    // Phase 2 (B4) runner-mode: dispatch a background DIRECT review (no task_group
+    // iteration) and return immediately. `dispatchReview` keys the reviewRuns entry off
+    // the round the review is FOR (nextRound); the runner (`runReviewFromLoop`) rebuilds
+    // the review context + DAG from the loop. currentIterationNumber stays NULL (the
+    // marker) — the reviewRuns entry is the sole in-flight signal. Flag OFF ⇒ the legacy
+    // startGroupAsync path below runs UNCHANGED (byte-identical parity).
+    if (cfg.directReview?.enabled) {
+      const nextRound = opts?.relaunch ? loop.round : loop.round + 1;
+      this.log(
+        loop.id,
+        `startReviewRound${opts?.relaunch ? " (relaunch)" : ""} -> dispatchReview (runner) round ${nextRound}`,
+      );
+      this.dispatchReview({ ...loop, round: nextRound });
+      return { round: nextRound, openP0: null };
+    }
     const group = await this.storage.getTaskGroup(loop.groupId);
     const objective = group?.input ?? "";
     // Enh1: for every review AFTER the first (loop.round >= 1), inject the prior
@@ -2454,13 +2487,10 @@ export class ConsiliumLoopController {
   private dispatchReview(loop: ConsiliumLoopRow): void {
     const run: ReviewRun = { round: loop.round, done: false };
     this.reviewRuns.set(loop.id, run);
-    const runner = this.deps.runReview;
-    if (!runner) {
-      // Round-1 isolation: the real review-runner.ts is not wired yet (B2). Settle a
-      // degraded result rather than leave the entry in-flight forever.
-      this.settleReviewRun(loop.id, run, degradedReviewResult("no review runner configured"));
-      return;
-    }
+    // Default runner (production) rebuilds the review context + DAG from the loop and
+    // runs it directly via `runReviewFromLoop` (mirrors how `closeout` rebuilds the SDLC
+    // context); tests inject `deps.runReview` (a fake) to bypass the gateway/model.
+    const runner = this.deps.runReview ?? ((l: ConsiliumLoopRow) => this.runReviewFromLoop(l));
     void runner(loop)
       .then((result) => this.settleReviewRun(loop.id, run, result))
       .catch((err: unknown) =>
@@ -2498,6 +2528,64 @@ export class ConsiliumLoopController {
     }
     run.result = result;
     run.done = true;
+  }
+
+  /**
+   * Default runner-mode review executor (Phase 2 B4): rebuilds the review context +
+   * DAG from the loop — objective, prior findings, test summary, repo map, diff
+   * context (the SAME inputs `startReviewRound`'s legacy path assembles), then the
+   * cross-review DAG (or the lone single-verifier for round > 1) — and runs it via
+   * `runReviewTasks`. Mirrors `closeout` rebuilding the SDLC context from the loop
+   * (not a caller hand-off). NEVER throws: a missing gateway or an unbuildable diff
+   * context (incl. an unresolved ref) settles a degraded {error} — the loop then
+   * fails closed via `review_failed` (fail-closed, exception-derived per L1; the
+   * curated failUnresolvedReview reason is a legacy-path nicety, tracked as a
+   * follow-up). `deps.runReview` bypasses this entirely in tests.
+   */
+  private async runReviewFromLoop(loop: ConsiliumLoopRow): Promise<ReviewRunResult> {
+    const gateway = this.deps.gateway;
+    if (!gateway) return degradedReviewResult("no review gateway configured");
+    const cfg = this.loopConfig();
+    const group = await this.storage.getTaskGroup(loop.groupId);
+    const objective = group?.input ?? "";
+    const priorFindings =
+      loop.round >= 1 ? await this.buildPriorFindings(loop, cfg.maxDiffBytes) : undefined;
+    const testSummary =
+      effectiveVerificationEnabled(this.deps.config()) || this.researchImplementEnabled()
+        ? await this.latestRoundTestSummary(loop)
+        : undefined;
+    const repoMap = await this.buildReviewRepoMap(loop, cfg);
+    const ctx = await buildDiffContext({
+      repoPath: loop.repoPath,
+      baselineCommit: loop.lastReviewedCommit,
+      ref: loop.reviewRef,
+      objective,
+      allowedRepoPaths: cfg.allowedRepoPaths,
+      maxDiffBytes: cfg.maxDiffBytes,
+      priorFindings,
+      testSummary,
+      repoMap,
+    });
+    if (!ctx.ok) return degradedReviewResult(ctx.message);
+    // Panel from the group's preset (recovered from the group NAME — the SAME source
+    // the task-group setup used), falling back to the sdlc-cross-review default panel.
+    const preset = parseConsiliumPreset(group?.name);
+    const panel = (preset && PRESET_PANELS[preset]) || PRESET_PANELS["sdlc-cross-review"];
+    // Single-verifier re-review (round > 1 ONLY) mirrors startReviewRound's swap.
+    const reviewMode = resolveReviewMode(loop.reviewMode, cfg.verifyReview?.enabled ?? false);
+    const singleVerifier = loop.round > 1 && reviewMode === "single-verifier";
+    const tasks = singleVerifier
+      ? [buildSingleVerifierTask({ model: cfg.verifyReview?.model ?? "claude-opus", priorFindings })]
+      : buildCrossReviewTasks(panel);
+    const judgeTaskName = singleVerifier ? VERIFIER_TASK_NAME : JUDGE_TASK_NAME;
+    return runReviewTasks({
+      tasks,
+      judgeTaskName,
+      groupName: group?.name ?? "",
+      groupInput: ctx.input,
+      gateway,
+      timeoutMs: this.deps.config().pipeline.taskGroups.taskTimeoutMs,
+    });
   }
 
   /**
