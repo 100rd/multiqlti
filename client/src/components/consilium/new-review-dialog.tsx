@@ -70,6 +70,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { apiRequest } from "@/hooks/use-pipeline";
 import { useSkills } from "@/hooks/use-skills";
 import { useToast } from "@/hooks/use-toast";
+import { parseBranchFromUrl } from "@/components/consilium/parse-branch-url";
 
 /**
  * The presets the backend accepts, with human labels + a one-line description of
@@ -198,6 +199,12 @@ export function NewConsiliumReviewDialog({
   // workspaces exist (for an allowlisted repo not registered as a workspace).
   const [customMode, setCustomMode] = useState(false);
   const [branch, setBranch] = useState("");
+  // "Paste a branch URL / ref" — an additional affordance alongside the dropdown
+  // (mirrors the repo `customMode` pattern). When on, the branch control becomes a
+  // free-text input that accepts a GitHub/GitLab branch URL OR a bare ref;
+  // `parseBranchFromUrl` derives the ref that is actually submitted.
+  const [branchCustomMode, setBranchCustomMode] = useState(false);
+  const [branchUrlDraft, setBranchUrlDraft] = useState("");
   const [maxRounds, setMaxRounds] = useState("1");
   // Single-verifier re-review: OPTIONAL per-loop review mode. "" = use the instance
   // default (verifyReview.enabled); otherwise pin the mode for this loop. Sent as
@@ -316,6 +323,26 @@ export function NewConsiliumReviewDialog({
       ? [branch, ...liveBranches]
       : liveBranches;
 
+  // The ref parsed from the pasted URL / bare ref (custom mode only). Shown as a
+  // live hint and used as the submitted ref, so the operator always sees what a
+  // pasted URL resolved to before starting the review.
+  const parsedCustomBranch = parseBranchFromUrl(branchUrlDraft);
+  // The single source of truth for the submitted branch: the pasted-URL derivation
+  // in custom mode, otherwise the dropdown/free-text `branch`.
+  const effectiveBranch = branchCustomMode ? parsedCustomBranch : branch;
+
+  // Enter the paste-URL affordance, seeding the draft from the current selection
+  // so a picked branch carries over as an editable starting point.
+  const enterBranchCustom = () => {
+    setBranchUrlDraft(branch);
+    setBranchCustomMode(true);
+  };
+  // Return to the dropdown, carrying the derived ref back so the choice survives.
+  const useBranchPicker = () => {
+    setBranch(parseBranchFromUrl(branchUrlDraft));
+    setBranchCustomMode(false);
+  };
+
   const enterCustomPath = () => {
     // Carry the current selection into the input as a starting point.
     setCustomMode(true);
@@ -395,7 +422,9 @@ export function NewConsiliumReviewDialog({
     // Branch → `ref`. Omit when empty, or (in workspace mode) when it equals the
     // workspace default — the server treats an absent ref as the working-tree
     // HEAD, so this preserves the prior behavior for the unchanged-default case.
-    const chosenBranch = branch.trim();
+    // `effectiveBranch` is the pasted-URL derivation in custom mode, else the
+    // dropdown/free-text branch — the SAME `ref` field either way.
+    const chosenBranch = effectiveBranch.trim();
     if (
       chosenBranch &&
       !(selectedWorkspace && chosenBranch === workspaceDefaultBranch)
@@ -528,10 +557,52 @@ export function NewConsiliumReviewDialog({
           </div>
 
           {/* Branch — a Select over the workspace's live branches, with graceful
-              loading / failure / free-text fallbacks so it's never a dead end. */}
+              loading / failure / free-text fallbacks so it's never a dead end,
+              PLUS a "paste a branch URL / ref" affordance (mirrors the repo
+              customMode toggle) that derives the submitted ref from a pasted
+              GitHub/GitLab URL or a bare ref. */}
           <div className="space-y-2">
-            <Label>Branch</Label>
-            {branchesLoading ? (
+            <div className="flex items-baseline justify-between gap-2">
+              <Label htmlFor={branchCustomMode ? "new-review-branch-url" : undefined}>
+                Branch
+              </Label>
+              <button
+                type="button"
+                className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+                onClick={branchCustomMode ? useBranchPicker : enterBranchCustom}
+                data-testid="new-review-toggle-branch-url"
+              >
+                {branchCustomMode ? "Pick from the list instead" : "Paste a branch URL / ref"}
+              </button>
+            </div>
+            {branchCustomMode ? (
+              <>
+                <Input
+                  id="new-review-branch-url"
+                  value={branchUrlDraft}
+                  onChange={(e) => setBranchUrlDraft(e.target.value)}
+                  placeholder="https://github.com/owner/repo/tree/release/1.2 — or a bare ref"
+                  data-testid="new-review-branch-url"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {parsedCustomBranch ? (
+                    <>
+                      Will review ref{" "}
+                      <span
+                        className="font-mono text-foreground"
+                        data-testid="new-review-branch-url-parsed"
+                      >
+                        {parsedCustomBranch}
+                      </span>
+                      . Paste a GitHub/GitLab branch URL (…/tree/&lt;branch&gt;) or a
+                      bare ref.
+                    </>
+                  ) : (
+                    "Paste a GitHub/GitLab branch URL (…/tree/<branch>) or a bare ref — leave empty for the repo's current branch (HEAD)."
+                  )}
+                </p>
+              </>
+            ) : branchesLoading ? (
               <Select disabled value="">
                 <SelectTrigger data-testid="new-review-branch-loading">
                   <span className="inline-flex items-center gap-2 text-muted-foreground">
@@ -546,7 +617,12 @@ export function NewConsiliumReviewDialog({
                 <SelectTrigger data-testid="new-review-branch-select">
                   <SelectValue placeholder="Select a branch" />
                 </SelectTrigger>
-                <SelectContent>
+                {/* Bounded, scrollable list: the shared SelectContent's base
+                    max-height resolves tiny when the trigger sits low in the
+                    viewport-capped dialog, clipping a long branch list. A fixed
+                    max-h (twMerge wins over the base var) + overflow-y keeps the
+                    portal popover itself scrolling, independent of the dialog. */}
+                <SelectContent className="max-h-60 overflow-y-auto">
                   {branchOptions.map((b) => (
                     <SelectItem key={b} value={b}>
                       {b}

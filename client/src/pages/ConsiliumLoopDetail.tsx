@@ -161,16 +161,24 @@ function p0ClassName(openP0: number | null | undefined, terminal: boolean): stri
 function ConvergenceMark({
   converged,
   terminal,
+  "data-testid": testId,
 }: {
   converged: boolean | null | undefined;
   terminal: boolean;
+  /** Optional test hook applied to whichever element renders (span / icon). */
+  "data-testid"?: string;
 }) {
-  if (converged == null) return <span className="text-muted-foreground">—</span>;
-  if (converged) return <Check className="h-4 w-4 text-green-600" />;
+  if (converged == null)
+    return (
+      <span data-testid={testId} className="text-muted-foreground">
+        —
+      </span>
+    );
+  if (converged) return <Check data-testid={testId} className="h-4 w-4 text-green-600" />;
   return terminal ? (
-    <X className="h-4 w-4 text-red-500" />
+    <X data-testid={testId} className="h-4 w-4 text-red-500" />
   ) : (
-    <Clock className="h-4 w-4 text-amber-500" aria-label="in progress" />
+    <Clock data-testid={testId} className="h-4 w-4 text-amber-500" aria-label="in progress" />
   );
 }
 
@@ -543,6 +551,7 @@ function RoundRow({
   return (
     <>
       <TableRow
+        data-testid="loop-round-row"
         className={expandable ? "cursor-pointer" : ""}
         onClick={expandable ? () => setOpen((v) => !v) : undefined}
       >
@@ -558,7 +567,11 @@ function RoundRow({
           </span>
         </TableCell>
         <TableCell>
-          <ConvergenceMark converged={round.converged} terminal={terminal} />
+          <ConvergenceMark
+            converged={round.converged}
+            terminal={terminal}
+            data-testid="loop-convergence-mark"
+          />
         </TableCell>
         <TableCell className={`tabular-nums font-medium ${p0ClassName(round.openP0, terminal)}`}>
           {round.openP0 ?? "—"}
@@ -595,7 +608,12 @@ function RoundRow({
               </p>
               <ul className="space-y-1.5">
                 {aps.map((ap, i) => (
-                  <li key={i} className="flex items-start gap-2 text-sm">
+                  <li
+                    key={i}
+                    className="flex items-start gap-2 text-sm"
+                    data-testid="loop-ap-item"
+                    data-priority={ap.priority ?? ""}
+                  >
                     {ap.priority && (
                       <Badge className={`${PRIORITY_COLOR[ap.priority] ?? "bg-muted"} shrink-0`}>
                         {ap.priority}
@@ -839,7 +857,12 @@ function ResultPanel({
             {latestAps.length > 0 ? (
               <ul className="space-y-1.5">
                 {latestAps.map((ap, i) => (
-                  <li key={i} className="flex items-start gap-2 text-sm">
+                  <li
+                    key={i}
+                    className="flex items-start gap-2 text-sm"
+                    data-testid="loop-ap-item"
+                    data-priority={ap.priority ?? ""}
+                  >
                     {ap.priority && (
                       <Badge className={`${PRIORITY_COLOR[ap.priority] ?? "bg-muted"} shrink-0`}>
                         {ap.priority}
