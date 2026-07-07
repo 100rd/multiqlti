@@ -166,6 +166,20 @@ export interface RoundVerdict {
   actionPoints: ActionPoint[];
 }
 
+/**
+ * One debater's turn in a round's dispute — the NEW round-sourced `participants`
+ * jsonb column (Phase 2). Replaces the iteration-sourced transcript for rounds that
+ * carry it; old pre-Phase-2 rounds have no `participants` and fall back to the
+ * task-group iteration view. `role` distinguishes a `primary` argument from a
+ * `rebuttal`. All fields are model-authored → rendered as INERT React text.
+ */
+export interface RoundParticipant {
+  name: string;
+  model: string;
+  role: "primary" | "rebuttal";
+  text: string;
+}
+
 export type ConsiliumLoopRoundDetail = ConsiliumLoopRoundRow & {
   /** The research artifact, on the latest round of a `research` loop only. */
   report?: ResearchReport | null;
@@ -173,6 +187,9 @@ export type ConsiliumLoopRoundDetail = ConsiliumLoopRoundRow & {
   executionTrace?: ExecutionTrace | null;
   /** The FULL judge verdict — see {@link RoundVerdict}. Null on old/backfilled rounds. */
   verdict?: RoundVerdict | null;
+  /** The round-sourced dispute transcript — see {@link RoundParticipant}. Null on
+   *  old pre-Phase-2 rounds (they fall back to the iteration-sourced view). */
+  participants?: RoundParticipant[] | null;
 };
 
 // ─── Composition (Observability GAP 2 — the "who does what" of a round) ───────

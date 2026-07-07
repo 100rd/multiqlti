@@ -66,6 +66,7 @@ import {
   type ConsiliumLoopRoundRow,
   type ConsiliumLoopRoundDetail,
   type RoundVerdict,
+  type RoundParticipant,
   type ConsiliumLoopDetail as ConsiliumLoopDetailRow,
   type DevProgress,
   type ResearchReport,
@@ -718,6 +719,56 @@ function RoundVerdictPanel({
   );
 }
 
+// ─── Round-sourced dispute transcript (Phase 2, F1) ─────────────────────────────
+//
+// The NEW round-sourced dispute view: one card per debater turn from the round's
+// `participants` column (name / model / role + text). It REPLACES the
+// iteration-sourced IterationDetailView for rounds that carry `participants`; old
+// pre-Phase-2 rounds have none and fall back to that view. This path is READ-ONLY
+// (the human-note editor stays on the iteration fallback).
+//
+// SECURITY: `name`, `model`, and `text` are model-authored → rendered as INERT
+// React text (never HTML, never a link/attribute sink). `role` is a fixed union.
+function RoundParticipantsView({
+  participants,
+}: {
+  participants: RoundParticipant[];
+}) {
+  return (
+    <div className="space-y-2" data-testid="loop-dispute-participants">
+      {participants.map((p, i) => (
+        <div
+          key={i}
+          className="space-y-1 rounded-md border border-border/60 p-2"
+          data-testid="loop-participant"
+          data-role={p.role}
+        >
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <Users className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            {/* INERT model-authored debater name */}
+            <span className="font-medium">{p.name || "—"}</span>
+            {p.model && (
+              <span className="font-mono text-[11px] text-muted-foreground">{p.model}</span>
+            )}
+            <Badge
+              variant={p.role === "rebuttal" ? "outline" : "secondary"}
+              className="text-[10px] py-0"
+            >
+              {p.role}
+            </Badge>
+          </div>
+          {/* INERT model-authored transcript text */}
+          {p.text && p.text.trim() !== "" && (
+            <p className="whitespace-pre-wrap break-words text-xs text-foreground/80">
+              {p.text}
+            </p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── Rounds table ─────────────────────────────────────────────────────────────
 
 function RoundRow({
@@ -742,7 +793,13 @@ function RoundRow({
   // group). Its DISPUTE — the debaters' + judge's executions plus the human-note
   // editor — lives ON the round now (the standalone Task Groups page is retired)
   // and is fetched LAZILY only when the operator opens this section.
-  const canShowDispute = !!groupId;
+  // Dispute transcript — Phase 2 prefers the round-sourced `participants`; old
+  // pre-Phase-2 rounds have none and fall back to the iteration-sourced view.
+  const participants: RoundParticipant[] = Array.isArray(round.participants)
+    ? round.participants
+    : [];
+  const hasParticipants = participants.length > 0;
+  const canShowDispute = hasParticipants || !!groupId;
   // The FULL judge verdict (new `verdict` col) — null on old/backfilled rounds.
   // Its presence makes the row expandable even when there are no open APs / trace.
   const hasVerdict = round.verdict != null;
@@ -865,10 +922,12 @@ function RoundRow({
               <p className="text-[11px] text-muted-foreground/70">{PRIORITY_LEGEND}</p>
                 </div>
               )}
-              {/* Dispute — the consilium debate behind this round: each
-                  participant's execution + the judge, plus the human-note editor
-                  whose text flows into the NEXT round's dispute context. Mounted
-                  (and fetched) only when opened, so the loop page stays light. */}
+              {/* Dispute — the consilium debate behind this round. Phase 2 (F1):
+                  a round-sourced `participants` transcript is preferred; old
+                  pre-Phase-2 rounds fall back to the iteration-sourced
+                  IterationDetailView (which also hosts the human-note editor whose
+                  text flows into the NEXT round). Mounted (and fetched, in the
+                  fallback) only when opened, so the loop page stays light. */}
               {canShowDispute && (
                 <div className="space-y-1.5">
                   <button
@@ -883,14 +942,19 @@ function RoundRow({
                       <ChevronRight className="h-3.5 w-3.5" />
                     )}
                     <Gavel className="h-3.5 w-3.5" />
-                    Dispute (iteration #{round.iterationNumber})
+                    {hasParticipants
+                      ? "Dispute"
+                      : `Dispute (iteration #${round.iterationNumber})`}
                   </button>
-                  {disputeOpen && (
-                    <IterationDetailView
-                      groupId={groupId}
-                      iterationNumber={round.iterationNumber}
-                    />
-                  )}
+                  {disputeOpen &&
+                    (hasParticipants ? (
+                      <RoundParticipantsView participants={participants} />
+                    ) : groupId ? (
+                      <IterationDetailView
+                        groupId={groupId}
+                        iterationNumber={round.iterationNumber}
+                      />
+                    ) : null)}
                 </div>
               )}
             </div>
