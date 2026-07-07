@@ -484,6 +484,15 @@ function degradedReviewResult(error: string): ReviewRunResult {
 }
 
 /**
+ * Security L1: the FIXED GENERIC explanation surfaced to `consilium_loops.error`
+ * when a runner-mode review DEGRADES (gateway/model/parse failure). The raw scrubbed
+ * detail (`ReviewRunResult.error`) is logged only — a model/exception-derived string
+ * must never reach the persisted, UI-rendered `loop.error`. Per-site fixed string
+ * (the peer of the other curated terminal explanations), NOT the raw reason.
+ */
+const REVIEW_RUN_FAILED = "review run failed";
+
+/**
  * Decide whether the open-P0 count failed to decrease across two consecutive
  * rounds (design §3 anti-stall). `series` is the per-round openP0 history,
  * oldest→newest, INCLUDING the round just decided.
@@ -1725,8 +1734,44 @@ export class ConsiliumLoopController {
     }
   }
 
-  /** REVIEWING: poll the consilium iteration; settle → completed/failed. */
+  /**
+   * REVIEWING → the next FSM event. Runner-mode (Phase 2 B5) and the legacy task-group
+   * iteration STRADDLE here, keyed off the ROUND's ACTUAL mode — a `reviewRuns` entry
+   * FOR THIS round (set by `dispatchReview` when the round entered reviewing under the
+   * runner) — NOT the live `directReview` flag (inv #5): a round dispatched under one
+   * mode is always read back under it, even across a mid-flight flip.
+   *
+   * Runner-mode: read the settled background review (mirrors `deriveDevEvent`). In-flight
+   * ⇒ null (wait). Settled+error ⇒ `review_failed` carrying the FIXED-GENERIC reason —
+   * the raw scrubbed detail goes to the LOGS only (Security L1; a model/exception-derived
+   * string must never land on the UI-rendered `loop.error`). Settled+clean ⇒
+   * `review_completed` with the runner's convergence (already computed via the SHARED
+   * readConvergence/readJudgeVerdict INSIDE the runner — no private re-parse, inv #2). The
+   * round audit (verdict + participants) is persisted on the CAS winner in `runSideEffect`,
+   * and the consumed entry dropped there (keeping this derive a pure read like deriveDevEvent).
+   *
+   * Legacy mode (no runner entry for this round): the UNCHANGED consilium-iteration poll.
+   */
   private async deriveReviewEvent(loop: ConsiliumLoopRow): Promise<LoopEvent | null> {
+    const run = this.reviewRuns.get(loop.id);
+    if (run && run.round === loop.round) {
+      if (!run.done || !run.result) return null; // in-flight ⇒ wait (no transition yet)
+      const result = run.result;
+      if (result.error) {
+        // L1: raw scrubbed detail → LOGS only; `loop.error` gets the fixed generic.
+        this.log(loop.id, `review run degraded (round ${loop.round}): ${result.error}`);
+        return { kind: "review_failed", error: REVIEW_RUN_FAILED };
+      }
+      return {
+        kind: "review_completed",
+        verdict: {
+          converged: result.converged,
+          openP0: result.openP0,
+          openActionPoints: result.openActionPoints,
+        },
+      };
+    }
+    // Legacy iteration path (byte-identical — no runner entry keyed to this round).
     const n = loop.currentIterationNumber;
     if (n == null) return null;
     const iteration = await this.storage.getIteration(loop.groupId, n);
@@ -1793,6 +1838,28 @@ export class ConsiliumLoopController {
         return {};
       }
       return extra;
+    }
+    // Phase 2 (B5) runner-mode: a reviewing→(deciding|failed) transition driven by a
+    // settled `reviewRuns` entry records the round audit HERE — on the CAS WINNER,
+    // single-flight — threading the runner's ALREADY-parsed judge verdict + participants
+    // (runner-mode has NO task executions the DECIDING recordRound could re-read; that
+    // later 2-arg recordRound(round) re-append hits the idempotent UNIQUE no-op, so THIS
+    // rich row wins). The consumed entry is then dropped. A DEGRADED settle
+    // (review_failed) records NO round — mirroring a failed legacy iteration — but still
+    // drops the entry. INERT in legacy mode: `reviewRuns` is empty (dispatchReview never
+    // ran), so this returns `{}` exactly like the prior fall-through ⇒ byte-identical.
+    if (transition.from === "reviewing") {
+      const run = this.reviewRuns.get(loop.id);
+      if (run && run.round === loop.round && run.done && run.result) {
+        if (event.kind === "review_completed" && !run.result.error) {
+          await this.recordRound(loop, event.verdict, {
+            verdict: run.result.verdict,
+            participants: run.result.participants,
+          });
+        }
+        this.reviewRuns.delete(loop.id);
+      }
+      return {};
     }
     if (transition.to === "developing" && event.kind === "decided") {
       return this.startDevHandoff(loop, event.verdict);
@@ -2650,13 +2717,24 @@ export class ConsiliumLoopController {
    * FSM transition. Fail-OPEN on state (never rethrow — the transition already
    * committed), fail-LOUD on the audit write.
    */
-  private async recordRound(loop: ConsiliumLoopRow, verdict: ConvergenceVerdict): Promise<void> {
+  private async recordRound(
+    loop: ConsiliumLoopRow,
+    verdict: ConvergenceVerdict,
+    runnerAudit?: { verdict: RoundVerdict | null; participants: RoundParticipant[] | null },
+  ): Promise<void> {
     const head = await this.readRepoHead(loop);
     // Rich judge verdict for the Rounds panel (best-effort, bounded, never blocks the
     // audit write — null when the raw judge output is unreadable). Read from the RAW
     // judge output, NOT reconstructed from the ConvergenceVerdict, so the prose /
     // pros / cons / full ranked action points survive.
-    const judgeVerdict = await this.readRoundVerdict(loop);
+    //
+    // Phase 2 (B5) runner-mode threads the ALREADY-parsed verdict + participants: a
+    // runner round has NO task executions for `readRoundVerdict` to re-read, and the
+    // legacy task-group path never captured participants. Legacy (no `runnerAudit`):
+    // read the verdict from the iteration executions as before and leave participants
+    // NULL (the column defaults null) ⇒ the persisted row is byte-identical to today.
+    const judgeVerdict = runnerAudit ? runnerAudit.verdict : await this.readRoundVerdict(loop);
+    const participants = runnerAudit?.participants ?? null;
     try {
       await this.storage.appendLoopRound({
         loopId: loop.id,
@@ -2666,6 +2744,7 @@ export class ConsiliumLoopController {
         openP0: verdict.openP0,
         openActionPoints: verdict.openActionPoints,
         verdict: judgeVerdict,
+        participants,
         baselineCommit: loop.lastReviewedCommit,
         headCommit: head,
       });
