@@ -364,6 +364,17 @@ export function parseJudgeVerifierOutput(content: string): { passed: boolean; su
 const ANTI_STALL_MIN_ROUND = 3;
 
 /**
+ * The UNIQUE(loop_id, round) constraint on `consilium_loop_rounds`
+ * (shared/schema.ts: `unique("consilium_loop_rounds_uq")`). A duplicate round
+ * append is a LEGITIMATE idempotent no-op (re-tick / crash redrive re-recording
+ * the same round) — `recordRound` swallows ONLY this, and surfaces every other
+ * insert failure. NOTE: the MemStorage shape throws a BARE `Error` whose message
+ * is exactly this name — it contains `_uq`, NOT `unique` — so a `/unique/i` test
+ * alone misses it; the constraint-name check is the reliable discriminator.
+ */
+const LOOP_ROUND_UNIQUE_CONSTRAINT = "consilium_loop_rounds_uq";
+
+/**
  * Per-coder reference grace (one coder run + buffer). The SDLC coder's hard
  * timeout is configurable (coder default 1_200_000ms / 20min); this is only a
  * reference floor. The AUTHORITATIVE developing re-drive guard is the process-
@@ -2398,11 +2409,22 @@ export class ConsiliumLoopController {
     return undefined;
   }
 
-  /** Persist this round's audit row (NEVER the raw diff/input — H-4). */
+  /**
+   * Persist this round's audit row (NEVER the raw diff/input — H-4).
+   *
+   * Defect C: this used to `.catch(() => undefined)` EVERY append error, so a
+   * transient storage failure (dropped connection, serialization failure, disk
+   * full, …) left `consilium_loop_rounds` silently empty — the detail page
+   * rendered blank with `loop.error` null and NO signal. Now we swallow ONLY the
+   * legitimate `UNIQUE(loop_id, round)` re-tick/redrive conflict; every OTHER
+   * failure is surfaced (logged + written to `loop.error`) WITHOUT blocking the
+   * FSM transition. Fail-OPEN on state (never rethrow — the transition already
+   * committed), fail-LOUD on the audit write.
+   */
   private async recordRound(loop: ConsiliumLoopRow, verdict: ConvergenceVerdict): Promise<void> {
     const head = await this.readRepoHead(loop);
-    await this.storage
-      .appendLoopRound({
+    try {
+      await this.storage.appendLoopRound({
         loopId: loop.id,
         round: loop.round,
         iterationNumber: loop.currentIterationNumber ?? loop.round,
@@ -2411,8 +2433,33 @@ export class ConsiliumLoopController {
         openActionPoints: verdict.openActionPoints,
         baselineCommit: loop.lastReviewedCommit,
         headCommit: head,
-      })
-      .catch(() => undefined); // UNIQUE(loop,round) → idempotent re-tick
+      });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const message = err instanceof Error ? err.message : String(err);
+      // UNIQUE(loop,round) → idempotent re-tick / crash redrive re-recording the
+      // same round. Detection follows the repo convention (model-skill-bindings.ts:115)
+      // — `code === "23505"` (Postgres) OR `/unique/i` (its message text) — EXTENDED
+      // with the constraint name, because the MemStorage bare `Error` message is
+      // `consilium_loop_rounds_uq` (contains `_uq`, not `unique`) and carries no code.
+      // A true no-op: leave `loop.error` untouched, emit NO log.
+      if (
+        code === "23505" ||
+        /unique/i.test(message) ||
+        message.includes(LOOP_ROUND_UNIQUE_CONSTRAINT)
+      ) {
+        return;
+      }
+      // Any OTHER failure is a real audit-write loss. Surface it — log (this.log's
+      // console.log convention, ~L792) AND persist to `loop.error` so the loop
+      // detail page shows it — but NEVER rethrow: the FSM state transition already
+      // committed and must not be undone by a best-effort audit write. The nested
+      // catch keeps recordRound total even if the error-persist itself fails.
+      this.log(loop.id, `recordRound: appendLoopRound failed for round ${loop.round}: ${message}`);
+      await this.storage
+        .updateLoop(loop.id, { error: `round ${loop.round} audit write failed: ${message}` })
+        .catch(() => undefined);
+    }
   }
 
   /** Resolve the judge convergence verdict for the loop's current iteration. */
