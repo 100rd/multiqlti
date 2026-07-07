@@ -1,45 +1,26 @@
 /**
- * Unit tests for the memory_search MCP tool.
+ * Unit tests for the memory_search tool (vector/RAG only — Subsystem B).
  *
- * Tests focus on the tool's contract: input validation, output formatting,
- * structured memory integration, and graceful degradation.
- * Vector search mocking is handled separately in retriever/vector-store tests.
+ * The structured-memory (Subsystem A) and federation branches were retired
+ * along with the pipeline engine; this tool is now a thin wrapper over
+ * VectorStore semantic search. Tests focus on the tool's contract: input
+ * validation, output formatting, and graceful degradation.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ─── Hoisted mocks ────────────────────────────────────────────────────────────
 
-const mockSearchMemories = vi.hoisted(() =>
-  vi.fn<[], Promise<unknown[]>>().mockResolvedValue([]),
-);
+const mockSearch = vi.hoisted(() => vi.fn());
+const mockGetEmbeddingConfig = vi.hoisted(() => vi.fn());
 
-vi.mock("../../../server/storage", () => ({
-  storage: {
-    searchMemories: mockSearchMemories,
-  },
-}));
-
-vi.mock("../../../server/federation/manager-state", () => ({
-  getFederationManager: vi.fn().mockReturnValue(null),
-}));
-
-vi.mock("../../../server/federation/memory-federation", () => ({
-  MemoryFederationService: vi.fn(),
-}));
-
-// Mock VectorStore and EmbeddingProviderFactory so performVectorSearch works in tests.
-// Use simple return values without complex mock chaining.
 vi.mock("../../../server/memory/vector-store", () => ({
   VectorStore: class MockVectorStore {
-    async search() { return []; }
-    async getEmbeddingConfig() { return null; }
-    async insertChunk() { return {}; }
-    async insertChunks() { return []; }
-    async deleteBySource() { return 0; }
-    async deleteByWorkspace() { return 0; }
-    async countChunks() { return 0; }
-    async listSources() { return []; }
-    async upsertEmbeddingConfig() { return {}; }
+    async search(...args: unknown[]) {
+      return mockSearch(...args);
+    }
+    async getEmbeddingConfig(...args: unknown[]) {
+      return mockGetEmbeddingConfig(...args);
+    }
   },
 }));
 
@@ -60,15 +41,13 @@ import { memorySearchHandler } from "../../../server/tools/builtin/memory-search
 
 // ─── Sample data ──────────────────────────────────────────────────────────────
 
-function makeMemory(key: string, type = "fact") {
+function makeChunk(overrides: Partial<{ chunkText: string; sourceType: string; sourceId: string; score: number }> = {}) {
   return {
-    id: Math.random(),
-    type,
-    key,
-    content: `Content for ${key}`,
-    confidence: 0.9,
-    published: true,
-    tags: [],
+    chunkText: "Some embedded knowledge chunk content",
+    sourceType: "document",
+    sourceId: "doc-1",
+    score: 0.85,
+    ...overrides,
   };
 }
 
@@ -76,7 +55,8 @@ function makeMemory(key: string, type = "fact") {
 
 describe("memorySearchHandler", () => {
   beforeEach(() => {
-    mockSearchMemories.mockClear().mockResolvedValue([]);
+    mockSearch.mockReset().mockResolvedValue([]);
+    mockGetEmbeddingConfig.mockReset().mockResolvedValue(null);
   });
 
   // ─── Input validation ────────────────────────────────────────────────────────
@@ -94,93 +74,64 @@ describe("memorySearchHandler", () => {
   // ─── No results ───────────────────────────────────────────────────────────────
 
   it('returns "no memories found" when nothing found', async () => {
-    const result = await memorySearchHandler.execute({ query: "unknown topic" });
+    const result = await memorySearchHandler.execute({ query: "unknown topic", workspace_id: "ws-1" });
     expect(result).toContain(`No memories found matching "unknown topic"`);
   });
 
-  it("handles query with no results gracefully", async () => {
-    mockSearchMemories.mockResolvedValue([]);
-    const result = await memorySearchHandler.execute({ query: "obscure topic" });
-    expect(typeof result).toBe("string");
+  it("does not call vector search when workspace_id is absent", async () => {
+    const result = await memorySearchHandler.execute({ query: "test" });
+    expect(mockSearch).not.toHaveBeenCalled();
     expect(result).toContain("No memories found");
   });
 
-  // ─── Local structured memory ───────────────────────────────────────────────
+  // ─── Vector search results ────────────────────────────────────────────────────
 
-  it("returns formatted local memories with type and confidence", async () => {
-    mockSearchMemories.mockResolvedValue([
-      makeMemory("arch-decision"),
-      makeMemory("perf-issue", "issue"),
+  it("returns formatted semantic memory results with source and score", async () => {
+    mockSearch.mockResolvedValue([makeChunk({ sourceId: "doc-42", score: 0.91 })]);
+
+    const result = await memorySearchHandler.execute({ query: "architecture", workspace_id: "ws-1" });
+    expect(result).toContain("Semantic Memory");
+    expect(result).toContain("doc-42");
+    expect(result).toContain("0.91");
+  });
+
+  it("formats multiple vector results correctly", async () => {
+    mockSearch.mockResolvedValue([
+      makeChunk({ sourceId: "doc-1" }),
+      makeChunk({ sourceId: "doc-2" }),
     ]);
 
-    const result = await memorySearchHandler.execute({ query: "architecture" });
-    expect(result).toContain("[fact] arch-decision:");
-    expect(result).toContain("[issue] perf-issue:");
-    expect(result).toContain("confidence: 0.90");
+    const result = await memorySearchHandler.execute({ query: "test", workspace_id: "ws-1" });
+    expect(result).toContain("doc-1");
+    expect(result).toContain("doc-2");
   });
 
-  it("formats multiple memory types correctly", async () => {
-    mockSearchMemories.mockResolvedValue([
-      makeMemory("decision-1", "decision"),
-      makeMemory("pattern-1", "pattern"),
-      makeMemory("dep-1", "dependency"),
-    ]);
-
-    const result = await memorySearchHandler.execute({ query: "test" });
-    expect(result).toContain("[decision] decision-1:");
-    expect(result).toContain("[pattern] pattern-1:");
-    expect(result).toContain("[dependency] dep-1:");
-  });
-
-  it("shows Structured Memory section when local results exist", async () => {
-    mockSearchMemories.mockResolvedValue([makeMemory("local-key")]);
-
-    const result = await memorySearchHandler.execute({ query: "test" });
-    expect(result).toContain("Structured Memory");
-  });
-
-  // ─── workspace_id handling ────────────────────────────────────────────────
+  // ─── workspace_id / top_k handling ────────────────────────────────────────────
 
   it("accepts workspace_id parameter without throwing", async () => {
-    const result = await memorySearchHandler.execute({
-      query: "test",
-      workspace_id: "ws-1",
-    });
+    const result = await memorySearchHandler.execute({ query: "test", workspace_id: "ws-1" });
     expect(typeof result).toBe("string");
   });
 
-  it("accepts top_k parameter without throwing", async () => {
-    const result = await memorySearchHandler.execute({
-      query: "test",
-      workspace_id: "ws-1",
-      top_k: 3,
-    });
-    expect(typeof result).toBe("string");
+  it("passes top_k through to vector search", async () => {
+    mockSearch.mockResolvedValue([makeChunk()]);
+    await memorySearchHandler.execute({ query: "test", workspace_id: "ws-1", top_k: 3 });
+    expect(mockSearch).toHaveBeenCalledWith("ws-1", expect.any(Array), expect.objectContaining({ topK: 3 }));
   });
 
-  it("accepts large top_k value without throwing (clamped to 20)", async () => {
-    const result = await memorySearchHandler.execute({
-      query: "test",
-      workspace_id: "ws-1",
-      top_k: 9999,
-    });
-    expect(typeof result).toBe("string");
-  });
-
-  it("does not call vector search when workspace_id is absent", async () => {
-    mockSearchMemories.mockResolvedValue([makeMemory("key1")]);
-    const result = await memorySearchHandler.execute({ query: "test" });
-    // Should not include "Semantic Memory" section since no workspace_id
-    expect(result).not.toContain("Semantic Memory");
+  it("clamps large top_k value to 20", async () => {
+    mockSearch.mockResolvedValue([makeChunk()]);
+    await memorySearchHandler.execute({ query: "test", workspace_id: "ws-1", top_k: 9999 });
+    expect(mockSearch).toHaveBeenCalledWith("ws-1", expect.any(Array), expect.objectContaining({ topK: 20 }));
   });
 
   // ─── Error handling ────────────────────────────────────────────────────────
 
-  it("returns error message when storage throws", async () => {
-    mockSearchMemories.mockRejectedValueOnce(new Error("DB connection failed"));
-    const result = await memorySearchHandler.execute({ query: "test" });
+  it("degrades gracefully (empty results) when vector search throws", async () => {
+    mockSearch.mockRejectedValueOnce(new Error("pgvector connection failed"));
+    const result = await memorySearchHandler.execute({ query: "test", workspace_id: "ws-1" });
     expect(typeof result).toBe("string");
-    expect(result).toContain("unavailable");
+    expect(result).toContain("No memories found");
   });
 
   // ─── Tool definition ───────────────────────────────────────────────────────

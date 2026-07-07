@@ -21,7 +21,6 @@ import {
 } from "../../../server/services/task-orchestrator.js";
 import { configLoader } from "../../../server/config/loader.js";
 import type { WsManager } from "../../../server/ws/manager.js";
-import type { PipelineController } from "../../../server/controller/pipeline-controller.js";
 import type { Gateway } from "../../../server/gateway/index.js";
 import type { GatewayRequest, GatewayResponse } from "../../../shared/types.js";
 
@@ -47,8 +46,7 @@ function makeGateway(behaviour: () => GatewayBehaviour): Gateway {
 function makeOrchestrator(gateway: Gateway): { orchestrator: TaskOrchestrator; storage: MemStorage } {
   const storage = new MemStorage();
   const wsManager = { broadcastToRun: () => {} } as unknown as WsManager;
-  const pipelineController = {} as unknown as PipelineController;
-  return { orchestrator: new TaskOrchestrator(storage, wsManager, pipelineController, gateway), storage };
+  return { orchestrator: new TaskOrchestrator(storage, wsManager, gateway), storage };
 }
 
 describe("TaskOrchestrator — iterations", () => {

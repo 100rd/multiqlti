@@ -3,7 +3,7 @@ import type { PipelineTrigger, InsertTrigger, UpdateTrigger, TriggerFiredLoopsRe
 import type { TriggerValidationIssue } from "@/components/triggers/trigger-form-logic";
 // Project-scoped transport: buildAuthHeaders attaches `x-project-id` (the pr-queue
 // 401 lesson — a project-scoped read that omits the header gets rejected).
-import { apiRequest as projectApiRequest } from "@/hooks/use-pipeline";
+import { apiRequest as projectApiRequest } from "@/hooks/use-api";
 
 /** Error thrown by {@link apiRequest}, carrying the server's structured validation issues. */
 export type TriggerApiError = Error & {

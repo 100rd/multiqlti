@@ -23,7 +23,6 @@ function buildApp(
   opts: { userId?: string; role?: UserRole; activeGroupIds?: string[] } = {},
 ) {
   const deps: ActivityRouteDeps = {
-    pipelineController: { getActiveRunIds: () => [] },
     taskOrchestrator: { getActiveGroupIds: () => opts.activeGroupIds ?? [] },
   };
   const user: User = {
@@ -58,7 +57,7 @@ async function seedRunningGroup(storage: MemStorage, createdBy: string | null) {
     groupId: group.id,
     name: "secret live task name",
     description: "secret live task desc",
-    executionMode: "pipeline_run",
+    executionMode: "direct_llm",
     dependsOn: [],
     input: { secret: "live task input" },
     status: "running",
@@ -82,7 +81,7 @@ describe("GET /api/activity — task_group as the fifth live mode", () => {
     expect(row.mode).toBe("task_group");
     expect(row.title).toBe("Task group");
     expect(row.runId).toBe(group.id);
-    expect(row.currentUnit.agent).toBe("pipeline_run"); // executionMode, not text
+    expect(row.currentUnit.agent).toBe("direct_llm"); // executionMode, not text
     expect(row.currentUnit.modelSlug).toBe("claude-sonnet");
 
     // No banned strings anywhere.

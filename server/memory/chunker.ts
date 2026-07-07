@@ -3,14 +3,13 @@
  *
  * Strategy per source:
  *   code         — split on function/class boundaries (regex), fall back to sliding window
- *   pipeline_run — split on paragraph / blank-line boundaries
  *   document     — sentence-aware sliding window
  *   memory_entry — treat each entry as a single chunk (usually short)
  */
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type ChunkSourceType = "code" | "pipeline_run" | "document" | "memory_entry" | "practice_card" | "news_item";
+export type ChunkSourceType = "code" | "document" | "memory_entry" | "practice_card" | "news_item";
 
 export interface TextChunk {
   text: string;
@@ -121,48 +120,6 @@ function chunkCode(text: string, opts: Required<ChunkerOptions>): TextChunk[] {
   return chunks.filter((c) => c.text.trim().length > 0);
 }
 
-function chunkByParagraphs(text: string, opts: Required<ChunkerOptions>): TextChunk[] {
-  const paragraphs = text.split(/\n\s*\n/);
-  const maxChars = opts.maxChunkTokens * CHARS_PER_TOKEN;
-  const chunks: TextChunk[] = [];
-  let chunkIndex = 0;
-  let offset = 0;
-
-  let buffer = "";
-  let bufferStart = 0;
-
-  for (const para of paragraphs) {
-    const paraWithNewline = para + "\n\n";
-    if (buffer.length > 0 && buffer.length + para.length > maxChars) {
-      // Flush current buffer.
-      chunks.push({
-        text: buffer.trimEnd(),
-        index: chunkIndex++,
-        startOffset: bufferStart,
-        endOffset: offset,
-        metadata: {},
-      });
-      buffer = para + "\n\n";
-      bufferStart = offset;
-    } else {
-      buffer += paraWithNewline;
-    }
-    offset += paraWithNewline.length;
-  }
-
-  if (buffer.trim().length > 0) {
-    chunks.push({
-      text: buffer.trimEnd(),
-      index: chunkIndex++,
-      startOffset: bufferStart,
-      endOffset: offset,
-      metadata: {},
-    });
-  }
-
-  return chunks;
-}
-
 function chunkDocument(text: string, opts: Required<ChunkerOptions>): TextChunk[] {
   // Sentence-aware: split at sentence boundaries, then build sliding window.
   const sentenceRe = /(?<=[.!?])\s+/g;
@@ -258,8 +215,6 @@ export class TextChunker {
     switch (sourceType) {
       case "code":
         return chunkCode(text, this.opts).map((c) => ({ ...c, metadata: { ...meta, ...c.metadata } }));
-      case "pipeline_run":
-        return chunkByParagraphs(text, this.opts).map((c) => ({ ...c, metadata: { ...meta, ...c.metadata } }));
       case "document":
         return chunkDocument(text, this.opts).map((c) => ({ ...c, metadata: { ...meta, ...c.metadata } }));
       case "memory_entry":

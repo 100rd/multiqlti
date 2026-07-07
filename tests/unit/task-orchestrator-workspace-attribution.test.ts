@@ -24,7 +24,6 @@ import { describe, it, expect } from "vitest";
 import { MemStorage } from "../../server/storage.js";
 import { TaskOrchestrator } from "../../server/services/task-orchestrator.js";
 import type { WsManager } from "../../server/ws/manager.js";
-import type { PipelineController } from "../../server/controller/pipeline-controller.js";
 import type { Gateway } from "../../server/gateway/index.js";
 import type { GatewayRequest, GatewayResponse } from "../../shared/types.js";
 import type { InsertLlmRequest } from "../../shared/schema.js";
@@ -88,8 +87,7 @@ function makeGateway(storage?: MemStorage): { gateway: Gateway; calls: RecordedC
 
 function makeOrchestrator(gateway: Gateway, storage: MemStorage): TaskOrchestrator {
   const wsManager = { broadcastToRun: () => {} } as unknown as WsManager;
-  const pipelineController = {} as unknown as PipelineController;
-  return new TaskOrchestrator(storage, wsManager, pipelineController, gateway);
+  return new TaskOrchestrator(storage, wsManager, gateway);
 }
 
 /** One direct_llm task standing in for a consilium review/judge call. */

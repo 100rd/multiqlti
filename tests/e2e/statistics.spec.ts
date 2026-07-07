@@ -1,8 +1,9 @@
 /**
- * E2E tests for the Statistics page and API.
+ * E2E tests for the Statistics API. Root-path (`/`) page rendering is covered
+ * by navigation.spec.ts — the former `/stats` alias route was a duplicate of
+ * `/` and has been removed, so this file no longer tests UI navigation.
  *
  * Covers:
- *   - /stats page renders without errors
  *   - Stats overview API returns expected shape
  *   - Stats timeline API returns array with date/requests/tokens/costUsd
  *   - Stats by-model, by-provider, by-team APIs
@@ -18,40 +19,6 @@ const BASE_URL_FALLBACK = "http://localhost:3099";
 test.describe("Statistics", () => {
   test.beforeEach(async ({ page }, testInfo) => {
     await loginPage(page, testInfo.project.use.baseURL ?? BASE_URL_FALLBACK);
-  });
-
-  // ─── Page rendering ───────────────────────────────────────────────────────
-
-  test("navigates to /stats without error", async ({ page }) => {
-    await page.goto("/stats");
-    await page.waitForLoadState("networkidle");
-
-    expect(page.url()).toContain("/stats");
-    const body = await page.locator("body").textContent();
-    expect(body).not.toContain("Something went wrong");
-    expect(body).not.toContain("Page Not Found");
-  });
-
-  test("stats page renders cost or token content", async ({ page }) => {
-    await page.goto("/stats");
-    await page.waitForLoadState("networkidle");
-
-    const body = (await page.locator("body").textContent()) ?? "";
-    const hasStatsContent =
-      body.toLowerCase().includes("token") ||
-      body.toLowerCase().includes("cost") ||
-      body.toLowerCase().includes("request") ||
-      body.toLowerCase().includes("run");
-    expect(hasStatsContent).toBe(true);
-  });
-
-  test("stats page does not show 404", async ({ page }) => {
-    await page.goto("/stats");
-    await page.waitForLoadState("networkidle");
-
-    const body = await page.locator("body").textContent();
-    expect(body).not.toContain("404");
-    expect(body).not.toContain("Page Not Found");
   });
 
   // ─── Stats Overview API ───────────────────────────────────────────────────

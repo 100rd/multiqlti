@@ -1,11 +1,8 @@
 /**
- * Unit tests for the H3 task-group fallback in WsManager.authorizeAndSubscribe.
- *
- * When `getPipelineRun(runId)` misses, the gate falls back to
- * `getTaskGroup(runId)` and applies the SAME isVisible(createdBy,user) rule:
+ * Unit tests for WsManager.authorizeAndSubscribe's task-group ownership gate
+ * (H3). `getTaskGroup(runId)` is the sole authorization path:
  *   - group owner subscribes; non-owner denied; admin bypass; ownerless denied
- *     to non-admin; unknown id (both spaces) denied; missing user / no storage
- *     fail closed; the pipeline path is unchanged (pipeline-first ordering).
+ *     to non-admin; unknown id denied; missing user / no storage fail closed.
  *
  * A real (non-listening) HTTP server backs the WsManager; no network I/O.
  */
@@ -24,22 +21,11 @@ function makeFakeWs(readyState = 1) {
   return { readyState, send: vi.fn() };
 }
 
-/** Storage where the id is a task group (no pipeline run), owned by `createdBy`. */
+/** Storage where the id is a task group, owned by `createdBy`. */
 function groupStorage(createdBy: string | null): IStorage {
   return {
-    getPipelineRun: vi.fn(async () => undefined),
     getTaskGroup: vi.fn(async () => ({ id: "g", createdBy })),
   } as unknown as IStorage;
-}
-
-/** Storage where the id IS a pipeline run (the unchanged path); getTaskGroup must NOT be hit. */
-function pipelineStorage(triggeredBy: string | null) {
-  const getTaskGroup = vi.fn(async () => undefined);
-  const storage = {
-    getPipelineRun: vi.fn(async () => ({ id: "r", triggeredBy })),
-    getTaskGroup,
-  } as unknown as IStorage;
-  return { storage, getTaskGroup };
 }
 
 const owner = { id: "owner", role: "user" } as never;
@@ -80,9 +66,8 @@ describe("WsManager.authorizeAndSubscribe — task-group fallback (H3)", () => {
     expect(await manager.authorizeAndSubscribe(ws as never, admin, "g")).toBe(true);
   });
 
-  it("DENIES an id unknown in BOTH spaces (fail closed)", async () => {
+  it("DENIES an unknown id (fail closed)", async () => {
     const storage = {
-      getPipelineRun: vi.fn(async () => undefined),
       getTaskGroup: vi.fn(async () => undefined),
     } as unknown as IStorage;
     const { manager } = await createManager(storage);
@@ -100,24 +85,5 @@ describe("WsManager.authorizeAndSubscribe — task-group fallback (H3)", () => {
     const { manager } = await createManager(undefined);
     const ws = makeFakeWs();
     expect(await manager.authorizeAndSubscribe(ws as never, owner, "g")).toBe(false);
-  });
-});
-
-describe("WsManager.authorizeAndSubscribe — pipeline path unchanged", () => {
-  it("a pipeline run is authorized via triggeredBy and NEVER consults getTaskGroup", async () => {
-    const { storage, getTaskGroup } = pipelineStorage("owner");
-    const { manager } = await createManager(storage);
-    const ws = makeFakeWs();
-    const ok = await manager.authorizeAndSubscribe(ws as never, owner, "r");
-    expect(ok).toBe(true);
-    expect(getTaskGroup).not.toHaveBeenCalled();
-  });
-
-  it("a pipeline run owned by another user is denied (and getTaskGroup not consulted)", async () => {
-    const { storage, getTaskGroup } = pipelineStorage("owner");
-    const { manager } = await createManager(storage);
-    const ws = makeFakeWs();
-    expect(await manager.authorizeAndSubscribe(ws as never, intruder, "r")).toBe(false);
-    expect(getTaskGroup).not.toHaveBeenCalled();
   });
 });

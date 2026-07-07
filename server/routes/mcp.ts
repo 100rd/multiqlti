@@ -28,7 +28,6 @@ import { Router } from "express";
 import { z } from "zod";
 import type { Request, Response } from "express";
 import type { IStorage } from "../storage";
-import type { PipelineController } from "../controller/pipeline-controller";
 import { requireAuth, requireRole } from "../auth/middleware";
 import { mcpTokenStore } from "../mcp-servers/multiqlti-self/auth";
 import {
@@ -89,12 +88,8 @@ function resolveMcpToken(req: Request): McpCallContext | null {
 
 // ─── Route registration ───────────────────────────────────────────────────────
 
-export function registerMcpRoutes(
-  router: Router,
-  storage: IStorage,
-  controller: PipelineController,
-): void {
-  const mcpServer = getMultiqltiMcpServer(storage, controller);
+export function registerMcpRoutes(router: Router, storage: IStorage): void {
+  const mcpServer = getMultiqltiMcpServer(storage);
 
   // ── GET /mcp/tools — capability discovery (no auth) ─────────────────────────
   // Must be registered on a router that bypasses session auth middleware.

@@ -12,7 +12,6 @@ import { MemStorage } from "../../../server/storage.js";
 import { TaskOrchestrator } from "../../../server/services/task-orchestrator.js";
 import { TaskTracer } from "../../../server/services/task-tracer.js";
 import type { WsManager } from "../../../server/ws/manager.js";
-import type { PipelineController } from "../../../server/controller/pipeline-controller.js";
 import type { Gateway } from "../../../server/gateway/index.js";
 import type { GatewayRequest, GatewayResponse } from "../../../shared/types.js";
 
@@ -32,12 +31,7 @@ function okGateway(): Gateway {
 function makeTraced(): { orchestrator: TaskOrchestrator; storage: MemStorage } {
   const storage = new MemStorage();
   const wsManager = { broadcastToRun: () => {} } as unknown as WsManager;
-  const orchestrator = new TaskOrchestrator(
-    storage,
-    wsManager,
-    {} as unknown as PipelineController,
-    okGateway(),
-  );
+  const orchestrator = new TaskOrchestrator(storage, wsManager, okGateway());
   orchestrator.setTracer(new TaskTracer(storage, wsManager));
   return { orchestrator, storage };
 }

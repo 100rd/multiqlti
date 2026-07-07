@@ -76,16 +76,12 @@ function buildApp(conflictService: ConflictResolutionService | null = null) {
     next();
   });
 
-  registerFederationRoutes(
+  registerFederationRoutes({
     app,
-    null,
-    null,
-    null,
-    null,
-    null,
-    null,
-    conflictService,
-  );
+    sessionSharing: null,
+    federationManager: null,
+    conflictResolution: conflictService,
+  });
 
   return app;
 }

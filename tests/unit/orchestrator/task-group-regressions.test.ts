@@ -6,8 +6,6 @@
  *        completion (diamond A→{B,C}→D; D must not double-run).
  *   H1 — a 0-ready-task start throws NoReadyTasksError BEFORE creating an
  *        iteration; the group is never left dangling-running.
- *   H2 — a poll loop whose storage.getPipelineRun() throws settles the
- *        execution `failed` (not hung) + no unhandled rejection.
  *   M2 — downstream-of-failed executions are `cancelled` (not left `blocked`).
  *   M1 — a running group appears in getActiveGroupIds() even with tracer:null.
  *
@@ -18,11 +16,9 @@ import { MemStorage } from "../../../server/storage.js";
 import {
   TaskOrchestrator,
   NoReadyTasksError,
-  MissingPipelineError,
   InvalidTaskGraphError,
 } from "../../../server/services/task-orchestrator.js";
 import type { WsManager } from "../../../server/ws/manager.js";
-import type { PipelineController } from "../../../server/controller/pipeline-controller.js";
 import type { Gateway } from "../../../server/gateway/index.js";
 import type { GatewayRequest, GatewayResponse } from "../../../shared/types.js";
 import type { TaskGroupRow } from "@shared/schema";
@@ -87,15 +83,11 @@ function makeGatewayGate(): GatewayGate {
   };
 }
 
-function makeOrchestrator(
-  gateway: Gateway,
-  opts: { pipelineController?: PipelineController } = {},
-): { orchestrator: TaskOrchestrator; storage: MemStorage } {
+function makeOrchestrator(gateway: Gateway): { orchestrator: TaskOrchestrator; storage: MemStorage } {
   const storage = new MemStorage();
   const wsManager = { broadcastToRun: () => {} } as unknown as WsManager;
-  const pipelineController = opts.pipelineController ?? ({} as unknown as PipelineController);
   return {
-    orchestrator: new TaskOrchestrator(storage, wsManager, pipelineController, gateway),
+    orchestrator: new TaskOrchestrator(storage, wsManager, gateway),
     storage,
   };
 }
@@ -193,49 +185,6 @@ describe("H1 — a start with zero ready tasks throws before creating an iterati
   });
 });
 
-// ─── H2 — poll loop storage throw settles failed, no hang ────────────────────
-
-describe("H2 — pollRunCompletion that throws settles the execution failed", () => {
-  it("a throwing getPipelineRun makes the execution fail (not hang)", async () => {
-    const gate = makeGatewayGate();
-    const pipelineController = {
-      async startRun() {
-        return { id: "run-1" };
-      },
-    } as unknown as PipelineController;
-
-    const { orchestrator, storage } = makeOrchestrator(gate.gateway, { pipelineController });
-    // Force getPipelineRun to throw a transient storage error on every poll.
-    storage.getPipelineRun = async () => {
-      throw new Error("transient storage failure");
-    };
-
-    const { group } = await orchestrator.createTaskGroup({
-      name: "pipe",
-      description: "d",
-      input: "obj",
-      tasks: [
-        { name: "P", description: "p", executionMode: "pipeline_run", pipelineId: "pl-1" },
-      ],
-    });
-
-    let unhandled: unknown;
-    const onUnhandled = (err: unknown) => (unhandled = err);
-    process.on("unhandledRejection", onUnhandled);
-    try {
-      const { iteration } = await orchestrator.startGroup(group.id);
-      const execs = await storage.getExecutionsByIteration(group.id, iteration.id);
-      expect(execs[0].status).toBe("failed");
-      expect((await storage.getIteration(group.id, 1))!.status).toBe("failed");
-      // Let any stray microtask/rejection surface.
-      await new Promise((r) => setTimeout(r, 10));
-      expect(unhandled).toBeUndefined();
-    } finally {
-      process.off("unhandledRejection", onUnhandled);
-    }
-  });
-});
-
 // ─── M2 — downstream-of-failed cancelled, not blocked ────────────────────────
 
 describe("M2 — downstream of a failed dependency is cancelled", () => {
@@ -299,34 +248,6 @@ describe("M1 — getActiveGroupIds tracks running groups without a tracer", () =
   });
 });
 
-// ─── L1 — pipeline_run with null pipelineId is an explicit error ─────────────
-
-describe("L1 — a pipeline_run task without a pipelineId fails explicitly", () => {
-  it("does NOT silently route to direct_llm; the execution fails", async () => {
-    const failGatewayImpl = async (): Promise<GatewayResponse> => {
-      throw new Error("direct_llm should not be reached for a pipeline_run task");
-    };
-    const failGateway = {
-      complete: failGatewayImpl,
-      completeStreaming: failGatewayImpl,
-    } as unknown as Gateway;
-    const { orchestrator, storage } = makeOrchestrator(failGateway);
-
-    const { group } = await orchestrator.createTaskGroup({
-      name: "g",
-      description: "d",
-      input: "obj",
-      // pipeline_run mode but NO pipelineId.
-      tasks: [{ name: "P", description: "p", executionMode: "pipeline_run" }],
-    });
-
-    const { iteration } = await orchestrator.startGroup(group.id);
-    const execs = await storage.getExecutionsByIteration(group.id, iteration.id);
-    expect(execs[0].status).toBe("failed");
-    expect(execs[0].errorMessage ?? "").toMatch(/pipeline/i);
-  });
-});
-
 // ─── L2 — create-path dangling dependsOn rejected ────────────────────────────
 
 describe("L2 — createTaskGroup rejects a dangling / self / cyclic dependsOn", () => {
@@ -360,6 +281,3 @@ describe("L2 — createTaskGroup rejects a dangling / self / cyclic dependsOn", 
   });
 });
 
-// Re-export the unused MissingPipelineError reference so tsc keeps it imported
-// (it is asserted via the failed-execution message above).
-void MissingPipelineError;

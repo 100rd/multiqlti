@@ -18,7 +18,6 @@ import type { Gateway } from "../../../server/gateway/index.js";
 import type { GatewayResponse } from "../../../shared/types.js";
 import { TaskOrchestrator } from "../../../server/services/task-orchestrator.js";
 import type { WsManager } from "../../../server/ws/manager.js";
-import type { PipelineController } from "../../../server/controller/pipeline-controller.js";
 import { MemStorage } from "../../../server/storage.js";
 
 function okGateway(): Gateway {
@@ -36,8 +35,7 @@ function okGateway(): Gateway {
 
 function makeOrchestrator(storage: MemStorage): TaskOrchestrator {
   const wsManager = { broadcastToRun: () => {} } as unknown as WsManager;
-  const pipelineController = {} as unknown as PipelineController;
-  return new TaskOrchestrator(storage, wsManager, pipelineController, okGateway());
+  return new TaskOrchestrator(storage, wsManager, okGateway());
 }
 
 describe("SEC1 — removing a definition preserves historical executions", () => {

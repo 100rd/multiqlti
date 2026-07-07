@@ -1,5 +1,4 @@
 import type { ToolHandler } from "../../registry";
-import { pipelineTools } from "./pipelines";
 import { workspaceTools } from "./workspaces";
 import { triggerTools } from "./triggers";
 import { utilityTools } from "./utilities";
@@ -10,13 +9,11 @@ import { utilityTools } from "./utilities";
  * for registration with the ToolRegistry singleton.
  */
 export const platformTools: ToolHandler[] = [
-  ...pipelineTools,
   ...workspaceTools,
   ...triggerTools,
   ...utilityTools,
 ];
 
-export { pipelineTools } from "./pipelines";
 export { workspaceTools } from "./workspaces";
 export { triggerTools } from "./triggers";
 export { utilityTools } from "./utilities";

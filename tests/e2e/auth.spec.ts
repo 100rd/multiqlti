@@ -32,9 +32,9 @@ test.describe("Auth flows", () => {
 
   // Protected route redirect ─────────────────────────────────────────────────
 
-  test("accessing /pipelines without auth redirects to /login", async ({ page }) => {
+  test("accessing /consilium-loops without auth redirects to /login", async ({ page }) => {
     // Navigate directly without setting auth cookie/localStorage
-    await page.goto("/pipelines");
+    await page.goto("/consilium-loops");
     await page.waitForLoadState("networkidle");
 
     // Should redirect to login
@@ -72,7 +72,7 @@ test.describe("Auth flows", () => {
     await page.evaluate((t) => localStorage.setItem("auth_token", t), token);
 
     // Navigate to protected route
-    await page.goto("/pipelines");
+    await page.goto("/consilium-loops");
     await page.waitForLoadState("networkidle");
 
     // Should NOT redirect to login
@@ -103,7 +103,7 @@ test.describe("Auth flows", () => {
     await page.evaluate((t) => localStorage.setItem("auth_token", t), token);
 
     // Navigate to protected route
-    await page.goto("/pipelines");
+    await page.goto("/consilium-loops");
     await page.waitForLoadState("networkidle");
     expect(page.url()).not.toContain("/login");
 
@@ -114,7 +114,7 @@ test.describe("Auth flows", () => {
     await page.context().clearCookies();
 
     // Navigate away and back
-    await page.goto("/pipelines");
+    await page.goto("/consilium-loops");
     await page.waitForLoadState("networkidle");
 
     // Should be back at login

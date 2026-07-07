@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { TriggerCard } from "@/components/triggers/TriggerCard";
 import { TriggerForm, type TriggerWorkspaceOption } from "@/components/triggers/TriggerForm";
 import { useTriggers, useDeleteTrigger } from "@/hooks/use-triggers";
-import { apiRequest } from "@/hooks/use-pipeline";
+import { apiRequest } from "@/hooks/use-api";
 import type { PipelineTrigger } from "@shared/types";
 import type { WorkspaceRow } from "@shared/schema";
 

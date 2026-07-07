@@ -36,8 +36,8 @@ import {
   useDiscoverProviderModels,
   useProbeEndpoint,
   useCreateModel,
-  apiRequest,
-} from "@/hooks/use-pipeline";
+} from "@/hooks/use-models";
+import { apiRequest } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
 import { useQueryClient, useMutation, useQuery } from "@tanstack/react-query";
 import { ArgocdSettings } from "@/components/settings/ArgocdSettings";

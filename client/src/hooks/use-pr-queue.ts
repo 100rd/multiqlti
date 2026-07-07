@@ -19,7 +19,7 @@
  * rel="noopener noreferrer".
  */
 import { useQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/hooks/use-pipeline";
+import { apiRequest } from "@/hooks/use-api";
 import type { PrQueueItem } from "@shared/pr-queue";
 
 export type { PrQueueItem };

@@ -79,17 +79,11 @@ export class WsManager {
   }
 
   /**
-   * Ownership-gated subscribe (the only path the live socket uses). A `runId`
-   * may name TWO id-spaces:
-   *   1. pipeline_runs.id   — owner via pipeline_runs.triggeredBy (pipeline /
-   *      manager / orchestrator / consensus). Checked FIRST (unchanged path).
-   *   2. task_groups.id     — owner via task_groups.createdBy (H3 fallback).
-   *      Task-group events broadcast on broadcastToRun(groupId,…) which has no
-   *      pipeline_runs row, so without this fallback the subscribe was rejected
-   *      (the TaskGroup live stream was dead).
+   * Ownership-gated subscribe (the only path the live socket uses). `runId`
+   * names a task_groups.id — owner via task_groups.createdBy (H3).
    *
    * Ownerless rows are denied to non-admins (the strict isVisible posture);
-   * unknown ids in BOTH spaces fail closed. Returns whether it subscribed.
+   * an unknown id fails closed. Returns whether it subscribed.
    */
   async authorizeAndSubscribe(
     ws: WebSocket,
@@ -104,17 +98,8 @@ export class WsManager {
     // context, which is correct here — we're looking up a run by ID without
     // knowing its project yet (that's the whole point of the ownership check).
     return runAsSystem("ws-authorize-and-subscribe", async () => {
-      // 1) Pipeline-family path (unchanged, checked first).
-      const run = await this.storage!.getPipelineRun(runId);
-      if (run) {
-        if (!isVisible(run.triggeredBy, user)) return false;
-        this.subscribe(ws, runId);
-        return true;
-      }
-
-      // 2) Task-group fallback (H3) — gate on task_groups.createdBy.
       const group = await this.storage!.getTaskGroup(runId);
-      if (!group) return false; // unknown in both spaces → fail closed.
+      if (!group) return false; // unknown id → fail closed.
       if (!isVisible(group.createdBy, user)) return false;
 
       this.subscribe(ws, runId);

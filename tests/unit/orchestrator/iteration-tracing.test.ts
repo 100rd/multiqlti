@@ -30,7 +30,6 @@ function makeTracer(throwOn = new Set<string>()) {
     },
     startTaskSpan: rec("startTaskSpan", "span-task"),
     startLlmCallSpan: rec("startLlmCallSpan", "span-llm"),
-    startPipelineRunSpan: rec("startPipelineRunSpan", "span-pipe"),
     completeSpan: (...args: unknown[]): void => {
       calls.push({ method: "completeSpan", args });
       if (throwOn.has("completeSpan")) throw new Error("completeSpan boom");
@@ -50,61 +49,11 @@ function makeStorage(traceSpans: Array<{ spanId: string }> = [{ spanId: "root-sp
   } as unknown as IStorage;
 }
 
-describe("IterationTracing — pipeline spans + non-fatal behaviour", () => {
+describe("IterationTracing — group lifecycle + non-fatal behaviour", () => {
   let tracing: IterationTracing;
 
   beforeEach(() => {
     tracing = new IterationTracing(makeStorage());
-  });
-
-  it("returns empty span ids when no tracer is attached (tracer-less deployment)", () => {
-    expect(tracing.startPipelineSpan("g1", "t1", "run-1")).toBe("");
-    // No throw, no context — completes/fails are silent no-ops.
-    tracing.completePipelineSpan("g1", "span", "run-1");
-    tracing.failPipelineSpan("g1", "span", "err");
-  });
-
-  it("opens, completes, and fails a pipeline-run span under the task span", async () => {
-    const { tracer, calls } = makeTracer();
-    tracing.setTracer(tracer);
-    await tracing.openIteration(group, iteration);
-    // A task span must exist before a pipeline span can attach.
-    expect(tracing.startTaskSpan("g1", task)).toBe("span-task");
-
-    const pipeSpan = tracing.startPipelineSpan("g1", "t1", "run-1");
-    expect(pipeSpan).toBe("span-pipe");
-    expect(calls.find((c) => c.method === "startPipelineRunSpan")?.args).toEqual([
-      "trace-1",
-      "span-task",
-      "run-1",
-    ]);
-
-    tracing.completePipelineSpan("g1", pipeSpan, "run-1");
-    tracing.failPipelineSpan("g1", pipeSpan, "pipeline failed");
-    expect(calls.some((c) => c.method === "completeSpan")).toBe(true);
-    expect(calls.some((c) => c.method === "failSpan")).toBe(true);
-  });
-
-  it("returns '' for a pipeline span when the task span is missing", async () => {
-    const { tracer } = makeTracer();
-    tracing.setTracer(tracer);
-    await tracing.openIteration(group, iteration);
-    // No startTaskSpan called → no taskSpanId → ""
-    expect(tracing.startPipelineSpan("g1", "t1", "run-1")).toBe("");
-  });
-
-  it("swallows tracer throws on every pipeline-span method (non-fatal)", async () => {
-    const { tracer } = makeTracer(
-      new Set(["startPipelineRunSpan", "completeSpan", "failSpan"]),
-    );
-    tracing.setTracer(tracer);
-    await tracing.openIteration(group, iteration);
-    tracing.startTaskSpan("g1", task);
-
-    expect(tracing.startPipelineSpan("g1", "t1", "run-1")).toBe("");
-    // completePipelineSpan needs a non-empty spanId to reach the throwing tracer call.
-    expect(() => tracing.completePipelineSpan("g1", "span-x", "run-1")).not.toThrow();
-    expect(() => tracing.failPipelineSpan("g1", "span-x", "err")).not.toThrow();
   });
 
   it("settles the iteration root span on group completion and drops context", async () => {
@@ -133,6 +82,10 @@ describe("IterationTracing — pipeline spans + non-fatal behaviour", () => {
     tracing.setTracer(tracer);
     await expect(tracing.openIteration(group, iteration)).resolves.toBeUndefined();
     // Context never bound → later span calls are silent "".
+    expect(tracing.startTaskSpan("g1", task)).toBe("");
+  });
+
+  it("returns '' from startTaskSpan when no tracer is attached (tracer-less deployment)", () => {
     expect(tracing.startTaskSpan("g1", task)).toBe("");
   });
 });

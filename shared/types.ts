@@ -1917,10 +1917,6 @@ export type TriggerConfig =
 // Public-facing Trigger shape returned from API (no secretEncrypted)
 export interface PipelineTrigger {
   id: string;
-  // T1 RETARGET: a trigger now targets a CONSILIUM LOOP (loop template in config),
-  // not a pipeline. `pipelineId` is legacy/nullable — new project-scoped triggers
-  // carry no pipeline. Kept on the shape for back-compat with pre-existing rows.
-  pipelineId: string | null;
   type: TriggerType;
   config: TriggerConfig;
   // webhookUrl is synthesized by the server for webhook and github_event triggers
@@ -1982,8 +1978,6 @@ export interface TriggerFiredLoopsResponse {
 export const TRIGGER_FIRED_LOOPS_LIMIT = 50;
 
 export interface InsertTrigger {
-  // Legacy/nullable — new loop-template triggers are project-scoped, no pipeline.
-  pipelineId?: string | null;
   type: TriggerType;
   config: TriggerConfig;
   // plaintext secret supplied at creation/update — immediately encrypted, never stored raw
@@ -2266,7 +2260,7 @@ export interface InsertSkillVersion {
 
 export type TaskGroupStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 export type TaskStatus = "pending" | "blocked" | "ready" | "running" | "completed" | "failed" | "cancelled";
-export type TaskExecutionMode = "pipeline_run" | "direct_llm";
+export type TaskExecutionMode = "direct_llm";
 
 export interface TaskResult {
   summary: string;
@@ -2635,12 +2629,11 @@ export interface VersionsResponse {
 
 // ─── Task Trace Types (End-to-End Request Observability) ─────────────────────
 
-export type TaskTraceSpanType = "task_group" | "task" | "pipeline_run" | "stage" | "llm_call";
+export type TaskTraceSpanType = "task_group" | "task" | "stage" | "llm_call";
 export type TaskTraceSpanStatus = "running" | "completed" | "failed";
 
 export interface TaskTraceSpanMetadata {
   taskId?: string;
-  pipelineRunId?: string;
   stageIndex?: number;
   modelSlug?: string;
   provider?: string;
@@ -3758,7 +3751,7 @@ export type Confidence = "high" | "medium" | "low";
 // id, an enum-derived label, or a model slug.
 
 /** Which run mode an active run belongs to. */
-export type ActivityMode = "pipeline" | "manager" | "task_group";
+export type ActivityMode = "task_group";
 
 /** The current unit of work inside a run (stage / iteration / step / round). */
 export interface ActivityUnit {

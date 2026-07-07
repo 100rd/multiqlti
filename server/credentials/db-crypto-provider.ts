@@ -6,15 +6,10 @@
  * Project scoping is resolved by joining with `workspaces` (which carries projectId).
  *
  * Hardened contract [ADR-001 §3.2]:
- *   [R3-SEC-2] issueLease reads approvalStatus + run.status from DB; throws ForbiddenError.
  *   [R3-SEC-3] Every public method asserts projectId === getProjectId() at entry.
- *   [R3-SEC-10] issueLease rate-limited per (projectId, runId); lease_used emitted by
- *               markLeaseUsed() helper (called by the Wave-2 pipeline controller).
  *
- * Expiry sweeper: expireStaleLeases() is exported for Wave-2 scheduling.
- * markLeaseUsed():  exported for Wave-2 to call immediately before spawnBuiltinServer.
- *
- * NOT wired into the pipeline controller yet — that is Wave 2.
+ * Expiry sweeper: expireStaleLeases() is exported for scheduling.
+ * markLeaseUsed(): exported for a caller to invoke immediately before spawnBuiltinServer.
  */
 
 import { eq, and, lt } from "drizzle-orm";
@@ -24,63 +19,15 @@ import { decrypt } from "../crypto.js";
 import {
   workspaceConnections,
   workspaces,
-  pipelineRuns,
-  stageExecutions,
   credentialLeases,
   credentialAccessLog,
 } from "../../shared/schema.js";
 import type {
   CredentialMetadata,
-  CredentialLease,
   CredentialProvider,
-  CredentialSecret,
   AccessSecretParams,
 } from "./types.js";
 import { ForbiddenError } from "./types.js";
-
-// ─── Rate limiting ────────────────────────────────────────────────────────────
-//
-// In-memory, process-local.  Sufficient for Wave 1.  A process restart clears the
-// window — the DB-level sweeper is the authoritative backstop.
-//
-// Limits: max RATE_LIMIT_MAX lease requests per (projectId, runId) within
-// RATE_LIMIT_WINDOW_MS.  Exceeding throws ForbiddenError so a compromised agent
-// cannot burst-issue credentials.
-
-const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
-const RATE_LIMIT_MAX = 10;           // 10 leases per (projectId, runId) per window
-
-interface RateLimitEntry {
-  count: number;
-  windowStart: number;
-}
-
-const _rateLimitStore = new Map<string, RateLimitEntry>();
-
-/** Exported for test reset between cases. */
-export function _resetRateLimitStore(): void {
-  _rateLimitStore.clear();
-}
-
-function checkRateLimit(projectId: string, runId: string): void {
-  const key = `${projectId}:${runId}`;
-  const now = Date.now();
-  const entry = _rateLimitStore.get(key);
-
-  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
-    _rateLimitStore.set(key, { count: 1, windowStart: now });
-    return;
-  }
-
-  if (entry.count >= RATE_LIMIT_MAX) {
-    throw new ForbiddenError(
-      `Rate limit exceeded: too many lease requests for runId=${runId} in project ${projectId}. ` +
-        `Max ${RATE_LIMIT_MAX} per ${RATE_LIMIT_WINDOW_MS / 1000}s window.`,
-    );
-  }
-
-  entry.count++;
-}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -254,222 +201,6 @@ export class DbCryptoCredentialProvider implements CredentialProvider {
   }
 
   // ── EXEC-TIME ───────────────────────────────────────────────────────────────
-
-  /**
-   * Issue a short-TTL credential lease.
-   *
-   * Enforcement order (ALL must pass before any secret is decrypted):
-   *   1. [R3-SEC-3] projectId === getProjectId()
-   *   2. [R3-SEC-10] Rate limit (projectId, runId)
-   *   3. [R3-SEC-2] stage_executions.approvalStatus === 'approved'
-   *   4. [R3-SEC-2] pipeline_runs.status === 'running'
-   *   5. Credential exists in project
-   *   6. Credential has a secret
-   *
-   * Writes credential_leases row + credential_access_log(action='lease_issued').
-   */
-  async issueLease(p: {
-    projectId: string;
-    credentialId: string;
-    runId: string;
-    stageId: string;
-    ttlSeconds?: number;
-    requestedBy: string;
-    justification?: string;
-  }): Promise<CredentialLease> {
-    // [R3-SEC-3] Context assertion — FIRST, before any DB access.
-    assertProject(p.projectId);
-
-    // [R3-SEC-10] Rate limit — SECOND, before expensive DB reads.
-    checkRateLimit(p.projectId, p.runId);
-
-    // [R3-SEC-2] Check stage execution approval status.
-    // Look up by stage execution ID AND runId to prevent cross-run confusion.
-    const [stageExec] = await db
-      .select()
-      .from(stageExecutions)
-      .where(
-        and(
-          eq(stageExecutions.id, p.stageId),
-          eq(stageExecutions.runId, p.runId),
-          eq(stageExecutions.projectId, p.projectId),
-        ),
-      );
-
-    if (!stageExec) {
-      const msg =
-        `Stage execution ${p.stageId} not found for run ${p.runId} ` +
-        `in project ${p.projectId}`;
-      await writeAccessLog({
-        credentialId: p.credentialId,
-        projectId: p.projectId,
-        runId: p.runId,
-        stageId: p.stageId,
-        action: "lease_issued",
-        requestedBy: p.requestedBy,
-        justification: p.justification,
-        success: false,
-        errorMessage: msg,
-      });
-      throw new ForbiddenError(msg);
-    }
-
-    if (stageExec.approvalStatus !== "approved") {
-      const msg =
-        `Stage ${p.stageId} is not approved ` +
-        `(approvalStatus=${stageExec.approvalStatus ?? "null"})`;
-      await writeAccessLog({
-        credentialId: p.credentialId,
-        projectId: p.projectId,
-        runId: p.runId,
-        stageId: p.stageId,
-        action: "lease_issued",
-        requestedBy: p.requestedBy,
-        justification: p.justification,
-        success: false,
-        errorMessage: msg,
-      });
-      throw new ForbiddenError(msg);
-    }
-
-    // [R3-SEC-2] Check pipeline run status.
-    const [run] = await db
-      .select()
-      .from(pipelineRuns)
-      .where(
-        and(
-          eq(pipelineRuns.id, p.runId),
-          eq(pipelineRuns.projectId, p.projectId),
-        ),
-      );
-
-    if (!run) {
-      const msg = `Pipeline run ${p.runId} not found in project ${p.projectId}`;
-      await writeAccessLog({
-        credentialId: p.credentialId,
-        projectId: p.projectId,
-        runId: p.runId,
-        stageId: p.stageId,
-        action: "lease_issued",
-        requestedBy: p.requestedBy,
-        justification: p.justification,
-        success: false,
-        errorMessage: msg,
-      });
-      throw new ForbiddenError(msg);
-    }
-
-    if (run.status !== "running") {
-      const msg =
-        `Pipeline run ${p.runId} is not in 'running' state ` +
-        `(status=${run.status})`;
-      await writeAccessLog({
-        credentialId: p.credentialId,
-        projectId: p.projectId,
-        runId: p.runId,
-        stageId: p.stageId,
-        action: "lease_issued",
-        requestedBy: p.requestedBy,
-        justification: p.justification,
-        success: false,
-        errorMessage: msg,
-      });
-      throw new ForbiddenError(msg);
-    }
-
-    // Get the credential (workspace connection), verify it belongs to this project.
-    const conn = await getConnectionForProject(p.credentialId, p.projectId);
-
-    if (!conn) {
-      const msg =
-        `Credential ${p.credentialId} not found in project ${p.projectId}`;
-      await writeAccessLog({
-        credentialId: p.credentialId,
-        projectId: p.projectId,
-        runId: p.runId,
-        stageId: p.stageId,
-        action: "lease_issued",
-        requestedBy: p.requestedBy,
-        justification: p.justification,
-        success: false,
-        errorMessage: msg,
-      });
-      throw new ForbiddenError(msg);
-    }
-
-    if (!conn.secretsEncrypted) {
-      const msg = `Credential ${p.credentialId} has no secret`;
-      await writeAccessLog({
-        credentialId: p.credentialId,
-        projectId: p.projectId,
-        runId: p.runId,
-        stageId: p.stageId,
-        action: "lease_issued",
-        requestedBy: p.requestedBy,
-        justification: p.justification,
-        success: false,
-        errorMessage: msg,
-      });
-      throw new Error(msg);
-    }
-
-    // Decrypt — only here, after all checks have passed.
-    const secrets: Record<string, string> = JSON.parse(
-      decrypt(conn.secretsEncrypted),
-    );
-
-    // Compute TTL: default 300 s, max 900 s.
-    const ttl = Math.min(p.ttlSeconds ?? 300, 900);
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + ttl * 1000);
-
-    // Persist the lease row.
-    const [leaseRow] = await db
-      .insert(credentialLeases)
-      .values({
-        credentialId: p.credentialId,
-        projectId: p.projectId,
-        runId: p.runId,
-        stageId: p.stageId,
-        requestedBy: p.requestedBy,
-        issuedAt: now,
-        expiresAt,
-        status: "active",
-      })
-      .returning();
-
-    // Audit: lease_issued.
-    await writeAccessLog({
-      leaseId: leaseRow.id,
-      credentialId: p.credentialId,
-      projectId: p.projectId,
-      runId: p.runId,
-      stageId: p.stageId,
-      action: "lease_issued",
-      requestedBy: p.requestedBy,
-      justification: p.justification,
-      success: true,
-      ttlSeconds: ttl,
-    });
-
-    // Build the static secret — Wave 1 serialises the entire secrets map.
-    // Wave 2 pipeline controller parses it back before passing to spawnBuiltinServer.
-    const secret: CredentialSecret = {
-      type: "static",
-      value: JSON.stringify(secrets),
-    };
-
-    return {
-      leaseId: leaseRow.id,
-      credentialId: p.credentialId,
-      projectId: p.projectId,
-      runId: p.runId,
-      stageId: p.stageId,
-      issuedAt: now,
-      expiresAt,
-      secret,
-    };
-  }
 
   /**
    * Revoke a single lease by ID.

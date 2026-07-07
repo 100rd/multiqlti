@@ -2,7 +2,7 @@ import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, inArray, sql a
 import type { SQL } from "drizzle-orm";
 import { db, withProject, withProjectList, withProjectInsert, withProjectOrGlobal } from "./db";
 import { unscopedSystemQuery, getProjectId } from "./context";
-import type { IStorage, PracticeCardFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmStatsByWorkspace, LlmTimelinePoint, RunHistoryQuery, PipelineRunHistoryRow, TaskGroupHistoryRow } from "./storage";
+import type { IStorage, PracticeCardFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmStatsByWorkspace, LlmTimelinePoint, RunHistoryQuery, TaskGroupHistoryRow } from "./storage";
 import {
   TASK_GROUP_V2_MAX_LIMIT,
   IterationConflictError,
@@ -14,20 +14,17 @@ import type {
   IterationStartInput,
   VirtualIteration,
 } from "./storage-task-groups-v2";
-import type { Memory, InsertMemory, MemoryScope, MemoryType, McpServerConfig } from "@shared/types";
+import type { McpServerConfig } from "@shared/types";
 import {
-  users, models, pipelines, pipelineRuns,
-  stageExecutions, questions, chatMessages, llmRequests,
+  users, models,
+  questions, chatMessages, llmRequests,
   lessons,
-  memories,
   mcpServers,
-  delegationRequests,
   specializationProfiles,
   skills,
   skillVersions,
   modelSkillBindings,
   triggers,
-  managerIterations,
   traces,
   argoCdConfig,
   workspaces,
@@ -40,19 +37,14 @@ import {
   type PracticeCardStatus,
   type UserRow, type InsertUser,
   type Model, type InsertModel,
-  type Pipeline, type InsertPipeline,
-  type PipelineRun, type InsertPipelineRun,
-  type StageExecution, type InsertStageExecution,
   type Lesson, type InsertLesson,
   type Question, type InsertQuestion,
   type ChatMessage, type InsertChatMessage,
   type LlmRequest, type InsertLlmRequest,
-  type InsertDelegationRequest, type DelegationRequestRow,
   type InsertSpecializationProfile,
   type SpecializationProfileRow,
   type Skill, type InsertSkill,
   type SkillVersionRow,
-  type InsertManagerIteration, type ManagerIterationRow,
   type TriggerRow,
   type InsertTrace,
   type TraceRow,
@@ -198,156 +190,6 @@ export class PgStorage implements IStorage {
 
   async deleteModel(id: string): Promise<void> {
     await db.delete(models).where(withProject(models, eq(models.id, id)));
-  }
-
-  // ─── Pipelines ──────────────────────────────────────
-
-  async getPipelines(): Promise<Pipeline[]> {
-    // Project-scoped in a request context; cross-project in a system context
-    // (federation, catalog reconcile, startup seed) via runAsSystem.
-    return db.select().from(pipelines).where(withProjectList(pipelines));
-  }
-
-  async getPipeline(id: string): Promise<Pipeline | undefined> {
-    const [row] = await db.select().from(pipelines).where(withProject(pipelines, eq(pipelines.id, id)));
-    return row;
-  }
-
-  async getTemplates(): Promise<Pipeline[]> {
-    return db.select().from(pipelines).where(withProject(pipelines, eq(pipelines.isTemplate, true)));
-  }
-
-  async createPipeline(pipeline: InsertPipeline): Promise<Pipeline> {
-    const [row] = await db.insert(pipelines).values(withProjectInsert(pipelines, pipeline)).returning();
-    return row;
-  }
-
-  async updatePipeline(id: string, updates: Partial<InsertPipeline>): Promise<Pipeline> {
-    const [row] = await db
-      .update(pipelines)
-      .set({ ...updates, updatedAt: new Date() })
-      .where(withProject(pipelines, eq(pipelines.id, id)))
-      .returning();
-    if (!row) throw new Error(`Pipeline not found: ${id}`);
-    return row;
-  }
-
-  async deletePipeline(id: string): Promise<void> {
-    await db.delete(pipelines).where(withProject(pipelines, eq(pipelines.id, id)));
-  }
-
-  // ─── Pipeline Runs ──────────────────────────────────
-
-  async getPipelineRuns(pipelineId?: string): Promise<PipelineRun[]> {
-    // ALWAYS project-scoped — both the per-pipeline branch AND the list-all
-    // branch (the latter previously returned runs from every project). A system
-    // context (runAsSystem) reads cross-project, audited.
-    const filter = pipelineId
-      ? withProjectList(pipelineRuns, eq(pipelineRuns.pipelineId, pipelineId))
-      : withProjectList(pipelineRuns);
-    return db
-      .select()
-      .from(pipelineRuns)
-      .where(filter)
-      .orderBy(desc(pipelineRuns.createdAt));
-  }
-
-  async listPipelineRunHistory(query: RunHistoryQuery): Promise<PipelineRunHistoryRow[]> {
-    const conditions: SQL[] = [
-      inArray(pipelineRuns.status, ["completed", "failed", "cancelled", "rejected"]),
-    ];
-    if (query.ownerId != null) conditions.push(eq(pipelineRuns.triggeredBy, query.ownerId));
-    if (query.cursor) {
-      const c = new Date(query.cursor.completedAt);
-      conditions.push(
-        or(
-          lt(pipelineRuns.completedAt, c),
-          and(eq(pipelineRuns.completedAt, c), lt(pipelineRuns.id, query.cursor.id)),
-        )!,
-      );
-    }
-    const rows = await db
-      .select({
-        id: pipelineRuns.id,
-        status: pipelineRuns.status,
-        workspaceId: pipelineRuns.workspaceId,
-        triggeredBy: pipelineRuns.triggeredBy,
-        startedAt: pipelineRuns.startedAt,
-        completedAt: pipelineRuns.completedAt,
-        currentStageIndex: pipelineRuns.currentStageIndex,
-      })
-      .from(pipelineRuns)
-      .where(withProject(pipelineRuns, and(...conditions)))
-      .orderBy(desc(pipelineRuns.completedAt), desc(pipelineRuns.id))
-      .limit(query.limit);
-    return rows.map((r) => ({
-      id: r.id,
-      status: r.status,
-      workspaceId: r.workspaceId ?? null,
-      triggeredBy: r.triggeredBy ?? null,
-      startedAt: r.startedAt ?? null,
-      completedAt: r.completedAt ?? null,
-      currentStageIndex: r.currentStageIndex ?? 0,
-    }));
-  }
-
-  async getPipelineRun(id: string): Promise<PipelineRun | undefined> {
-    const [row] = await db
-      .select()
-      .from(pipelineRuns)
-      .where(withProject(pipelineRuns, eq(pipelineRuns.id, id)));
-    return row;
-  }
-
-  async createPipelineRun(run: InsertPipelineRun): Promise<PipelineRun> {
-    const [row] = await db.insert(pipelineRuns).values(withProjectInsert(pipelineRuns, run)).returning();
-    return row;
-  }
-
-  async updatePipelineRun(id: string, updates: Partial<PipelineRun>): Promise<PipelineRun> {
-    const [row] = await db
-      .update(pipelineRuns)
-      .set(updates)
-      .where(withProject(pipelineRuns, eq(pipelineRuns.id, id)))
-      .returning();
-    if (!row) throw new Error(`Run not found: ${id}`);
-    return row;
-  }
-
-  // ─── Stage Executions ───────────────────────────────
-
-  async getStageExecutions(runId: string): Promise<StageExecution[]> {
-    return db
-      .select()
-      .from(stageExecutions)
-      .where(withProject(stageExecutions, eq(stageExecutions.runId, runId)))
-      .orderBy(stageExecutions.stageIndex);
-  }
-
-  async getStageExecution(id: string): Promise<StageExecution | undefined> {
-    const [row] = await db
-      .select()
-      .from(stageExecutions)
-      .where(withProject(stageExecutions, eq(stageExecutions.id, id)));
-    return row;
-  }
-
-  async createStageExecution(execution: InsertStageExecution): Promise<StageExecution> {
-    const [row] = await db.insert(stageExecutions).values(withProjectInsert(stageExecutions, execution)).returning();
-    return row;
-  }
-
-  async updateStageExecution(
-    id: string,
-    updates: Partial<StageExecution>,
-  ): Promise<StageExecution> {
-    const [row] = await db
-      .update(stageExecutions)
-      .set(updates)
-      .where(withProject(stageExecutions, eq(stageExecutions.id, id)))
-      .returning();
-    if (!row) throw new Error(`Stage execution not found: ${id}`);
-    return row;
   }
 
   // ─── Lessons (agent-experience memory — Track B) ─────
@@ -711,124 +553,6 @@ export class PgStorage implements IStorage {
     }));
   }
 
-  // ─── Memories ───────────────────────────────────────
-
-  private rowToMemory(row: typeof memories.$inferSelect): Memory {
-    return {
-      id: row.id,
-      scope: row.scope as Memory['scope'],
-      scopeId: row.scopeId ?? null,
-      type: row.type as Memory['type'],
-      key: row.key,
-      content: row.content,
-      source: row.source ?? null,
-      confidence: row.confidence,
-      tags: row.tags ?? [],
-      createdAt: row.createdAt ?? null,
-      updatedAt: row.updatedAt ?? null,
-      expiresAt: row.expiresAt ?? null,
-      createdByRunId: row.createdByRunId ?? null,
-      published: row.published ?? false,
-    };
-  }
-
-  async getMemories(scope: MemoryScope, scopeId?: string | null, type?: MemoryType): Promise<Memory[]> {
-    const conditions = [eq(memories.scope, scope)];
-
-    if (scopeId !== undefined) {
-      conditions.push(scopeId === null
-        ? drizzleSql`${memories.scopeId} IS NULL`
-        : eq(memories.scopeId, scopeId));
-    }
-
-    if (type) {
-      conditions.push(eq(memories.type, type));
-    }
-
-    const rows = await db.select().from(memories).where(withProject(memories, and(...conditions)));
-    return rows.map((r) => this.rowToMemory(r));
-  }
-
-  async searchMemories(query: string, scope?: MemoryScope): Promise<Memory[]> {
-    const searchPattern = `%${query}%`;
-    const textMatch = or(
-      ilike(memories.key, searchPattern),
-      ilike(memories.content, searchPattern),
-    );
-
-    const condition = scope
-      ? and(textMatch, eq(memories.scope, scope))
-      : textMatch;
-
-    const rows = await db.select().from(memories).where(withProject(memories, condition));
-    return rows.map((r) => this.rowToMemory(r));
-  }
-
-  async upsertMemory(insert: InsertMemory): Promise<Memory> {
-    const [row] = await db
-      .insert(memories)
-      .values(withProjectInsert(memories, {
-        scope: insert.scope,
-        scopeId: insert.scopeId ?? null,
-        type: insert.type,
-        key: insert.key,
-        content: insert.content,
-        source: insert.source ?? null,
-        confidence: insert.confidence ?? 1.0,
-        tags: insert.tags ?? [],
-        expiresAt: insert.expiresAt ?? null,
-        createdByRunId: insert.createdByRunId ?? null,
-        published: insert.published ?? false,
-      }))
-      .onConflictDoUpdate({
-        target: [memories.scope, memories.scopeId, memories.key],
-        set: {
-          content: insert.content,
-          confidence: insert.confidence ?? 1.0,
-          source: insert.source ?? null,
-          updatedAt: new Date(),
-        },
-      })
-      .returning();
-    return this.rowToMemory(row);
-  }
-
-  async deleteMemory(id: number): Promise<void> {
-    await db.delete(memories).where(withProject(memories, eq(memories.id, id)));
-  }
-
-  async decayMemories(excludeRunId: number, decayAmount: number): Promise<number> {
-    const result = await db
-      .update(memories)
-      .set({
-        confidence: drizzleSql`${memories.confidence} - ${decayAmount}`,
-        updatedAt: new Date(),
-      })
-      .where(withProject(memories, and(
-          ne(memories.createdByRunId, excludeRunId),
-          drizzleSql`${memories.confidence} > ${decayAmount}`,
-        ),))
-      .returning({ id: memories.id });
-    return result.length;
-  }
-
-  async deleteStaleMemories(threshold: number): Promise<number> {
-    const result = await db
-      .delete(memories)
-      .where(withProject(memories, lt(memories.confidence, threshold)))
-      .returning({ id: memories.id });
-    return result.length;
-  }
-
-  async updateMemoryPublished(id: number, published: boolean): Promise<Memory | null> {
-    const [row] = await db
-      .update(memories)
-      .set({ published, updatedAt: new Date() })
-      .where(withProject(memories, eq(memories.id, id)))
-      .returning();
-    return row ? this.rowToMemory(row) : null;
-  }
-
   // ─── MCP Servers ────────────────────────────────────
 
   private rowToMcpServer(row: typeof mcpServers.$inferSelect): McpServerConfig {
@@ -900,34 +624,6 @@ export class PgStorage implements IStorage {
 
   async deleteMcpServer(id: number): Promise<void> {
     await db.delete(mcpServers).where(withProject(mcpServers, eq(mcpServers.id, id)));
-  }
-
-  // ─── Delegation Requests (Phase 6.4) ────────────────────────────────────
-
-  async createDelegationRequest(data: InsertDelegationRequest): Promise<DelegationRequestRow> {
-    const [row] = await db.insert(delegationRequests).values(withProjectInsert(delegationRequests, data)).returning();
-    return row;
-  }
-
-  async getDelegationRequests(runId: string): Promise<DelegationRequestRow[]> {
-    return db
-      .select()
-      .from(delegationRequests)
-      .where(withProject(delegationRequests, eq(delegationRequests.runId, runId)))
-      .orderBy(asc(delegationRequests.createdAt));
-  }
-
-  async updateDelegationRequest(
-    id: string,
-    updates: Partial<DelegationRequestRow>,
-  ): Promise<DelegationRequestRow> {
-    const [row] = await db
-      .update(delegationRequests)
-      .set(updates)
-      .where(withProject(delegationRequests, eq(delegationRequests.id, id)))
-      .returning();
-    if (!row) throw new Error(`Delegation request not found: ${id}`);
-    return row;
   }
 
   // ─── Specialization Profiles (Phase 5) ──────────────────────────────────────
@@ -1066,49 +762,6 @@ export class PgStorage implements IStorage {
     return row?.usageCount ?? 0;
   }
 
-
-  // ─── Manager Iterations (Phase 6.6) ────────────────────────────────────────
-
-  async createManagerIteration(data: InsertManagerIteration): Promise<ManagerIterationRow> {
-    const [row] = await db.insert(managerIterations).values(withProjectInsert(managerIterations, data)).returning();
-    return row;
-  }
-
-  async updateManagerIteration(
-    runId: string,
-    iterationNumber: number,
-    updates: Partial<Pick<ManagerIterationRow, "teamResult" | "teamDurationMs">>,
-  ): Promise<void> {
-    await db
-      .update(managerIterations)
-      .set(updates)
-      .where(withProject(managerIterations, and(
-          eq(managerIterations.runId, runId),
-          eq(managerIterations.iterationNumber, iterationNumber),
-        ),));
-  }
-
-  async getManagerIterations(
-    runId: string,
-    offset = 0,
-    limit = 50,
-  ): Promise<ManagerIterationRow[]> {
-    return db
-      .select()
-      .from(managerIterations)
-      .where(withProject(managerIterations, eq(managerIterations.runId, runId)))
-      .orderBy(asc(managerIterations.iterationNumber))
-      .limit(limit)
-      .offset(offset);
-  }
-
-  async countManagerIterations(runId: string): Promise<number> {
-    const result = await db
-      .select({ count: drizzleSql<number>`count(*)::int` })
-      .from(managerIterations)
-      .where(withProject(managerIterations, eq(managerIterations.runId, runId)));
-    return result[0]?.count ?? 0;
-  }
 
   // ─── Consilium Loops (Phase B — auto-versioned FSM) ───────────────────────
 
@@ -1452,10 +1105,6 @@ export class PgStorage implements IStorage {
 
   // ─── Triggers (Phase 6.3) ─────────────────────────────────────────────────
 
-  async getTriggers(pipelineId: string): Promise<TriggerRow[]> {
-    return db.select().from(triggers).where(withProject(triggers, eq(triggers.pipelineId, pipelineId))).orderBy(triggers.createdAt);
-  }
-
   async getProjectTriggers(): Promise<TriggerRow[]> {
     // T1: project-scoped list (the ALS project filter only) so pipeline-less,
     // loop-template triggers are returned alongside any legacy pipeline triggers.
@@ -1494,8 +1143,6 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .insert(triggers)
       .values(withProjectInsert(triggers, {
-        // T1: nullable — a loop-template trigger carries no pipeline.
-        pipelineId: data.pipelineId ?? null,
         type: data.type as TriggerRow["type"],
         config: data.config,
         secretEncrypted: data.secretEncrypted ?? null,
@@ -1562,9 +1209,12 @@ export class PgStorage implements IStorage {
     return row;
   }
 
-  async getTraceByRunId(runId: string): Promise<TraceRow | null> {
-    const [row] = await db.select().from(traces).where(withProject(traces, eq(traces.runId, runId))).limit(1);
-    return row ?? null;
+  async getTraceByRunId(_runId: string): Promise<TraceRow | null> {
+    // traces has no project_id column; its only scoping mechanism was a
+    // subquery through pipeline_runs.project_id, which is retired along with
+    // the pipelines engine. Returning null (never the unscoped row) avoids a
+    // cross-project data leak — see migration 0053 / task #29.
+    return null;
   }
 
   async getTraceByTraceId(traceId: string): Promise<TraceRow | null> {
@@ -1572,24 +1222,12 @@ export class PgStorage implements IStorage {
     return row ?? null;
   }
 
-  async getTraces(limit = 50, offset = 0): Promise<TraceRow[]> {
-    // traces has NO project_id column (a trace belongs to a pipeline run). Scope
-    // by sub-querying through pipeline_runs (which IS project-scoped) so only
-    // traces whose run is in the current project are returned. A schema migration
-    // adding traces.project_id was considered but rejected here: it would
-    // denormalize and require a backfill + dual-write, whereas the
-    // runId->pipeline_runs join is exact and cheap (indexed run_id) for the
-    // dashboard's page-sized reads.
-    return db.select().from(traces)
-      .where(
-        inArray(
-          traces.runId,
-          db.select({ id: pipelineRuns.id }).from(pipelineRuns).where(withProjectList(pipelineRuns)),
-        ),
-      )
-      .orderBy(desc(traces.createdAt))
-      .limit(limit)
-      .offset(offset);
+  async getTraces(_limit = 50, _offset = 0): Promise<TraceRow[]> {
+    // traces has no project_id column; it was scoped by sub-querying through
+    // pipeline_runs.project_id, which is retired along with the pipelines
+    // engine. Returning [] (never the unscoped rows) avoids a cross-project
+    // data leak — see migration 0053 / task #29 (WorkspaceTraces repoint).
+    return [];
   }
 
   async updateTraceSpans(traceId: string, spans: TraceSpan[]): Promise<void> {

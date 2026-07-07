@@ -1,6 +1,6 @@
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { Copy, RefreshCw } from "lucide-react";
-import { apiRequest } from "@/hooks/use-pipeline";
+import { apiRequest } from "@/hooks/use-api";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";

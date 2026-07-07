@@ -430,66 +430,26 @@ describe("makeEnqueuer", () => {
   });
 });
 
-// ── defaultApplyOne — pipeline routing ────────────────────────────────────────
+// ── defaultApplyOne — unknown/retired entity kinds ────────────────────────────
 
-describe("defaultApplyOne — pipeline", () => {
+describe("defaultApplyOne — unknown/retired entity kinds", () => {
   let storage: IStorage;
 
   beforeEach(() => {
     storage = createMockStorage();
   });
 
-  it("creates a pipeline on create operation", async () => {
-    await defaultApplyOne(
-      "pipeline",
-      "p1",
-      "create",
-      { name: "My Pipeline", stages: [], isTemplate: false },
-      storage,
-    );
-    expect(storage.createPipeline).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "My Pipeline" }),
-    );
-  });
-
-  it("updates existing pipeline on update operation", async () => {
-    const mockStorage = {
-      ...storage,
-      getPipelines: vi.fn(async () => [
-        { id: "pipe-existing", name: "My Pipeline", stages: [], isTemplate: false, createdAt: new Date(), updatedAt: new Date() },
-      ]),
-      updatePipeline: vi.fn(async () => undefined),
-    } as unknown as IStorage;
-
-    await defaultApplyOne(
-      "pipeline",
-      "pipe-existing",
-      "update",
-      { name: "My Pipeline", description: "Updated" },
-      mockStorage,
-    );
-    expect(mockStorage.updatePipeline).toHaveBeenCalledWith(
-      "pipe-existing",
-      expect.objectContaining({ name: "My Pipeline" }),
-    );
-  });
-
-  it("skips delete operation without error", async () => {
-    await expect(
-      defaultApplyOne("pipeline", "p1", "delete", {}, storage),
-    ).resolves.toBeUndefined();
-    expect(storage.createPipeline).not.toHaveBeenCalled();
-  });
-
-  it("skips create when name is missing", async () => {
-    await defaultApplyOne("pipeline", "p1", "create", {}, storage);
-    expect(storage.createPipeline).not.toHaveBeenCalled();
-  });
-
   it("silently ignores unknown entity kind", async () => {
     await expect(
       defaultApplyOne("unknown-kind", "id-1", "create", {}, storage),
     ).resolves.toBeUndefined();
+  });
+
+  it("silently ignores a retired 'pipeline' entity kind (pipelines engine removed)", async () => {
+    await expect(
+      defaultApplyOne("pipeline", "p1", "create", { name: "My Pipeline" }, storage),
+    ).resolves.toBeUndefined();
+    expect(storage.createPipeline).not.toHaveBeenCalled();
   });
 });
 
@@ -507,11 +467,11 @@ describe("defaultApplyOne — trigger", () => {
       "trigger",
       "t1",
       "create",
-      { pipelineId: "pipe-1", enabled: true, config: { type: "webhook" } },
+      { enabled: true, config: { type: "webhook" } },
       storage,
     );
     expect(storage.createTrigger).toHaveBeenCalledWith(
-      expect.objectContaining({ pipelineId: "pipe-1", enabled: true }),
+      expect.objectContaining({ enabled: true }),
     );
   });
 
@@ -520,7 +480,7 @@ describe("defaultApplyOne — trigger", () => {
       "trigger",
       "t1",
       "update",
-      { id: "trigger-abc", pipelineId: "pipe-1", enabled: false, config: { type: "webhook" } },
+      { id: "trigger-abc", enabled: false, config: { type: "webhook" } },
       storage,
     );
     expect(storage.updateTrigger).toHaveBeenCalledWith(
@@ -529,9 +489,9 @@ describe("defaultApplyOne — trigger", () => {
     );
   });
 
-  it("skips trigger create without pipelineId", async () => {
+  it("creates a trigger even with a minimal (no pipelineId) payload — T1 retarget, triggers are project-scoped", async () => {
     await defaultApplyOne("trigger", "t1", "create", {}, storage);
-    expect(storage.createTrigger).not.toHaveBeenCalled();
+    expect(storage.createTrigger).toHaveBeenCalled();
   });
 });
 

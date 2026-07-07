@@ -1,7 +1,8 @@
 /**
  * Unit tests for the TextChunker.
  *
- * Tests cover all four source types, overlap behavior, edge cases.
+ * Tests cover the memory_entry, document, and code source types, overlap
+ * behavior, and edge cases.
  */
 import { describe, it, expect } from "vitest";
 import { TextChunker } from "../../../server/memory/chunker.js";
@@ -70,32 +71,6 @@ describe("TextChunker", () => {
       const chunks = chunker.chunk("Hello world.", "document", { docId: "abc" });
       for (const chunk of chunks) {
         expect(chunk.metadata).toMatchObject({ docId: "abc" });
-      }
-    });
-  });
-
-  // ─── pipeline_run source type ──────────────────────────────────────────────
-
-  describe("pipeline_run source type", () => {
-    it("splits on blank lines", () => {
-      // Use a small chunker (10 tokens = 40 chars) so each paragraph forces a new chunk
-      const smallChunker = new TextChunker({ maxChunkTokens: 10, overlapTokens: 0 });
-      const text = "Paragraph one.\nStill in para one.\n\nParagraph two.\n\nParagraph three.";
-      const chunks = smallChunker.chunk(text, "pipeline_run");
-      expect(chunks.length).toBeGreaterThanOrEqual(2);
-    });
-
-    it("returns single chunk when text fits budget", () => {
-      const text = "Short decision: use TypeScript.";
-      const chunks = chunker.chunk(text, "pipeline_run");
-      expect(chunks).toHaveLength(1);
-    });
-
-    it("each chunk text is non-empty", () => {
-      const text = "Para A.\n\nPara B.\n\nPara C.\n\n";
-      const chunks = chunker.chunk(text, "pipeline_run");
-      for (const chunk of chunks) {
-        expect(chunk.text.trim().length).toBeGreaterThan(0);
       }
     });
   });

@@ -5,9 +5,9 @@
  *   1. Returns 400 with field-level errors when the body is invalid.
  *   2. Passes through successfully when the body is valid.
  *
- * Chat routes are tested against a minimal Express app because the full
- * createTestApp() does not register chat routes (it is a purely in-memory
- * pipeline-focused helper).
+ * Chat/gateway/providers routes are tested against minimal Express app
+ * fixtures (createChatApp/createGatewayApp) rather than createTestApp(),
+ * since they don't depend on its model-seeding setup.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
@@ -15,7 +15,6 @@ import express from "express";
 import type { Router } from "express";
 import { createTestApp } from "../helpers/test-app.js";
 import { registerChatRoutes } from "../../server/routes/chat.js";
-import { registerStrategyRoutes } from "../../server/routes/strategies.js";
 import { registerGatewayRoutes } from "../../server/routes/gateway.js";
 import type { TestApp } from "../helpers/test-app.js";
 
@@ -80,128 +79,6 @@ function expectValidationFailure(body: unknown) {
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
-
-describe("Zod validation — POST /api/pipelines", () => {
-  let testApp: TestApp;
-
-  beforeAll(async () => {
-    testApp = await createTestApp();
-  });
-
-  afterAll(async () => {
-    await testApp.close();
-  });
-
-  it("returns 400 when name is missing", async () => {
-    const res = await request(testApp.app)
-      .post("/api/pipelines")
-      .send({ stages: [] });
-    expect(res.status).toBe(400);
-    expectValidationFailure(res.body);
-  });
-
-  it("returns 400 when name is empty string", async () => {
-    const res = await request(testApp.app)
-      .post("/api/pipelines")
-      .send({ name: "", stages: [] });
-    expect(res.status).toBe(400);
-  });
-
-  it("passes through with valid body (201)", async () => {
-    const res = await request(testApp.app)
-      .post("/api/pipelines")
-      .send({ name: "Valid Pipeline", stages: [] });
-    expect(res.status).toBe(201);
-    expect((res.body as { name: string }).name).toBe("Valid Pipeline");
-  });
-});
-
-describe("Zod validation — PATCH /api/pipelines/:id", () => {
-  let testApp: TestApp;
-  let pipelineId: string;
-
-  beforeAll(async () => {
-    testApp = await createTestApp();
-    const res = await request(testApp.app)
-      .post("/api/pipelines")
-      .send({ name: "Patch Target", stages: [] });
-    pipelineId = (res.body as { id: string }).id;
-  });
-
-  afterAll(async () => {
-    await testApp.close();
-  });
-
-  it("returns 400 when name is too long (>100 chars)", async () => {
-    const res = await request(testApp.app)
-      .patch(`/api/pipelines/${pipelineId}`)
-      .send({ name: "x".repeat(101) });
-    expect(res.status).toBe(400);
-    expectValidationFailure(res.body);
-  });
-
-  it("passes through with valid partial body (200)", async () => {
-    const res = await request(testApp.app)
-      .patch(`/api/pipelines/${pipelineId}`)
-      .send({ name: "Updated Name" });
-    expect(res.status).toBe(200);
-    expect((res.body as { name: string }).name).toBe("Updated Name");
-  });
-});
-
-describe("Zod validation — POST /api/runs", () => {
-  let testApp: TestApp;
-  let pipelineId: string;
-
-  beforeAll(async () => {
-    testApp = await createTestApp();
-    const res = await request(testApp.app)
-      .post("/api/pipelines")
-      .send({ name: "Run Target", stages: [] });
-    pipelineId = (res.body as { id: string }).id;
-  });
-
-  afterAll(async () => {
-    await testApp.close();
-  });
-
-  it("returns 400 when pipelineId is missing", async () => {
-    const res = await request(testApp.app)
-      .post("/api/runs")
-      .send({ input: "hello" });
-    expect(res.status).toBe(400);
-    expectValidationFailure(res.body);
-  });
-
-  it("returns 400 when input is missing", async () => {
-    const res = await request(testApp.app)
-      .post("/api/runs")
-      .send({ pipelineId });
-    expect(res.status).toBe(400);
-    expectValidationFailure(res.body);
-  });
-
-  it("returns 400 when input is empty string", async () => {
-    const res = await request(testApp.app)
-      .post("/api/runs")
-      .send({ pipelineId, input: "" });
-    expect(res.status).toBe(400);
-    expectValidationFailure(res.body);
-  });
-
-  it("passes validation with valid body (pipeline not found → 400 from controller, not validation)", async () => {
-    // With a valid pipelineId that doesn't exist, validation passes
-    // and the controller returns 400 "Pipeline not found" (not a validation error)
-    const res = await request(testApp.app)
-      .post("/api/runs")
-      .send({ pipelineId: "nonexistent-id", input: "some input" });
-    // Validation passes, controller returns 400 with a different error
-    expect(res.status).toBe(400);
-    const body = res.body as { error: string };
-    // Should NOT be a validation error — it should be a controller error
-    expect(body.error).toMatch(/not found|pipeline/i);
-  });
-});
 
 describe("Zod validation — POST /api/models", () => {
   let testApp: TestApp;
@@ -277,51 +154,6 @@ describe("Zod validation — PATCH /api/models/:id", () => {
       .send({ name: "Updated Model Name" });
     expect(res.status).toBe(200);
     expect((res.body as { name: string }).name).toBe("Updated Model Name");
-  });
-});
-
-describe("Zod validation — PATCH /api/pipelines/:id/stages/:stageIndex/strategy", () => {
-  let app: express.Express;
-  let pipelineId: string;
-  let testApp: TestApp;
-
-  beforeAll(async () => {
-    testApp = await createTestApp();
-    app = testApp.app;
-    registerStrategyRoutes(app as unknown as import("express").Router & ReturnType<typeof express>, testApp.storage);
-
-    const res = await request(app)
-      .post("/api/pipelines")
-      .send({
-        name: "Strategy Pipeline",
-        stages: [{ teamId: "planning", modelSlug: "mock", enabled: true }],
-      });
-    pipelineId = (res.body as { id: string }).id;
-  });
-
-  afterAll(async () => {
-    await testApp.close();
-  });
-
-  it("returns 400 when strategy type is invalid", async () => {
-    const res = await request(app)
-      .patch(`/api/pipelines/${pipelineId}/stages/0/strategy`)
-      .send({ type: "invalid-type" });
-    expect(res.status).toBe(400);
-  });
-
-  it("returns 400 when moa strategy is missing proposers", async () => {
-    const res = await request(app)
-      .patch(`/api/pipelines/${pipelineId}/stages/0/strategy`)
-      .send({ type: "moa", aggregator: { modelSlug: "mock" } });
-    expect(res.status).toBe(400);
-  });
-
-  it("passes through with valid single strategy (200)", async () => {
-    const res = await request(app)
-      .patch(`/api/pipelines/${pipelineId}/stages/0/strategy`)
-      .send({ type: "single" });
-    expect(res.status).toBe(200);
   });
 });
 
@@ -457,24 +289,6 @@ describe("Zod validation — POST /api/providers/probe", () => {
 // ─── maxLength constraint tests ───────────────────────────────────────────────
 
 describe("Zod validation — maxLength constraints", () => {
-  let testApp: TestApp;
-
-  beforeAll(async () => {
-    testApp = await createTestApp();
-  });
-
-  afterAll(async () => {
-    await testApp.close();
-  });
-
-  it("returns 400 when POST /api/runs input exceeds 50000 chars", async () => {
-    const res = await request(testApp.app)
-      .post("/api/runs")
-      .send({ pipelineId: "pid-1", input: "x".repeat(50001) });
-    expect(res.status).toBe(400);
-    expectValidationFailure(res.body);
-  });
-
   it("returns 400 when POST /api/gateway/complete modelSlug exceeds 200 chars", async () => {
     const app = createGatewayApp();
     const res = await request(app)

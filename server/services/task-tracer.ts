@@ -77,17 +77,6 @@ export class TaskTracer {
     return span.spanId;
   }
 
-  startPipelineRunSpan(traceId: string, parentSpanId: string, runId: string): string {
-    const trace = this.activeTraces.get(traceId);
-    if (!trace) return "";
-
-    const span = this.makeSpan(parentSpanId, `Pipeline Run`, "pipeline_run", { pipelineRunId: runId });
-    trace.spans.push(span);
-    this.flushTrace(traceId);
-    this.broadcastSpanEvent(trace.groupId, "trace:span:started", span);
-    return span.spanId;
-  }
-
   startStageSpan(traceId: string, parentSpanId: string, stageIndex: number, modelSlug: string): string {
     const trace = this.activeTraces.get(traceId);
     if (!trace) return "";

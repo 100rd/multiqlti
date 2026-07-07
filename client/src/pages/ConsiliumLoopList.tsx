@@ -53,7 +53,7 @@ import {
   type ConsiliumLoopListItem,
   type ConsiliumLoopRoundRow,
 } from "@/hooks/use-consilium-loops";
-import { apiRequest } from "@/hooks/use-pipeline";
+import { apiRequest } from "@/hooks/use-api";
 import { LoopStateChipFor } from "@/components/consilium/loop-state";
 import { NewConsiliumReviewDialog } from "@/components/consilium/new-review-dialog";
 import type { WorkspaceRow } from "@shared/schema";

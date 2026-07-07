@@ -11,16 +11,10 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import { useAuth } from "@/hooks/use-auth";
 
 import MainLayout from "@/components/layout/MainLayout";
-import PipelineList from "@/pages/PipelineList";
-import PipelineDetail from "@/pages/PipelineDetail";
-import PipelineRun from "@/pages/PipelineRun";
-import RunComparison from "@/pages/RunComparison";
 import TriggersPage from "@/pages/TriggersPage";
-import { TracePage } from "@/pages/Trace";
 import Settings from "@/pages/Settings";
 import Privacy from "@/pages/Privacy";
 import Statistics from "@/pages/Statistics";
-import Memory from "@/pages/Memory";
 import KnowledgeBase from "@/pages/KnowledgeBase";
 import WorkspaceList from "@/pages/WorkspaceList";
 import Workspace from "@/pages/Workspace";
@@ -33,7 +27,6 @@ import Skills from "@/pages/Skills";
 import { WorkspaceTracesPage, WorkspaceTraceDetailPage } from "@/pages/WorkspaceTraces";
 import Costs from "@/pages/Costs";
 import ConfigSync from "@/pages/ConfigSync";
-import Activity from "@/pages/Activity";
 import ConsiliumLoopList from "@/pages/ConsiliumLoopList";
 import ConsiliumLoopDetail from "@/pages/ConsiliumLoopDetail";
 import Roles from "@/pages/Roles";
@@ -62,25 +55,6 @@ function ProtectedRouter() {
       <Switch>
         <Route path="/" component={() => (
           <ErrorBoundary><Statistics /></ErrorBoundary>
-        )} />
-        <Route path="/pipelines" component={() => (
-          <ErrorBoundary><PipelineList /></ErrorBoundary>
-        )} />
-        <Route path="/pipelines/:id/compare">
-          {(params) => (
-            <ErrorBoundary><RunComparison params={params as { id: string }} /></ErrorBoundary>
-          )}
-        </Route>
-        <Route path="/pipelines/:id">
-          {(params) => (
-            <ErrorBoundary><PipelineDetail params={params as { id: string }} /></ErrorBoundary>
-          )}
-        </Route>
-        <Route path="/runs/:runId/trace" component={() => (
-          <ErrorBoundary><TracePage /></ErrorBoundary>
-        )} />
-        <Route path="/runs/:runId" component={() => (
-          <ErrorBoundary><PipelineRun /></ErrorBoundary>
         )} />
         <Route path="/triggers" component={() => (
           <ErrorBoundary><TriggersPage /></ErrorBoundary>
@@ -141,15 +115,6 @@ function ProtectedRouter() {
         )} />
         <Route path="/privacy" component={() => (
           <ErrorBoundary><Privacy /></ErrorBoundary>
-        )} />
-        <Route path="/activity" component={() => (
-          <ErrorBoundary><Activity /></ErrorBoundary>
-        )} />
-        <Route path="/stats" component={() => (
-          <ErrorBoundary><Statistics /></ErrorBoundary>
-        )} />
-        <Route path="/memories" component={() => (
-          <ErrorBoundary><Memory /></ErrorBoundary>
         )} />
         <Route path="/contour" component={() => (
           <ErrorBoundary><ContourObservability /></ErrorBoundary>

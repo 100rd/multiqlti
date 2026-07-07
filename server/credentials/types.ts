@@ -75,23 +75,6 @@ export type CredentialSecret =
     }
   | { type: "github-app-token"; token: string; expiresAt: Date };
 
-/**
- * A short-TTL credential lease.  The `secret` field ONLY appears here, never in
- * CredentialMetadata.  The caller MUST NOT store or log `secret` after handing
- * it to spawnBuiltinServer.
- */
-export interface CredentialLease {
-  leaseId: string;
-  credentialId: string;
-  projectId: string;
-  runId: string;
-  stageId: string;
-  issuedAt: Date;
-  expiresAt: Date;
-  /** Secret material — do not persist or log. */
-  secret: CredentialSecret;
-}
-
 // ─── Non-lease access shape (Wave 2) ─────────────────────────────────────────
 
 /**
@@ -178,27 +161,6 @@ export interface CredentialProvider {
   accessSecret(params: AccessSecretParams): Promise<string>;
 
   // ── EXEC-TIME ─────────────────────────────────────────────────────────────
-
-  /**
-   * Issue a short-TTL credential lease.
-   *
-   * Enforces internally:
-   *   - stage_executions.approvalStatus === 'approved'
-   *   - pipeline_runs.status === 'running'
-   *   - rate-limit per (projectId, runId)
-   *
-   * Writes credential_leases row + credential_access_log(action='lease_issued').
-   * TTL default 300 s, max 900 s.
-   */
-  issueLease(p: {
-    projectId: string;
-    credentialId: string;
-    runId: string;
-    stageId: string;
-    ttlSeconds?: number;
-    requestedBy: string;
-    justification?: string;
-  }): Promise<CredentialLease>;
 
   /** Mark a lease revoked.  No-op if already revoked (idempotent). */
   revokeLease(leaseId: string): Promise<void>;

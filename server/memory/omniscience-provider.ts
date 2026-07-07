@@ -149,7 +149,6 @@ const SOURCE_TYPE_MAP: Record<string, ChunkSourceType> = {
   docs: "document",
   incident: "document",
   infra: "document",
-  pipeline_run: "pipeline_run",
   memory_entry: "memory_entry",
   // Real Omniscience v0.2 source_type enum.
   git: "code",

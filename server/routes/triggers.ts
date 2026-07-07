@@ -1,8 +1,8 @@
 /**
- * Trigger CRUD API routes — Phase 6.3
+ * Trigger CRUD API routes — Phase 6.3 (T1 retarget: project-scoped, no pipeline)
  *
- * GET    /api/pipelines/:pipelineId/triggers        — list triggers for a pipeline
- * POST   /api/pipelines/:pipelineId/triggers        — create a trigger
+ * GET    /api/triggers                              — list this project's triggers
+ * POST   /api/triggers                               — create a trigger
  * GET    /api/triggers/:id                          — get single trigger
  * PATCH  /api/triggers/:id                          — update trigger
  * DELETE /api/triggers/:id                          — delete trigger
@@ -14,7 +14,7 @@ import { z, ZodError } from "zod";
 import { randomUUID } from "crypto";
 import type { TriggerService } from "../services/trigger-service.js";
 import type { IStorage } from "../storage.js";
-import { requireRole, requireOwnerOrRole } from "../auth/middleware.js";
+import { requireRole } from "../auth/middleware.js";
 import { CONSILIUM_REVIEW_PRESETS, TRIGGER_FIRED_LOOPS_LIMIT } from "@shared/types";
 import type { TriggerFiredLoop, TriggerFiredLoopsResponse } from "@shared/types";
 import type { ConsiliumLoopRow } from "@shared/schema";
@@ -227,55 +227,19 @@ const UpdateTriggerSchema = z.object({
 import type { Request, Response } from "express";
 
 /**
- * VETO-1 fix: Resolves the pipeline for a given pipelineId, enforces ownership
- * via requireOwnerOrRole, and returns true if the check passed (i.e. next() was
- * called and we should continue). Returns false if a response was already sent
- * (401/403/404) and the handler should return immediately.
- */
-async function assertPipelineOwnership(
-  pipelineId: string,
-  storage: IStorage,
-  req: Request,
-  res: Response,
-): Promise<boolean> {
-  const pipeline = await storage.getPipeline(pipelineId);
-  if (!pipeline) {
-    res.status(404).json({ error: "Pipeline not found" });
-    return false;
-  }
-
-  const ownerId = pipeline.ownerId;
-  let passed = false;
-  await new Promise<void>((resolve) => {
-    const middleware = requireOwnerOrRole(() => ownerId, "admin");
-    middleware(req, res, () => {
-      passed = true;
-      resolve();
-    });
-    // If the middleware sent a 401/403, the response finishes — resolve to avoid hanging.
-    res.on("finish", () => resolve());
-  });
-
-  return passed && !res.headersSent;
-}
-
-/**
- * T1: authorize a per-id trigger operation. A LEGACY pipeline trigger is gated on
- * its pipeline's owner (unchanged). A pipeline-less loop-template trigger has no
- * pipeline owner to check — but it was already fetched via a PROJECT-SCOPED
- * `getTrigger` (so it belongs to req.projectId, which requireProject validated the
- * caller is a member of), and the mutating routes additionally carry
- * requireRole("maintainer","admin"). So project scope + role are the boundary here.
+ * T1: authorize a per-id trigger operation. The trigger entity is no longer
+ * pipeline-shaped (the pipeline entity left the product) — it was already
+ * fetched via a PROJECT-SCOPED `getTrigger` (so it belongs to req.projectId,
+ * which requireProject validated the caller is a member of), and the mutating
+ * routes additionally carry requireRole("maintainer","admin"). So project
+ * scope + role are the boundary here.
  */
 async function assertTriggerAccess(
-  trigger: { pipelineId: string | null },
-  storage: IStorage,
-  req: Request,
-  res: Response,
+  _trigger: unknown,
+  _storage: IStorage,
+  _req: Request,
+  _res: Response,
 ): Promise<boolean> {
-  if (trigger.pipelineId) {
-    return assertPipelineOwnership(trigger.pipelineId, storage, req, res);
-  }
   return true;
 }
 
@@ -286,13 +250,6 @@ export function registerTriggerRoutes(app: Express, triggerService: TriggerServi
   // GET /api/triggers — list all triggers across all pipelines the current user can see
   app.get("/api/triggers", async (req, res) => {
     try {
-      const pipelineId = req.query.pipelineId ? String(req.query.pipelineId) : undefined;
-      if (pipelineId) {
-        const allowed = await assertPipelineOwnership(pipelineId, storage, req, res);
-        if (!allowed) return;
-        return res.json(await triggerService.getTriggers(pipelineId));
-      }
-
       // T1: return the PROJECT's triggers (project-scoped), including pipeline-less
       // loop-template triggers. requireProject upstream validated membership and set
       // the ALS project the query filters by. (The old pipeline-fan-out returned []
@@ -351,68 +308,8 @@ export function registerTriggerRoutes(app: Express, triggerService: TriggerServi
     },
   );
 
-  // GET /api/pipelines/:pipelineId/triggers
-  // VETO-1: resolve pipeline and gate on ownership before returning triggers.
-  app.get("/api/pipelines/:pipelineId/triggers", async (req, res) => {
-    try {
-      const pipelineId = String(req.params.pipelineId);
-
-      const allowed = await assertPipelineOwnership(pipelineId, storage, req, res);
-      if (!allowed) return;
-
-      const triggers = await triggerService.getTriggers(pipelineId);
-      return res.json(triggers);
-    } catch (e) {
-      if (e instanceof ZodError) {
-        return res.status(400).json({ error: "Validation failed", issues: e.issues });
-      }
-      const cid = correlationId();
-      console.error(`[triggers] GET pipeline triggers error cid=${cid}`, e);
-      return res.status(500).json({ error: "Internal server error", correlationId: cid });
-    }
-  });
-
-  // POST /api/pipelines/:pipelineId/triggers
-  // VETO-1: gate on pipeline ownership before creating triggers.
-  // NOTE: New schedule/file_change triggers are stored in DB but only activated
-  // on server restart. Live activation is tracked in issue #XXX.
-  app.post(
-    "/api/pipelines/:pipelineId/triggers",
-    requireRole("maintainer", "admin"),
-    async (req, res) => {
-      try {
-        const pipelineId = String(req.params.pipelineId);
-
-        const allowed = await assertPipelineOwnership(pipelineId, storage, req, res);
-        if (!allowed) return;
-
-        const body = CreateTriggerSchema.parse(req.body);
-
-        // Fix 3: validate config against the specific type schema
-        const validatedConfig = validateTriggerConfig(body.type, body.config);
-
-        const trigger = await triggerService.createTrigger({
-          pipelineId,
-          type: body.type,
-          config: validatedConfig as never,
-          secret: body.secret,
-          enabled: body.enabled,
-        });
-
-        return res.status(201).json(trigger);
-      } catch (e) {
-        if (e instanceof ZodError) {
-          return res.status(400).json({ error: "Validation failed", issues: e.issues });
-        }
-        const cid = correlationId();
-        console.error(`[triggers] POST create trigger error cid=${cid}`, e);
-        return res.status(500).json({ error: "Internal server error", correlationId: cid });
-      }
-    },
-  );
-
   // GET /api/triggers/:id
-  // VETO-1: resolve trigger → pipelineId → pipeline owner → ownership check.
+  // T1: project scope + role are the access boundary (see assertTriggerAccess).
   app.get("/api/triggers/:id", async (req, res) => {
     try {
       const trigger = await triggerService.getTrigger(String(req.params.id));
@@ -500,7 +397,7 @@ export function registerTriggerRoutes(app: Express, triggerService: TriggerServi
   });
 
   // PATCH /api/triggers/:id
-  // VETO-1: resolve trigger → pipeline → ownership check before mutating.
+  // T1: project scope + role are the access boundary (see assertTriggerAccess).
   app.patch(
     "/api/triggers/:id",
     requireRole("maintainer", "admin"),
@@ -540,7 +437,7 @@ export function registerTriggerRoutes(app: Express, triggerService: TriggerServi
   );
 
   // DELETE /api/triggers/:id
-  // VETO-1: resolve trigger → pipeline → ownership check before deleting.
+  // T1: project scope + role are the access boundary (see assertTriggerAccess).
   app.delete(
     "/api/triggers/:id",
     requireRole("maintainer", "admin"),
@@ -567,7 +464,7 @@ export function registerTriggerRoutes(app: Express, triggerService: TriggerServi
   );
 
   // POST /api/triggers/:id/enable
-  // VETO-1: resolve trigger → pipeline → ownership check before enabling.
+  // T1: project scope + role are the access boundary (see assertTriggerAccess).
   app.post(
     "/api/triggers/:id/enable",
     requireRole("maintainer", "admin"),
@@ -591,7 +488,7 @@ export function registerTriggerRoutes(app: Express, triggerService: TriggerServi
   );
 
   // POST /api/triggers/:id/disable
-  // VETO-1: resolve trigger → pipeline → ownership check before disabling.
+  // T1: project scope + role are the access boundary (see assertTriggerAccess).
   app.post(
     "/api/triggers/:id/disable",
     requireRole("maintainer", "admin"),

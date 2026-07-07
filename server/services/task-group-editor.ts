@@ -50,7 +50,7 @@ export interface GroupPatch {
 export interface TaskPatch {
   name?: string;
   description?: string;
-  executionMode?: "pipeline_run" | "direct_llm";
+  executionMode?: "direct_llm";
   dependsOn?: string[];
   pipelineId?: string;
   modelSlug?: string;
@@ -62,7 +62,7 @@ export interface TaskPatch {
 export interface NewTaskInput {
   name: string;
   description: string;
-  executionMode?: "pipeline_run" | "direct_llm";
+  executionMode?: "direct_llm";
   dependsOn?: string[];
   pipelineId?: string;
   modelSlug?: string;
@@ -175,7 +175,7 @@ export class TaskGroupEditor {
 
   /** Resolve a new task's definition fields. */
   private resolveTaskFields(input: NewTaskInput): {
-    executionMode: "pipeline_run" | "direct_llm";
+    executionMode: "direct_llm";
     pipelineId: string | null;
     modelSlug: string | null;
     teamId: string | null;

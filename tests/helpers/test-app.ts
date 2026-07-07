@@ -7,16 +7,10 @@
  * functions correctly without a real auth layer.
  */
 import express from "express";
-import { createServer } from "http";
 import { MemStorage } from "../../server/storage.js";
 import { MockProvider } from "../../server/gateway/providers/mock.js";
-import { Gateway } from "../../server/gateway/index.js";
-import { TeamRegistry } from "../../server/teams/registry.js";
-import { PipelineController } from "../../server/controller/pipeline-controller.js";
-import { registerPipelineRoutes } from "../../server/routes/pipelines.js";
-import { registerRunRoutes } from "../../server/routes/runs.js";
 import { registerModelRoutes } from "../../server/routes/models.js";
-import { DEFAULT_MODELS, DEFAULT_PIPELINE_STAGES } from "../../shared/constants.js";
+import { DEFAULT_MODELS } from "../../shared/constants.js";
 import type { User } from "../../shared/types.js";
 
 export interface TestApp {
@@ -41,19 +35,6 @@ export async function createTestApp(): Promise<TestApp> {
   const storage = new MemStorage();
   const mockProvider = new MockProvider();
 
-  // Build Gateway with MemStorage — models all have provider="mock"
-  // so Gateway falls back to its internal MockProvider for all calls.
-  const gateway = new Gateway(storage);
-
-  // Create an HTTP server stub — WsManager needs one for construction
-  // but we won't start listening so no port is needed.
-  const httpServer = createServer();
-  const { WsManager } = await import("../../server/ws/manager.js");
-  const wsManager = new WsManager(httpServer);
-
-  const teamRegistry = new TeamRegistry(gateway, wsManager);
-  const controller = new PipelineController(storage, teamRegistry, wsManager, gateway);
-
   const app = express();
   app.use(express.json());
 
@@ -65,8 +46,6 @@ export async function createTestApp(): Promise<TestApp> {
 
   // Register only the routes under test (no auth, no full-app dependencies)
   registerModelRoutes(app, storage);
-  registerPipelineRoutes(app, storage);
-  registerRunRoutes(app, storage, controller);
 
   // Seed default models (all mock provider)
   for (const model of DEFAULT_MODELS) {
@@ -83,21 +62,10 @@ export async function createTestApp(): Promise<TestApp> {
     capabilities: [],
   });
 
-  // Seed default pipeline template
-  await storage.createPipeline({
-    name: "Full SDLC Pipeline",
-    description: "Complete software development lifecycle",
-    stages: DEFAULT_PIPELINE_STAGES,
-    isTemplate: true,
-  });
-
   return {
     app,
     storage,
     mockProvider,
-    close: () =>
-      new Promise<void>((resolve) => {
-        httpServer.close(() => resolve());
-      }),
+    close: () => Promise.resolve(),
   };
 }

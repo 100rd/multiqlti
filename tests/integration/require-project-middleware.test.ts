@@ -73,8 +73,6 @@ beforeAll(async () => {
     "/api/stats",
     "/api/strategies",
     "/api/privacy",
-    "/api/memory",
-    "/api/memories",
     "/api/lessons",
     "/api/tools",
     "/api/mcp",
@@ -83,14 +81,12 @@ beforeAll(async () => {
     "/api/skills",
     "/api/guardrails",
     "/api/triggers",
-    "/api/traces",
     "/api/task-groups",
     "/api/consilium-loops",
     "/api/lmstudio",
     "/api/tracker-connections",
     "/api/remote-agents",
     "/api/workspaces/:id/knowledge",
-    "/api/pipeline-run-stats",
   ];
 
   for (const prefix of SCOPED) {
@@ -133,8 +129,6 @@ describe("Project-scoped routers — return 400 when x-project-id is absent", ()
     "/api/stats",
     "/api/strategies",
     "/api/privacy",
-    "/api/memory",
-    "/api/memories",
     "/api/lessons",
     "/api/tools",
     "/api/mcp",
@@ -143,13 +137,11 @@ describe("Project-scoped routers — return 400 when x-project-id is absent", ()
     "/api/skills",
     "/api/guardrails",
     "/api/triggers",
-    "/api/traces",
     "/api/task-groups",
     "/api/consilium-loops",
     "/api/lmstudio",
     "/api/tracker-connections",
     "/api/remote-agents",
-    "/api/pipeline-run-stats",
   ];
 
   for (const route of SCOPED_SAMPLES) {
