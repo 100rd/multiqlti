@@ -1973,6 +1973,7 @@ export class MemStorage implements IStorage {
       openP0: data.openP0 ?? null,
       openActionPoints: data.openActionPoints ?? null,
       verdict: data.verdict ?? null,
+      participants: data.participants ?? null,
       baselineCommit: data.baselineCommit ?? null,
       headCommit: data.headCommit ?? null,
       testSummary: data.testSummary ?? null,
