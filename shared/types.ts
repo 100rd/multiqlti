@@ -2408,6 +2408,26 @@ export interface RoundVerdict {
 }
 
 /**
+ * One review participant's contribution to a round, persisted in
+ * `consilium_loop_rounds.participants` (jsonb). Populated by the direct
+ * review-runner (Phase 2): the primary reviewers and their rebuttals, each with
+ * the seat NAME, the MODEL that filled it, the role, and the human-readable
+ * review PROSE. Nullable on the column — absent on old/backfilled rounds and on
+ * rounds run under the legacy task-group path.
+ *
+ * SECURITY (L-2): `text` (and `name`/`model`) are UNTRUSTED model output —
+ * bounded on persist (count + per-`text` length caps, same discipline as
+ * {@link RoundVerdict}) and rendered as INERT text on the client. Client-safe
+ * (like {@link ActionPoint}): the FE imports THIS type — single source of truth.
+ */
+export interface RoundParticipant {
+  name: string;
+  model: string;
+  role: "primary" | "rebuttal";
+  text: string;
+}
+
+/**
  * Finding #5 — the READ-TIME (never-persisted) summary of the STILL-OPEN action
  * points carried by a TERMINAL loop's LAST recorded round. Convergence is keyed
  * on `P0` BY DESIGN (a loop converges the moment no P0 remains), but the judge

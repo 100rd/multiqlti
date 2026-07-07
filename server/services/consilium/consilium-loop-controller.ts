@@ -52,7 +52,7 @@ import { runAsSystem, runAsProject } from "../../context.js";
 import type { ConsiliumLoopRow, ConsiliumLoopRoundRow, ConsiliumLoopState, TaskGroupIterationRow, InsertTask } from "@shared/schema";
 import { ARCHETYPES } from "@shared/types";
 import type { Archetype } from "@shared/types";
-import type { ActionPoint, ConvergenceVerdict, RoundVerdict, ReviewMode } from "@shared/types";
+import type { ActionPoint, ConvergenceVerdict, RoundVerdict, RoundParticipant, ReviewMode } from "@shared/types";
 import { P0_PRIORITY } from "@shared/types";
 import type { TaskOrchestrator } from "../task-orchestrator.js";
 import type { AppConfig } from "../../config/schema.js";
@@ -72,7 +72,9 @@ import {
 } from "./experience/experience-reader.js";
 import { assertAllowedRepoPath } from "./repo-allowlist.js";
 import { buildBranchName } from "./pr-wrapper.js";
-import { assertRepoIsProjectWorkspace, backtickFence, stripControlMultiline, buildSingleVerifierTask, VERIFIER_TASK_NAME } from "./review-factory.js";
+import { assertRepoIsProjectWorkspace, backtickFence, stripControlMultiline, buildSingleVerifierTask, VERIFIER_TASK_NAME, buildCrossReviewTasks, PRESET_PANELS, JUDGE_TASK_NAME } from "./review-factory.js";
+import { parseConsiliumPreset } from "./composition.js";
+import { runReviewTasks } from "./review-runner.js";
 
 // ─── FSM events (design §3 "Event / guard" column) ──────────────────────────
 
@@ -407,6 +409,21 @@ const SDLC_DEV_MAX_ACTION_POINTS = 24;
 export const SDLC_DEV_REDRIVE_GRACE_MS = SDLC_DEV_GRACE_MS * SDLC_DEV_MAX_ACTION_POINTS;
 
 /**
+ * M-1 (Security MEDIUM): the number of SEQUENTIAL waves a runner review executes — the
+ * cross-review DAG runs primaries∥ → rebuttals∥ → judge, each wave bounded by the per-call
+ * `taskTimeoutMs`. The reviewing redrive grace is sized to a WHOLE runner review
+ * (`taskTimeoutMs × REVIEW_RUNNER_WAVES`) — the reviewing peer of {@link SDLC_DEV_REDRIVE_GRACE_MS}.
+ * A runner review keeps `currentIterationNumber` NULL, so the null-ref stranded check treats it
+ * as stranded; cross-instance, another instance holds NO local `reviewRuns` entry and would
+ * otherwise redrive a LIVE multi-wave review at the bare ~30s base (duplicate model spend +
+ * round-counter inflation + a redrive storm). Governs ONLY the registry-empty (cross-instance /
+ * cross-restart) case — the in-process `reviewRuns` registry is the authoritative same-instance
+ * guard — so erring toward a full-review span is safe. A single-verifier round is ONE wave, well
+ * under this bound.
+ */
+export const REVIEW_RUNNER_WAVES = 3;
+
+/**
  * R1 — process GLOBAL ceiling on simultaneously in-flight HUMAN-triggered dev
  * handoffs (`controller.develop`). Each spawns a real agentic coder + worktree,
  * so the human surface must be bounded just as the removed execute-sdlc path was
@@ -436,10 +453,59 @@ interface SdlcRun {
   viaCommand?: boolean;
 }
 
+/**
+ * The settled result of a direct review run (Phase 2, mirrors DevCloseoutResult).
+ * Carries BOTH the FSM-facing convergence (converged/openP0/openActionPoints — what
+ * `deriveReviewEvent` reduces on) AND the rich round-audit payload (verdict +
+ * participants — what recordRound persists). A DEGRADED run (gateway/model failure)
+ * settles with `error` set + `verdict`/`participants` NULL + a conservative
+ * NOT-CONVERGED convergence, exactly like a no-PR degraded SDLC close-out.
+ */
+export interface ReviewRunResult {
+  converged: boolean;
+  openP0: number;
+  openActionPoints: ActionPoint[];
+  verdict: RoundVerdict | null;
+  participants: RoundParticipant[] | null;
+  error?: string;
+}
+
+/**
+ * H-2 (Phase 2): process-local registry entry for an in-flight/settled BACKGROUND
+ * review run, keyed by loopId — the direct-review peer of {@link SdlcRun}. The
+ * review-runner runs OFF the tick path (N LLM calls, ~minutes), so a tick never
+ * blocks the poller; `deriveReviewEvent` reads the settled result here (Round-2 B5)
+ * and `reviewRuns` is the AUTHORITATIVE in-flight gate for the reviewing redrive
+ * (Round-2 B4) — exactly as `sdlcRuns` is for developing.
+ */
+interface ReviewRun {
+  round: number;
+  done: boolean;
+  result?: ReviewRunResult;
+}
+
 /** Minimal error scrub (strip fs paths) for the background-run catch. */
 function scrubErr(raw: string): string {
   return raw.replace(/\/[^\s'"]+/g, "<path>").replace(/\s+/g, " ").trim().slice(0, 200);
 }
+
+/**
+ * A DEGRADED (errored) review settle (Phase 2): a conservative NOT-CONVERGED
+ * convergence + NO verdict/participants to render, carrying the scrubbed error —
+ * the review peer of a no-PR degraded DevCloseoutResult on an SDLC close-out throw.
+ */
+function degradedReviewResult(error: string): ReviewRunResult {
+  return { converged: false, openP0: 0, openActionPoints: [], verdict: null, participants: null, error };
+}
+
+/**
+ * Security L1: the FIXED GENERIC explanation surfaced to `consilium_loops.error`
+ * when a runner-mode review DEGRADES (gateway/model/parse failure). The raw scrubbed
+ * detail (`ReviewRunResult.error`) is logged only — a model/exception-derived string
+ * must never reach the persisted, UI-rendered `loop.error`. Per-site fixed string
+ * (the peer of the other curated terminal explanations), NOT the raw reason.
+ */
+const REVIEW_RUN_FAILED = "review run failed";
 
 /**
  * Decide whether the open-P0 count failed to decrease across two consecutive
@@ -656,6 +722,14 @@ export interface ConsiliumLoopControllerDeps {
    */
   readJudgeOutput?: (loop: ConsiliumLoopRow) => Promise<unknown | undefined>;
   /**
+   * Phase 2 (direct review-runner): the review executor `dispatchReview` fires as a
+   * BACKGROUND job. Injectable so unit tests drive the `reviewRuns` registry with a
+   * fake runner (mirrors `runSdlc?`/`runResearch?`), never touching a real gateway/
+   * model. Defaults to the real `review-runner.ts` executor (Round-2 B2). Absent in
+   * Round 1 ⇒ `dispatchReview` settles a degraded "no runner configured" result.
+   */
+  runReview?: (loop: ConsiliumLoopRow) => Promise<ReviewRunResult>;
+  /**
    * Resolve the repo HEAD sha for audit / the merge-gate baseline. Injectable so
    * tests never touch real `process.cwd()` git (the default routes through A2's
    * buildDiffContext). Returns "" when unreadable (caller treats it as best-effort).
@@ -724,6 +798,16 @@ export class ConsiliumLoopController {
    * settled result here and the developing->awaiting_merge CAS consumes it.
    */
   private readonly sdlcRuns = new Map<string, SdlcRun>();
+
+  /**
+   * H-2 (Phase 2): process-local registry of in-flight/settled BACKGROUND review
+   * runs, keyed by loopId — the direct-review peer of `sdlcRuns`. `dispatchReview`
+   * sets the entry SYNCHRONOUSLY before the async runner so a concurrent tick sees
+   * it in-flight; `deriveReviewEvent` (Round-2 B5) consumes the settle. In Round 1
+   * this registry + its methods are ISOLATED — nothing in the live FSM path calls
+   * `dispatchReview` yet (that's Round-2 B4), so the reviewing path is byte-identical.
+   */
+  private readonly reviewRuns = new Map<string, ReviewRun>();
   /** MED-2: emit the "verification ignored" gate warning at most once per instance. */
   private warnedVerificationGate = false;
 
@@ -826,7 +910,32 @@ export class ConsiliumLoopController {
     // governs the registry-empty (cross-restart) case; the authoritative
     // in-process guard is the `sdlcRuns` registry consulted in redriveStranded.
     if (state === "developing") return Math.max(base, SDLC_DEV_REDRIVE_GRACE_MS);
+    // M-1: a RUNNER review keeps currentIterationNumber NULL (⇒ nullRef true), so — like
+    // developing — its TIME fallback must cover a WHOLE multi-wave review, not the bare base,
+    // or a cross-instance poller (no local reviewRuns entry) redrives a LIVE review (duplicate
+    // model spend + round-counter inflation + a redrive storm). Sized to the 3-wave cross-review
+    // DAG at the configured per-call timeout.
+    //
+    // GATED on the runner kill-switch to KEEP FLAG-OFF PARITY: under the legacy path a review
+    // mints an iteration (currentIterationNumber SET ⇒ nullRef false ⇒ never reaches here) EXCEPT
+    // in the sub-second crash window before the child-ref write, which the legacy crash-redrive
+    // must recover at the SHORT base grace (unchanged). So only when the runner is enabled do we
+    // extend the reviewing grace. Trade-off: a mid-flight flip to OFF reverts a live runner review
+    // to the base grace, so a cross-instance poller could redrive it ONCE as legacy — one round of
+    // duplicate spend, but the round row stays single (UNIQUE(loop,round)) and the FSM advances
+    // once (CAS), so no loop is stranded or misread (the settle READS still key off the round's
+    // actual mode, never the flag — inv #5).
+    if (state === "reviewing" && this.directReviewEnabled()) {
+      const taskTimeoutMs = this.deps.config().pipeline.taskGroups?.taskTimeoutMs ?? 600_000;
+      return Math.max(base, taskTimeoutMs * REVIEW_RUNNER_WAVES);
+    }
     return base;
+  }
+
+  /** M-1: the runner kill-switch, read live — gates ONLY the reviewing redrive grace sizing
+   *  (the settle/verdict READS never consult it — they key off the round's actual mode). */
+  private directReviewEnabled(): boolean {
+    return this.loopConfig().directReview?.enabled ?? false;
   }
 
   /** Begin round 1. 409s (returns null) unless the loop is PENDING. */
@@ -1240,11 +1349,19 @@ export class ConsiliumLoopController {
 
   /**
    * SERVER-READ the FULL action-point list (ALL priorities) from the loop's
-   * current iteration's judge verdict, via `pickJudgeOutput`→`extractActionPoints`
-   * (the SAME server-read path the removed execute-sdlc button used). Returns `[]`
-   * for a missing iteration / unparseable verdict (→ NO_ACTION_POINTS).
+   * current round's judge verdict. STRADDLE (Phase 2 B6) keyed off the round's ACTUAL
+   * mode (NOT the live flag): a RUNNER round's full ranked list is the persisted
+   * `RoundVerdict.actionPoints` (written via the SHARED `readJudgeVerdict`) — runner
+   * rounds have NO executions. Else the UNCHANGED old path: `pickJudgeOutput`→
+   * `extractActionPoints` off the iteration executions (the SAME server-read path the
+   * removed execute-sdlc button used). Returns `[]` for a missing round/iteration /
+   * unparseable verdict (→ NO_ACTION_POINTS).
    */
   private async resolveDevActionPoints(loop: ConsiliumLoopRow): Promise<ActionPoint[]> {
+    if (loop.currentIterationNumber == null) {
+      const round = await this.currentRoundRow(loop);
+      if (this.isRunnerRound(round)) return round.verdict?.actionPoints ?? [];
+    }
     const n = loop.currentIterationNumber;
     if (n == null) return [];
     const iteration = await this.storage.getIteration(loop.groupId, n);
@@ -1428,6 +1545,22 @@ export class ConsiliumLoopController {
       const run = this.sdlcRuns.get(loop.id);
       if (run && run.round === loop.round) {
         this.log(loop.id, `developing has a registered SDLC run (round ${run.round}, done=${run.done}) — not stranded, no re-drive`);
+        return null;
+      }
+    }
+
+    // Phase 2 (B4) — the reviewing peer of the developing gate above. A runner review
+    // ALWAYS keeps currentIterationNumber NULL, so the null-ref check treats it as
+    // stranded; the `reviewRuns` registry is AUTHORITATIVE — an entry for this
+    // loop+round means NOT stranded (in-flight ⇒ wait; settled ⇒ deriveReviewEvent
+    // advances it). Re-dispatch ONLY when the registry has NO entry (a genuine
+    // crash/restart that lost it), gated by the grace + claimRedrive below — exactly
+    // the developing discipline. INERT in legacy mode: reviewRuns is empty (dispatchReview
+    // never ran), so this never fires and the legacy stranded-review redrive runs unchanged.
+    if (loop.state === "reviewing") {
+      const run = this.reviewRuns.get(loop.id);
+      if (run && run.round === loop.round) {
+        this.log(loop.id, `reviewing has a registered review run (round ${run.round}, done=${run.done}) — not stranded, no re-drive`);
         return null;
       }
     }
@@ -1649,8 +1782,44 @@ export class ConsiliumLoopController {
     }
   }
 
-  /** REVIEWING: poll the consilium iteration; settle → completed/failed. */
+  /**
+   * REVIEWING → the next FSM event. Runner-mode (Phase 2 B5) and the legacy task-group
+   * iteration STRADDLE here, keyed off the ROUND's ACTUAL mode — a `reviewRuns` entry
+   * FOR THIS round (set by `dispatchReview` when the round entered reviewing under the
+   * runner) — NOT the live `directReview` flag (inv #5): a round dispatched under one
+   * mode is always read back under it, even across a mid-flight flip.
+   *
+   * Runner-mode: read the settled background review (mirrors `deriveDevEvent`). In-flight
+   * ⇒ null (wait). Settled+error ⇒ `review_failed` carrying the FIXED-GENERIC reason —
+   * the raw scrubbed detail goes to the LOGS only (Security L1; a model/exception-derived
+   * string must never land on the UI-rendered `loop.error`). Settled+clean ⇒
+   * `review_completed` with the runner's convergence (already computed via the SHARED
+   * readConvergence/readJudgeVerdict INSIDE the runner — no private re-parse, inv #2). The
+   * round audit (verdict + participants) is persisted on the CAS winner in `runSideEffect`,
+   * and the consumed entry dropped there (keeping this derive a pure read like deriveDevEvent).
+   *
+   * Legacy mode (no runner entry for this round): the UNCHANGED consilium-iteration poll.
+   */
   private async deriveReviewEvent(loop: ConsiliumLoopRow): Promise<LoopEvent | null> {
+    const run = this.reviewRuns.get(loop.id);
+    if (run && run.round === loop.round) {
+      if (!run.done || !run.result) return null; // in-flight ⇒ wait (no transition yet)
+      const result = run.result;
+      if (result.error) {
+        // L1: raw scrubbed detail → LOGS only; `loop.error` gets the fixed generic.
+        this.log(loop.id, `review run degraded (round ${loop.round}): ${result.error}`);
+        return { kind: "review_failed", error: REVIEW_RUN_FAILED };
+      }
+      return {
+        kind: "review_completed",
+        verdict: {
+          converged: result.converged,
+          openP0: result.openP0,
+          openActionPoints: result.openActionPoints,
+        },
+      };
+    }
+    // Legacy iteration path (byte-identical — no runner entry keyed to this round).
     const n = loop.currentIterationNumber;
     if (n == null) return null;
     const iteration = await this.storage.getIteration(loop.groupId, n);
@@ -1671,8 +1840,16 @@ export class ConsiliumLoopController {
     const verdict = await this.resolveVerdict(loop);
     if (!verdict) return null;
     const rounds = await this.storage.getLoopRounds(loop.id);
-    const priorOpenP0 = rounds.map((r) => r.openP0 ?? 0);
-    priorOpenP0.push(verdict.openP0); // include the round just decided
+    // B6 guard (Phase 2): build the prior series from rounds STRICTLY BEFORE the current
+    // round, then push the FRESH verdict. A RUNNER round records its row EARLY (at
+    // reviewing→deciding), so `rounds` already contains round N here — the `< loop.round`
+    // filter excludes that early row; without it round N is counted twice, corrupting BOTH
+    // isAntiStall's 3-window (a duplicate tail ⇒ spurious `escalated`) AND `decide()`'s
+    // `round = priorOpenP0.length`. Byte-identical for legacy: the current round is NOT
+    // recorded during its own deciding (recorded later at deciding→X), so the filter drops
+    // nothing and this equals the prior `rounds.map(...).push(verdict.openP0)`.
+    const priorOpenP0 = rounds.filter((r) => r.round < loop.round).map((r) => r.openP0 ?? 0);
+    priorOpenP0.push(verdict.openP0); // include the round just decided (fresh)
     return { kind: "decided", verdict, priorOpenP0 };
   }
 
@@ -1717,6 +1894,28 @@ export class ConsiliumLoopController {
         return {};
       }
       return extra;
+    }
+    // Phase 2 (B5) runner-mode: a reviewing→(deciding|failed) transition driven by a
+    // settled `reviewRuns` entry records the round audit HERE — on the CAS WINNER,
+    // single-flight — threading the runner's ALREADY-parsed judge verdict + participants
+    // (runner-mode has NO task executions the DECIDING recordRound could re-read; that
+    // later 2-arg recordRound(round) re-append hits the idempotent UNIQUE no-op, so THIS
+    // rich row wins). The consumed entry is then dropped. A DEGRADED settle
+    // (review_failed) records NO round — mirroring a failed legacy iteration — but still
+    // drops the entry. INERT in legacy mode: `reviewRuns` is empty (dispatchReview never
+    // ran), so this returns `{}` exactly like the prior fall-through ⇒ byte-identical.
+    if (transition.from === "reviewing") {
+      const run = this.reviewRuns.get(loop.id);
+      if (run && run.round === loop.round && run.done && run.result) {
+        if (event.kind === "review_completed" && !run.result.error) {
+          await this.recordRound(loop, event.verdict, {
+            verdict: run.result.verdict,
+            participants: run.result.participants,
+          });
+        }
+        this.reviewRuns.delete(loop.id);
+      }
+      return {};
     }
     if (transition.to === "developing" && event.kind === "decided") {
       return this.startDevHandoff(loop, event.verdict);
@@ -2066,6 +2265,27 @@ export class ConsiliumLoopController {
     opts?: { relaunch?: boolean },
   ): Promise<Record<string, unknown>> {
     const cfg = this.loopConfig();
+    // Phase 2 (B4) runner-mode: dispatch a background DIRECT review (no task_group
+    // iteration) and return immediately. `dispatchReview` keys the reviewRuns entry off
+    // the round the review is FOR (nextRound); the runner (`runReviewFromLoop`) rebuilds
+    // the review context + DAG from the loop. currentIterationNumber stays NULL (the
+    // marker) — the reviewRuns entry is the sole in-flight signal. Flag OFF ⇒ the legacy
+    // startGroupAsync path below runs UNCHANGED (byte-identical parity).
+    if (cfg.directReview?.enabled) {
+      const nextRound = opts?.relaunch ? loop.round : loop.round + 1;
+      this.log(
+        loop.id,
+        `startReviewRound${opts?.relaunch ? " (relaunch)" : ""} -> dispatchReview (runner) round ${nextRound}`,
+      );
+      this.dispatchReview({ ...loop, round: nextRound });
+      // EXPLICIT null (not omit): a round run earlier on the OLD path persisted a real
+      // currentIterationNumber; after the flag flips ON, the runner-mode extra must CLEAR
+      // it so the row's sole in-flight marker is the reviewRuns entry. Omitting the field
+      // would leave the stale non-null value — and on a crash (registry lost) the null-ref
+      // stranded check would read FALSE (round stuck, never redriven) and the straddle's
+      // getIteration(stale) would misclassify the runner round as old-path.
+      return { round: nextRound, openP0: null, currentIterationNumber: null };
+    }
     const group = await this.storage.getTaskGroup(loop.groupId);
     const objective = group?.input ?? "";
     // Enh1: for every review AFTER the first (loop.round >= 1), inject the prior
@@ -2383,6 +2603,121 @@ export class ConsiliumLoopController {
   }
 
   /**
+   * Phase 2 (H-2, direct review-runner): dispatch a background review run — the
+   * review peer of `dispatchSdlc`. Registers the `reviewRuns` entry SYNCHRONOUSLY
+   * (before the await) so a concurrent tick sees it in-flight, then fires the runner
+   * FIRE-AND-FORGET: non-blocking, and it NEVER throws out (a runner rejection is
+   * caught and settled as a degraded, error-carrying result). Does NOT mutate the
+   * loop — the ONLY marker of an in-flight runner review is the `reviewRuns` entry;
+   * `currentIterationNumber` stays NULL (mirrors dispatchSdlc leaving devGroupId null
+   * for developing), so the null-ref stranded check (Round-2 B4) still recognises an
+   * in-flight runner review and the client never mounts a broken iteration view.
+   */
+  private dispatchReview(loop: ConsiliumLoopRow): void {
+    const run: ReviewRun = { round: loop.round, done: false };
+    this.reviewRuns.set(loop.id, run);
+    // Default runner (production) rebuilds the review context + DAG from the loop and
+    // runs it directly via `runReviewFromLoop` (mirrors how `closeout` rebuilds the SDLC
+    // context); tests inject `deps.runReview` (a fake) to bypass the gateway/model.
+    const runner = this.deps.runReview ?? ((l: ConsiliumLoopRow) => this.runReviewFromLoop(l));
+    void runner(loop)
+      .then((result) => this.settleReviewRun(loop.id, run, result))
+      .catch((err: unknown) =>
+        this.settleReviewRun(
+          loop.id,
+          run,
+          degradedReviewResult(scrubErr(err instanceof Error ? err.message : String(err))),
+        ),
+      );
+  }
+
+  /**
+   * Idempotent settle of a BACKGROUND review run into `reviewRuns` — the review peer
+   * of `settleSdlcRun`. A late/duplicate DEGRADED settle (a redrive that lost the
+   * race but still resolved with an error) must NEVER clobber an already-recorded
+   * GOOD (error-free) result for the SAME round: the good entry stays authoritative
+   * and the late run mirrors it, so `deriveReviewEvent` (B5) only ever observes the
+   * good verdict (mirrors settleSdlcRun's null-prRef-can't-clobber-a-good-PR guard).
+   */
+  private settleReviewRun(loopId: string, run: ReviewRun, result: ReviewRunResult): void {
+    const existing = this.reviewRuns.get(loopId);
+    if (
+      existing &&
+      existing.done &&
+      existing.round === run.round &&
+      existing.result &&
+      !existing.result.error &&
+      result.error
+    ) {
+      this.log(loopId, `idempotent settle: degraded review result IGNORED — keeping the recorded verdict (round ${run.round})`);
+      run.result = existing.result;
+      run.done = true;
+      this.reviewRuns.set(loopId, existing); // keep the good entry authoritative
+      return;
+    }
+    run.result = result;
+    run.done = true;
+  }
+
+  /**
+   * Default runner-mode review executor (Phase 2 B4): rebuilds the review context +
+   * DAG from the loop — objective, prior findings, test summary, repo map, diff
+   * context (the SAME inputs `startReviewRound`'s legacy path assembles), then the
+   * cross-review DAG (or the lone single-verifier for round > 1) — and runs it via
+   * `runReviewTasks`. Mirrors `closeout` rebuilding the SDLC context from the loop
+   * (not a caller hand-off). NEVER throws: a missing gateway or an unbuildable diff
+   * context (incl. an unresolved ref) settles a degraded {error} — the loop then
+   * fails closed via `review_failed` (fail-closed, exception-derived per L1; the
+   * curated failUnresolvedReview reason is a legacy-path nicety, tracked as a
+   * follow-up). `deps.runReview` bypasses this entirely in tests.
+   */
+  private async runReviewFromLoop(loop: ConsiliumLoopRow): Promise<ReviewRunResult> {
+    const gateway = this.deps.gateway;
+    if (!gateway) return degradedReviewResult("no review gateway configured");
+    const cfg = this.loopConfig();
+    const group = await this.storage.getTaskGroup(loop.groupId);
+    const objective = group?.input ?? "";
+    const priorFindings =
+      loop.round >= 1 ? await this.buildPriorFindings(loop, cfg.maxDiffBytes) : undefined;
+    const testSummary =
+      effectiveVerificationEnabled(this.deps.config()) || this.researchImplementEnabled()
+        ? await this.latestRoundTestSummary(loop)
+        : undefined;
+    const repoMap = await this.buildReviewRepoMap(loop, cfg);
+    const ctx = await buildDiffContext({
+      repoPath: loop.repoPath,
+      baselineCommit: loop.lastReviewedCommit,
+      ref: loop.reviewRef,
+      objective,
+      allowedRepoPaths: cfg.allowedRepoPaths,
+      maxDiffBytes: cfg.maxDiffBytes,
+      priorFindings,
+      testSummary,
+      repoMap,
+    });
+    if (!ctx.ok) return degradedReviewResult(ctx.message);
+    // Panel from the group's preset (recovered from the group NAME — the SAME source
+    // the task-group setup used), falling back to the sdlc-cross-review default panel.
+    const preset = parseConsiliumPreset(group?.name);
+    const panel = (preset && PRESET_PANELS[preset]) || PRESET_PANELS["sdlc-cross-review"];
+    // Single-verifier re-review (round > 1 ONLY) mirrors startReviewRound's swap.
+    const reviewMode = resolveReviewMode(loop.reviewMode, cfg.verifyReview?.enabled ?? false);
+    const singleVerifier = loop.round > 1 && reviewMode === "single-verifier";
+    const tasks = singleVerifier
+      ? [buildSingleVerifierTask({ model: cfg.verifyReview?.model ?? "claude-opus", priorFindings })]
+      : buildCrossReviewTasks(panel);
+    const judgeTaskName = singleVerifier ? VERIFIER_TASK_NAME : JUDGE_TASK_NAME;
+    return runReviewTasks({
+      tasks,
+      judgeTaskName,
+      groupName: group?.name ?? "",
+      groupInput: ctx.input,
+      gateway,
+      timeoutMs: this.deps.config().pipeline.taskGroups.taskTimeoutMs,
+    });
+  }
+
+  /**
    * Enh1: assemble the "prior findings to verify" block for round > 1 from the
    * persisted per-round verdict rows (`consilium_loop_rounds.openActionPoints`).
    * Best-effort: a storage failure or empty history yields `undefined` (no
@@ -2438,13 +2773,24 @@ export class ConsiliumLoopController {
    * FSM transition. Fail-OPEN on state (never rethrow — the transition already
    * committed), fail-LOUD on the audit write.
    */
-  private async recordRound(loop: ConsiliumLoopRow, verdict: ConvergenceVerdict): Promise<void> {
+  private async recordRound(
+    loop: ConsiliumLoopRow,
+    verdict: ConvergenceVerdict,
+    runnerAudit?: { verdict: RoundVerdict | null; participants: RoundParticipant[] | null },
+  ): Promise<void> {
     const head = await this.readRepoHead(loop);
     // Rich judge verdict for the Rounds panel (best-effort, bounded, never blocks the
     // audit write — null when the raw judge output is unreadable). Read from the RAW
     // judge output, NOT reconstructed from the ConvergenceVerdict, so the prose /
     // pros / cons / full ranked action points survive.
-    const judgeVerdict = await this.readRoundVerdict(loop);
+    //
+    // Phase 2 (B5) runner-mode threads the ALREADY-parsed verdict + participants: a
+    // runner round has NO task executions for `readRoundVerdict` to re-read, and the
+    // legacy task-group path never captured participants. Legacy (no `runnerAudit`):
+    // read the verdict from the iteration executions as before and leave participants
+    // NULL (the column defaults null) ⇒ the persisted row is byte-identical to today.
+    const judgeVerdict = runnerAudit ? runnerAudit.verdict : await this.readRoundVerdict(loop);
+    const participants = runnerAudit?.participants ?? null;
     try {
       await this.storage.appendLoopRound({
         loopId: loop.id,
@@ -2454,6 +2800,7 @@ export class ConsiliumLoopController {
         openP0: verdict.openP0,
         openActionPoints: verdict.openActionPoints,
         verdict: judgeVerdict,
+        participants,
         baselineCommit: loop.lastReviewedCommit,
         headCommit: head,
       });
@@ -2478,14 +2825,18 @@ export class ConsiliumLoopController {
       // detail page shows it — but NEVER rethrow: the FSM state transition already
       // committed and must not be undone by a best-effort audit write. The nested
       // catch keeps recordRound total even if the error-persist itself fails.
-      this.log(loop.id, `recordRound: appendLoopRound failed for round ${loop.round}: ${message}`);
+      // Security L1: the raw exception `message` goes to the LOGS ONLY, scrubbed (fs
+      // paths stripped) — a model/exception-derived string must never reach the
+      // PERSISTED, UI-rendered `loop.error`.
+      this.log(loop.id, `recordRound: appendLoopRound failed for round ${loop.round}: ${scrubErr(message)}`);
       // Write ONLY when the (committed) row's error is still empty — `loop` is the
       // post-commit `won` row at every call site, so this is the freshest value.
       // Never clobber a terminal explanation the transition itself just set (e.g. a
-      // cancel note); the log line above records the audit failure regardless.
+      // cancel note). Security L1: a FIXED GENERIC — the scrubbed detail is in the log
+      // above, never on the row (which the loop detail page renders verbatim).
       if (!loop.error) {
         await this.storage
-          .updateLoop(loop.id, { error: `round ${loop.round} audit write failed: ${message}` })
+          .updateLoop(loop.id, { error: `round ${loop.round} audit write failed` })
           .catch(() => undefined);
       }
     }
@@ -2509,8 +2860,58 @@ export class ConsiliumLoopController {
     }
   }
 
-  /** Resolve the judge convergence verdict for the loop's current iteration. */
+  /**
+   * The recorded round row for the loop's CURRENT round, or undefined — the STRADDLE
+   * anchor for {@link resolveVerdict} / {@link resolveDevActionPoints} (Phase 2 B6).
+   */
+  private async currentRoundRow(loop: ConsiliumLoopRow): Promise<ConsiliumLoopRoundRow | undefined> {
+    try {
+      const rounds = await this.storage.getLoopRounds(loop.id);
+      return rounds.find((r) => r.round === loop.round);
+    } catch {
+      // Best-effort straddle anchor (same discipline as buildPriorFindings /
+      // latestRoundTestSummary): a getLoopRounds failure degrades to the OLD path rather
+      // than crashing a tick/plan/develop — the round-row read is never load-bearing enough
+      // to abort on.
+      return undefined;
+    }
+  }
+
+  /**
+   * True when the loop's current round was produced by the DIRECT RUNNER — the STRADDLE
+   * discriminator, keyed off the round's ACTUAL mode, NEVER the live directReview flag.
+   *
+   * Keyed on `participants` (non-null): the runner ALWAYS writes the array — even EMPTY
+   * for a single-verifier round — whereas the legacy task-group path ALWAYS leaves it null.
+   * `verdict` is NOT a discriminator: the legacy path writes it too (via `readJudgeVerdict`
+   * off the iteration executions), so a legacy round with a readable judge output carries a
+   * non-null `verdict`. `!= null` (loose) also treats an absent field (undefined, e.g. a
+   * legacy fake round row) as legacy.
+   */
+  private isRunnerRound(round: ConsiliumLoopRoundRow | undefined): round is ConsiliumLoopRoundRow {
+    return round != null && round.participants != null;
+  }
+
+  /**
+   * Resolve the judge convergence verdict for the loop's current round. STRADDLE
+   * (Phase 2 B6): a RUNNER round has NO task executions — its convergence was persisted on
+   * the round row by `recordRound` via the SHARED `readConvergence`, so read it straight
+   * back (no private re-parse). The round-row probe fires ONLY under the runner marker
+   * (`currentIterationNumber == null`), so a legacy loop (iteration set) skips it entirely
+   * and its path is byte-identical (never a getLoopRounds read). Else the UNCHANGED old
+   * path: the injected `readIterationVerdict` seam first, then the iteration executions.
+   */
   private async resolveVerdict(loop: ConsiliumLoopRow): Promise<ConvergenceVerdict | null> {
+    if (loop.currentIterationNumber == null) {
+      const round = await this.currentRoundRow(loop);
+      if (this.isRunnerRound(round)) {
+        return {
+          converged: round.converged ?? false,
+          openP0: round.openP0 ?? 0,
+          openActionPoints: round.openActionPoints ?? [],
+        };
+      }
+    }
     if (this.deps.readIterationVerdict) return this.deps.readIterationVerdict(loop);
     const judgeOutput = await this.resolveJudgeOutput(loop);
     if (judgeOutput === undefined) return null;

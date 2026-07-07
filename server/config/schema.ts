@@ -427,6 +427,20 @@ export const ConfigSchema = z.object({
         maxRepoMapBytes: z.coerce.number().int().min(512).max(200_000).default(6_000),
       }).default({}),
       /**
+       * Phase 2 (defect-B): run the per-round review via the DIRECT in-process
+       * review-runner (`review-runner.ts`) instead of the task-group
+       * `startGroupAsync` engine. Default OFF ⇒ BYTE-IDENTICAL to today: the review
+       * dispatches through startGroupAsync and mints a task_group iteration exactly as
+       * before. When ON, entering `reviewing` dispatches a background direct review
+       * (reviewRuns registry, no iteration); the read path keys off the ROUND's actual
+       * mode, so a round started under one mode is always read back under it (a
+       * mid-flight flip never mis-reads an in-flight round). Ships dark.
+       */
+      directReview: z.object({
+        /** Kill-switch: false (default) → the legacy task-group review path (byte-identical). */
+        enabled: z.boolean().default(false),
+      }).default({}),
+      /**
        * Hard wall-clock timeout PER action-point SDLC coder run (ms). The SDLC
        * executor runs the agentic coder once per action point sequentially in one
        * worktree, so this bounds a SINGLE action point, not the whole round.

@@ -24,6 +24,7 @@ import type {
   ActionPoint,
   Archetype,
   OpenRemainder,
+  RoundParticipant,
   ResearchReport,
   ResearchClaim,
   ResearchCitation,
@@ -173,6 +174,9 @@ export type ConsiliumLoopRoundDetail = ConsiliumLoopRoundRow & {
   executionTrace?: ExecutionTrace | null;
   /** The FULL judge verdict — see {@link RoundVerdict}. Null on old/backfilled rounds. */
   verdict?: RoundVerdict | null;
+  /** The round-sourced dispute transcript — see {@link RoundParticipant}. Null on
+   *  old pre-Phase-2 rounds (they fall back to the iteration-sourced view). */
+  participants?: RoundParticipant[] | null;
 };
 
 // ─── Composition (Observability GAP 2 — the "who does what" of a round) ───────

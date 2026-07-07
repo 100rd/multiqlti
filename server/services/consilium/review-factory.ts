@@ -188,7 +188,7 @@ function judgeDescription(): string {
 }
 
 /** Judge task name — stable so the DAG/tests reference it by name. */
-const JUDGE_TASK_NAME = "Judge verdict";
+export const JUDGE_TASK_NAME = "Judge verdict";
 
 /** Primary task name for a seat: "Opus primary" / "Gemini primary". */
 function primaryName(r: ReviewerModel): string {

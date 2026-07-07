@@ -219,14 +219,17 @@ export function extractActionPoints(judgeOutput: unknown): ActionPoint[] {
  * length (`MAX_PROS_CONS`) and each entry's length (`MAX_FIELD_LEN`). Never throws.
  */
 function boundStringList(value: unknown): string[] {
-  const arr = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
-  const out: string[] = [];
-  for (const item of arr) {
-    if (typeof item !== "string") continue;
-    out.push(clampStr(item, MAX_FIELD_LEN) ?? "");
-    if (out.length >= MAX_PROS_CONS) break;
-  }
-  return out;
+  // A lone string coerces to a one-element list; anything non-array is empty (guard).
+  if (typeof value === "string") return [clampStr(value, MAX_FIELD_LEN) ?? ""];
+  if (!Array.isArray(value)) return [];
+  // Security L-2: SLICE to the cap BEFORE filter/clamp so the work is bounded by
+  // MAX_PROS_CONS regardless of input size — a malicious multi-million-element array
+  // (especially one padded with non-strings) can never drive an O(N) scan. Legit judge
+  // output carries <= MAX_PROS_CONS entries, so slicing is a no-op for it.
+  return value
+    .slice(0, MAX_PROS_CONS)
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => clampStr(item, MAX_FIELD_LEN) ?? "");
 }
 
 /**

@@ -17,7 +17,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { TriggerConfig, TriggerType, TriggerProvenance, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, RoundVerdict, ExecutionTrace, ReviewMode, ExperienceScope, ExperienceEvidence, ExperienceVerification, ExperienceProvenance, ExperienceFreshness, ExperienceConfidence, ExperienceConsolidation, SkillProposalStatus, SkillProposalProvenance, SkillProposalEvidence } from "./types.js";
+import type { TriggerConfig, TriggerType, TriggerProvenance, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, RoundVerdict, RoundParticipant, ExecutionTrace, ReviewMode, ExperienceScope, ExperienceEvidence, ExperienceVerification, ExperienceProvenance, ExperienceFreshness, ExperienceConfidence, ExperienceConsolidation, SkillProposalStatus, SkillProposalProvenance, SkillProposalEvidence } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -2131,6 +2131,12 @@ export const consiliumLoopRounds = pgTable(
     // openActionPoints (H-4: NEVER the raw diff/prompt input). NULL on pre-column /
     // backfilled rounds and whenever the raw judge output is unreadable at record time.
     verdict: jsonb("verdict").$type<RoundVerdict>(),
+    // Phase 2 (direct review-runner): the round's review participants — primary
+    // reviewers + rebuttals, each carrying the seat name, the model that filled it,
+    // the role, and the review prose (design: RoundParticipant). Bounded before write
+    // (Security L-2, same as verdict; H-4: NEVER the raw diff/prompt input). NULL on
+    // pre-column / backfilled rounds and on rounds run via the legacy task-group path.
+    participants: jsonb("participants").$type<RoundParticipant[]>(),
     baselineCommit: text("baseline_commit"),
     headCommit: text("head_commit"),
     testSummary: text("test_summary"),
