@@ -132,21 +132,27 @@ describe("B6 — verdict/action-point straddle keys off the round's actual mode"
     expect(v).toEqual({ converged: true, openP0: 0, openActionPoints: [] });
   });
 
-  it("anti-stall PARITY (the gate): a runner 2-round FLAT-openP0 loop (r1=2, r2=2) does NOT spuriously escalate", async () => {
-    const loop = makeLoop({ state: "deciding", round: 2, currentIterationNumber: null });
-    const r1 = roundRow({ round: 1, openP0: 2, participants: PARTS });
-    // r2 is the CURRENT round, recorded EARLY at reviewing→deciding (runner-mode).
-    const r2 = roundRow({ round: 2, converged: false, openP0: 2, openActionPoints: [AP0], verdict: VERDICT, participants: PARTS });
-    const { controller } = makeController({ rounds: [r1, r2] });
+  it("anti-stall PARITY (the gate): a runner 3-round loop (openP0 3→2→2) does NOT spuriously escalate", async () => {
+    // 3 REAL rounds — a 2-round series would pass with OR without the guard (isAntiStall
+    // needs round≥3), so it cannot catch the bug. Here the early-recorded current round is
+    // the difference between a correct [3,2,2] and the corrupt [3,2,2,2].
+    const loop = makeLoop({ state: "deciding", round: 3, currentIterationNumber: null });
+    const r1 = roundRow({ round: 1, openP0: 3, participants: PARTS });
+    const r2 = roundRow({ round: 2, openP0: 2, participants: PARTS });
+    // r3 is the CURRENT round, recorded EARLY at reviewing→deciding (runner-mode).
+    const r3 = roundRow({ round: 3, converged: false, openP0: 2, openActionPoints: [AP0], verdict: VERDICT, participants: PARTS });
+    const { controller } = makeController({ rounds: [r1, r2, r3] });
 
     const event = await (controller as unknown as Priv).deriveDecideEvent(loop);
 
     expect(event?.kind).toBe("decided");
-    // The guard excluded the early r2 row: [2,2], NOT the double-counted [2,2,2].
-    expect(event?.priorOpenP0).toEqual([2, 2]);
+    // Guard excluded the early r3 row: prior [3,2] + fresh verdict 2 = [3,2,2], NOT [3,2,2,2].
+    expect(event?.priorOpenP0).toEqual([3, 2, 2]);
+    // [3,2,2]: slice(-3)=[3,2,2] — 2>=2 but 2>=3 FALSE ⇒ NOT a stall ⇒ developing.
     expect(reduce("deciding", { kind: "decided", verdict: event!.verdict, priorOpenP0: event!.priorOpenP0 })?.to).toBe("developing");
-    // Contrast: the double-counted series is exactly what would have spuriously escalated.
-    expect(reduce("deciding", { kind: "decided", verdict: event!.verdict, priorOpenP0: [2, 2, 2] })?.to).toBe("escalated");
+    // Contrast (the exact bug): WITHOUT the guard the early r3 is double-counted ⇒ [3,2,2,2]
+    // ⇒ round 4, slice(-3)=[2,2,2] ⇒ non-decreasing ⇒ SPURIOUS escalate.
+    expect(reduce("deciding", { kind: "decided", verdict: event!.verdict, priorOpenP0: [3, 2, 2, 2] })?.to).toBe("escalated");
   });
 
   it("legacy guard parity: a legacy 3-round loop still pushes the fresh verdict (round not pre-recorded) and anti-stall is UNCHANGED", async () => {
