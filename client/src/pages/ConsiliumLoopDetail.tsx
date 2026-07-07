@@ -65,6 +65,7 @@ import {
   isVerdictTerminalLoopState,
   type ConsiliumLoopRoundRow,
   type ConsiliumLoopRoundDetail,
+  type RoundVerdict,
   type ConsiliumLoopDetail as ConsiliumLoopDetailRow,
   type DevProgress,
   type ResearchReport,
@@ -521,6 +522,202 @@ function SettledExecutionTree({ trace }: { trace: ExecutionTrace }) {
   );
 }
 
+// ─── Round verdict panel (the FULL judge verdict for a round) ───────────────────
+//
+// Surfaces the NEW `verdict` jsonb column: the judge's prose summary, the pros/cons,
+// a convergence badge (reusing the round SUMMARY fields), and the FULL RANKED action
+// point list — ALL priorities, distinct from the still-open `openActionPoints` subset
+// — GROUPED BY PRIORITY (P0→P3). Rendered only when `round.verdict` is present, so
+// old / backfilled rounds (verdict null) omit it entirely and never crash.
+//
+// The grouping-by-priority is EXCLUSIVE to this full list; the separate still-open
+// list below the panel stays a flat, badge-per-item list (QA asserts badge counts
+// there, scoped via the `loop-open-ap-list` container).
+//
+// SECURITY: the verdict prose, every pro/con, and each action-point field are
+// model-authored (judge) text rendered as INERT React text.
+
+const PRIORITY_ORDER = ["P0", "P1", "P2", "P3"] as const;
+
+/**
+ * Group action points into ordered priority buckets (P0→P3), with any
+ * unknown/absent-priority items after the known tiers (sorted for stability). The
+ * judge's ranked order is preserved WITHIN each bucket.
+ */
+function groupActionPointsByPriority(
+  aps: ActionPoint[],
+): { priority: string; items: ActionPoint[] }[] {
+  const buckets = new Map<string, ActionPoint[]>();
+  for (const ap of aps) {
+    const key = (ap.priority ?? "").trim().toUpperCase() || "—";
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(ap);
+    else buckets.set(key, [ap]);
+  }
+  const ordered: { priority: string; items: ActionPoint[] }[] = [];
+  for (const p of PRIORITY_ORDER) {
+    const items = buckets.get(p);
+    if (items) {
+      ordered.push({ priority: p, items });
+      buckets.delete(p);
+    }
+  }
+  for (const key of [...buckets.keys()].sort()) {
+    ordered.push({ priority: key, items: buckets.get(key)! });
+  }
+  return ordered;
+}
+
+function RoundVerdictPanel({
+  verdict,
+  converged,
+  openP0,
+  terminal,
+}: {
+  verdict: RoundVerdict;
+  converged: boolean | null | undefined;
+  openP0: number | null | undefined;
+  terminal: boolean;
+}) {
+  const pros = Array.isArray(verdict.pros) ? verdict.pros : [];
+  const cons = Array.isArray(verdict.cons) ? verdict.cons : [];
+  const aps = Array.isArray(verdict.actionPoints) ? verdict.actionPoints : [];
+  const groups = groupActionPointsByPriority(aps);
+
+  return (
+    <div
+      className="space-y-3 rounded-md border border-primary/30 bg-primary/5 p-3"
+      data-testid="loop-verdict-panel"
+    >
+      {/* Header — judge verdict + convergence badge (reuses the round summary fields).
+          The ConvergenceMark here is intentionally UNTAGGED: `loop-convergence-mark`
+          stays unique per round on the table-cell mark. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+          <Gavel className="h-3.5 w-3.5" />
+          Judge verdict
+        </p>
+        <ConvergenceMark converged={converged} terminal={terminal} />
+        <span className={`tabular-nums text-xs font-medium ${p0ClassName(openP0, terminal)}`}>
+          {openP0 ?? "—"} open P0
+        </span>
+      </div>
+
+      {/* Verdict prose (INERT) — the judge's summary. */}
+      {verdict.verdict && verdict.verdict.trim() !== "" && (
+        <p className="text-sm leading-relaxed">{verdict.verdict}</p>
+      )}
+
+      {/* Pros / cons — two columns (INERT). */}
+      {(pros.length > 0 || cons.length > 0) && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1">
+            <p className="inline-flex items-center gap-1 text-[11px] uppercase tracking-wide text-green-700 dark:text-green-400">
+              <Check className="h-3.5 w-3.5" /> Pros
+            </p>
+            {pros.length > 0 ? (
+              <ul className="space-y-1">
+                {pros.map((p, i) => (
+                  <li key={i} className="flex items-start gap-1.5 text-xs">
+                    <Check className="mt-0.5 h-3 w-3 shrink-0 text-green-600" />
+                    <span className="min-w-0 break-words">{p}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-muted-foreground">—</p>
+            )}
+          </div>
+          <div className="space-y-1">
+            <p className="inline-flex items-center gap-1 text-[11px] uppercase tracking-wide text-red-700 dark:text-red-400">
+              <X className="h-3.5 w-3.5" /> Cons
+            </p>
+            {cons.length > 0 ? (
+              <ul className="space-y-1">
+                {cons.map((c, i) => (
+                  <li key={i} className="flex items-start gap-1.5 text-xs">
+                    <X className="mt-0.5 h-3 w-3 shrink-0 text-red-500" />
+                    <span className="min-w-0 break-words">{c}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-muted-foreground">—</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* FULL ranked action points, GROUPED BY PRIORITY (P0→P3). */}
+      {aps.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+            Action points ({aps.length})
+          </p>
+          <div className="space-y-2" data-testid="loop-verdict-ap-list">
+            {groups.map((group) => (
+              <div key={group.priority} className="space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <Badge className={`${PRIORITY_COLOR[group.priority] ?? "bg-muted"} shrink-0`}>
+                    {group.priority}
+                  </Badge>
+                  <span className="text-[11px] tabular-nums text-muted-foreground">
+                    {group.items.length}
+                  </span>
+                </div>
+                <ul className="space-y-1.5 pl-1">
+                  {group.items.map((ap, i) => (
+                    <li
+                      key={i}
+                      className="space-y-0.5 border-l-2 border-border/60 pl-2 text-sm"
+                      data-testid="loop-ap-item"
+                      data-priority={ap.priority ?? ""}
+                    >
+                      {/* INERT model-authored text */}
+                      <span className="font-medium">{ap.title}</span>
+                      {ap.rationale && (
+                        <p className="text-xs text-muted-foreground break-words">
+                          {ap.rationale}
+                        </p>
+                      )}
+                      {ap.tradeoff && (
+                        <p className="text-xs text-muted-foreground break-words">
+                          <span className="font-medium uppercase tracking-wide text-muted-foreground/70">
+                            Tradeoff:
+                          </span>{" "}
+                          {ap.tradeoff}
+                        </p>
+                      )}
+                      {ap.acceptanceCriterion && (
+                        <p className="text-xs text-muted-foreground break-words">
+                          <span className="font-medium uppercase tracking-wide text-muted-foreground/70">
+                            Acceptance criterion (DoD):
+                          </span>{" "}
+                          {ap.acceptanceCriterion}
+                        </p>
+                      )}
+                      {ap.weakCriterion && (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+                          title="Weak/absent acceptance criterion — demoted to judge verification (never counts as tests-green)."
+                        >
+                          <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+                          weak DoD — demoted to judge
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-muted-foreground/70">{PRIORITY_LEGEND}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Rounds table ─────────────────────────────────────────────────────────────
 
 function RoundRow({
@@ -546,7 +743,10 @@ function RoundRow({
   // editor — lives ON the round now (the standalone Task Groups page is retired)
   // and is fetched LAZILY only when the operator opens this section.
   const canShowDispute = !!groupId;
-  const expandable = aps.length > 0 || hasTrace || canShowDispute;
+  // The FULL judge verdict (new `verdict` col) — null on old/backfilled rounds.
+  // Its presence makes the row expandable even when there are no open APs / trace.
+  const hasVerdict = round.verdict != null;
+  const expandable = aps.length > 0 || hasTrace || canShowDispute || hasVerdict;
 
   return (
     <>
@@ -592,6 +792,17 @@ function RoundRow({
         <TableRow>
           <TableCell colSpan={5} className="bg-muted/30">
             <div className="space-y-3 py-1">
+              {/* FULL judge verdict (new `verdict` col) — prose + pros/cons +
+                  convergence + the full ranked AP list grouped by priority. Guarded
+                  on presence; old/backfilled rounds (verdict null) omit it. */}
+              {round.verdict && (
+                <RoundVerdictPanel
+                  verdict={round.verdict}
+                  converged={round.converged}
+                  openP0={round.openP0}
+                  terminal={terminal}
+                />
+              )}
               {/* Per-round mini-tree — how THIS round ran (Stage 4 history). */}
               {traceHasContent(trace) && (
                 <div className="space-y-1.5">
@@ -606,7 +817,10 @@ function RoundRow({
               <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
                 Still-open action points
               </p>
-              <ul className="space-y-1.5">
+              {/* The still-open SUBSET — a FLAT list with a per-item badge (distinct
+                  from the verdict panel's full grouped list). Scoped for QA via this
+                  container id so counts don't collide with the verdict list above. */}
+              <ul className="space-y-1.5" data-testid="loop-open-ap-list">
                 {aps.map((ap, i) => (
                   <li
                     key={i}
@@ -841,6 +1055,13 @@ function ResultPanel({
                 {latest.openP0 ?? "—"} open P0
               </span>
             </div>
+            {/* The judge's prose verdict from the new `verdict` col, when present —
+                INERT model-authored text. Absent on old/backfilled rounds. */}
+            {latest.verdict?.verdict && latest.verdict.verdict.trim() !== "" && (
+              <p className="text-sm leading-relaxed" data-testid="loop-result-verdict">
+                {latest.verdict.verdict}
+              </p>
+            )}
             {/* Finding #5 — trivial priority breakdown of the still-open remainder.
                 A CONVERGED loop gets the dedicated actionable callout above; here
                 we only enrich the OTHER terminal verdicts (stopped_cap/escalated,
