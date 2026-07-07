@@ -409,6 +409,21 @@ const SDLC_DEV_MAX_ACTION_POINTS = 24;
 export const SDLC_DEV_REDRIVE_GRACE_MS = SDLC_DEV_GRACE_MS * SDLC_DEV_MAX_ACTION_POINTS;
 
 /**
+ * M-1 (Security MEDIUM): the number of SEQUENTIAL waves a runner review executes — the
+ * cross-review DAG runs primaries∥ → rebuttals∥ → judge, each wave bounded by the per-call
+ * `taskTimeoutMs`. The reviewing redrive grace is sized to a WHOLE runner review
+ * (`taskTimeoutMs × REVIEW_RUNNER_WAVES`) — the reviewing peer of {@link SDLC_DEV_REDRIVE_GRACE_MS}.
+ * A runner review keeps `currentIterationNumber` NULL, so the null-ref stranded check treats it
+ * as stranded; cross-instance, another instance holds NO local `reviewRuns` entry and would
+ * otherwise redrive a LIVE multi-wave review at the bare ~30s base (duplicate model spend +
+ * round-counter inflation + a redrive storm). Governs ONLY the registry-empty (cross-instance /
+ * cross-restart) case — the in-process `reviewRuns` registry is the authoritative same-instance
+ * guard — so erring toward a full-review span is safe. A single-verifier round is ONE wave, well
+ * under this bound.
+ */
+export const REVIEW_RUNNER_WAVES = 3;
+
+/**
  * R1 — process GLOBAL ceiling on simultaneously in-flight HUMAN-triggered dev
  * handoffs (`controller.develop`). Each spawns a real agentic coder + worktree,
  * so the human surface must be bounded just as the removed execute-sdlc path was
@@ -895,7 +910,32 @@ export class ConsiliumLoopController {
     // governs the registry-empty (cross-restart) case; the authoritative
     // in-process guard is the `sdlcRuns` registry consulted in redriveStranded.
     if (state === "developing") return Math.max(base, SDLC_DEV_REDRIVE_GRACE_MS);
+    // M-1: a RUNNER review keeps currentIterationNumber NULL (⇒ nullRef true), so — like
+    // developing — its TIME fallback must cover a WHOLE multi-wave review, not the bare base,
+    // or a cross-instance poller (no local reviewRuns entry) redrives a LIVE review (duplicate
+    // model spend + round-counter inflation + a redrive storm). Sized to the 3-wave cross-review
+    // DAG at the configured per-call timeout.
+    //
+    // GATED on the runner kill-switch to KEEP FLAG-OFF PARITY: under the legacy path a review
+    // mints an iteration (currentIterationNumber SET ⇒ nullRef false ⇒ never reaches here) EXCEPT
+    // in the sub-second crash window before the child-ref write, which the legacy crash-redrive
+    // must recover at the SHORT base grace (unchanged). So only when the runner is enabled do we
+    // extend the reviewing grace. Trade-off: a mid-flight flip to OFF reverts a live runner review
+    // to the base grace, so a cross-instance poller could redrive it ONCE as legacy — one round of
+    // duplicate spend, but the round row stays single (UNIQUE(loop,round)) and the FSM advances
+    // once (CAS), so no loop is stranded or misread (the settle READS still key off the round's
+    // actual mode, never the flag — inv #5).
+    if (state === "reviewing" && this.directReviewEnabled()) {
+      const taskTimeoutMs = this.deps.config().pipeline.taskGroups?.taskTimeoutMs ?? 600_000;
+      return Math.max(base, taskTimeoutMs * REVIEW_RUNNER_WAVES);
+    }
     return base;
+  }
+
+  /** M-1: the runner kill-switch, read live — gates ONLY the reviewing redrive grace sizing
+   *  (the settle/verdict READS never consult it — they key off the round's actual mode). */
+  private directReviewEnabled(): boolean {
+    return this.loopConfig().directReview?.enabled ?? false;
   }
 
   /** Begin round 1. 409s (returns null) unless the loop is PENDING. */
