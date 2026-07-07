@@ -648,6 +648,14 @@ export interface ConsiliumLoopControllerDeps {
   /** Resolve the judge convergence verdict for a settled iteration. */
   readIterationVerdict?: (loop: ConsiliumLoopRow) => Promise<ConvergenceVerdict | null>;
   /**
+   * Resolve the RAW judge output for a settled iteration (the pre-`readConvergence`
+   * object recordRound reads to persist the FULL {@link RoundVerdict}). Injectable
+   * companion to `readIterationVerdict` so a test can populate a round's `verdict`
+   * without fabricating raw execution/output rows; absent ⇒ the default reads the
+   * iteration's executions via storage (see `resolveJudgeOutput`).
+   */
+  readJudgeOutput?: (loop: ConsiliumLoopRow) => Promise<unknown | undefined>;
+  /**
    * Resolve the repo HEAD sha for audit / the merge-gate baseline. Injectable so
    * tests never touch real `process.cwd()` git (the default routes through A2's
    * buildDiffContext). Returns "" when unreadable (caller treats it as best-effort).
@@ -2518,6 +2526,7 @@ export class ConsiliumLoopController {
    * no current iteration / no parseable judge execution.
    */
   private async resolveJudgeOutput(loop: ConsiliumLoopRow): Promise<unknown | undefined> {
+    if (this.deps.readJudgeOutput) return this.deps.readJudgeOutput(loop);
     const n = loop.currentIterationNumber;
     if (n == null) return undefined;
     const iteration = await this.storage.getIteration(loop.groupId, n);
