@@ -2155,7 +2155,13 @@ export class ConsiliumLoopController {
         `startReviewRound${opts?.relaunch ? " (relaunch)" : ""} -> dispatchReview (runner) round ${nextRound}`,
       );
       this.dispatchReview({ ...loop, round: nextRound });
-      return { round: nextRound, openP0: null };
+      // EXPLICIT null (not omit): a round run earlier on the OLD path persisted a real
+      // currentIterationNumber; after the flag flips ON, the runner-mode extra must CLEAR
+      // it so the row's sole in-flight marker is the reviewRuns entry. Omitting the field
+      // would leave the stale non-null value — and on a crash (registry lost) the null-ref
+      // stranded check would read FALSE (round stuck, never redriven) and the straddle's
+      // getIteration(stale) would misclassify the runner round as old-path.
+      return { round: nextRound, openP0: null, currentIterationNumber: null };
     }
     const group = await this.storage.getTaskGroup(loop.groupId);
     const objective = group?.input ?? "";

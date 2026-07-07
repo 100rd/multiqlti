@@ -112,6 +112,34 @@ describe("B4 — reviewing dispatch keys off the live directReview flag", () => 
     release({ converged: false, openP0: 1, openActionPoints: [], verdict: null, participants: null });
   });
 
+  it("flag ON: a STALE currentIterationNumber (from a prior OLD-path round) is CLEARED to explicit null", async () => {
+    // A round ran earlier on the legacy path (currentIterationNumber persisted), then the
+    // flag flips ON. The runner extra MUST set currentIterationNumber: null explicitly —
+    // otherwise the stale non-null value survives and, on a crash, redriveStranded's
+    // null-ref check reads false (round stuck) + the straddle misreads it as old-path.
+    const loop = makeLoop({ state: "building_context", round: 1, currentIterationNumber: 5 });
+    const { storage, get } = makeFakeStorage(loop);
+    const startGroupAsync = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 9 } }));
+    let release: (r: unknown) => void = () => {};
+    const runReview = vi.fn(() => new Promise((res) => { release = res; }));
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: startGroupAsync, startGroupAsync, createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: configWith(true),
+      runReview: runReview as never,
+    });
+
+    const res = await controller.tick(loop.id);
+
+    expect(res?.state).toBe("reviewing");
+    expect(res?.round).toBe(2); // nextRound
+    // toBeNull fails on undefined — so an OMITTED field (stale 5 surviving) is caught.
+    expect(res?.currentIterationNumber).toBeNull(); // stale 5 EXPLICITLY cleared
+    expect(get().currentIterationNumber).toBeNull(); // persisted null
+    expect(startGroupAsync).not.toHaveBeenCalled();
+    release({ converged: true, openP0: 0, openActionPoints: [], verdict: null, participants: null });
+  });
+
   it("flag OFF: entering reviewing runs the legacy startGroupAsync path (byte-identical), NO reviewRuns entry", async () => {
     const loop = makeLoop({ state: "building_context", round: 0, lastReviewedCommit: null });
     const { storage } = makeFakeStorage(loop);
