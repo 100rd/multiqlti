@@ -19,7 +19,7 @@
  */
 import { z } from "zod";
 import { P0_PRIORITY, JUDGE_PROPOSABLE_METHODS } from "@shared/types";
-import type { ActionPoint, ConvergenceVerdict, Archetype, VerificationMethod } from "@shared/types";
+import type { ActionPoint, ConvergenceVerdict, RoundVerdict, Archetype, VerificationMethod } from "@shared/types";
 
 const actionPointSchema = z.object({
   title: z.string(),
@@ -81,6 +81,12 @@ const MAX_CRITERION_LEN = 1000;
 // wave planner drops nonexistent refs anyway, so over-bounding is safe.
 const MAX_DEPENDS_ON = 50;
 const MAX_DEPENDS_REF_LEN = 500;
+// RoundVerdict bounds (Security L-2, parity with the action-point caps above): the
+// judge's prose verdict + its pros/cons are UNTRUSTED model text. Cap the prose length
+// and both the count and per-item length of the pros/cons lists so a malicious or
+// malfunctioning judge cannot bloat the persisted round row.
+const MAX_VERDICT_LEN = 4000;
+const MAX_PROS_CONS = 50;
 
 /** Truncate a string to `max` chars; pass through `undefined`. */
 function clampStr(v: string | undefined, max: number): string | undefined {
@@ -204,6 +210,50 @@ export function extractActionPoints(judgeOutput: unknown): ActionPoint[] {
   const parsed = z.array(actionPointSchema).safeParse(body.action_points);
   if (!parsed.success) return [];
   return boundActionPoints(parsed.data);
+}
+
+/**
+ * Coerce a judge-authored `pros`/`cons` value into a bounded `string[]`. The field
+ * is UNTRUSTED and may arrive as a single string, an array, or garbage — coerce a
+ * lone string to a one-element list, drop non-string entries, then cap BOTH the list
+ * length (`MAX_PROS_CONS`) and each entry's length (`MAX_FIELD_LEN`). Never throws.
+ */
+function boundStringList(value: unknown): string[] {
+  const arr = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
+  const out: string[] = [];
+  for (const item of arr) {
+    if (typeof item !== "string") continue;
+    out.push(clampStr(item, MAX_FIELD_LEN) ?? "");
+    if (out.length >= MAX_PROS_CONS) break;
+  }
+  return out;
+}
+
+/**
+ * Read the FULL {@link RoundVerdict} from arbitrary judge output — the judge's prose
+ * `verdict`, its `pros`/`cons`, and the FULL RANKED `action_points` list (ALL
+ * priorities via {@link extractActionPoints}, NOT the open-P0 subset the FSM's
+ * `readConvergence` narrows to). Persisted per round for the loop detail page.
+ *
+ * Fail-soft, NEVER throws (mirrors {@link readConvergence}): routes through the same
+ * {@link pickJudgeBody} (so it finds the fields whether top-level or under `.output`)
+ * and bounds EVERYTHING (Security L-2) — `clampStr` the prose, `boundStringList` the
+ * pros/cons (count + per-item length, string-or-array coerced), `boundActionPoints`
+ * the list. Returns `null` when nothing parseable is present (no body, or every field
+ * empty) so the column stays NULL and consumers guard on it.
+ */
+export function readJudgeVerdict(judgeOutput: unknown): RoundVerdict | null {
+  const body = pickJudgeBody(judgeOutput);
+  if (!body) return null;
+  const verdict = clampStr(typeof body.verdict === "string" ? body.verdict : undefined, MAX_VERDICT_LEN);
+  const pros = boundStringList(body.pros);
+  const cons = boundStringList(body.cons);
+  const actionPoints = extractActionPoints(judgeOutput);
+  // Nothing recognizable → null (leave the column empty), rather than a hollow row.
+  if (verdict === undefined && pros.length === 0 && cons.length === 0 && actionPoints.length === 0) {
+    return null;
+  }
+  return { verdict: verdict ?? "", pros, cons, actionPoints };
 }
 
 /**

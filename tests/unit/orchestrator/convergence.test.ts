@@ -309,3 +309,88 @@ describe("Stage C — applyCriteriaQa demotion", () => {
     expect(out).not.toBe(aps);
   });
 });
+
+// ─── readJudgeVerdict — the FULL RoundVerdict (Phase 1, item 2) ───────────────
+import { readJudgeVerdict } from "../../../server/services/orchestrator/convergence.js";
+
+// Module-private caps mirrored here (convergence.ts): keep in sync with the reader.
+const MAX_VERDICT_LEN = 4000;
+const MAX_PROS_CONS = 50;
+const MAX_FIELD_LEN = 1000;
+
+describe("readJudgeVerdict — bounded, fail-soft rich judge verdict", () => {
+  it("extracts verdict + pros/cons + the FULL ranked action-point list (nested under .output)", () => {
+    const judge = {
+      output: {
+        verdict: "Looks solid overall.",
+        pros: ["clean tests", "good naming"],
+        cons: ["missing an edge case"],
+        // FULL ranked list — P0 AND lower priorities (NOT just the open-P0 subset).
+        action_points: [
+          { title: "handle null input", priority: "P0" },
+          { title: "add a doc note", priority: "P2" },
+        ],
+        convergence: { converged: false, open_p0: 1 },
+      },
+    };
+    const r = readJudgeVerdict(judge);
+    expect(r).not.toBeNull();
+    expect(r!.verdict).toBe("Looks solid overall.");
+    expect(r!.pros).toEqual(["clean tests", "good naming"]);
+    expect(r!.cons).toEqual(["missing an edge case"]);
+    expect(r!.actionPoints.map((a) => a.title)).toEqual(["handle null input", "add a doc note"]);
+  });
+
+  it("accepts a bare top-level object (no `output` wrapper)", () => {
+    const r = readJudgeVerdict({
+      verdict: "ok",
+      pros: ["a"],
+      cons: ["b"],
+      action_points: [{ title: "t", priority: "P0" }],
+    });
+    expect(r).toEqual({ verdict: "ok", pros: ["a"], cons: ["b"], actionPoints: [{ title: "t", priority: "P0" }] });
+  });
+
+  it("coerces a single-string pros/cons into a one-element list", () => {
+    const r = readJudgeVerdict({ verdict: "v", pros: "just one pro", cons: "just one con" });
+    expect(r!.pros).toEqual(["just one pro"]);
+    expect(r!.cons).toEqual(["just one con"]);
+  });
+
+  it("drops non-string pros/cons entries defensively (never throws)", () => {
+    const r = readJudgeVerdict({ verdict: "v", pros: ["ok", 42, null, { x: 1 }, "two"], cons: [{}, "real"] });
+    expect(r!.pros).toEqual(["ok", "two"]);
+    expect(r!.cons).toEqual(["real"]);
+  });
+
+  it("bounds the verdict prose length and the pros/cons count + per-item length (Security L-2)", () => {
+    const r = readJudgeVerdict({
+      verdict: "x".repeat(MAX_VERDICT_LEN + 5000),
+      pros: Array.from({ length: MAX_PROS_CONS + 25 }, () => "p".repeat(MAX_FIELD_LEN + 500)),
+    });
+    expect(r!.verdict.length).toBe(MAX_VERDICT_LEN);
+    expect(r!.pros.length).toBe(MAX_PROS_CONS); // list capped
+    expect(r!.pros[0].length).toBe(MAX_FIELD_LEN); // each entry clamped
+  });
+
+  it("bounds a huge action-point list (parity with extractActionPoints)", () => {
+    const many = Array.from({ length: 500 }, (_, i) => ({ title: `ap${i}`, priority: "P1" }));
+    const r = readJudgeVerdict({ output: { verdict: "v", action_points: many } });
+    expect(r!.actionPoints.length).toBe(50); // MAX_ACTION_POINTS
+  });
+
+  it("returns null when nothing is parseable (fail-soft) and NEVER throws on garbage", () => {
+    for (const bad of [undefined, null, 42, "a string", [], {}, { output: { convergence: null } }]) {
+      expect(() => readJudgeVerdict(bad)).not.toThrow();
+      expect(readJudgeVerdict(bad)).toBeNull();
+    }
+  });
+
+  it("returns a verdict with empty prose when only action_points are present", () => {
+    const r = readJudgeVerdict({ output: { action_points: [{ title: "t", priority: "P0" }] } });
+    expect(r).not.toBeNull();
+    expect(r!.verdict).toBe("");
+    expect(r!.pros).toEqual([]);
+    expect(r!.actionPoints).toEqual([{ title: "t", priority: "P0" }]);
+  });
+});

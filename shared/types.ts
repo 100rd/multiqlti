@@ -2387,6 +2387,27 @@ export interface ConvergenceVerdict {
 }
 
 /**
+ * The FULL judge verdict persisted per round (`consilium_loop_rounds.verdict`
+ * jsonb). Distinct from the round's SUMMARY fields (`converged` / `openP0` /
+ * `openActionPoints`): it carries the judge's prose summary, the pros/cons, and
+ * the FULL RANKED action-point list (ALL priorities, not just the still-open P0
+ * subset). Nullable on the column — absent on pre-column / backfilled rows, and
+ * whenever the raw judge output is unreadable at record time — so every consumer
+ * guards on `verdict == null` before reading it.
+ *
+ * SECURITY (L-2): `verdict`, every `pros`/`cons` entry, and each `actionPoints`
+ * field are UNTRUSTED model (judge) text — bounded on write by `readJudgeVerdict`
+ * (count + per-field length caps) and rendered as INERT text on the client. The
+ * client mirrors this shape (client/src/hooks/use-consilium-loops.ts `RoundVerdict`).
+ */
+export interface RoundVerdict {
+  verdict: string;
+  pros: string[];
+  cons: string[];
+  actionPoints: ActionPoint[];
+}
+
+/**
  * Finding #5 — the READ-TIME (never-persisted) summary of the STILL-OPEN action
  * points carried by a TERMINAL loop's LAST recorded round. Convergence is keyed
  * on `P0` BY DESIGN (a loop converges the moment no P0 remains), but the judge

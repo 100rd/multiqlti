@@ -1954,10 +1954,14 @@ export class MemStorage implements IStorage {
   }
 
   async appendLoopRound(data: InsertConsiliumLoopRound): Promise<ConsiliumLoopRoundRow> {
-    // UNIQUE(loop, round): reject a duplicate round append.
+    // UNIQUE(loop, round): reject a duplicate round append. Carry a Postgres-parity
+    // `code = "23505"` so callers can discriminate the conflict uniformly across the
+    // Mem and Pg backends (the constraint NAME in the message is the fallback signal).
     for (const r of this.consiliumLoopRoundsMap.values()) {
       if (r.loopId === data.loopId && r.round === data.round) {
-        throw new Error("consilium_loop_rounds_uq");
+        const err = new Error("consilium_loop_rounds_uq");
+        (err as NodeJS.ErrnoException).code = "23505";
+        throw err;
       }
     }
     const row: ConsiliumLoopRoundRow = {
@@ -1968,6 +1972,7 @@ export class MemStorage implements IStorage {
       converged: data.converged ?? null,
       openP0: data.openP0 ?? null,
       openActionPoints: data.openActionPoints ?? null,
+      verdict: data.verdict ?? null,
       baselineCommit: data.baselineCommit ?? null,
       headCommit: data.headCommit ?? null,
       testSummary: data.testSummary ?? null,

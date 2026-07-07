@@ -17,7 +17,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { TriggerConfig, TriggerType, TriggerProvenance, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, ExecutionTrace, ReviewMode, ExperienceScope, ExperienceEvidence, ExperienceVerification, ExperienceProvenance, ExperienceFreshness, ExperienceConfidence, ExperienceConsolidation, SkillProposalStatus, SkillProposalProvenance, SkillProposalEvidence } from "./types.js";
+import type { TriggerConfig, TriggerType, TriggerProvenance, ManagerConfig, ManagerDecision, TraceSpan, SwarmCloneResult, SwarmMerger, SwarmSplitter, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, RoundVerdict, ExecutionTrace, ReviewMode, ExperienceScope, ExperienceEvidence, ExperienceVerification, ExperienceProvenance, ExperienceFreshness, ExperienceConfidence, ExperienceConsolidation, SkillProposalStatus, SkillProposalProvenance, SkillProposalEvidence } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -2124,6 +2124,13 @@ export const consiliumLoopRounds = pgTable(
     // We persist the structured AP metadata for audit + the DEV handoff, but
     // NEVER the raw diff / assembled prompt input (Security H-4).
     openActionPoints: jsonb("open_action_points").$type<ActionPoint[]>(),
+    // The FULL judge verdict for this round (design: RoundVerdict) — the judge's
+    // prose summary, pros/cons, and the FULL RANKED action-point list (ALL
+    // priorities, not just the still-open P0 subset the SUMMARY fields carry).
+    // Bounded (readJudgeVerdict) before write — same Security L-2 discipline as
+    // openActionPoints (H-4: NEVER the raw diff/prompt input). NULL on pre-column /
+    // backfilled rounds and whenever the raw judge output is unreadable at record time.
+    verdict: jsonb("verdict").$type<RoundVerdict>(),
     baselineCommit: text("baseline_commit"),
     headCommit: text("head_commit"),
     testSummary: text("test_summary"),
