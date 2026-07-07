@@ -66,7 +66,6 @@ import {
   type ConsiliumLoopRoundRow,
   type ConsiliumLoopRoundDetail,
   type RoundVerdict,
-  type RoundParticipant,
   type ConsiliumLoopDetail as ConsiliumLoopDetailRow,
   type DevProgress,
   type ResearchReport,
@@ -120,7 +119,7 @@ import {
 } from "@/components/ui/select";
 import type { ConsiliumLoopState } from "@/hooks/use-consilium-loops";
 import { IterationDetailView } from "@/components/task-groups/iterations-panel";
-import type { ActionPoint, Archetype, OpenRemainder } from "@shared/types";
+import type { ActionPoint, Archetype, OpenRemainder, RoundParticipant } from "@shared/types";
 import { ARCHETYPES } from "@shared/types";
 import { summarizeNonP0Remainder } from "@shared/consilium-remainder";
 import {

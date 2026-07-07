@@ -24,6 +24,7 @@ import type {
   ActionPoint,
   Archetype,
   OpenRemainder,
+  RoundParticipant,
   ResearchReport,
   ResearchClaim,
   ResearchCitation,
@@ -164,20 +165,6 @@ export interface RoundVerdict {
   pros: string[];
   cons: string[];
   actionPoints: ActionPoint[];
-}
-
-/**
- * One debater's turn in a round's dispute — the NEW round-sourced `participants`
- * jsonb column (Phase 2). Replaces the iteration-sourced transcript for rounds that
- * carry it; old pre-Phase-2 rounds have no `participants` and fall back to the
- * task-group iteration view. `role` distinguishes a `primary` argument from a
- * `rebuttal`. All fields are model-authored → rendered as INERT React text.
- */
-export interface RoundParticipant {
-  name: string;
-  model: string;
-  role: "primary" | "rebuttal";
-  text: string;
 }
 
 export type ConsiliumLoopRoundDetail = ConsiliumLoopRoundRow & {
