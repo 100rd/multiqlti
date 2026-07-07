@@ -1309,11 +1309,19 @@ export class ConsiliumLoopController {
 
   /**
    * SERVER-READ the FULL action-point list (ALL priorities) from the loop's
-   * current iteration's judge verdict, via `pickJudgeOutput`→`extractActionPoints`
-   * (the SAME server-read path the removed execute-sdlc button used). Returns `[]`
-   * for a missing iteration / unparseable verdict (→ NO_ACTION_POINTS).
+   * current round's judge verdict. STRADDLE (Phase 2 B6) keyed off the round's ACTUAL
+   * mode (NOT the live flag): a RUNNER round's full ranked list is the persisted
+   * `RoundVerdict.actionPoints` (written via the SHARED `readJudgeVerdict`) — runner
+   * rounds have NO executions. Else the UNCHANGED old path: `pickJudgeOutput`→
+   * `extractActionPoints` off the iteration executions (the SAME server-read path the
+   * removed execute-sdlc button used). Returns `[]` for a missing round/iteration /
+   * unparseable verdict (→ NO_ACTION_POINTS).
    */
   private async resolveDevActionPoints(loop: ConsiliumLoopRow): Promise<ActionPoint[]> {
+    if (loop.currentIterationNumber == null) {
+      const round = await this.currentRoundRow(loop);
+      if (this.isRunnerRound(round)) return round.verdict?.actionPoints ?? [];
+    }
     const n = loop.currentIterationNumber;
     if (n == null) return [];
     const iteration = await this.storage.getIteration(loop.groupId, n);
@@ -1792,8 +1800,16 @@ export class ConsiliumLoopController {
     const verdict = await this.resolveVerdict(loop);
     if (!verdict) return null;
     const rounds = await this.storage.getLoopRounds(loop.id);
-    const priorOpenP0 = rounds.map((r) => r.openP0 ?? 0);
-    priorOpenP0.push(verdict.openP0); // include the round just decided
+    // B6 guard (Phase 2): build the prior series from rounds STRICTLY BEFORE the current
+    // round, then push the FRESH verdict. A RUNNER round records its row EARLY (at
+    // reviewing→deciding), so `rounds` already contains round N here — the `< loop.round`
+    // filter excludes that early row; without it round N is counted twice, corrupting BOTH
+    // isAntiStall's 3-window (a duplicate tail ⇒ spurious `escalated`) AND `decide()`'s
+    // `round = priorOpenP0.length`. Byte-identical for legacy: the current round is NOT
+    // recorded during its own deciding (recorded later at deciding→X), so the filter drops
+    // nothing and this equals the prior `rounds.map(...).push(verdict.openP0)`.
+    const priorOpenP0 = rounds.filter((r) => r.round < loop.round).map((r) => r.openP0 ?? 0);
+    priorOpenP0.push(verdict.openP0); // include the round just decided (fresh)
     return { kind: "decided", verdict, priorOpenP0 };
   }
 
@@ -2800,8 +2816,58 @@ export class ConsiliumLoopController {
     }
   }
 
-  /** Resolve the judge convergence verdict for the loop's current iteration. */
+  /**
+   * The recorded round row for the loop's CURRENT round, or undefined — the STRADDLE
+   * anchor for {@link resolveVerdict} / {@link resolveDevActionPoints} (Phase 2 B6).
+   */
+  private async currentRoundRow(loop: ConsiliumLoopRow): Promise<ConsiliumLoopRoundRow | undefined> {
+    try {
+      const rounds = await this.storage.getLoopRounds(loop.id);
+      return rounds.find((r) => r.round === loop.round);
+    } catch {
+      // Best-effort straddle anchor (same discipline as buildPriorFindings /
+      // latestRoundTestSummary): a getLoopRounds failure degrades to the OLD path rather
+      // than crashing a tick/plan/develop — the round-row read is never load-bearing enough
+      // to abort on.
+      return undefined;
+    }
+  }
+
+  /**
+   * True when the loop's current round was produced by the DIRECT RUNNER — the STRADDLE
+   * discriminator, keyed off the round's ACTUAL mode, NEVER the live directReview flag.
+   *
+   * Keyed on `participants` (non-null): the runner ALWAYS writes the array — even EMPTY
+   * for a single-verifier round — whereas the legacy task-group path ALWAYS leaves it null.
+   * `verdict` is NOT a discriminator: the legacy path writes it too (via `readJudgeVerdict`
+   * off the iteration executions), so a legacy round with a readable judge output carries a
+   * non-null `verdict`. `!= null` (loose) also treats an absent field (undefined, e.g. a
+   * legacy fake round row) as legacy.
+   */
+  private isRunnerRound(round: ConsiliumLoopRoundRow | undefined): round is ConsiliumLoopRoundRow {
+    return round != null && round.participants != null;
+  }
+
+  /**
+   * Resolve the judge convergence verdict for the loop's current round. STRADDLE
+   * (Phase 2 B6): a RUNNER round has NO task executions — its convergence was persisted on
+   * the round row by `recordRound` via the SHARED `readConvergence`, so read it straight
+   * back (no private re-parse). The round-row probe fires ONLY under the runner marker
+   * (`currentIterationNumber == null`), so a legacy loop (iteration set) skips it entirely
+   * and its path is byte-identical (never a getLoopRounds read). Else the UNCHANGED old
+   * path: the injected `readIterationVerdict` seam first, then the iteration executions.
+   */
   private async resolveVerdict(loop: ConsiliumLoopRow): Promise<ConvergenceVerdict | null> {
+    if (loop.currentIterationNumber == null) {
+      const round = await this.currentRoundRow(loop);
+      if (this.isRunnerRound(round)) {
+        return {
+          converged: round.converged ?? false,
+          openP0: round.openP0 ?? 0,
+          openActionPoints: round.openActionPoints ?? [],
+        };
+      }
+    }
     if (this.deps.readIterationVerdict) return this.deps.readIterationVerdict(loop);
     const judgeOutput = await this.resolveJudgeOutput(loop);
     if (judgeOutput === undefined) return null;
