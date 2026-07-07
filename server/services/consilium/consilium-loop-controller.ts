@@ -52,12 +52,12 @@ import { runAsSystem, runAsProject } from "../../context.js";
 import type { ConsiliumLoopRow, ConsiliumLoopRoundRow, ConsiliumLoopState, TaskGroupIterationRow, InsertTask } from "@shared/schema";
 import { ARCHETYPES } from "@shared/types";
 import type { Archetype } from "@shared/types";
-import type { ActionPoint, ConvergenceVerdict, ReviewMode } from "@shared/types";
+import type { ActionPoint, ConvergenceVerdict, RoundVerdict, ReviewMode } from "@shared/types";
 import { P0_PRIORITY } from "@shared/types";
 import type { TaskOrchestrator } from "../task-orchestrator.js";
 import type { AppConfig } from "../../config/schema.js";
 import { effectiveVerificationEnabled, resolveImplementForRepo } from "../../config/schema.js";
-import { readConvergence, extractActionPoints, normalizeActionPointMethods, applyCriteriaQa } from "../orchestrator/convergence.js";
+import { readConvergence, readJudgeVerdict, extractActionPoints, normalizeActionPointMethods, applyCriteriaQa } from "../orchestrator/convergence.js";
 import { buildDiffContext } from "./diff-context.js";
 import { buildRepoMap, createDbRepoMapSource, listTouchedFiles, repoMapGit } from "./repo-map.js";
 import { findLoopWorkspace } from "./workspace-bind.js";
@@ -364,6 +364,17 @@ export function parseJudgeVerifierOutput(content: string): { passed: boolean; su
 const ANTI_STALL_MIN_ROUND = 3;
 
 /**
+ * The UNIQUE(loop_id, round) constraint on `consilium_loop_rounds`
+ * (shared/schema.ts: `unique("consilium_loop_rounds_uq")`). A duplicate round
+ * append is a LEGITIMATE idempotent no-op (re-tick / crash redrive re-recording
+ * the same round) — `recordRound` swallows ONLY this, and surfaces every other
+ * insert failure. NOTE: the MemStorage shape throws a BARE `Error` whose message
+ * is exactly this name — it contains `_uq`, NOT `unique` — so a `/unique/i` test
+ * alone misses it; the constraint-name check is the reliable discriminator.
+ */
+const LOOP_ROUND_UNIQUE_CONSTRAINT = "consilium_loop_rounds_uq";
+
+/**
  * Per-coder reference grace (one coder run + buffer). The SDLC coder's hard
  * timeout is configurable (coder default 1_200_000ms / 20min); this is only a
  * reference floor. The AUTHORITATIVE developing re-drive guard is the process-
@@ -636,6 +647,14 @@ export interface ConsiliumLoopControllerDeps {
   config: () => AppConfig;
   /** Resolve the judge convergence verdict for a settled iteration. */
   readIterationVerdict?: (loop: ConsiliumLoopRow) => Promise<ConvergenceVerdict | null>;
+  /**
+   * Resolve the RAW judge output for a settled iteration (the pre-`readConvergence`
+   * object recordRound reads to persist the FULL {@link RoundVerdict}). Injectable
+   * companion to `readIterationVerdict` so a test can populate a round's `verdict`
+   * without fabricating raw execution/output rows; absent ⇒ the default reads the
+   * iteration's executions via storage (see `resolveJudgeOutput`).
+   */
+  readJudgeOutput?: (loop: ConsiliumLoopRow) => Promise<unknown | undefined>;
   /**
    * Resolve the repo HEAD sha for audit / the merge-gate baseline. Injectable so
    * tests never touch real `process.cwd()` git (the default routes through A2's
@@ -1310,11 +1329,20 @@ export class ConsiliumLoopController {
     // Cap precedence (M-2): a `decided` event at the cap round with open P0s is
     // STOPPED_CAP — but a CONVERGED verdict still wins (handled in `decide`).
     if (event.kind === "decided" && !event.verdict.converged && loop.round >= loop.maxRounds) {
-      return this.commit(loop, {
+      const won = await this.commit(loop, {
         from: "deciding",
         to: "stopped_cap",
         extra: { completedAt: new Date() },
       });
+      // Defect A (loop 456c3b8e): `stopped_cap` is constructed ONLY here — `decide`
+      // never yields it, so this early exit returns directly from `commit` and never
+      // reaches `runSideEffect`/`recordRound`. A capped loop (e.g. maxRounds=1, still
+      // open) therefore recorded ZERO rounds and its detail page rendered blank. Record
+      // the round on the CAS winner (single-flight), exactly as the converged/escalated
+      // terminal exits do. `recordRound` is idempotent and never throws, so it can
+      // neither undo nor block the already-committed transition.
+      if (won) await this.recordRound(won, event.verdict);
+      return won;
     }
 
     const transition = reduce(loop.state, event, {
@@ -2398,34 +2426,113 @@ export class ConsiliumLoopController {
     return undefined;
   }
 
-  /** Persist this round's audit row (NEVER the raw diff/input — H-4). */
+  /**
+   * Persist this round's audit row (NEVER the raw diff/input — H-4).
+   *
+   * Defect C: this used to `.catch(() => undefined)` EVERY append error, so a
+   * transient storage failure (dropped connection, serialization failure, disk
+   * full, …) left `consilium_loop_rounds` silently empty — the detail page
+   * rendered blank with `loop.error` null and NO signal. Now we swallow ONLY the
+   * legitimate `UNIQUE(loop_id, round)` re-tick/redrive conflict; every OTHER
+   * failure is surfaced (logged + written to `loop.error`) WITHOUT blocking the
+   * FSM transition. Fail-OPEN on state (never rethrow — the transition already
+   * committed), fail-LOUD on the audit write.
+   */
   private async recordRound(loop: ConsiliumLoopRow, verdict: ConvergenceVerdict): Promise<void> {
     const head = await this.readRepoHead(loop);
-    await this.storage
-      .appendLoopRound({
+    // Rich judge verdict for the Rounds panel (best-effort, bounded, never blocks the
+    // audit write — null when the raw judge output is unreadable). Read from the RAW
+    // judge output, NOT reconstructed from the ConvergenceVerdict, so the prose /
+    // pros / cons / full ranked action points survive.
+    const judgeVerdict = await this.readRoundVerdict(loop);
+    try {
+      await this.storage.appendLoopRound({
         loopId: loop.id,
         round: loop.round,
         iterationNumber: loop.currentIterationNumber ?? loop.round,
         converged: verdict.converged,
         openP0: verdict.openP0,
         openActionPoints: verdict.openActionPoints,
+        verdict: judgeVerdict,
         baselineCommit: loop.lastReviewedCommit,
         headCommit: head,
-      })
-      .catch(() => undefined); // UNIQUE(loop,round) → idempotent re-tick
+      });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const message = err instanceof Error ? err.message : String(err);
+      // UNIQUE(loop,round) → idempotent re-tick / crash redrive re-recording the
+      // same round. Detection follows the repo convention (model-skill-bindings.ts:115)
+      // — `code === "23505"` (Postgres) OR `/unique/i` (its message text) — EXTENDED
+      // with the constraint name, because the MemStorage bare `Error` message is
+      // `consilium_loop_rounds_uq` (contains `_uq`, not `unique`) and carries no code.
+      // A true no-op: leave `loop.error` untouched, emit NO log.
+      if (
+        code === "23505" ||
+        /unique/i.test(message) ||
+        message.includes(LOOP_ROUND_UNIQUE_CONSTRAINT)
+      ) {
+        return;
+      }
+      // Any OTHER failure is a real audit-write loss. Surface it — log (this.log's
+      // console.log convention, ~L792) AND persist to `loop.error` so the loop
+      // detail page shows it — but NEVER rethrow: the FSM state transition already
+      // committed and must not be undone by a best-effort audit write. The nested
+      // catch keeps recordRound total even if the error-persist itself fails.
+      this.log(loop.id, `recordRound: appendLoopRound failed for round ${loop.round}: ${message}`);
+      // Write ONLY when the (committed) row's error is still empty — `loop` is the
+      // post-commit `won` row at every call site, so this is the freshest value.
+      // Never clobber a terminal explanation the transition itself just set (e.g. a
+      // cancel note); the log line above records the audit failure regardless.
+      if (!loop.error) {
+        await this.storage
+          .updateLoop(loop.id, { error: `round ${loop.round} audit write failed: ${message}` })
+          .catch(() => undefined);
+      }
+    }
+  }
+
+  /**
+   * Best-effort rich judge verdict for the round audit ({@link RoundVerdict}),
+   * bounded by {@link readJudgeVerdict}. Reads the RAW judge output for the loop's
+   * current iteration; returns null when unreadable. NEVER throws — a verdict-read
+   * failure must not block the round-audit write (fail-soft, like the summary read).
+   */
+  private async readRoundVerdict(loop: ConsiliumLoopRow): Promise<RoundVerdict | null> {
+    try {
+      return readJudgeVerdict(await this.resolveJudgeOutput(loop));
+    } catch (err) {
+      this.log(
+        loop.id,
+        `recordRound: judge verdict read failed for round ${loop.round}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
   }
 
   /** Resolve the judge convergence verdict for the loop's current iteration. */
   private async resolveVerdict(loop: ConsiliumLoopRow): Promise<ConvergenceVerdict | null> {
     if (this.deps.readIterationVerdict) return this.deps.readIterationVerdict(loop);
-    const n = loop.currentIterationNumber;
-    if (n == null) return null;
-    const iteration = await this.storage.getIteration(loop.groupId, n);
-    if (!iteration) return null;
-    const executions = await this.storage.getExecutionsByIteration(loop.groupId, iteration.id);
-    const judgeOutput = pickJudgeOutput(executions.map((e) => e.output));
+    const judgeOutput = await this.resolveJudgeOutput(loop);
     if (judgeOutput === undefined) return null;
     return readConvergence(judgeOutput);
+  }
+
+  /**
+   * Sibling to {@link resolveVerdict}: resolve the RAW judge output for the loop's
+   * current iteration (the pre-`readConvergence` object), so the round audit can
+   * persist the FULL {@link RoundVerdict} (prose + pros/cons + ranked action points)
+   * alongside the summary. `resolveVerdict` reuses this — same read, so a loop with a
+   * settled iteration yields the SAME judge output to both. `undefined` when there is
+   * no current iteration / no parseable judge execution.
+   */
+  private async resolveJudgeOutput(loop: ConsiliumLoopRow): Promise<unknown | undefined> {
+    if (this.deps.readJudgeOutput) return this.deps.readJudgeOutput(loop);
+    const n = loop.currentIterationNumber;
+    if (n == null) return undefined;
+    const iteration = await this.storage.getIteration(loop.groupId, n);
+    if (!iteration) return undefined;
+    const executions = await this.storage.getExecutionsByIteration(loop.groupId, iteration.id);
+    return pickJudgeOutput(executions.map((e) => e.output));
   }
 
   /** Best-effort HEAD read for audit; bounded, never throws (H-4 scrubbed). */

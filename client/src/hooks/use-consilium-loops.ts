@@ -21,6 +21,7 @@ import type {
   AppliedSkillRef,
 } from "@shared/schema";
 import type {
+  ActionPoint,
   Archetype,
   OpenRemainder,
   ResearchReport,
@@ -147,11 +148,31 @@ export type ExecutionCriterionMethod = ExecutionCriterion["method"];
  * `ConsiliumLoopRoundDetail` is structurally a `ConsiliumLoopRoundRow`, so every
  * existing round consumer keeps working unchanged.
  */
+/**
+ * The FULL judge verdict for a round — the NEW nullable `verdict` jsonb column.
+ * Distinct from the round's SUMMARY fields (`converged` / `openP0` /
+ * `openActionPoints`): it carries the judge's prose summary, the pros/cons, and the
+ * FULL RANKED action-point list (ALL priorities, not just the still-open subset).
+ * Absent/null on old rounds (incl. the backfilled one), so every consumer guards
+ * on `verdict == null` before reading it.
+ *
+ * SECURITY: `verdict`, every `pros`/`cons` entry, and each `actionPoints` field are
+ * model-authored (judge) text — rendered as INERT React text, never a sink.
+ */
+export interface RoundVerdict {
+  verdict: string;
+  pros: string[];
+  cons: string[];
+  actionPoints: ActionPoint[];
+}
+
 export type ConsiliumLoopRoundDetail = ConsiliumLoopRoundRow & {
   /** The research artifact, on the latest round of a `research` loop only. */
   report?: ResearchReport | null;
   /** The Stage-4 observability tree — present once the backend persists it. */
   executionTrace?: ExecutionTrace | null;
+  /** The FULL judge verdict — see {@link RoundVerdict}. Null on old/backfilled rounds. */
+  verdict?: RoundVerdict | null;
 };
 
 // ─── Composition (Observability GAP 2 — the "who does what" of a round) ───────
