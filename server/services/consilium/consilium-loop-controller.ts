@@ -1321,11 +1321,20 @@ export class ConsiliumLoopController {
     // Cap precedence (M-2): a `decided` event at the cap round with open P0s is
     // STOPPED_CAP — but a CONVERGED verdict still wins (handled in `decide`).
     if (event.kind === "decided" && !event.verdict.converged && loop.round >= loop.maxRounds) {
-      return this.commit(loop, {
+      const won = await this.commit(loop, {
         from: "deciding",
         to: "stopped_cap",
         extra: { completedAt: new Date() },
       });
+      // Defect A (loop 456c3b8e): `stopped_cap` is constructed ONLY here — `decide`
+      // never yields it, so this early exit returns directly from `commit` and never
+      // reaches `runSideEffect`/`recordRound`. A capped loop (e.g. maxRounds=1, still
+      // open) therefore recorded ZERO rounds and its detail page rendered blank. Record
+      // the round on the CAS winner (single-flight), exactly as the converged/escalated
+      // terminal exits do. `recordRound` is idempotent and never throws, so it can
+      // neither undo nor block the already-committed transition.
+      if (won) await this.recordRound(won, event.verdict);
+      return won;
     }
 
     const transition = reduce(loop.state, event, {
