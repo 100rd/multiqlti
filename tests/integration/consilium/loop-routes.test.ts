@@ -149,6 +149,15 @@ describe("consilium-loop routes", () => {
     expect(res.body.state).toBe("pending");
   });
 
+  // P1 (GH #445, ADR-0003 I1, additive): review-only launch (implement.enabled
+  // unset/false in this harness's fakeConfig) ⇒ class defaults to R0. No
+  // escalation, no gating — this is pure metadata.
+  it("P1: review-only loop launch → class R0", async () => {
+    const res = await post("/api/consilium-loops", { groupId: ctx.group.id, repoPath: REPO_ROOT });
+    expect(res.status).toBe(201);
+    expect(res.body.class).toBe("R0");
+  });
+
   it("H-3: a 2nd active loop on the same group → 409", async () => {
     const first = await post("/api/consilium-loops", { groupId: ctx.group.id, repoPath: REPO_ROOT });
     expect(first.status).toBe(201);
@@ -256,5 +265,57 @@ describe("consilium-loop routes", () => {
     const res = await get("/api/consilium-loops");
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(0);
+  });
+});
+
+// P1 (GH #445, ADR-0003 I1, additive): a coder-enabled operator config
+// (`implement.enabled: true`) stamps class A at launch. Separate describe block
+// so it doesn't disturb the review-only `fakeConfig` used by every test above.
+describe("consilium-loop routes — P1 class field (coder-enabled)", () => {
+  it("coder-enabled loop launch → class A", async () => {
+    const storage = new MemStorage();
+    const coderConfig = () =>
+      ({
+        pipeline: {
+          consiliumLoop: {
+            enabled: true,
+            maxRounds: 6,
+            pollIntervalMs: 5000,
+            maxDiffBytes: 200000,
+            allowedRepoPaths: [REPO_ROOT],
+            implement: { enabled: true },
+          },
+        },
+      }) as never;
+    const controller = new ConsiliumLoopController({
+      storage,
+      taskOrchestrator: {
+        startGroup: async () => ({ group: {}, iteration: { iterationNumber: 1 } }),
+        createTaskGroup: async () => ({ group: { id: "devgrp" }, tasks: [] }),
+        cancelGroup: async () => undefined,
+      } as never,
+      config: coderConfig,
+      readRepoHead: async () => "feedface",
+    });
+    const app: Express = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.user = OWNER_USER;
+      next();
+    });
+    registerConsiliumLoopRoutes(app, storage, controller, coderConfig);
+
+    const group = await storage.createTaskGroup({
+      name: "consilium",
+      description: "d",
+      input: "objective",
+      createdBy: OWNER_USER.id,
+    } as never);
+
+    const res = await request(app)
+      .post("/api/consilium-loops")
+      .send({ groupId: (group as { id: string }).id, repoPath: REPO_ROOT });
+    expect(res.status).toBe(201);
+    expect(res.body.class).toBe("A");
   });
 });

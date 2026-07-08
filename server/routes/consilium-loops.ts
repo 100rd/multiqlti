@@ -130,6 +130,10 @@ export function registerConsiliumLoopRoutes(
           maxRounds: body.maxRounds ?? cfg.maxRounds,
           lastReviewedCommit: body.lastReviewedCommit ?? null,
           createdBy: req.user.id,
+          // ADR-0003 I1 (re-scoped, GH #445 P1): additive class metadata only —
+          // no escalation, no gating reads this yet. Coder-enabled (worktree
+          // write / Draft-PR capable) ⇒ A; review-only ⇒ R0.
+          class: cfg.implement?.enabled ? "A" : "R0",
         });
         return res.status(201).json(loop);
       } catch (err) {
