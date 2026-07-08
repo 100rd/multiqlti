@@ -1,8 +1,8 @@
-import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, inArray, sql as drizzleSql } from "drizzle-orm";
+import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, isNotNull, inArray, sql as drizzleSql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db, withProject, withProjectList, withProjectInsert, withProjectOrGlobal } from "./db";
 import { unscopedSystemQuery, getProjectId } from "./context";
-import type { IStorage, PracticeCardFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmStatsByWorkspace, LlmTimelinePoint, RunHistoryQuery, TaskGroupHistoryRow } from "./storage";
+import type { IStorage, PracticeCardFilters, LlmRequestFilters, LlmRequestStats, LlmStatsByModel, LlmStatsByProvider, LlmStatsByTeam, LlmStatsByWorkspace, LlmTimelinePoint, RunHistoryQuery, TaskGroupHistoryRow, WorkspaceTaskModelUsage } from "./storage";
 import {
   TASK_GROUP_V2_MAX_LIMIT,
   IterationConflictError,
@@ -1323,6 +1323,19 @@ export class PgStorage implements IStorage {
       .orderBy(asc(tasks.sortOrder), asc(tasks.createdAt));
   }
 
+  async getWorkspaceTaskModelUsage(workspaceId: string): Promise<WorkspaceTaskModelUsage[]> {
+    const rows = await db
+      .select({ taskId: tasks.id, modelSlug: tasks.modelSlug })
+      .from(tasks)
+      .where(withProject(
+        tasks,
+        and(eq(tasks.workspaceId, workspaceId), isNotNull(tasks.modelSlug)),
+      ));
+    return rows
+      .filter((r): r is { taskId: string; modelSlug: string } => r.modelSlug !== null)
+      .map((r) => ({ taskId: r.taskId, modelSlug: r.modelSlug }));
+  }
+
   async getTask(id: string): Promise<TaskRow | undefined> {
     const [row] = await db.select().from(tasks).where(withProject(tasks, eq(tasks.id, id)));
     return row;
@@ -1465,6 +1478,12 @@ export class PgStorage implements IStorage {
   async getModelSkillBindings(modelId: string): Promise<ModelSkillBinding[]> {
     return db.select().from(modelSkillBindings)
       .where(withProject(modelSkillBindings, eq(modelSkillBindings.modelId, modelId)))
+      .orderBy(asc(modelSkillBindings.createdAt));
+  }
+
+  async getAllModelSkillBindings(): Promise<ModelSkillBinding[]> {
+    return db.select().from(modelSkillBindings)
+      .where(withProjectList(modelSkillBindings))
       .orderBy(asc(modelSkillBindings.createdAt));
   }
 

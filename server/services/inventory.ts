@@ -3,21 +3,41 @@
  *
  * Builds a workspace-scoped dependency graph from storage data.
  *
- * INTERIM STATE (pipelines engine retirement, migration 0053): the graph is
- * connection-nodes only. It previously also derived pipeline/stage nodes
- * (from the now-removed `pipelines` table) plus skill/model nodes and
- * stage→{connection,skill,model} edges — all of which were sourced SOLELY
- * via a pipeline stage's config, with no other data source in this function.
- * `InventoryNodeType`/the FE legend (client/src/pages/Inventory.tsx) still
- * list "pipeline"/"stage"/"skill"/"model" — deliberately left broad so the
- * FE compiles untouched; those types simply never appear in a graph today.
- * Follow-up #54 repoints skill/model nodes to the skill/model registry and
- * connection-usage edges to a KEPT dependents source (consilium loops /
- * workspaces), then narrows the type and cleans the FE legend — mirroring
- * the WorkspaceTraces write-less-then-repoint pattern (task #29).
+ * DERIVATION (#54 — registry-backed redesign, follow-up to the pipelines
+ * engine retirement, migration 0053):
+ *   - `connection` nodes — `storage.getWorkspaceConnections(workspaceId)`, workspace-scoped.
+ *   - `skill` nodes — `storage.getSkills()`, project-scoped (tenant context), ALL
+ *     skills in the project (not filtered to this workspace — skills have no
+ *     workspace FK). Metadata surfaces `sourceType` ("manual"|"git") and
+ *     `gitSourceId` for provenance (git-sync rows are a parallel, separate PR).
+ *   - `model` nodes — `storage.getModels()`, project-or-global catalog. Metadata
+ *     surfaces `provider` and `isActive`.
+ *   - `"compatible"` edges (model ↔ skill) — `storage.getAllModelSkillBindings()`
+ *     (bulk read, avoids an N+1 per-model lookup), a curated capability match,
+ *     NOT an observed-usage signal.
+ *   - `"uses"` edges (task → model) — `storage.getWorkspaceTaskModelUsage(workspaceId)`,
+ *     genuine observed usage but SPARSE/best-effort: only tasks with both a
+ *     non-null `modelSlug` and a `workspaceId` matching this workspace are
+ *     included (`tasks.workspaceId` is populated only via the consilium loop
+ *     DEV handoff path — most tasks have none, so this edge set is partial by
+ *     design, not a bug).
+ *   - NO skill-usage edge (workspace/task → skill): no kept table supports this
+ *     link (no `skillId` FK exists on `tasks`/`taskExecutions`/consilium-loop
+ *     tables — the only skill-adjacent FK is `skill_proposals.skillId`, a
+ *     nullable DREAM-4 feedback reference, "NEVER an FK write target" per its
+ *     own schema comment). Deliberately not fabricated via a `teamId` string
+ *     match — too imprecise, would risk false dependency edges.
+ *
+ * `InventoryNodeType` is narrowed to "connection"|"skill"|"model" (dropped
+ * "pipeline"|"stage", dead since the pipelines-engine retirement — no source
+ * data ever populated them). `InventoryEdge.relation` drops "contains"
+ * (pipeline→stage, now dead) for "compatible"|"uses" (see @shared/types.ts).
+ * FE (client/src/pages/Inventory.tsx) legend/filter cleanup is a separate,
+ * follow-up PR.
  *
  * Orphan detection: a connection node is flagged as an orphan when it has had
- * zero MCP tool-call activity in the last ORPHAN_DAYS days.
+ * zero MCP tool-call activity in the last ORPHAN_DAYS days. Skill/model nodes
+ * are never flagged as orphans (no comparable per-node usage series exists).
  */
 
 import type { IStorage } from "../storage";
@@ -34,9 +54,9 @@ export const ORPHAN_DAYS = 30;
 // ─── Build dependency graph ───────────────────────────────────────────────────
 
 /**
- * Builds a connection-only dependency graph for the given workspace.
- * See the file-level INTERIM STATE note for why pipeline/stage/skill/model
- * nodes are absent for now.
+ * Builds the workspace dependency graph: connection nodes (workspace-scoped)
+ * plus skill/model registry nodes (project-scoped) and their compatible/uses
+ * edges. See the file-level DERIVATION note for exact sourcing per node/edge.
  */
 export async function buildInventoryGraph(
   storage: IStorage,
@@ -44,6 +64,10 @@ export async function buildInventoryGraph(
   nowMs = Date.now(),
 ): Promise<InventoryGraph> {
   const connections = await storage.getWorkspaceConnections(workspaceId);
+  const skills = await storage.getSkills();
+  const models = await storage.getModels();
+  const bindings = await storage.getAllModelSkillBindings();
+  const taskModelUsage = await storage.getWorkspaceTaskModelUsage(workspaceId);
 
   const nodes: InventoryNode[] = [];
   const edges: InventoryEdge[] = [];
@@ -75,6 +99,58 @@ export async function buildInventoryGraph(
       },
       isOrphan: connectionOrphanMap.get(conn.id) ?? true,
     });
+  }
+
+  // ── Skill nodes ────────────────────────────────────────────────────────────
+
+  for (const skill of skills) {
+    nodes.push({
+      id: skill.id,
+      type: "skill",
+      label: skill.name,
+      metadata: {
+        sourceType: skill.sourceType,
+        gitSourceId: skill.gitSourceId,
+      },
+    });
+  }
+
+  // ── Model nodes ────────────────────────────────────────────────────────────
+  // model_skill_bindings.modelId and tasks.modelSlug both reference a model by
+  // its stable slug-ish identifier (route validation at
+  // server/routes/model-skill-bindings.ts accepts either models.slug or the
+  // provider-side models.modelId) — index both so edge resolution below is a
+  // single map lookup, no N+1 per-edge query.
+
+  const modelNodeIdByIdentifier = new Map<string, string>();
+  for (const model of models) {
+    modelNodeIdByIdentifier.set(model.slug, model.id);
+    if (model.modelId) modelNodeIdByIdentifier.set(model.modelId, model.id);
+    nodes.push({
+      id: model.id,
+      type: "model",
+      label: model.name,
+      metadata: {
+        provider: model.provider,
+        isActive: model.isActive,
+      },
+    });
+  }
+
+  // ── "compatible" edges: model ↔ skill (curated bindings) ───────────────────
+
+  for (const binding of bindings) {
+    const modelNodeId = modelNodeIdByIdentifier.get(binding.modelId);
+    if (!modelNodeId) continue; // binding references a model outside this catalog
+    edges.push({ source: modelNodeId, target: binding.skillId, relation: "compatible" });
+  }
+
+  // ── "uses" edges: task → model (sparse, observed — see file header) ────────
+
+  for (const usage of taskModelUsage) {
+    const modelNodeId = modelNodeIdByIdentifier.get(usage.modelSlug);
+    if (!modelNodeId) continue; // modelSlug doesn't resolve to a known model row
+    edges.push({ source: usage.taskId, target: modelNodeId, relation: "uses" });
   }
 
   return { nodes, edges };

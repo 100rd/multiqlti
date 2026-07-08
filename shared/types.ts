@@ -3345,7 +3345,7 @@ export type McpConnectionUsage = ConnectionUsageMetrics;
 // ── Inventory & Dependency Graph (issue #275) ─────────────────────────────────
 
 /** Node types present in the workspace dependency graph. */
-export type InventoryNodeType = "connection" | "pipeline" | "stage" | "skill" | "model";
+export type InventoryNodeType = "connection" | "skill" | "model";
 
 /** A node in the workspace dependency graph. */
 export interface InventoryNode {
@@ -3365,11 +3365,13 @@ export interface InventoryEdge {
   /** ID of the target node. */
   target: string;
   /**
-   * Relationship label:
-   * - "contains"  — pipeline → stage
-   * - "uses"      — stage → connection | skill | model
+   * Relationship label (#54 — registry-backed derivation):
+   * - "compatible" — model ↔ skill, curated via model_skill_bindings
+   * - "uses"       — task → model, observed via tasks.modelSlug (sparse/best-effort,
+   *                  scoped to tasks with a matching tasks.workspaceId — see
+   *                  server/services/inventory.ts file header)
    */
-  relation: "contains" | "uses";
+  relation: "compatible" | "uses";
 }
 
 /** Full inventory graph returned by GET /api/workspaces/:id/inventory. */

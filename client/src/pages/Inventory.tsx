@@ -100,8 +100,16 @@ function useDependents(workspaceId: string, connectionId: string | null) {
 }
 
 // ─── Node colour + icon ───────────────────────────────────────────────────────
+//
+// NOTE (#54 BE): InventoryNodeType was narrowed to "connection"|"skill"|"model"
+// (server/services/inventory.ts no longer emits "pipeline"/"stage" — dead since
+// the pipelines-engine retirement, they never populated a graph). The maps below
+// keep their "pipeline"/"stage" entries under this compile-only local type so
+// this file keeps type-checking unmodified pending the FE follow-up PR, which
+// owns removing them for real (design brief "FE PR" section).
+type LegacyInventoryNodeType = InventoryNodeType | "pipeline" | "stage";
 
-const NODE_COLOUR: Record<InventoryNodeType, string> = {
+const NODE_COLOUR: Record<LegacyInventoryNodeType, string> = {
   connection: "#6366f1", // indigo
   pipeline: "#10b981",  // emerald
   stage: "#f59e0b",     // amber
@@ -109,7 +117,7 @@ const NODE_COLOUR: Record<InventoryNodeType, string> = {
   model: "#3b82f6",     // blue
 };
 
-const NODE_ICON_LABEL: Record<InventoryNodeType, string> = {
+const NODE_ICON_LABEL: Record<LegacyInventoryNodeType, string> = {
   connection: "Conn",
   pipeline: "Pipe",
   stage: "Stg",
@@ -118,7 +126,7 @@ const NODE_ICON_LABEL: Record<InventoryNodeType, string> = {
 };
 
 function NodeTypeIcon({ type, className }: { type: InventoryNodeType; className?: string }) {
-  const icons: Record<InventoryNodeType, React.ReactNode> = {
+  const icons: Record<LegacyInventoryNodeType, React.ReactNode> = {
     connection: <Plug className={cn("h-4 w-4", className)} />,
     pipeline: <GitMerge className={cn("h-4 w-4", className)} />,
     stage: <Layers className={cn("h-4 w-4", className)} />,
@@ -259,6 +267,9 @@ function InventoryGraphSvg({ nodes, edges, selectedId, onSelectNode }: GraphProp
         const src = posMap.get(edge.source);
         const tgt = posMap.get(edge.target);
         if (!src || !tgt) return null;
+        // NOTE (#54 BE): "contains" (pipeline→stage) is dead — swapped for
+        // "compatible" (model↔skill) to keep the same visual weighting; real
+        // FE styling pass is the follow-up FE PR.
         return (
           <line
             key={i}
@@ -266,8 +277,8 @@ function InventoryGraphSvg({ nodes, edges, selectedId, onSelectNode }: GraphProp
             y1={src.y}
             x2={tgt.x}
             y2={tgt.y}
-            stroke={edge.relation === "contains" ? "#4b5563" : "#9ca3af"}
-            strokeWidth={edge.relation === "contains" ? 1.5 : 1}
+            stroke={edge.relation === "compatible" ? "#4b5563" : "#9ca3af"}
+            strokeWidth={edge.relation === "compatible" ? 1.5 : 1}
             strokeDasharray={edge.relation === "uses" ? "4 2" : undefined}
             markerEnd="url(#arrowhead)"
             opacity={0.6}
@@ -541,7 +552,7 @@ function applyFilters(
 // ─── Legend ───────────────────────────────────────────────────────────────────
 
 function GraphLegend() {
-  const items: Array<{ type: InventoryNodeType; label: string }> = [
+  const items: Array<{ type: LegacyInventoryNodeType; label: string }> = [
     { type: "connection", label: "Connection" },
     { type: "pipeline", label: "Pipeline" },
     { type: "stage", label: "Stage" },
