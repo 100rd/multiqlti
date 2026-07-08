@@ -279,7 +279,18 @@ test.describe("Journey A — Review Queue", () => {
   }
 
   test.beforeEach(async ({ page }, testInfo) => {
-    await loginPage(page, testInfo.project.use.baseURL ?? BASE_URL_FALLBACK);
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    await loginPage(page, baseURL);
+    // Each test gets a fresh page/context (no localStorage carried over from
+    // the describe block's lazy seeder, which only runs once). Without this,
+    // the client's own ProjectContext auto-selects "the first project in the
+    // account" on a page with no project_id set — harmless when this file
+    // runs alone (exactly one project exists all-suite), but under a full
+    // suite run other specs' admin-owned projects can sort first, pointing
+    // this page at the wrong project and turning every workspace lookup
+    // into a 404 "Workspace not found". Explicitly (re)writing the cached
+    // project id here, every test, removes that dependency on list order.
+    await ensureProjectHeaders(page, baseURL);
   });
 
   test("navigates to knowledge-base without error (after seeding)", async ({ page }, testInfo) => {
@@ -525,7 +536,18 @@ test.describe("Journey B — Refresh Run Now", () => {
   }
 
   test.beforeEach(async ({ page }, testInfo) => {
-    await loginPage(page, testInfo.project.use.baseURL ?? BASE_URL_FALLBACK);
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    await loginPage(page, baseURL);
+    // Each test gets a fresh page/context (no localStorage carried over from
+    // the describe block's lazy seeder, which only runs once). Without this,
+    // the client's own ProjectContext auto-selects "the first project in the
+    // account" on a page with no project_id set — harmless when this file
+    // runs alone (exactly one project exists all-suite), but under a full
+    // suite run other specs' admin-owned projects can sort first, pointing
+    // this page at the wrong project and turning every workspace lookup
+    // into a 404 "Workspace not found". Explicitly (re)writing the cached
+    // project id here, every test, removes that dependency on list order.
+    await ensureProjectHeaders(page, baseURL);
   });
 
   test("Refresh tab renders the Run refresh now button without error", async ({
@@ -694,7 +716,18 @@ test.describe("Journey C — Compliance Panel", () => {
   }
 
   test.beforeEach(async ({ page }, testInfo) => {
-    await loginPage(page, testInfo.project.use.baseURL ?? BASE_URL_FALLBACK);
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    await loginPage(page, baseURL);
+    // Each test gets a fresh page/context (no localStorage carried over from
+    // the describe block's lazy seeder, which only runs once). Without this,
+    // the client's own ProjectContext auto-selects "the first project in the
+    // account" on a page with no project_id set — harmless when this file
+    // runs alone (exactly one project exists all-suite), but under a full
+    // suite run other specs' admin-owned projects can sort first, pointing
+    // this page at the wrong project and turning every workspace lookup
+    // into a 404 "Workspace not found". Explicitly (re)writing the cached
+    // project id here, every test, removes that dependency on list order.
+    await ensureProjectHeaders(page, baseURL);
   });
 
   test("Compliance tab renders without error", async ({ page }, testInfo) => {
@@ -816,7 +849,18 @@ test.describe("Adversarial gate — server enforces verifier != ingester", () =>
   }
 
   test.beforeEach(async ({ page }, testInfo) => {
-    await loginPage(page, testInfo.project.use.baseURL ?? BASE_URL_FALLBACK);
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    await loginPage(page, baseURL);
+    // Each test gets a fresh page/context (no localStorage carried over from
+    // the describe block's lazy seeder, which only runs once). Without this,
+    // the client's own ProjectContext auto-selects "the first project in the
+    // account" on a page with no project_id set — harmless when this file
+    // runs alone (exactly one project exists all-suite), but under a full
+    // suite run other specs' admin-owned projects can sort first, pointing
+    // this page at the wrong project and turning every workspace lookup
+    // into a 404 "Workspace not found". Explicitly (re)writing the cached
+    // project id here, every test, removes that dependency on list order.
+    await ensureProjectHeaders(page, baseURL);
   });
 
   test("POST verify with the SAME user id returns 409", async ({ page }, testInfo) => {
