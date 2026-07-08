@@ -6,12 +6,11 @@
 server:
   port: 5000
 
-pipeline:
-  # Consilium Loop — LOCAL dry-run config (do NOT commit; feature ships disabled).
-  consiliumLoop:
-    enabled: true
-    allowedRepoPaths:
-      - /Users/lord/Develop/multi-team-agentic/project/Omniscience
+# Consilium Loop ships disabled. It is a local dry-run feature: enable it and set
+# pipeline.consiliumLoop.allowedRepoPaths (the fail-closed repo allowlist, config-only —
+# never widened from the environment per Security H-1) in an untracked local override,
+# NOT here. Committed defaults keep enabled=false / allowedRepoPaths=[] (see
+# server/config/schema.ts consiliumLoop).
 
 features:
   sandbox:
