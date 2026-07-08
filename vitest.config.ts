@@ -53,6 +53,28 @@ export default defineConfig({
       "@shared": path.resolve(__dirname, "shared"),
     },
   },
+  // Task #52.2: the "unit-dom" project below renders .tsx components (React
+  // Testing Library) without the app's own @vitejs/plugin-react (that plugin
+  // lives only in vite.config.ts, for the actual client build). Without this,
+  // esbuild's default classic JSX transform emits bare `React.createElement`
+  // calls with no `React` import, failing every render with "React is not
+  // defined" — client/src components rely on the automatic runtime (no
+  // explicit `import React` anywhere), same as vite.config.ts's react() plugin.
+  esbuild: {
+    jsx: "automatic",
+  },
+  // Task #52.2: matches vite.config.ts's identical override. The repo's root
+  // postcss.config.js still lists `tailwindcss` as a classic PostCSS plugin
+  // (stale — tailwindcss v4's PostCSS integration moved to the separate
+  // `@tailwindcss/postcss` package, wired only via the `@tailwindcss/vite`
+  // plugin in vite.config.ts). Without this override, any .tsx test that
+  // imports a component pulling in third-party CSS (e.g. Statistics.tsx →
+  // react-grid-layout/css/styles.css) crashes vite:css with that mismatch.
+  css: {
+    postcss: {
+      plugins: [],
+    },
+  },
   test: {
     projects: [
       {
@@ -62,6 +84,27 @@ export default defineConfig({
           include: ["tests/unit/**/*.test.ts"],
           exclude: [...configDefaults.exclude, ...FLAKY_UNIT],
           environment: "node",
+        },
+      },
+      {
+        // Task #52.2: FE component tests (React Testing Library). Split into its
+        // own project (glob'd on .tsx only, so it never overlaps the "unit"
+        // project's .ts-only include) because these need a DOM (jsdom), unlike
+        // every other unit test in the repo which runs under plain "node".
+        extends: true,
+        test: {
+          name: "unit-dom",
+          include: ["tests/unit/**/*.test.tsx"],
+          exclude: [...configDefaults.exclude],
+          environment: "jsdom",
+          setupFiles: ["tests/unit/setup-dom.ts"],
+          // Some client/src pages import third-party CSS (e.g. Statistics.tsx →
+          // react-grid-layout/css/styles.css), which this repo's root PostCSS
+          // config can't process outside the real Vite build (tailwindcss v4's
+          // PostCSS plugin moved to @tailwindcss/postcss, wired only in
+          // vite.config.ts). RTL assertions here check text content, never
+          // computed styles, so CSS processing is unneeded — disable it.
+          css: false,
         },
       },
       {

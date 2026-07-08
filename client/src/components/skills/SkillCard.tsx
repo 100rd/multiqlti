@@ -3,13 +3,20 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Pencil, Trash2, Lock, TrendingUp } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { Skill } from "@shared/schema";
+import type { Skill, ConsiliumLoopSkillStat } from "@shared/schema";
 
 interface SkillCardProps {
   skill: Skill;
   onView: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  /**
+   * Loop-trust stat for this skill (Task #52.2), looked up by the caller from
+   * the batch `GET /api/skills/stats` response. `undefined` means the stats
+   * query is still loading OR the skill was applied to zero terminal loops —
+   * either way we render "No data", never a synthetic 0%/100% rate.
+   */
+  stat?: ConsiliumLoopSkillStat;
 }
 
 const TEAM_BADGE_COLORS: Record<string, string> = {
@@ -23,7 +30,7 @@ const TEAM_BADGE_COLORS: Record<string, string> = {
   fact_check: "bg-violet-500/15 text-violet-600 border-violet-500/30",
 };
 
-export function SkillCard({ skill, onView, onEdit, onDelete }: SkillCardProps) {
+export function SkillCard({ skill, onView, onEdit, onDelete, stat }: SkillCardProps) {
   const teamBadgeClass =
     TEAM_BADGE_COLORS[skill.teamId] ??
     "bg-muted text-muted-foreground border-border";
@@ -76,11 +83,26 @@ export function SkillCard({ skill, onView, onEdit, onDelete }: SkillCardProps) {
           </p>
         )}
 
-        {/* Usage count */}
-        {skill.usageCount > 0 && (
-          <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+        {/* Loop-trust success rate (Task #52.2): replaces the dead usageCount
+            stat. A skill with zero applied terminal loops shows "No data" —
+            never a synthetic 0%/100% success rate. */}
+        {stat ? (
+          <div
+            className="flex items-center gap-1 text-[10px] text-muted-foreground"
+            data-testid="skill-stat"
+          >
             <TrendingUp className="h-3 w-3" />
-            <span>{skill.usageCount} use{skill.usageCount !== 1 ? "s" : ""}</span>
+            <span>
+              {Math.round(stat.successRate * 100)}% success · {stat.appliedCount} applied
+            </span>
+          </div>
+        ) : (
+          <div
+            className="flex items-center gap-1 text-[10px] text-muted-foreground/60"
+            data-testid="skill-stat-no-data"
+          >
+            <TrendingUp className="h-3 w-3" />
+            <span>No data</span>
           </div>
         )}
 

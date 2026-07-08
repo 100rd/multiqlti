@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { SDLC_TEAMS } from "@shared/constants";
 import {
   useSkills,
+  useSkillStats,
   useDeleteSkill,
   useExportSkills,
   useImportSkills,
@@ -63,6 +64,9 @@ export default function Skills() {
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<"library" | "model-skills">("library");
   const { data: skills = [], isLoading, error } = useSkills();
+  // Task #52.2: one batch fetch for the whole page (no N+1 per-card requests).
+  const { data: skillStats = [] } = useSkillStats();
+  const skillStatsById = new Map(skillStats.map((s) => [s.skillId, s]));
   const deleteSkill = useDeleteSkill();
   const exportSkills = useExportSkills();
   const importSkills = useImportSkills();
@@ -366,6 +370,7 @@ export default function Skills() {
               <SkillCard
                 key={skill.id}
                 skill={skill}
+                stat={skillStatsById.get(skill.id)}
                 onView={() => setViewingSkill(skill)}
                 onEdit={() => handleEdit(skill)}
                 onDelete={() => handleDelete(skill)}

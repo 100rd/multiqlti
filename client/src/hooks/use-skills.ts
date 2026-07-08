@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Skill, InsertSkill } from "@shared/schema";
+import type { Skill, InsertSkill, ConsiliumLoopSkillStat } from "@shared/schema";
 
 function getAuthToken(): string | null {
   return localStorage.getItem("auth_token");
@@ -60,6 +60,20 @@ export function useSkill(id: string) {
     queryKey: ["/api/skills", id],
     queryFn: () => apiRequest<Skill>("GET", `/api/skills/${id}`),
     enabled: Boolean(id),
+  });
+}
+
+/**
+ * Batch per-skill loop-trust stats (Task #52.2). Replaces the dead
+ * `skills.usageCount` display — one fetch for the whole Skills page instead
+ * of N+1 per-card requests. A skill applied to zero terminal loops is simply
+ * absent from the response array (see `ConsiliumLoopSkillStat` doc comment);
+ * callers must render "no data" for that case, never a synthetic rate.
+ */
+export function useSkillStats() {
+  return useQuery<ConsiliumLoopSkillStat[]>({
+    queryKey: ["/api/skills/stats"],
+    queryFn: () => apiRequest<ConsiliumLoopSkillStat[]>("GET", "/api/skills/stats"),
   });
 }
 

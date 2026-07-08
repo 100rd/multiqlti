@@ -15,7 +15,9 @@
 import type { Layout, LayoutItem, ResponsiveLayouts } from "react-grid-layout/legacy";
 
 // Bump whenever the DEFAULT_LAYOUT shape or widget set changes incompatibly.
-export const LAYOUT_VERSION = 1;
+// Task #52.2: bumped 1 → 2 for the new "loop-trust" widget. Any layout persisted
+// under the old version is discarded (guarantee #1 below), never crashes.
+export const LAYOUT_VERSION = 2;
 
 const STORAGE_KEY = "stats-dashboard-layout:v1";
 
@@ -27,7 +29,8 @@ export type WidgetKey =
   | "timeline"
   | "by-model"
   | "by-workspace"
-  | "request-log";
+  | "request-log"
+  | "loop-trust";
 
 export const WIDGET_KEYS: readonly WidgetKey[] = [
   "totals",
@@ -35,6 +38,7 @@ export const WIDGET_KEYS: readonly WidgetKey[] = [
   "by-model",
   "by-workspace",
   "request-log",
+  "loop-trust",
 ];
 
 function isKnownWidget(key: string): key is WidgetKey {
@@ -57,6 +61,7 @@ export const DEFAULT_LAYOUT: ResponsiveLayouts = {
     { i: "by-model", x: 0, y: 10, w: 12, h: 7, minW: 4, minH: 3 },
     { i: "by-workspace", x: 0, y: 17, w: 12, h: 7, minW: 4, minH: 3 },
     { i: "request-log", x: 0, y: 24, w: 12, h: 10, minW: 5, minH: 5 },
+    { i: "loop-trust", x: 0, y: 34, w: 12, h: 5, minW: 4, minH: 3 },
   ],
 };
 

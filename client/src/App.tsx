@@ -31,7 +31,6 @@ import ConsiliumLoopDetail from "@/pages/ConsiliumLoopDetail";
 import Roles from "@/pages/Roles";
 import PrReviewQueue from "@/pages/PrReviewQueue";
 import TrustTelemetry from "@/pages/TrustTelemetry";
-import ContourObservability from "@/pages/ContourObservability";
 import CredentialAccess from "@/pages/CredentialAccess";
 
 function ProtectedRouter() {
@@ -114,9 +113,6 @@ function ProtectedRouter() {
         )} />
         {/* Privacy moved into Settings ("Privacy & Compliance" section) — redirect legacy bookmarks. */}
         <Route path="/privacy" component={() => <Redirect to="/settings" />} />
-        <Route path="/contour" component={() => (
-          <ErrorBoundary><ContourObservability /></ErrorBoundary>
-        )} />
         <Route path="/credentials" component={() => (
           <ErrorBoundary><CredentialAccess /></ErrorBoundary>
         )} />
