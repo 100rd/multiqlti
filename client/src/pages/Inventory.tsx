@@ -4,7 +4,10 @@
  * Route: /workspaces/:id/inventory
  *
  * Features:
- * - Interactive SVG force-directed graph (connections/pipelines/stages/skills/models)
+ * - Interactive SVG force-directed graph (connections/skills/models — see #54,
+ *   the retired "pipeline"/"stage" node types are gone; the dependents drawer's
+ *   own "pipeline"/"stage" kind strings are a separate, unrelated concept —
+ *   ConnectionDependentsResponse — and are intentionally untouched)
  * - Filters: by type, used/unused, last activity
  * - Search box (filters nodes by label)
  * - Click node → side panel with metadata + dependents
@@ -24,6 +27,7 @@ import {
   Network,
   Plug,
   GitMerge,
+  GitBranch,
   Layers,
   Sparkles,
   Cpu,
@@ -41,6 +45,14 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import {
+  NODE_COLOUR,
+  NODE_ICON_LABEL,
+  GRAPH_LEGEND_ITEMS,
+  TYPE_FILTER_OPTIONS,
+  getNodeProvenanceBadges,
+  type TypeFilter,
+} from "@/lib/inventory-graph-legend";
 import type {
   InventoryGraph,
   InventoryNode,
@@ -101,35 +113,20 @@ function useDependents(workspaceId: string, connectionId: string | null) {
 
 // ─── Node colour + icon ───────────────────────────────────────────────────────
 //
-// NOTE (#54 BE): InventoryNodeType was narrowed to "connection"|"skill"|"model"
-// (server/services/inventory.ts no longer emits "pipeline"/"stage" — dead since
-// the pipelines-engine retirement, they never populated a graph). The maps below
-// keep their "pipeline"/"stage" entries under this compile-only local type so
-// this file keeps type-checking unmodified pending the FE follow-up PR, which
-// owns removing them for real (design brief "FE PR" section).
-type LegacyInventoryNodeType = InventoryNodeType | "pipeline" | "stage";
-
-const NODE_COLOUR: Record<LegacyInventoryNodeType, string> = {
-  connection: "#6366f1", // indigo
-  pipeline: "#10b981",  // emerald
-  stage: "#f59e0b",     // amber
-  skill: "#8b5cf6",     // violet
-  model: "#3b82f6",     // blue
-};
-
-const NODE_ICON_LABEL: Record<LegacyInventoryNodeType, string> = {
-  connection: "Conn",
-  pipeline: "Pipe",
-  stage: "Stg",
-  skill: "Skill",
-  model: "Mdl",
-};
+// #54 FE: "pipeline"/"stage" node types are retired for real here (were dead —
+// no source data ever populated them since the pipelines-engine retirement;
+// see server/services/inventory.ts's DERIVATION note). GitMerge/Layers stay
+// imported — they're still used by the (untouched) dependents drawer below,
+// which renders an unrelated "pipeline"/"stage" kind from
+// ConnectionDependentsResponse.
+//
+// NODE_COLOUR/NODE_ICON_LABEL/GRAPH_LEGEND_ITEMS/TYPE_FILTER_OPTIONS live in
+// lib/inventory-graph-legend.ts (pure, DOM-free) so this type surface is
+// unit-testable without a rendering harness — see that module's header.
 
 function NodeTypeIcon({ type, className }: { type: InventoryNodeType; className?: string }) {
-  const icons: Record<LegacyInventoryNodeType, React.ReactNode> = {
+  const icons: Record<InventoryNodeType, React.ReactNode> = {
     connection: <Plug className={cn("h-4 w-4", className)} />,
-    pipeline: <GitMerge className={cn("h-4 w-4", className)} />,
-    stage: <Layers className={cn("h-4 w-4", className)} />,
     skill: <Sparkles className={cn("h-4 w-4", className)} />,
     model: <Cpu className={cn("h-4 w-4", className)} />,
   };
@@ -267,9 +264,9 @@ function InventoryGraphSvg({ nodes, edges, selectedId, onSelectNode }: GraphProp
         const src = posMap.get(edge.source);
         const tgt = posMap.get(edge.target);
         if (!src || !tgt) return null;
-        // NOTE (#54 BE): "contains" (pipeline→stage) is dead — swapped for
-        // "compatible" (model↔skill) to keep the same visual weighting; real
-        // FE styling pass is the follow-up FE PR.
+        // #54: "compatible" (model<->skill, curated) renders as a solid,
+        // slightly thicker/darker line; "uses" (task->model, observed) renders
+        // dashed — see GraphLegend for the matching labels.
         return (
           <line
             key={i}
@@ -365,6 +362,55 @@ function MetadataRow({ label, value }: { label: string; value: unknown }) {
   );
 }
 
+/**
+ * #54: skill/model provenance badges shown alongside the type badge in the
+ * side panel — skill.sourceType ("git" vs "manual") and model provider/
+ * isActive. Badge selection is the pure getNodeProvenanceBadges() (lib/
+ * inventory-graph-legend.ts); this component only maps its descriptors to
+ * JSX/styling.
+ */
+function NodeProvenanceBadges({ node }: { node: InventoryNode }) {
+  const badges = getNodeProvenanceBadges(node);
+  return (
+    <>
+      {badges.map((badge) => {
+        if (badge.kind === "git-sourced") {
+          return (
+            <Badge
+              key={badge.kind}
+              variant="outline"
+              className="gap-1 text-emerald-500 border-emerald-500/50"
+            >
+              <GitBranch className="h-3 w-3" />
+              {badge.label}
+            </Badge>
+          );
+        }
+        if (badge.kind === "active") {
+          return (
+            <Badge key={badge.kind} variant="outline" className="text-emerald-500 border-emerald-500/50">
+              {badge.label}
+            </Badge>
+          );
+        }
+        if (badge.kind === "provider") {
+          return (
+            <Badge key={badge.kind} variant="outline" className="capitalize">
+              {badge.label}
+            </Badge>
+          );
+        }
+        // "manual" | "inactive"
+        return (
+          <Badge key={badge.kind} variant="outline" className="text-muted-foreground">
+            {badge.label}
+          </Badge>
+        );
+      })}
+    </>
+  );
+}
+
 interface SidePanelProps {
   node: InventoryNode;
   workspaceId: string;
@@ -400,6 +446,7 @@ function NodeSidePanel({ node, workspaceId, onClose }: SidePanelProps) {
             <NodeTypeIcon type={node.type} className="mr-1" />
             {node.type}
           </Badge>
+          <NodeProvenanceBadges node={node} />
           {node.isOrphan && (
             <Badge variant="outline" className="text-amber-500 border-amber-500/50">
               <AlertTriangle className="h-3 w-3 mr-1" />
@@ -415,9 +462,17 @@ function NodeSidePanel({ node, workspaceId, onClose }: SidePanelProps) {
           </p>
           <div className="bg-muted/40 rounded-md px-3 py-2 space-y-0.5">
             <MetadataRow label="ID" value={node.id} />
-            {Object.entries(node.metadata).map(([k, v]) => (
-              <MetadataRow key={k} label={k} value={v} />
-            ))}
+            {Object.entries(node.metadata)
+              // sourceType/gitSourceId (skill) and provider/isActive (model)
+              // are already surfaced as badges above — skip the raw duplicate.
+              .filter(([k]) => {
+                if (node.type === "skill") return k !== "sourceType" && k !== "gitSourceId";
+                if (node.type === "model") return k !== "provider" && k !== "isActive";
+                return true;
+              })
+              .map(([k, v]) => (
+                <MetadataRow key={k} label={k} value={v} />
+              ))}
           </div>
         </section>
 
@@ -502,8 +557,9 @@ function OrphanList({ nodes }: { nodes: InventoryNode[] }) {
 }
 
 // ─── Filters ─────────────────────────────────────────────────────────────────
+//
+// TypeFilter lives in lib/inventory-graph-legend.ts (pure, DOM-free).
 
-type TypeFilter = InventoryNodeType | "all";
 type UsageFilter = "all" | "used" | "unused";
 
 function applyFilters(
@@ -552,16 +608,9 @@ function applyFilters(
 // ─── Legend ───────────────────────────────────────────────────────────────────
 
 function GraphLegend() {
-  const items: Array<{ type: LegacyInventoryNodeType; label: string }> = [
-    { type: "connection", label: "Connection" },
-    { type: "pipeline", label: "Pipeline" },
-    { type: "stage", label: "Stage" },
-    { type: "skill", label: "Skill" },
-    { type: "model", label: "Model" },
-  ];
   return (
     <div className="flex flex-wrap gap-3 px-4 py-2 border-t border-border bg-card/50">
-      {items.map((item) => (
+      {GRAPH_LEGEND_ITEMS.map((item) => (
         <div key={item.type} className="flex items-center gap-1.5 text-xs">
           <span
             className="inline-block w-3 h-3 rounded-full"
@@ -578,7 +627,7 @@ function GraphLegend() {
         <svg width="24" height="8">
           <line x1="0" y1="4" x2="20" y2="4" stroke="#4b5563" strokeWidth={1.5} />
         </svg>
-        <span className="text-muted-foreground">Contains</span>
+        <span className="text-muted-foreground">Compatible</span>
       </div>
       <div className="flex items-center gap-1.5 text-xs">
         <svg width="24" height="8">
@@ -670,12 +719,11 @@ export default function Inventory() {
             <SelectValue placeholder="All types" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All types</SelectItem>
-            <SelectItem value="connection">Connection</SelectItem>
-            <SelectItem value="pipeline">Pipeline</SelectItem>
-            <SelectItem value="stage">Stage</SelectItem>
-            <SelectItem value="skill">Skill</SelectItem>
-            <SelectItem value="model">Model</SelectItem>
+            {TYPE_FILTER_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
 
