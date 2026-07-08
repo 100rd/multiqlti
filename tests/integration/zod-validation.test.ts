@@ -78,6 +78,27 @@ function expectValidationFailure(body: unknown) {
   expect(b.error).toBeTruthy();
 }
 
+// supertest spins up an ephemeral listener per call; under full-suite parallel
+// load these can intermittently die mid-request ("socket hang up" / ECONNRESET).
+// Retry immediately (no delay) on that specific transient error only.
+async function requestWithRetry(
+  fn: () => Promise<import("supertest").Response>,
+  retries = 3,
+): Promise<import("supertest").Response> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      const isTransientSocketError =
+        err instanceof Error &&
+        (err.message.includes("socket hang up") || code === "ECONNRESET" || code === "ECONNREFUSED");
+      if (!isTransientSocketError || attempt === retries) throw err;
+    }
+  }
+  throw new Error("unreachable");
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("Zod validation — POST /api/models", () => {
@@ -226,9 +247,11 @@ describe("Zod validation — POST /api/gateway/complete", () => {
 
   it("passes through with valid body", async () => {
     const app = createGatewayApp();
-    const res = await request(app)
-      .post("/api/gateway/complete")
-      .send({ modelSlug: "llama3", messages: [{ role: "user", content: "Hello" }] });
+    const res = await requestWithRetry(() =>
+      request(app)
+        .post("/api/gateway/complete")
+        .send({ modelSlug: "llama3", messages: [{ role: "user", content: "Hello" }] }),
+    );
     expect(res.status).toBe(200);
   });
 });
