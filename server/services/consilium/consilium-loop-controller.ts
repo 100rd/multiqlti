@@ -2273,6 +2273,29 @@ export class ConsiliumLoopController {
     // startGroupAsync path below runs UNCHANGED (byte-identical parity).
     if (cfg.directReview?.enabled) {
       const nextRound = opts?.relaunch ? loop.round : loop.round + 1;
+      // #21 follow-up (B4 review): pre-validate the diff ref BEFORE dispatching the
+      // runner. Left unchecked, a DETERMINISTIC unresolved ref (the legacy path's
+      // `errorKind === "unresolved-ref"` below) would instead only be discovered
+      // INSIDE `runReviewFromLoop`'s own `buildDiffContext` call, which settles ANY
+      // build failure as the runner's generic scrubbed `{error}` → `review_failed` —
+      // losing the curated "diff ref unresolvable" terminal reason `failUnresolvedReview`
+      // surfaces on the legacy path. This call is ref-resolution-only (the throwaway
+      // objective never rides a prompt): the runner independently rebuilds the REAL
+      // diff context (real objective/priorFindings/testSummary/repoMap) on dispatch, so
+      // a non-"unresolved-ref" failure here is NOT terminal — it falls through to
+      // dispatch, where the runner's own attempt keeps the existing generic path for
+      // genuinely-transient failures.
+      const preflight = await buildDiffContext({
+        repoPath: loop.repoPath,
+        baselineCommit: loop.lastReviewedCommit,
+        ref: loop.reviewRef,
+        objective: "preflight-ref-check",
+        allowedRepoPaths: cfg.allowedRepoPaths,
+        maxDiffBytes: cfg.maxDiffBytes,
+      });
+      if (!preflight.ok && preflight.errorKind === "unresolved-ref") {
+        return { error: preflight.message, terminal: true };
+      }
       this.log(
         loop.id,
         `startReviewRound${opts?.relaunch ? " (relaunch)" : ""} -> dispatchReview (runner) round ${nextRound}`,
@@ -2666,10 +2689,13 @@ export class ConsiliumLoopController {
    * cross-review DAG (or the lone single-verifier for round > 1) — and runs it via
    * `runReviewTasks`. Mirrors `closeout` rebuilding the SDLC context from the loop
    * (not a caller hand-off). NEVER throws: a missing gateway or an unbuildable diff
-   * context (incl. an unresolved ref) settles a degraded {error} — the loop then
-   * fails closed via `review_failed` (fail-closed, exception-derived per L1; the
-   * curated failUnresolvedReview reason is a legacy-path nicety, tracked as a
-   * follow-up). `deps.runReview` bypasses this entirely in tests.
+   * context settles a degraded {error} — the loop then fails closed via
+   * `review_failed` (fail-closed, exception-derived per L1). #21: an unresolved ref
+   * specifically should never reach HERE — `startReviewRound` pre-validates it and
+   * fails closed with the curated `failUnresolvedReview` reason BEFORE dispatch; this
+   * generic degraded path now only carries genuinely-transient failures (a flaky
+   * fetch, a missing gateway, a parse error, …). `deps.runReview` bypasses this
+   * entirely in tests.
    */
   private async runReviewFromLoop(loop: ConsiliumLoopRow): Promise<ReviewRunResult> {
     const gateway = this.deps.gateway;
