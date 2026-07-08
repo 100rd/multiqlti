@@ -35,7 +35,7 @@
  * No other file imports this module.
  */
 import { test, expect, request as playwrightRequest } from "@playwright/test";
-import { loginPage, getAuthToken } from "./helpers/auth";
+import { loginPage, getAuthToken, ensureProjectHeaders, getCachedProjectHeaders } from "./helpers/auth";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -72,7 +72,12 @@ async function createWorkspaceViaPage(
   page: Parameters<Parameters<typeof test>[1]>[0]["page"],
   baseURL: string,
 ): Promise<string> {
+  // /api/workspaces is mounted behind requireAuth + requireProject
+  // (server/routes.ts) — page.request bypasses the client's fetch
+  // interceptor that normally attaches x-project-id, so send it explicitly.
+  const projectHeaders = await ensureProjectHeaders(page, baseURL);
   const res = await page.request.post(`${baseURL}/api/workspaces`, {
+    headers: projectHeaders,
     data: {
       type: "remote",
       url: "https://github.com/example/e2e-kb-workspace",
@@ -101,6 +106,7 @@ async function ingestCardsViaPage(
   const res = await page.request.post(
     `${baseURL}/api/workspaces/${workspaceId}/knowledge/practice-cards/ingest`,
     {
+      headers: await ensureProjectHeaders(page, baseURL),
       data: {
         topic: "terraform-module-best-practices",
         ingestedBy: "e2e-researcher-agent",
@@ -177,7 +183,14 @@ async function verifyCardWithToken(
 ): Promise<{ reviewState: string } | null> {
   const ctx = await playwrightRequest.newContext({
     baseURL,
-    extraHTTPHeaders: { Authorization: `Bearer ${verifierToken}` },
+    extraHTTPHeaders: {
+      Authorization: `Bearer ${verifierToken}`,
+      // Different auth context than the seeding page, but the same project —
+      // getCachedProjectHeaders reads the id createWorkspaceViaPage already
+      // cached via ensureProjectHeaders (server/middleware/project.ts
+      // requireProject needs it regardless of which authenticated user calls).
+      ...getCachedProjectHeaders(),
+    },
   });
   try {
     const res = await ctx.post(
@@ -213,7 +226,7 @@ async function acceptCardViaPage(
 ): Promise<void> {
   const res = await page.request.post(
     `${baseURL}/api/workspaces/${workspaceId}/knowledge/practice-cards/${cardId}/review`,
-    { data: { decision: "accept" } },
+    { headers: await ensureProjectHeaders(page, baseURL), data: { decision: "accept" } },
   );
   expect(res.status()).toBe(200);
 }
@@ -733,6 +746,7 @@ test.describe("Journey C — Compliance Panel", () => {
     // Check whether any active card exists in this workspace via API.
     const res = await page.request.get(
       `${url}/api/workspaces/${workspaceId}/knowledge/practice-cards?status=active&limit=1`,
+      { headers: await ensureProjectHeaders(page, url) },
     );
     let hasActiveCard = false;
     if (res.status() === 200) {
@@ -815,6 +829,7 @@ test.describe("Adversarial gate — server enforces verifier != ingester", () =>
     const res = await page.request.post(
       `${url}/api/workspaces/${workspaceId}/knowledge/practice-cards/${cardId}/verify`,
       {
+        headers: await ensureProjectHeaders(page, url),
         data: {
           // A different label is provided to prove the server checks the user id,
           // not just the label string.

@@ -10,13 +10,18 @@
  *   - Export endpoint returns JSON
  */
 import { test, expect } from "@playwright/test";
-import { loginPage } from "./helpers/auth";
+import { loginPage, ensureProjectHeaders } from "./helpers/auth";
 
 const BASE_URL_FALLBACK = "http://localhost:3099";
 
 test.describe("Skills Management", () => {
+  let projectHeaders: { "x-project-id": string };
+
   test.beforeEach(async ({ page }, testInfo) => {
-    await loginPage(page, testInfo.project.use.baseURL ?? BASE_URL_FALLBACK);
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    await loginPage(page, baseURL);
+    // /api/skills is mounted behind requireAuth + requireProject (server/routes.ts).
+    projectHeaders = await ensureProjectHeaders(page, baseURL);
   });
 
   // ─── Page rendering ───────────────────────────────────────────────────────
@@ -56,7 +61,7 @@ test.describe("Skills Management", () => {
 
   test("GET /api/skills returns an array", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const res = await page.request.get(`${baseURL}/api/skills`);
+    const res = await page.request.get(`${baseURL}/api/skills`, { headers: projectHeaders });
     expect(res.status()).toBe(200);
 
     const skills = await res.json() as Array<{ id: string; name: string; isBuiltin: boolean }>;
@@ -66,7 +71,7 @@ test.describe("Skills Management", () => {
 
   test("GET /api/skills includes built-in skills", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const res = await page.request.get(`${baseURL}/api/skills`);
+    const res = await page.request.get(`${baseURL}/api/skills`, { headers: projectHeaders });
     const skills = await res.json() as Array<{ id: string; name: string; isBuiltin: boolean }>;
 
     const builtins = skills.filter((s) => s.isBuiltin);
@@ -75,7 +80,7 @@ test.describe("Skills Management", () => {
 
   test("GET /api/skills returns skills with required fields", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const res = await page.request.get(`${baseURL}/api/skills`);
+    const res = await page.request.get(`${baseURL}/api/skills`, { headers: projectHeaders });
     const skills = await res.json() as Array<{ id: string; name: string; description: string; teamId: string }>;
 
     for (const skill of skills.slice(0, 3)) {
@@ -90,6 +95,7 @@ test.describe("Skills Management", () => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
 
     const res = await page.request.post(`${baseURL}/api/skills`, {
+      headers: projectHeaders,
       data: {
         name: "E2E Test Skill",
         description: "Created by E2E test",
@@ -114,6 +120,7 @@ test.describe("Skills Management", () => {
 
     // Create a skill first
     const createRes = await page.request.post(`${baseURL}/api/skills`, {
+      headers: projectHeaders,
       data: {
         name: "E2E Get Skill",
         description: "Test",
@@ -126,7 +133,7 @@ test.describe("Skills Management", () => {
     });
     const skill = await createRes.json() as { id: string };
 
-    const getRes = await page.request.get(`${baseURL}/api/skills/${skill.id}`);
+    const getRes = await page.request.get(`${baseURL}/api/skills/${skill.id}`, { headers: projectHeaders });
     expect(getRes.status()).toBe(200);
 
     const fetched = await getRes.json() as { id: string; name: string };
@@ -139,6 +146,7 @@ test.describe("Skills Management", () => {
 
     // Create then delete
     const createRes = await page.request.post(`${baseURL}/api/skills`, {
+      headers: projectHeaders,
       data: {
         name: "E2E Delete Skill",
         description: "To be deleted",
@@ -151,11 +159,11 @@ test.describe("Skills Management", () => {
     });
     const skill = await createRes.json() as { id: string };
 
-    const deleteRes = await page.request.delete(`${baseURL}/api/skills/${skill.id}`);
+    const deleteRes = await page.request.delete(`${baseURL}/api/skills/${skill.id}`, { headers: projectHeaders });
     expect(deleteRes.status()).toBe(204);
 
     // Verify it's gone
-    const getRes = await page.request.get(`${baseURL}/api/skills/${skill.id}`);
+    const getRes = await page.request.get(`${baseURL}/api/skills/${skill.id}`, { headers: projectHeaders });
     expect(getRes.status()).toBe(404);
   });
 
@@ -163,7 +171,7 @@ test.describe("Skills Management", () => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
 
     // Get a builtin skill id
-    const listRes = await page.request.get(`${baseURL}/api/skills`);
+    const listRes = await page.request.get(`${baseURL}/api/skills`, { headers: projectHeaders });
     const skills = await listRes.json() as Array<{ id: string; isBuiltin: boolean }>;
     const builtin = skills.find((s) => s.isBuiltin);
 
@@ -172,7 +180,7 @@ test.describe("Skills Management", () => {
       return;
     }
 
-    const deleteRes = await page.request.delete(`${baseURL}/api/skills/${builtin.id}`);
+    const deleteRes = await page.request.delete(`${baseURL}/api/skills/${builtin.id}`, { headers: projectHeaders });
     expect(deleteRes.status()).toBe(403);
   });
 
@@ -180,6 +188,7 @@ test.describe("Skills Management", () => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
 
     const res = await page.request.post(`${baseURL}/api/skills`, {
+      headers: projectHeaders,
       data: { description: "Missing name" },
     });
     expect(res.status()).toBe(400);
@@ -188,7 +197,7 @@ test.describe("Skills Management", () => {
   test("GET /api/skills/export returns a downloadable JSON response", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
 
-    const res = await page.request.get(`${baseURL}/api/skills/export`);
+    const res = await page.request.get(`${baseURL}/api/skills/export`, { headers: projectHeaders });
     expect(res.status()).toBe(200);
 
     const contentType = res.headers()["content-type"];

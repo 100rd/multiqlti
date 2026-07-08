@@ -12,20 +12,28 @@
  *   - Export endpoint (POST /api/stats/export)
  */
 import { test, expect } from "@playwright/test";
-import { loginPage } from "./helpers/auth";
+import { loginPage, ensureProjectHeaders } from "./helpers/auth";
 
 const BASE_URL_FALLBACK = "http://localhost:3099";
 
 test.describe("Statistics", () => {
+  let projectHeaders: { "x-project-id": string };
+
   test.beforeEach(async ({ page }, testInfo) => {
-    await loginPage(page, testInfo.project.use.baseURL ?? BASE_URL_FALLBACK);
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    await loginPage(page, baseURL);
+    // /api/stats/* is mounted behind requireAuth + requireProject
+    // (server/routes.ts) — page.request bypasses the client's fetch
+    // interceptor that normally attaches x-project-id, so it must be sent
+    // explicitly on every call below.
+    projectHeaders = await ensureProjectHeaders(page, baseURL);
   });
 
   // ─── Stats Overview API ───────────────────────────────────────────────────
 
   test("GET /api/stats/overview returns expected shape", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const res = await page.request.get(`${baseURL}/api/stats/overview`);
+    const res = await page.request.get(`${baseURL}/api/stats/overview`, { headers: projectHeaders });
     expect(res.status()).toBe(200);
 
     const body = await res.json() as {
@@ -42,7 +50,7 @@ test.describe("Statistics", () => {
 
   test("GET /api/stats/overview returns non-negative numbers", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const res = await page.request.get(`${baseURL}/api/stats/overview`);
+    const res = await page.request.get(`${baseURL}/api/stats/overview`, { headers: projectHeaders });
     const body = await res.json() as {
       totalRequests: number;
       totalTokens: { input: number; output: number; total: number };
@@ -59,7 +67,7 @@ test.describe("Statistics", () => {
 
   test("GET /api/stats/timeline returns array", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const res = await page.request.get(`${baseURL}/api/stats/timeline?period=7d`);
+    const res = await page.request.get(`${baseURL}/api/stats/timeline?period=7d`, { headers: projectHeaders });
     expect(res.status()).toBe(200);
 
     const body = await res.json() as Array<{
@@ -73,7 +81,7 @@ test.describe("Statistics", () => {
 
   test("GET /api/stats/timeline entries have required fields", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const res = await page.request.get(`${baseURL}/api/stats/timeline?period=7d`);
+    const res = await page.request.get(`${baseURL}/api/stats/timeline?period=7d`, { headers: projectHeaders });
     const body = await res.json() as Array<{
       date: string;
       requests: number;
@@ -92,7 +100,7 @@ test.describe("Statistics", () => {
 
   test("GET /api/stats/timeline with period=30d returns array", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const res = await page.request.get(`${baseURL}/api/stats/timeline?period=30d`);
+    const res = await page.request.get(`${baseURL}/api/stats/timeline?period=30d`, { headers: projectHeaders });
     expect(res.status()).toBe(200);
 
     const body = await res.json() as unknown[];
@@ -103,7 +111,7 @@ test.describe("Statistics", () => {
 
   test("GET /api/stats/by-model returns array", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const res = await page.request.get(`${baseURL}/api/stats/by-model`);
+    const res = await page.request.get(`${baseURL}/api/stats/by-model`, { headers: projectHeaders });
     expect(res.status()).toBe(200);
 
     const body = await res.json() as unknown[];
@@ -112,7 +120,7 @@ test.describe("Statistics", () => {
 
   test("GET /api/stats/by-provider returns array", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const res = await page.request.get(`${baseURL}/api/stats/by-provider`);
+    const res = await page.request.get(`${baseURL}/api/stats/by-provider`, { headers: projectHeaders });
     expect(res.status()).toBe(200);
 
     const body = await res.json() as unknown[];
@@ -121,7 +129,7 @@ test.describe("Statistics", () => {
 
   test("GET /api/stats/by-team returns array", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const res = await page.request.get(`${baseURL}/api/stats/by-team`);
+    const res = await page.request.get(`${baseURL}/api/stats/by-team`, { headers: projectHeaders });
     expect(res.status()).toBe(200);
 
     const body = await res.json() as unknown[];
@@ -130,7 +138,7 @@ test.describe("Statistics", () => {
 
   test("GET /api/stats/by-workspace returns array", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const res = await page.request.get(`${baseURL}/api/stats/by-workspace`);
+    const res = await page.request.get(`${baseURL}/api/stats/by-workspace`, { headers: projectHeaders });
     expect(res.status()).toBe(200);
 
     const body = await res.json() as unknown[];
@@ -141,7 +149,7 @@ test.describe("Statistics", () => {
 
   test("GET /api/stats/requests returns object with rows array", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const res = await page.request.get(`${baseURL}/api/stats/requests`);
+    const res = await page.request.get(`${baseURL}/api/stats/requests`, { headers: projectHeaders });
     expect(res.status()).toBe(200);
 
     const body = await res.json() as { rows: unknown[]; total: number };
@@ -155,6 +163,7 @@ test.describe("Statistics", () => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
     const res = await page.request.post(`${baseURL}/api/stats/export?format=json`, {
       data: {},
+      headers: projectHeaders,
     });
 
     // Export should return 200
@@ -168,6 +177,7 @@ test.describe("Statistics", () => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
     const res = await page.request.post(`${baseURL}/api/stats/export?format=csv`, {
       data: {},
+      headers: projectHeaders,
     });
 
     expect(res.status()).toBe(200);

@@ -11,23 +11,32 @@
  * when it is absent.
  */
 import { test, expect, request as playwrightRequest } from "@playwright/test";
-import { loginPage, getAuthToken } from "./helpers/auth";
+import { loginPage, getAuthToken, ensureProjectHeaders } from "./helpers/auth";
 
 const BASE_URL_FALLBACK = "http://localhost:3099";
 const HAS_DATABASE = !!process.env.DATABASE_URL;
 
-/** Create an authenticated API context against the Playwright webServer. */
-async function authenticatedApiContext(baseURL: string) {
+/**
+ * Create an authenticated API context against the Playwright webServer.
+ * /api/workspaces is mounted behind requireAuth + requireProject
+ * (server/routes.ts) — extraHeaders lets callers merge in x-project-id
+ * since this context bypasses the client's fetch interceptor entirely.
+ */
+async function authenticatedApiContext(baseURL: string, extraHeaders: Record<string, string> = {}) {
   const token = await getAuthToken(baseURL);
   return playwrightRequest.newContext({
     baseURL,
-    extraHTTPHeaders: { Authorization: `Bearer ${token}` },
+    extraHTTPHeaders: { Authorization: `Bearer ${token}`, ...extraHeaders },
   });
 }
 
 test.describe("Workspaces", () => {
+  let projectHeaders: { "x-project-id": string };
+
   test.beforeEach(async ({ page }, testInfo) => {
-    await loginPage(page, testInfo.project.use.baseURL ?? BASE_URL_FALLBACK);
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    await loginPage(page, baseURL);
+    projectHeaders = await ensureProjectHeaders(page, baseURL);
   });
 
   // ─── Page rendering ───────────────────────────────────────────────────────
@@ -70,6 +79,7 @@ test.describe("Workspaces", () => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
 
     const res = await page.request.post(`${baseURL}/api/workspaces`, {
+      headers: projectHeaders,
       data: {},
     });
     expect(res.status()).toBe(400);
@@ -82,7 +92,7 @@ test.describe("Workspaces", () => {
   test("GET /api/workspaces returns an array (DB)", async ({}, testInfo) => {
     test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const ctx = await authenticatedApiContext(baseURL);
+    const ctx = await authenticatedApiContext(baseURL, projectHeaders);
     try {
       const res = await ctx.get("/api/workspaces");
       expect(res.status()).toBe(200);
@@ -97,7 +107,7 @@ test.describe("Workspaces", () => {
   test("GET /api/workspaces returns valid JSON not HTML (DB)", async ({}, testInfo) => {
     test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const ctx = await authenticatedApiContext(baseURL);
+    const ctx = await authenticatedApiContext(baseURL, projectHeaders);
     try {
       const res = await ctx.get("/api/workspaces");
       expect(res.status()).toBe(200);
@@ -115,7 +125,7 @@ test.describe("Workspaces", () => {
   test("POST /api/workspaces with remote URL creates workspace (DB)", async ({}, testInfo) => {
     test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const ctx = await authenticatedApiContext(baseURL);
+    const ctx = await authenticatedApiContext(baseURL, projectHeaders);
     try {
       const res = await ctx.post("/api/workspaces", {
         data: {
