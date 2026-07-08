@@ -109,7 +109,7 @@ describe("syncSkillsRegistry", () => {
     expect(demoRows).toHaveLength(1);
   });
 
-  it("refuses to overwrite an existing MANUAL skill with the same name (reports error, no write)", async () => {
+  it("refuses to overwrite an existing MANUAL skill with the same name (reports conflict, no write)", async () => {
     const root = await realpathRoot();
 
     const manual = await storage.createSkill({
@@ -132,13 +132,46 @@ describe("syncSkillsRegistry", () => {
     });
 
     const demo = result.results.find((r) => r.skillKey === "demo-skill");
-    expect(demo?.status).toBe("error");
+    expect(demo?.status).toBe("conflict");
+    expect(demo?.existingSourceType).toBe("manual");
     expect(demo?.reason).toMatch(/[Nn]ame collision/);
     expect(demo?.reason).toMatch(/manually-created/);
 
     const untouched = await storage.getSkill(manual.id);
     expect(untouched?.systemPromptOverride).toBe("hand-written by a human, never touch me");
-    expect(untouched?.sourceType).not.toBe("git");
+    expect(untouched?.sourceType).toBe("manual");
+  });
+
+  it("refuses to overwrite an existing BUILT-IN skill with the same name (reports conflict, no write, no immutability flip)", async () => {
+    const root = await realpathRoot();
+
+    const builtin = await storage.createSkill({
+      name: "demo-skill",
+      teamId: "team-a",
+      systemPromptOverride: "built-in, protected content",
+      tags: [],
+      isBuiltin: true,
+      isPublic: true,
+      createdBy: "system",
+      version: "1.0.0",
+      sharing: "public",
+    });
+
+    const result = await syncSkillsRegistry({
+      storage,
+      registryRoot: root,
+      teamId: "team-a",
+      allowedRoots: [root],
+    });
+
+    const demo = result.results.find((r) => r.skillKey === "demo-skill");
+    expect(demo?.status).toBe("conflict");
+    expect(demo?.reason).toMatch(/built-in/);
+
+    const untouched = await storage.getSkill(builtin.id);
+    expect(untouched?.systemPromptOverride).toBe("built-in, protected content");
+    expect(untouched?.sourceType).toBe("manual");
+    expect(untouched?.isBuiltin).toBe(true);
   });
 
   it("fail-closed: throws when registryRoot resolves outside the allowlist", async () => {

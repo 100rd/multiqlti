@@ -46,7 +46,7 @@ const SkillsLockSchema = z.object({
 
 // ─── Result types ───────────────────────────────────────────────────────────
 
-export type RegistrySkillStatus = "synced" | "skipped" | "drift" | "error";
+export type RegistrySkillStatus = "synced" | "skipped" | "drift" | "conflict" | "error";
 
 export interface RegistrySkillResult {
   skillKey: string;
@@ -54,6 +54,8 @@ export interface RegistrySkillResult {
   status: RegistrySkillStatus;
   reason?: string;
   skillId?: string;
+  /** Set only for status:'conflict' — the sourceType of the row that already owns this name. */
+  existingSourceType?: string;
 }
 
 export interface RegistrySyncResult {
@@ -209,22 +211,31 @@ async function syncOneSkill(params: SyncOneSkillParams): Promise<RegistrySkillRe
     };
 
     // getSkillIdByName is a GLOBAL, unscoped lookup (no teamId/sourceType
-    // filter) -- guard against silently clobbering a manually-created skill,
-    // a built-in, or another team's git-sourced skill that happens to share
-    // this name. Only ever update a row we already own (sourceType 'git' AND
-    // same teamId); anything else is a reported conflict, never overwritten.
+    // filter) -- guard against silently clobbering a manually-created skill
+    // (including built-ins, which are sourceType:'manual' + isBuiltin:true),
+    // or another team's git-sourced skill that happens to share this name.
+    // Update ONLY a row we already own (sourceType 'git' AND same teamId) --
+    // this preserves git->git idempotency and drift semantics. Anything else
+    // is reported as a conflict and left completely unwritten.
     const existingId = await storage.getSkillIdByName(parsed.frontmatter.name);
     const existing = existingId ? await storage.getSkill(existingId) : undefined;
 
-    if (existing && (existing.sourceType !== "git" || existing.teamId !== teamId)) {
+    if (existing && existing.sourceType !== "git") {
       return {
         skillKey,
         skillPath: entry.skillPath,
-        status: "error",
-        reason:
-          existing.sourceType !== "git"
-            ? `Name collision: a manually-created skill named "${parsed.frontmatter.name}" already exists; registry sync will not overwrite non-git skills.`
-            : `Name collision: a git-sourced skill named "${parsed.frontmatter.name}" already exists for a different team; registry sync will not overwrite it.`,
+        status: "conflict",
+        existingSourceType: existing.sourceType,
+        reason: `Name collision: a ${existing.isBuiltin ? "built-in" : "manually-created"} skill named "${parsed.frontmatter.name}" already exists; registry sync will not overwrite non-git skills.`,
+      };
+    }
+    if (existing && existing.teamId !== teamId) {
+      return {
+        skillKey,
+        skillPath: entry.skillPath,
+        status: "conflict",
+        existingSourceType: existing.sourceType,
+        reason: `Name collision: a git-sourced skill named "${parsed.frontmatter.name}" already exists for a different team; registry sync will not overwrite it.`,
       };
     }
 

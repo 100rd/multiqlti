@@ -104,6 +104,35 @@ reported in the sync result.
   (frontmatter + body), verified empirically against a real lock file via
   `shasum -a 256` before implementing.
 
+## F1 fix (security veto, PR #535 review — reports/BkSec-PR535.md)
+
+BkSec flagged F1 (HIGH, data-loss): the original collision guard returned
+`status: "error"` and blocked the write, but didn't give callers a
+machine-distinguishable signal, and the guard text didn't make explicit that
+the upsert is strictly `sourceType === 'git'`-gated. Fixed:
+
+- `RegistrySkillStatus` gained a dedicated `"conflict"` value (was folded
+  into `"error"`); `RegistrySkillResult` gained `existingSourceType?: string`
+  so callers/tests can assert on the sourceType of the row that already owns
+  the name without regex-parsing `reason`.
+- Upsert is now explicitly gated on `existing.sourceType === "git"` (comment
+  updated to say so directly) before falling through to a same-team check;
+  either failure returns `"conflict"` and performs zero writes.
+- Added a dedicated built-in-collision test (`isBuiltin: true`,
+  `sourceType: "manual"` by schema default) alongside the manual-skill
+  collision test, asserting the row's content, `sourceType`, and
+  `isBuiltin` are all byte-unchanged after a colliding sync attempt (i.e.
+  no immutability-flip into a locked `sourceType: 'git'` row).
+
+**Evidence (re-run after the fix):**
+- `tsc --noEmit --pretty false`: clean, 0 errors.
+- New suite: `vitest run tests/unit/skills/skill-md-service.test.ts
+  tests/unit/skills/registry-sync.test.ts
+  tests/integration/skills-registry-sync-api.test.ts` → 3 files passed, 22
+  tests passed.
+- Full suite: `vitest run --reporter=dot` → **304 test files passed (304),
+  5171 tests passed | 5 skipped (5176), 0 failed**.
+
 ## PR
 
 https://github.com/100rd/multiqlti/pull/535 (`feat/git-backed-skills-sync` → `main`, closes #446)
