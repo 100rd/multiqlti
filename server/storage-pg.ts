@@ -66,6 +66,9 @@ import {
   type ConsiliumLoopRoundRow,
   type InsertConsiliumLoopRound,
   type ConsiliumLoopState,
+  CONSILIUM_LOOP_TERMINAL_STATES,
+  type ConsiliumLoopSkillStat,
+  type ConsiliumLoopOutcomeStats,
   trackerConnections,
   type TaskGroupRow,
   type InsertTaskGroup,
@@ -816,6 +819,57 @@ export class PgStorage implements IStorage {
         ),))
       .limit(1);
     return row;
+  }
+
+  /** Task #52.2: shared project-scoped fetch of TERMINAL-state loops' skill/state
+   *  columns only (replaces the mock contour observability aggregates). */
+  private async getTerminalLoopStatsRows(): Promise<
+    { appliedSkills: ConsiliumLoopRow["appliedSkills"]; state: ConsiliumLoopRow["state"] }[]
+  > {
+    return db
+      .select({ appliedSkills: consiliumLoops.appliedSkills, state: consiliumLoops.state })
+      .from(consiliumLoops)
+      .where(
+        and(
+          inArray(
+            consiliumLoops.groupId,
+            db.select({ id: taskGroups.id }).from(taskGroups).where(withProjectList(taskGroups)),
+          ),
+          inArray(consiliumLoops.state, [...CONSILIUM_LOOP_TERMINAL_STATES]),
+        ),
+      );
+  }
+
+  async getConsiliumLoopSkillStats(): Promise<ConsiliumLoopSkillStat[]> {
+    const rows = await this.getTerminalLoopStatsRows();
+    const acc = new Map<string, { appliedCount: number; convergedCount: number }>();
+    for (const loop of rows) {
+      for (const ref of loop.appliedSkills ?? []) {
+        if (ref.dropped) continue; // dropped ⇒ never actually applied
+        const entry = acc.get(ref.id) ?? { appliedCount: 0, convergedCount: 0 };
+        entry.appliedCount += 1;
+        if (loop.state === "converged") entry.convergedCount += 1;
+        acc.set(ref.id, entry);
+      }
+    }
+    return Array.from(acc.entries()).map(([skillId, { appliedCount, convergedCount }]) => ({
+      skillId,
+      appliedCount,
+      convergedCount,
+      successRate: appliedCount > 0 ? convergedCount / appliedCount : 0,
+    }));
+  }
+
+  async getConsiliumLoopOutcomeStats(): Promise<ConsiliumLoopOutcomeStats> {
+    const rows = await this.getTerminalLoopStatsRows();
+    const totalTerminalLoops = rows.length;
+    const convergedCount = rows.filter((l) => l.state === "converged").length;
+    const escalatedCount = rows.filter((l) => l.state === "escalated").length;
+    return {
+      totalTerminalLoops,
+      convergedRate: totalTerminalLoops > 0 ? convergedCount / totalTerminalLoops : 0,
+      escalatedRate: totalTerminalLoops > 0 ? escalatedCount / totalTerminalLoops : 0,
+    };
   }
 
   async updateLoop(

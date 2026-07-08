@@ -26,6 +26,8 @@ import {
   type ConsiliumLoopRoundRow,
   type InsertConsiliumLoopRound,
   type ConsiliumLoopState,
+  type ConsiliumLoopSkillStat,
+  type ConsiliumLoopOutcomeStats,
   type ExperienceItemRow,
   type InsertExperienceItem,
   type SkillProposalRow,
@@ -423,6 +425,18 @@ export interface IStorage {
   getLoops(): Promise<ConsiliumLoopRow[]>;
   /** The active (non-terminal) loop for a group, if any (create-time conflict check). */
   getActiveLoopByGroup(groupId: string): Promise<ConsiliumLoopRow | undefined>;
+  /**
+   * Task #52.2: real per-skill applied/converged aggregate over TERMINAL loops
+   * only (replaces the mock contour observability skill-trust demo). See
+   * `ConsiliumLoopSkillStat` doc-comment (shared/schema.ts) for exclusion rules
+   * (`dropped: true`, non-terminal loops, zero-applied skills omitted).
+   */
+  getConsiliumLoopSkillStats(): Promise<ConsiliumLoopSkillStat[]>;
+  /**
+   * Task #52.2: real loop outcome distribution over TERMINAL loops only
+   * (replaces the mock contour yield/escape metrics).
+   */
+  getConsiliumLoopOutcomeStats(): Promise<ConsiliumLoopOutcomeStats>;
   updateLoop(
     id: string,
     updates: Partial<Omit<ConsiliumLoopRow, "id" | "createdAt">>,
@@ -1423,6 +1437,49 @@ export class MemStorage implements IStorage {
     return Array.from(this.consiliumLoopsMap.values()).find(
       (l) => l.groupId === groupId && this.isLoopActive(l),
     );
+  }
+
+  private isTerminalLoop(row: ConsiliumLoopRow): boolean {
+    return CONSILIUM_LOOP_TERMINAL_STATES.includes(
+      row.state as (typeof CONSILIUM_LOOP_TERMINAL_STATES)[number],
+    );
+  }
+
+  async getConsiliumLoopSkillStats(): Promise<ConsiliumLoopSkillStat[]> {
+    const acc = new Map<string, { appliedCount: number; convergedCount: number }>();
+    for (const loop of this.consiliumLoopsMap.values()) {
+      if (!this.isTerminalLoop(loop)) continue;
+      for (const ref of loop.appliedSkills ?? []) {
+        if (ref.dropped) continue; // dropped ⇒ never actually applied
+        const entry = acc.get(ref.id) ?? { appliedCount: 0, convergedCount: 0 };
+        entry.appliedCount += 1;
+        if (loop.state === "converged") entry.convergedCount += 1;
+        acc.set(ref.id, entry);
+      }
+    }
+    return Array.from(acc.entries()).map(([skillId, { appliedCount, convergedCount }]) => ({
+      skillId,
+      appliedCount,
+      convergedCount,
+      successRate: appliedCount > 0 ? convergedCount / appliedCount : 0,
+    }));
+  }
+
+  async getConsiliumLoopOutcomeStats(): Promise<ConsiliumLoopOutcomeStats> {
+    let totalTerminalLoops = 0;
+    let convergedCount = 0;
+    let escalatedCount = 0;
+    for (const loop of this.consiliumLoopsMap.values()) {
+      if (!this.isTerminalLoop(loop)) continue;
+      totalTerminalLoops += 1;
+      if (loop.state === "converged") convergedCount += 1;
+      if (loop.state === "escalated") escalatedCount += 1;
+    }
+    return {
+      totalTerminalLoops,
+      convergedRate: totalTerminalLoops > 0 ? convergedCount / totalTerminalLoops : 0,
+      escalatedRate: totalTerminalLoops > 0 ? escalatedCount / totalTerminalLoops : 0,
+    };
   }
 
   async updateLoop(
