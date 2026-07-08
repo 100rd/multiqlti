@@ -11,3 +11,4 @@ computedHash) — verified computedHash = sha256 of raw SKILL.md file bytes via 
 Found PRIOR removed impl (297d62d, server/services/git-skill-sync.ts) — different design
 (remote clone+PAT), read for context only, not reused (new design is local-registry-root based).
 - Phase 3 done: full suite 304/304 files, 5169 passed/5 skipped, 0 failed (tsc clean)
+- Phase 4/5 done: committed d35939d, pushed feat/git-backed-skills-sync, PR #535 opened (https://github.com/100rd/multiqlti/pull/535), reports/BkBE2-52.1.md written
