@@ -142,6 +142,17 @@ export interface LlmTimelinePoint {
   costUsd: number;
 }
 
+/**
+ * A task→model "uses" observation for the inventory graph (#54). Sparse and
+ * best-effort: only tasks with a non-null modelSlug AND a workspaceId that
+ * matches the queried workspace are included — tasks.workspaceId is populated
+ * only via the consilium loop DEV handoff path, so most tasks have none.
+ */
+export interface WorkspaceTaskModelUsage {
+  taskId: string;
+  modelSlug: string;
+}
+
 /** Recency sort key for a lesson (createdAt may be null in degenerate rows). */
 function lessonTime(lesson: Lesson): number {
   return lesson.createdAt?.getTime() ?? 0;
@@ -356,6 +367,8 @@ export interface IStorage {
 
   // Tasks (Task Orchestrator)
   getTasksByGroup(groupId: string): Promise<TaskRow[]>;
+  /** Bulk task→modelSlug usage for the inventory graph (#54) — see WorkspaceTaskModelUsage doc. */
+  getWorkspaceTaskModelUsage(workspaceId: string): Promise<WorkspaceTaskModelUsage[]>;
   getTask(id: string): Promise<TaskRow | undefined>;
   createTask(data: InsertTask): Promise<TaskRow>;
   updateTask(id: string, updates: Partial<TaskRow>): Promise<TaskRow>;
@@ -582,6 +595,8 @@ export interface IStorage {
 
   // Model Skill Bindings (Phase 6.17)
   getModelSkillBindings(modelId: string): Promise<ModelSkillBinding[]>;
+  /** Bulk read of every model↔skill binding across all models — for the inventory graph (#54), avoids per-model N+1. */
+  getAllModelSkillBindings(): Promise<ModelSkillBinding[]>;
   getModelsWithSkillBindings(): Promise<string[]>;
   createModelSkillBinding(data: InsertModelSkillBinding): Promise<ModelSkillBinding>;
   deleteModelSkillBinding(modelId: string, skillId: string): Promise<void>;
@@ -1888,6 +1903,14 @@ export class MemStorage implements IStorage {
       .sort((a, b) => a.sortOrder - b.sortOrder);
   }
 
+  async getWorkspaceTaskModelUsage(workspaceId: string): Promise<WorkspaceTaskModelUsage[]> {
+    return Array.from(this.tasksMap.values())
+      .filter((t): t is TaskRow & { modelSlug: string } =>
+        t.workspaceId === workspaceId && t.modelSlug !== null,
+      )
+      .map((t) => ({ taskId: t.id, modelSlug: t.modelSlug }));
+  }
+
   async getTask(id: string): Promise<TaskRow | undefined> {
     return this.tasksMap.get(id);
   }
@@ -2057,6 +2080,10 @@ export class MemStorage implements IStorage {
     return Array.from(this.modelSkillBindingsMap.values()).filter(
       (b) => b.modelId === modelId,
     );
+  }
+
+  async getAllModelSkillBindings(): Promise<ModelSkillBinding[]> {
+    return Array.from(this.modelSkillBindingsMap.values());
   }
 
   async getModelsWithSkillBindings(): Promise<string[]> {

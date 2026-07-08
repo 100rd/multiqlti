@@ -1,18 +1,20 @@
 /**
  * Tests for inventory service and API routes (issue #275)
  *
- * INTERIM STATE (pipelines engine retirement, migration 0053): the graph is
- * connection-nodes only — see server/services/inventory.ts's file-level note
- * and follow-up #54 for the planned skill/model-registry-backed redesign.
- *
  * Coverage:
  * - Graph construction (connection nodes + orphan flag)
  * - Orphan detection (unused 30d+ connections)
  * - Inventory API routes (2 endpoints)
+ * - #54: skill/model registry nodes + compatible/uses edges (see
+ *   server/services/inventory.ts's DERIVATION note for exact sourcing).
+ *   Registry-sourced cases below run against both MemStorage (always) and
+ *   PgStorage (gated behind DATABASE_URL), mirroring the parity-harness
+ *   pattern in tests/integration/storage/mem-pg-parity.test.ts.
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { MemStorage } from "../../server/storage";
+import type { IStorage } from "../../server/storage";
 import {
   buildInventoryGraph,
   getOrphanNodes,
@@ -22,6 +24,9 @@ import type {
   CreateWorkspaceConnectionInput,
   RecordMcpToolCallInput,
 } from "../../shared/types";
+import type { InsertModel, InsertSkill, InsertModelSkillBinding } from "../../shared/schema";
+
+const HAS_DATABASE = Boolean(process.env.DATABASE_URL);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -39,6 +44,40 @@ function makeConnInput(
     config: {},
     ...overrides,
   };
+}
+
+/** A short unique suffix so PG runs (shared DB) don't collide across cases. */
+function uniq(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function makeModelInput(overrides: Partial<InsertModel> = {}): InsertModel {
+  const suffix = uniq();
+  return {
+    name: `Model ${suffix}`,
+    slug: `model-${suffix}`,
+    provider: "anthropic",
+    isActive: true,
+    ...overrides,
+  } as InsertModel;
+}
+
+function makeSkillInput(overrides: Partial<InsertSkill> = {}): InsertSkill {
+  const suffix = uniq();
+  return {
+    name: `Skill ${suffix}`,
+    teamId: "team-1",
+    sourceType: "manual",
+    ...overrides,
+  } as InsertSkill;
+}
+
+function makeBindingInput(
+  modelId: string,
+  skillId: string,
+  overrides: Partial<InsertModelSkillBinding> = {},
+): InsertModelSkillBinding {
+  return { modelId, skillId, ...overrides } as InsertModelSkillBinding;
 }
 
 /** Returns a nowMs that is 31 days in the future relative to the tool call date. */
@@ -202,4 +241,229 @@ describe("ORPHAN_DAYS constant", () => {
   it("is 30", () => {
     expect(ORPHAN_DAYS).toBe(30);
   });
+});
+
+// ─── #54: registry-backed nodes/edges — dual-impl cases ───────────────────────
+//
+// One shared case table run against MemStorage (always) and PgStorage (gated
+// behind DATABASE_URL), mirroring tests/integration/storage/mem-pg-parity.test.ts.
+
+function runRegistryCases(label: string, makeGraphStorage: () => IStorage): void {
+  describe(`buildInventoryGraph registries — ${label}`, () => {
+    describe("skill nodes", () => {
+      it("creates a skill node for every skill regardless of workspace", async () => {
+        const storage = makeGraphStorage();
+        const skill = await storage.createSkill(
+          makeSkillInput({ name: "Code Review", sourceType: "git", gitSourceId: "git-src-1" }),
+        );
+
+        const graph = await buildInventoryGraph(storage, "ws-skills-1");
+
+        const node = graph.nodes.find((n) => n.id === skill.id);
+        expect(node).toBeDefined();
+        expect(node?.type).toBe("skill");
+        expect(node?.label).toBe("Code Review");
+        expect(node?.metadata.sourceType).toBe("git");
+        expect(node?.metadata.gitSourceId).toBe("git-src-1");
+      });
+    });
+
+    describe("model nodes", () => {
+      it("creates a model node surfacing provider and isActive", async () => {
+        const storage = makeGraphStorage();
+        const model = await storage.createModel(
+          makeModelInput({ name: "Sonnet", provider: "anthropic", isActive: false }),
+        );
+
+        const graph = await buildInventoryGraph(storage, "ws-models-1");
+
+        const node = graph.nodes.find((n) => n.id === model.id);
+        expect(node).toBeDefined();
+        expect(node?.type).toBe("model");
+        expect(node?.label).toBe("Sonnet");
+        expect(node?.metadata.provider).toBe("anthropic");
+        expect(node?.metadata.isActive).toBe(false);
+      });
+    });
+
+    describe("compatible edges (model <-> skill bindings)", () => {
+      it("creates a compatible edge between a model and a bound skill via slug", async () => {
+        const storage = makeGraphStorage();
+        const model = await storage.createModel(makeModelInput());
+        const skill = await storage.createSkill(makeSkillInput());
+        await storage.createModelSkillBinding(makeBindingInput(model.slug, skill.id));
+
+        const graph = await buildInventoryGraph(storage, "ws-bind-1");
+
+        expect(graph.edges).toContainEqual({
+          source: model.id,
+          target: skill.id,
+          relation: "compatible",
+        });
+      });
+
+      it("resolves a binding keyed by the provider modelId (not slug)", async () => {
+        const storage = makeGraphStorage();
+        const model = await storage.createModel(
+          makeModelInput({ modelId: `provider-${uniq()}` }),
+        );
+        const skill = await storage.createSkill(makeSkillInput());
+        await storage.createModelSkillBinding(
+          makeBindingInput(model.modelId as string, skill.id),
+        );
+
+        const graph = await buildInventoryGraph(storage, "ws-bind-2");
+
+        expect(graph.edges).toContainEqual({
+          source: model.id,
+          target: skill.id,
+          relation: "compatible",
+        });
+      });
+
+      it("skips a binding whose modelId resolves to no known model", async () => {
+        const storage = makeGraphStorage();
+        const skill = await storage.createSkill(makeSkillInput());
+        await storage.createModelSkillBinding(makeBindingInput("unknown-model-slug", skill.id));
+
+        const graph = await buildInventoryGraph(storage, "ws-bind-3");
+
+        expect(graph.edges.some((e) => e.relation === "compatible")).toBe(false);
+      });
+    });
+
+    describe("uses edges (task -> model, sparse/best-effort)", () => {
+      it("creates a uses edge for a task with matching workspaceId and a modelSlug", async () => {
+        const storage = makeGraphStorage();
+        const model = await storage.createModel(makeModelInput());
+        const group = await storage.createTaskGroup({
+          name: `group-${uniq()}`,
+          description: "d",
+          input: "the prompt",
+        });
+        const task = await storage.createTask({
+          groupId: group.id,
+          name: "t",
+          description: "d",
+          sortOrder: 0,
+          workspaceId: "ws-uses-1",
+          modelSlug: model.slug,
+        });
+
+        const graph = await buildInventoryGraph(storage, "ws-uses-1");
+
+        expect(graph.edges).toContainEqual({
+          source: task.id,
+          target: model.id,
+          relation: "uses",
+        });
+      });
+
+      it("excludes a task whose workspaceId does not match the queried workspace", async () => {
+        const storage = makeGraphStorage();
+        const model = await storage.createModel(makeModelInput());
+        const group = await storage.createTaskGroup({
+          name: `group-${uniq()}`,
+          description: "d",
+          input: "the prompt",
+        });
+        await storage.createTask({
+          groupId: group.id,
+          name: "t",
+          description: "d",
+          sortOrder: 0,
+          workspaceId: "ws-other",
+          modelSlug: model.slug,
+        });
+
+        const graph = await buildInventoryGraph(storage, "ws-uses-2");
+
+        expect(graph.edges.some((e) => e.relation === "uses")).toBe(false);
+      });
+
+      it("excludes a task with a null modelSlug even when workspaceId matches", async () => {
+        const storage = makeGraphStorage();
+        const group = await storage.createTaskGroup({
+          name: `group-${uniq()}`,
+          description: "d",
+          input: "the prompt",
+        });
+        await storage.createTask({
+          groupId: group.id,
+          name: "t",
+          description: "d",
+          sortOrder: 0,
+          workspaceId: "ws-uses-3",
+        });
+
+        const graph = await buildInventoryGraph(storage, "ws-uses-3");
+
+        expect(graph.edges.some((e) => e.relation === "uses")).toBe(false);
+      });
+    });
+
+    describe("mixed graph", () => {
+      it("combines connection, skill, and model nodes with compatible + uses edges", async () => {
+        const storage = makeGraphStorage();
+        const wsId = `ws-mixed-${uniq()}`;
+        const conn = await storage.createWorkspaceConnection(makeConnInput({ workspaceId: wsId }));
+        const model = await storage.createModel(makeModelInput());
+        const skill = await storage.createSkill(makeSkillInput());
+        await storage.createModelSkillBinding(makeBindingInput(model.slug, skill.id));
+        const group = await storage.createTaskGroup({
+          name: `group-${uniq()}`,
+          description: "d",
+          input: "the prompt",
+        });
+        const task = await storage.createTask({
+          groupId: group.id,
+          name: "t",
+          description: "d",
+          sortOrder: 0,
+          workspaceId: wsId,
+          modelSlug: model.slug,
+        });
+
+        const graph = await buildInventoryGraph(storage, wsId);
+
+        const nodeIds = graph.nodes.map((n) => n.id);
+        expect(nodeIds).toContain(conn.id);
+        expect(nodeIds).toContain(model.id);
+        expect(nodeIds).toContain(skill.id);
+        expect(graph.nodes.find((n) => n.id === conn.id)?.type).toBe("connection");
+        expect(graph.edges).toContainEqual({ source: model.id, target: skill.id, relation: "compatible" });
+        expect(graph.edges).toContainEqual({ source: task.id, target: model.id, relation: "uses" });
+      });
+    });
+
+    describe("orphan connections alongside registry nodes", () => {
+      it("still flags an unused connection as orphan when skill/model nodes are present", async () => {
+        const storage = makeGraphStorage();
+        const wsId = `ws-orphan-${uniq()}`;
+        const conn = await storage.createWorkspaceConnection(makeConnInput({ workspaceId: wsId }));
+        await storage.createModel(makeModelInput());
+        await storage.createSkill(makeSkillInput());
+
+        const graph = await buildInventoryGraph(storage, wsId, Date.now());
+
+        const connNode = graph.nodes.find((n) => n.id === conn.id);
+        expect(connNode?.isOrphan).toBe(true);
+        // Skill/model nodes never carry an orphan flag (no comparable usage series).
+        for (const node of graph.nodes.filter((n) => n.type !== "connection")) {
+          expect(node.isOrphan).toBeUndefined();
+        }
+      });
+    });
+  });
+}
+
+// MemStorage: always runs (DB-free).
+runRegistryCases("MemStorage", () => new MemStorage());
+
+// PgStorage: registered only when DATABASE_URL is set (kept `./db`'s eager pg
+// Pool construction out of the DB-free import path — same guard as the parity
+// harness).
+describe.skipIf(!HAS_DATABASE)("buildInventoryGraph registries — PgStorage gate", async () => {
+  const { PgStorage } = await import("../../server/storage-pg");
+  runRegistryCases("PgStorage", () => new PgStorage());
 });
