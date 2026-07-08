@@ -555,6 +555,14 @@ export interface IStorage {
    */
   updateLoopRoundActionPoints(loopId: string, round: number, actionPoints: ActionPoint[]): Promise<void>;
 
+  /**
+   * #18: persist the operator's steering note on a completed round — the
+   * runner-mode mirror of `task_group_iterations.human_note`. Additive over the
+   * audit row recorded on entering `developing`; no-op when the (loop, round)
+   * row is absent. Idempotent / best-effort (mirror of updateLoopRoundTestSummary).
+   */
+  updateLoopRoundHumanNote(loopId: string, round: number, humanNote: string | null): Promise<void>;
+
   // Experience plane — the "Dream" distillation, WRITE side (DREAM-1).
   // The distiller observer reads terminal loops read-only and writes verification-grounded
   // items here. WRITE-ONLY in DREAM-1 (no planner read path — that is DREAM-2).
@@ -1620,6 +1628,7 @@ export class MemStorage implements IStorage {
       baselineCommit: data.baselineCommit ?? null,
       headCommit: data.headCommit ?? null,
       testSummary: data.testSummary ?? null,
+      humanNote: data.humanNote ?? null,
       report: data.report ?? null,
       executionTrace: data.executionTrace ?? null,
       createdAt: new Date(),
@@ -1665,6 +1674,15 @@ export class MemStorage implements IStorage {
     for (const r of this.consiliumLoopRoundsMap.values()) {
       if (r.loopId === loopId && r.round === round) {
         this.consiliumLoopRoundsMap.set(r.id, { ...r, openActionPoints: actionPoints });
+        return;
+      }
+    }
+  }
+
+  async updateLoopRoundHumanNote(loopId: string, round: number, humanNote: string | null): Promise<void> {
+    for (const r of this.consiliumLoopRoundsMap.values()) {
+      if (r.loopId === loopId && r.round === round) {
+        this.consiliumLoopRoundsMap.set(r.id, { ...r, humanNote });
         return;
       }
     }

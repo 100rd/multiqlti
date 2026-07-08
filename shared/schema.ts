@@ -1983,6 +1983,14 @@ export const consiliumLoopRounds = pgTable(
     baselineCommit: text("baseline_commit"),
     headCommit: text("head_commit"),
     testSummary: text("test_summary"),
+    // #18: operator steering note recorded AFTER this round completes — the
+    // runner-mode (Phase 2) mirror of `task_group_iterations.human_note`.
+    // Runner-mode rounds never mint an iteration row (see composeIterationInput
+    // in task-orchestrator.ts, legacy-path only), so this is where the note has
+    // to live for the review-runner to carry it into the NEXT round's context
+    // (alongside the existing prior-findings carry-forward). Nullable; only the
+    // latest round's note is read forward. Never wired into the legacy path.
+    humanNote: text("human_note"),
     // Stage 3 (research archetype): the structured, web-evidence-verified report the
     // research-runner produces INSTEAD of code + a Draft PR. Nullable; written
     // out-of-band by `updateLoopRoundReport` after the research run settles (mirror of
