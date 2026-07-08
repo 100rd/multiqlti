@@ -5,6 +5,8 @@ import type { InsertSkill, Skill } from "@shared/schema";
 import type { SharingLevel } from "@shared/types";
 import { bumpVersion, snapshotConfig } from "../skills/version-service";
 import { serializeSkillToYaml, deserializeSkillYaml, SkillYamlSchema } from "../skills/yaml-service";
+import { syncSkillsRegistry } from "../skills/registry-sync";
+import { configLoader } from "../config/loader";
 
 // ─── Zod Schemas ────────────────────────────────────────────────────────────
 
@@ -50,6 +52,12 @@ const VersionsQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+const RegistrySyncSchema = z.object({
+  registryRoot: z.string().min(1).max(1000),
+  teamId: z.string().min(1).max(100),
+  autoUpdate: z.boolean().default(false),
+});
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /** Returns true if user is the skill owner or has admin role. */
@@ -58,6 +66,18 @@ function isOwnerOrAdmin(skill: Skill, req: Request): boolean {
   if (!user) return false;
   if (user.role === "admin") return true;
   return skill.createdBy === user.id;
+}
+
+/**
+ * Returns a human-readable reason a skill cannot be mutated via the API, or
+ * null if it's mutable. Built-in skills and git-sourced skills (issue #446 —
+ * synced from a registry, kept in sync by the git-skill-sources sync job) are
+ * both read-only from this API's perspective.
+ */
+function immutableReason(skill: Skill): string | null {
+  if (skill.isBuiltin) return "built-in";
+  if (skill.sourceType === "git") return "git-sourced";
+  return null;
 }
 
 /** Resolves sharing from body, falling back to isPublic for backward compat. */
@@ -155,6 +175,30 @@ export function registerSkillRoutes(app: Express, storage: IStorage) {
     }
   });
 
+  // ─── GIT-BACKED REGISTRY SYNC (issue #446) ───────────────────────────────
+
+  app.post("/api/skills/registry-sync", async (req: Request, res: Response) => {
+    const parsed = RegistrySyncSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.errors[0]?.message ?? "Invalid input" });
+    }
+
+    const allowedRoots = configLoader.get().pipeline.consiliumLoop.allowedRepoPaths;
+    try {
+      const result = await syncSkillsRegistry({
+        storage,
+        registryRoot: parsed.data.registryRoot,
+        teamId: parsed.data.teamId,
+        autoUpdate: parsed.data.autoUpdate,
+        allowedRoots,
+        createdBy: req.user?.id ?? "system",
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Registry sync failed" });
+    }
+  });
+
   // ─── SINGLE SKILL EXPORT ─────────────────────────────────────────────────
 
   app.get("/api/skills/:id/export", async (req: Request, res: Response) => {
@@ -200,7 +244,10 @@ export function registerSkillRoutes(app: Express, storage: IStorage) {
   app.post("/api/skills/:id/versions", async (req: Request, res: Response) => {
     const skill = await storage.getSkill(req.params.id as string);
     if (!skill) return res.status(404).json({ error: "Skill not found" });
-    if (skill.isBuiltin) return res.status(403).json({ error: "Cannot version built-in skills" });
+    const versionBlockReason = immutableReason(skill);
+    if (versionBlockReason) {
+      return res.status(403).json({ error: `Cannot version ${versionBlockReason} skills` });
+    }
     if (!isOwnerOrAdmin(skill, req)) {
       return res.status(403).json({ error: "Forbidden -- must be owner or admin" });
     }
@@ -231,7 +278,10 @@ export function registerSkillRoutes(app: Express, storage: IStorage) {
   app.post("/api/skills/:id/rollback/:version", async (req: Request, res: Response) => {
     const skill = await storage.getSkill(req.params.id as string);
     if (!skill) return res.status(404).json({ error: "Skill not found" });
-    if (skill.isBuiltin) return res.status(403).json({ error: "Cannot rollback built-in skills" });
+    const rollbackBlockReason = immutableReason(skill);
+    if (rollbackBlockReason) {
+      return res.status(403).json({ error: `Cannot rollback ${rollbackBlockReason} skills` });
+    }
     if (!isOwnerOrAdmin(skill, req)) {
       return res.status(403).json({ error: "Forbidden -- must be owner or admin" });
     }
@@ -286,7 +336,10 @@ export function registerSkillRoutes(app: Express, storage: IStorage) {
   app.patch("/api/skills/:id/sharing", async (req: Request, res: Response) => {
     const skill = await storage.getSkill(req.params.id as string);
     if (!skill) return res.status(404).json({ error: "Skill not found" });
-    if (skill.isBuiltin) return res.status(403).json({ error: "Cannot change sharing of built-in skills" });
+    const sharingBlockReason = immutableReason(skill);
+    if (sharingBlockReason) {
+      return res.status(403).json({ error: `Cannot change sharing of ${sharingBlockReason} skills` });
+    }
     if (!isOwnerOrAdmin(skill, req)) {
       return res.status(403).json({ error: "Forbidden -- must be owner or admin" });
     }
@@ -350,7 +403,10 @@ export function registerSkillRoutes(app: Express, storage: IStorage) {
 
     const skill = await storage.getSkill(req.params.id as string);
     if (!skill) return res.status(404).json({ error: "Skill not found" });
-    if (skill.isBuiltin) return res.status(403).json({ error: "Cannot modify built-in skills" });
+    const patchBlockReason = immutableReason(skill);
+    if (patchBlockReason) {
+      return res.status(403).json({ error: `Cannot modify ${patchBlockReason} skills` });
+    }
 
     // VETO-1 fix: ownership check
     if (!isOwnerOrAdmin(skill, req)) {
@@ -395,7 +451,10 @@ export function registerSkillRoutes(app: Express, storage: IStorage) {
   app.delete("/api/skills/:id", async (req: Request, res: Response) => {
     const skill = await storage.getSkill(req.params.id as string);
     if (!skill) return res.status(404).json({ error: "Skill not found" });
-    if (skill.isBuiltin) return res.status(403).json({ error: "Cannot delete built-in skills" });
+    const deleteBlockReason = immutableReason(skill);
+    if (deleteBlockReason) {
+      return res.status(403).json({ error: `Cannot delete ${deleteBlockReason} skills` });
+    }
 
     // VETO-1 fix: ownership check
     if (!isOwnerOrAdmin(skill, req)) {

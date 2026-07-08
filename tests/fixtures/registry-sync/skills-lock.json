@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "demo-skill": {
+      "source": "test-org/test-registry",
+      "sourceType": "local",
+      "skillPath": "skills/demo-skill/SKILL.md",
+      "computedHash": "a66791ed9b1db0a23ac5a2e84d7b035d9a27eb878a2a7927a1b155bf94fc51c8"
+    },
+    "other-tool-skill": {
+      "source": "test-org/test-registry",
+      "sourceType": "local",
+      "skillPath": "skills/other-tool-skill/SKILL.md",
+      "computedHash": "dc2023026c0fcc03e5d16654da80a46ee00e3afd03a1a62e18e8b3c83fec8ed7"
+    },
+    "drifted-skill": {
+      "source": "test-org/test-registry",
+      "sourceType": "local",
+      "skillPath": "skills/drifted-skill/SKILL.md",
+      "computedHash": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}
