@@ -2227,8 +2227,42 @@ export class PgStorage implements IStorage {
 
   // ─── Practice Cards (Active Knowledge Base) ───────────────────────────────
 
+  // practiceCards / practiceCardRefreshRuns carry only `workspaceId` — no
+  // `project_id` column of their own (shared/schema.ts) — so `withProject`
+  // (which requires the column) threw "table has no projectId column" on
+  // every call, 500ing the knowledge-base page. Scope through the parent
+  // `workspaces` row instead, which IS project-scoped: same
+  // subquery-through-parent shape as getLoops()'s consilium_loops→task_groups
+  // scoping, and exactly what withProjectList's own doc recommends ("table has
+  // no projectId column — use a subquery through a project-scoped parent
+  // table instead"). Every practice-card route already resolves+validates the
+  // parent workspace via storage.getWorkspace() (itself withProject-scoped)
+  // before reaching these queries, so this is belt-and-suspenders for the
+  // workspaceId-filtered methods and the ONLY DB-level guard for the by-id
+  // lookups (getPracticeCard/updatePracticeCardState/getRefreshRun/
+  // updateRefreshRun), which take no workspaceId at all.
+  private practiceCardsInScope(condition?: SQL): SQL {
+    return and(
+      inArray(practiceCards.workspaceId, db.select({ id: workspaces.id }).from(workspaces).where(withProjectList(workspaces))),
+      condition,
+    )!;
+  }
+
+  private refreshRunsInScope(condition?: SQL): SQL {
+    return and(
+      inArray(practiceCardRefreshRuns.workspaceId, db.select({ id: workspaces.id }).from(workspaces).where(withProjectList(workspaces))),
+      condition,
+    )!;
+  }
+
   async createPracticeCard(data: InsertPracticeCard): Promise<PracticeCardRow> {
     // Idempotent: ON CONFLICT (workspace_id, content_hash) DO NOTHING.
+    // NOTE: withProjectInsert stamps a `projectId` field onto the insert
+    // payload, but practiceCards has no such column — Drizzle's insert only
+    // serializes columns present in the table definition, so the extra field
+    // is silently dropped (harmless no-op, verified: seeding via this path
+    // already worked before this fix). Left as-is to keep this change scoped
+    // to the actually-broken read/update paths below.
     const [inserted] = await db
       .insert(practiceCards)
       .values(withProjectInsert(practiceCards, data as typeof practiceCards.$inferInsert))
@@ -2239,15 +2273,15 @@ export class PgStorage implements IStorage {
     const [existing] = await db
       .select()
       .from(practiceCards)
-      .where(withProject(practiceCards, and(
+      .where(this.practiceCardsInScope(and(
           eq(practiceCards.workspaceId, data.workspaceId),
           eq(practiceCards.contentHash, data.contentHash),
-        ),));
+        )));
     return existing;
   }
 
   async getPracticeCard(id: string): Promise<PracticeCardRow | null> {
-    const [row] = await db.select().from(practiceCards).where(withProject(practiceCards, eq(practiceCards.id, id)));
+    const [row] = await db.select().from(practiceCards).where(this.practiceCardsInScope(eq(practiceCards.id, id)));
     return row ?? null;
   }
 
@@ -2270,12 +2304,12 @@ export class PgStorage implements IStorage {
     const [{ count }] = await db
       .select({ count: drizzleSql<number>`count(*)::int` })
       .from(practiceCards)
-      .where(withProject(practiceCards, where));
+      .where(this.practiceCardsInScope(where));
 
     const cards = await db
       .select()
       .from(practiceCards)
-      .where(withProject(practiceCards, where))
+      .where(this.practiceCardsInScope(where))
       .orderBy(desc(practiceCards.createdAt))
       .limit(filters.limit ?? 50)
       .offset(filters.offset ?? 0);
@@ -2284,7 +2318,7 @@ export class PgStorage implements IStorage {
   }
 
   async getPracticeCardsByWorkspace(workspaceId: string): Promise<PracticeCardRow[]> {
-    return db.select().from(practiceCards).where(withProject(practiceCards, eq(practiceCards.workspaceId, workspaceId)));
+    return db.select().from(practiceCards).where(this.practiceCardsInScope(eq(practiceCards.workspaceId, workspaceId)));
   }
 
   async updatePracticeCardState(
@@ -2295,7 +2329,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(practiceCards)
       .set({ ...rest, updatedAt: new Date() } as Partial<typeof practiceCards.$inferInsert>)
-      .where(withProject(practiceCards, eq(practiceCards.id, id)))
+      .where(this.practiceCardsInScope(eq(practiceCards.id, id)))
       .returning();
     if (!row) throw new Error(`Practice card not found: ${id}`);
     return row;
@@ -2317,7 +2351,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .select()
       .from(practiceCardRefreshRuns)
-      .where(withProject(practiceCardRefreshRuns, eq(practiceCardRefreshRuns.id, id)));
+      .where(this.refreshRunsInScope(eq(practiceCardRefreshRuns.id, id)));
     return row ?? null;
   }
 
@@ -2329,7 +2363,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .update(practiceCardRefreshRuns)
       .set(rest as Partial<typeof practiceCardRefreshRuns.$inferInsert>)
-      .where(withProject(practiceCardRefreshRuns, eq(practiceCardRefreshRuns.id, id)))
+      .where(this.refreshRunsInScope(eq(practiceCardRefreshRuns.id, id)))
       .returning();
     if (!row) throw new Error(`Refresh run not found: ${id}`);
     return row;
