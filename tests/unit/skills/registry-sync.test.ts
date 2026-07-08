@@ -109,6 +109,38 @@ describe("syncSkillsRegistry", () => {
     expect(demoRows).toHaveLength(1);
   });
 
+  it("refuses to overwrite an existing MANUAL skill with the same name (reports error, no write)", async () => {
+    const root = await realpathRoot();
+
+    const manual = await storage.createSkill({
+      name: "demo-skill",
+      teamId: "team-a",
+      systemPromptOverride: "hand-written by a human, never touch me",
+      tags: [],
+      isBuiltin: false,
+      isPublic: true,
+      createdBy: "human",
+      version: "9.9.9",
+      sharing: "private",
+    });
+
+    const result = await syncSkillsRegistry({
+      storage,
+      registryRoot: root,
+      teamId: "team-a",
+      allowedRoots: [root],
+    });
+
+    const demo = result.results.find((r) => r.skillKey === "demo-skill");
+    expect(demo?.status).toBe("error");
+    expect(demo?.reason).toMatch(/[Nn]ame collision/);
+    expect(demo?.reason).toMatch(/manually-created/);
+
+    const untouched = await storage.getSkill(manual.id);
+    expect(untouched?.systemPromptOverride).toBe("hand-written by a human, never touch me");
+    expect(untouched?.sourceType).not.toBe("git");
+  });
+
   it("fail-closed: throws when registryRoot resolves outside the allowlist", async () => {
     const root = await realpathRoot();
     const outsideAllowlist = ["/tmp/some-other-unrelated-root"];

@@ -208,9 +208,28 @@ async function syncOneSkill(params: SyncOneSkillParams): Promise<RegistrySkillRe
       autoUpdate,
     };
 
+    // getSkillIdByName is a GLOBAL, unscoped lookup (no teamId/sourceType
+    // filter) -- guard against silently clobbering a manually-created skill,
+    // a built-in, or another team's git-sourced skill that happens to share
+    // this name. Only ever update a row we already own (sourceType 'git' AND
+    // same teamId); anything else is a reported conflict, never overwritten.
     const existingId = await storage.getSkillIdByName(parsed.frontmatter.name);
-    const skillId = existingId
-      ? (await storage.updateSkill(existingId, insertData)).id
+    const existing = existingId ? await storage.getSkill(existingId) : undefined;
+
+    if (existing && (existing.sourceType !== "git" || existing.teamId !== teamId)) {
+      return {
+        skillKey,
+        skillPath: entry.skillPath,
+        status: "error",
+        reason:
+          existing.sourceType !== "git"
+            ? `Name collision: a manually-created skill named "${parsed.frontmatter.name}" already exists; registry sync will not overwrite non-git skills.`
+            : `Name collision: a git-sourced skill named "${parsed.frontmatter.name}" already exists for a different team; registry sync will not overwrite it.`,
+      };
+    }
+
+    const skillId = existing
+      ? (await storage.updateSkill(existing.id, insertData)).id
       : (await storage.createSkill(insertData)).id;
 
     return { skillKey, skillPath: entry.skillPath, status: "synced", skillId };
