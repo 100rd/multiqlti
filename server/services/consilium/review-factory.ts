@@ -1432,6 +1432,10 @@ export async function createConsiliumReview(
     // it at round time; an explicit value always wins). INERT dispatch selector.
     reviewMode: params.reviewMode ?? null,
     createdBy: params.createdBy,
+    // ADR-0003 I1 (re-scoped, GH #445 P1): additive class metadata only — no
+    // escalation, no gating reads this yet. Coder-enabled (worktree write /
+    // Draft-PR capable) ⇒ A; review-only ⇒ R0.
+    class: cfg.implement?.enabled ? "A" : "R0",
   } as InsertConsiliumLoop);
 
   // 3) Start it (PENDING → BUILDING_CONTEXT). The poller advances it from there;

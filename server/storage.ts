@@ -1371,6 +1371,10 @@ export class MemStorage implements IStorage {
       repoPath: data.repoPath,
       lastReviewedCommit: data.lastReviewedCommit ?? null,
       reviewRef: data.reviewRef ?? null,
+      // ADR-0003 I1 (re-scoped, GH #445 P1): additive class metadata (mirrors the
+      // DB default). Nothing reads either field yet.
+      class: data.class ?? "R0",
+      autonomyTier: data.autonomyTier ?? null,
       // Single-verifier re-review: per-loop mode (nullable; null ⇒ operator default).
       reviewMode: data.reviewMode ?? null,
       // Stage 1: engineer instruction + archetype planner columns (all nullable).

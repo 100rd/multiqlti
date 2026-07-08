@@ -1787,6 +1787,15 @@ export const CONSILIUM_LOOP_TERMINAL_STATES = [
   "cancelled",
 ] as const satisfies readonly ConsiliumLoopState[];
 
+// ADR-0003 I1 (re-scoped, GH #445 P1): the loop's autonomy CLASS — additive
+// metadata only, set once at launch, nothing reads it yet. R0 = review/judge-only
+// loop (no worktree write, advisory). A = coder-enabled loop (worktree write /
+// Draft-PR capable, i.e. `pipeline.consiliumLoop.implement.enabled`). B/C/E are
+// reserved for future deploy/prod targets (none exist today; never assigned).
+// NO escalation and NO gating logic reads this field yet — that is P2/P3.
+export const CONSILIUM_CLASSES = ["R0", "A", "B", "C", "E"] as const;
+export type ConsiliumClass = (typeof CONSILIUM_CLASSES)[number];
+
 /**
  * Provenance of ONE operator-selected skill whose directives extended a consilium
  * loop's engineer instruction (Stage 2 — skills extend the loop's engineer
@@ -1817,6 +1826,12 @@ export const consiliumLoops = pgTable(
       .notNull()
       .references(() => taskGroups.id, { onDelete: "cascade" }),
     state: text("state").notNull().default("pending").$type<ConsiliumLoopState>(),
+    // ADR-0003 I1 (re-scoped, GH #445 P1): additive autonomy metadata, set once at
+    // launch (review-only ⇒ R0, coder-enabled ⇒ A). Nothing reads either column
+    // yet — no escalation, no gating (that is P2/P3). `autonomyTier` is reserved
+    // for a future finer-grained tier and is left unset (null) by this PR.
+    class: text("class").notNull().default("R0").$type<ConsiliumClass>(),
+    autonomyTier: text("autonomy_tier"),
     round: integer("round").notNull().default(0),
     maxRounds: integer("max_rounds").notNull().default(6),
     // Allowlisted target repo (validated at create AND re-validated each round).
