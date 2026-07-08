@@ -80,6 +80,15 @@ const ArchetypeOverrideSchema = z.object({
   archetype: z.enum(ARCHETYPES),
 });
 
+/**
+ * #18: body for PATCH round note. Empty string clears the note; bounded to 20k
+ * (mirrors `task-iterations.ts`'s NoteSchema — the legacy-path equivalent that
+ * cannot resolve a real iteration row for a runner-mode loop).
+ */
+const RoundNoteSchema = z.object({
+  humanNote: z.string().max(20_000),
+});
+
 /** Mask the loop row for non-admins: hide createdBy attribution. */
 function maskLoop(loop: Record<string, unknown>, isAdmin: boolean): Record<string, unknown> {
   if (isAdmin) return loop;
@@ -377,6 +386,37 @@ export function registerConsiliumLoopRoutes(
       if (!result.ok) return res.status(404).json({ error: "Consilium loop not found" });
       const isAdmin = req.user?.role === "admin";
       return res.json(maskLoop({ ...result.loop }, !!isAdmin));
+    },
+  );
+
+  // ── Round note (#18) ─────────────────────────────────────────────────────────
+  // Owner-or-admin. Human-in-the-loop steering note attached to a completed round —
+  // the runner-mode mirror of `task-iterations.ts`'s iteration-note PATCH (which
+  // cannot resolve a real iteration row for a runner-mode loop, since those never
+  // mint one). Folded into the NEXT round's review context by the review-runner
+  // (buildOperatorNote, alongside buildPriorFindings). Empty body clears the note.
+  app.patch(
+    "/api/consilium-loops/:id/rounds/:round/note",
+    validateBody(RoundNoteSchema),
+    async (req: Request, res: Response) => {
+      const auth = await authorizeConsiliumLoop(req, res, storage, String(req.params.id));
+      if (!auth) return;
+      const round = Number(req.params.round);
+      if (!Number.isInteger(round) || round < 1) {
+        return res.status(404).json({ error: "Round not found" });
+      }
+      const body = req.body as z.infer<typeof RoundNoteSchema>;
+      const humanNote = body.humanNote.trim() === "" ? null : body.humanNote;
+      try {
+        const rounds = await storage.getLoopRounds(auth.loop.id);
+        if (!rounds.some((r) => r.round === round)) {
+          return res.status(404).json({ error: "Round not found" });
+        }
+        await storage.updateLoopRoundHumanNote(auth.loop.id, round, humanNote);
+        return res.json({ round, humanNote });
+      } catch {
+        return res.status(500).json({ error: "Failed to save round note" });
+      }
     },
   );
 

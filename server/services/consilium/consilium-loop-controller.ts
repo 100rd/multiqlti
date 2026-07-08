@@ -55,6 +55,7 @@ import type { Archetype } from "@shared/types";
 import type { ActionPoint, ConvergenceVerdict, RoundVerdict, RoundParticipant, ReviewMode } from "@shared/types";
 import { P0_PRIORITY } from "@shared/types";
 import type { TaskOrchestrator } from "../task-orchestrator.js";
+import { HUMAN_NOTE_HEADING } from "../task-orchestrator.js";
 import type { AppConfig } from "../../config/schema.js";
 import { effectiveVerificationEnabled, resolveImplementForRepo } from "../../config/schema.js";
 import { readConvergence, readJudgeVerdict, extractActionPoints, normalizeActionPointMethods, applyCriteriaQa } from "../orchestrator/convergence.js";
@@ -2677,8 +2678,19 @@ export class ConsiliumLoopController {
     const cfg = this.loopConfig();
     const group = await this.storage.getTaskGroup(loop.groupId);
     const objective = group?.input ?? "";
-    const priorFindings =
+    const priorFindingsBase =
       loop.round >= 1 ? await this.buildPriorFindings(loop, cfg.maxDiffBytes) : undefined;
+    // #18: the operator's steering note (persisted on the ROUND record — runner-mode
+    // rounds mint no iteration row, so `task_group_iterations.human_note` /
+    // `composeIterationInput` — the legacy path's carry-forward — never fires here).
+    // Injected ALONGSIDE buildPriorFindings for round > 1; the legacy path is
+    // untouched (it already carries the note its own way).
+    const operatorNote =
+      loop.round >= 1 ? await this.buildOperatorNote(loop) : undefined;
+    const priorFindings =
+      [priorFindingsBase, operatorNote]
+        .filter((s): s is string => !!s && s.trim().length > 0)
+        .join("\n\n") || undefined;
     const testSummary =
       effectiveVerificationEnabled(this.deps.config()) || this.researchImplementEnabled()
         ? await this.latestRoundTestSummary(loop)
@@ -2757,6 +2769,33 @@ export class ConsiliumLoopController {
     for (let i = rounds.length - 1; i >= 0; i--) {
       const ts = rounds[i].testSummary;
       if (ts && ts.trim().length > 0) return ts;
+    }
+    return undefined;
+  }
+
+  /**
+   * #18: the operator's steering note for round > 1, carried on the ROUND record
+   * itself (`consilium_loop_rounds.human_note`) — the runner-mode mirror of the
+   * legacy path's `task_group_iterations.human_note` / `composeIterationInput`
+   * carry-forward (runner-mode rounds never mint an iteration row, so the note has
+   * nowhere else to live). Best-effort: a storage failure or empty history yields
+   * `undefined` (mirrors latestRoundTestSummary). Reads the MOST RECENT round that
+   * carries a note (mirrors latestRoundTestSummary's scan), not just the immediately
+   * prior round, so a note survives even if an intervening round has none.
+   */
+  private async buildOperatorNote(loop: ConsiliumLoopRow): Promise<string | undefined> {
+    let rounds: ConsiliumLoopRoundRow[];
+    try {
+      rounds = await this.storage.getLoopRounds(loop.id);
+    } catch (err) {
+      this.log(loop.id, `buildOperatorNote: getLoopRounds failed (no note injected): ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+    for (let i = rounds.length - 1; i >= 0; i--) {
+      const note = rounds[i].humanNote;
+      if (note && note.trim().length > 0) {
+        return `${HUMAN_NOTE_HEADING}:\n${note.trim()}`;
+      }
     }
     return undefined;
   }

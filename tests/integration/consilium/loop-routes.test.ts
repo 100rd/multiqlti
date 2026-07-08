@@ -142,6 +142,12 @@ describe("consilium-loop routes", () => {
   const get = (path: string): Promise<request.Response> =>
     send(() => request(ctx.app).get(path));
 
+  const patch = (path: string, body?: unknown): Promise<request.Response> =>
+    send(() => {
+      const r = request(ctx.app).patch(path);
+      return body === undefined ? r : r.send(body as object);
+    });
+
   it("POST create → 201, stamps createdBy = caller", async () => {
     const res = await post("/api/consilium-loops", { groupId: ctx.group.id, repoPath: REPO_ROOT });
     expect(res.status).toBe(201);
@@ -265,6 +271,47 @@ describe("consilium-loop routes", () => {
     const res = await get("/api/consilium-loops");
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(0);
+  });
+
+  // ─── #18: round note (runner-mode operator steering note) ──────────────────
+
+  it("PATCH round note: owner sets a note → 200, persisted on the round row", async () => {
+    const created = await post("/api/consilium-loops", { groupId: ctx.group.id, repoPath: REPO_ROOT });
+    const id = created.body.id;
+    await ctx.storage.appendLoopRound({ loopId: id, round: 1, iterationNumber: 1 } as never);
+    const res = await patch(`/api/consilium-loops/${id}/rounds/1/note`, { humanNote: "focus on the auth path" });
+    expect(res.status).toBe(200);
+    expect(res.body.humanNote).toBe("focus on the auth path");
+    const rounds = await ctx.storage.getLoopRounds(id);
+    expect(rounds.find((r) => r.round === 1)?.humanNote).toBe("focus on the auth path");
+  });
+
+  it("PATCH round note: blank body clears an existing note", async () => {
+    const created = await post("/api/consilium-loops", { groupId: ctx.group.id, repoPath: REPO_ROOT });
+    const id = created.body.id;
+    await ctx.storage.appendLoopRound({ loopId: id, round: 1, iterationNumber: 1 } as never);
+    await ctx.storage.updateLoopRoundHumanNote(id, 1, "old note");
+    const res = await patch(`/api/consilium-loops/${id}/rounds/1/note`, { humanNote: "" });
+    expect(res.status).toBe(200);
+    expect(res.body.humanNote).toBeNull();
+    const rounds = await ctx.storage.getLoopRounds(id);
+    expect(rounds.find((r) => r.round === 1)?.humanNote).toBeNull();
+  });
+
+  it("PATCH round note: unknown round → 404", async () => {
+    const created = await post("/api/consilium-loops", { groupId: ctx.group.id, repoPath: REPO_ROOT });
+    const id = created.body.id;
+    const res = await patch(`/api/consilium-loops/${id}/rounds/1/note`, { humanNote: "x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("M-1: PATCH round note cross-owner → 404 (not 403)", async () => {
+    const created = await post("/api/consilium-loops", { groupId: ctx.group.id, repoPath: REPO_ROOT });
+    const id = created.body.id;
+    await ctx.storage.appendLoopRound({ loopId: id, round: 1, iterationNumber: 1 } as never);
+    ctx.setUser(OTHER_USER);
+    const res = await patch(`/api/consilium-loops/${id}/rounds/1/note`, { humanNote: "x" });
+    expect(res.status).toBe(404);
   });
 });
 

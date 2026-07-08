@@ -992,6 +992,14 @@ export class PgStorage implements IStorage {
       .where(and(eq(consiliumLoopRounds.loopId, loopId), eq(consiliumLoopRounds.round, round)));
   }
 
+  async updateLoopRoundHumanNote(loopId: string, round: number, humanNote: string | null): Promise<void> {
+    // #18: same (loop, round) scoping as testSummary/report/executionTrace.
+    await db
+      .update(consiliumLoopRounds)
+      .set({ humanNote })
+      .where(and(eq(consiliumLoopRounds.loopId, loopId), eq(consiliumLoopRounds.round, round)));
+  }
+
   // ─── Experience plane — the "Dream" distillation, WRITE side (DREAM-1) ─────
 
   async createExperienceItems(items: InsertExperienceItem[]): Promise<ExperienceItemRow[]> {
