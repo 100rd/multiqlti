@@ -9,7 +9,7 @@
  */
 import { test, expect, request as playwrightRequest } from "@playwright/test";
 import { startTestAgent, type TestAgentHandle } from "../helpers/test-agent";
-import { getAuthToken } from "./helpers/auth";
+import { getAuthToken, loginPage, ensureProjectHeaders } from "./helpers/auth";
 
 const BASE_URL_FALLBACK = "http://localhost:3099";
 const HAS_DATABASE = !!process.env.DATABASE_URL;
@@ -336,12 +336,24 @@ test.describe("Remote Agents — Custom Tools", () => {
 // ─── API Tests (DB required) ──────────────────────────────────────────────────
 
 test.describe("Remote Agents — API (DB)", () => {
+  let projectHeaders: { "x-project-id": string };
+
+  test.beforeEach(async ({ page }, testInfo) => {
+    // /api/remote-agents is mounted behind requireAuth + requireProject
+    // (server/routes.ts) — the standalone request.newContext() below
+    // bypasses the client's fetch interceptor, so x-project-id must be
+    // primed via the page and merged in explicitly at each call site.
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    await loginPage(page, baseURL);
+    projectHeaders = await ensureProjectHeaders(page, baseURL);
+  });
+
   /** Create an authenticated API context against the Playwright webServer. */
   async function authenticatedApiContext(baseURL: string) {
     const token = await getAuthToken(baseURL);
     return playwrightRequest.newContext({
       baseURL,
-      extraHTTPHeaders: { Authorization: `Bearer ${token}` },
+      extraHTTPHeaders: { Authorization: `Bearer ${token}`, ...projectHeaders },
     });
   }
 

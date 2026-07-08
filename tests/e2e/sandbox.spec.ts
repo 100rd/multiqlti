@@ -1,6 +1,12 @@
 /**
  * E2E tests for sandbox configuration.
- * Tests the sandbox API endpoints and verifies the pipeline detail page loads.
+ * Tests the sandbox API endpoints directly.
+ *
+ * Note: this file previously also covered a pipeline-detail-page rendering
+ * test (`POST /api/pipelines` + `/pipelines/:id`), but both the route and
+ * the client page were retired in PR #525 ("chore: retire legacy pipelines
+ * engine..."). No successor page exists, so that coverage was removed
+ * rather than pointed at broken/missing surface.
  */
 import { test, expect } from "@playwright/test";
 import { loginPage } from "./helpers/auth";
@@ -63,30 +69,6 @@ test.describe("Sandbox", () => {
       data: {},
     });
     expect(res.status()).toBe(400);
-  });
-
-  // Pipeline page with sandbox section ──────────────────────────────────────
-
-  test("pipeline detail page renders without sandbox errors", async ({ page }, testInfo) => {
-    const baseURL = testInfo.project.use.baseURL ?? "http://localhost:3099";
-
-    // Create a pipeline
-    const createRes = await page.request.post(`${baseURL}/api/pipelines`, {
-      data: {
-        name: "Sandbox E2E Pipeline",
-        description: "For sandbox E2E tests",
-        stages: [{ teamId: "development", modelSlug: "mock", enabled: true }],
-      },
-    });
-    expect(createRes.status()).toBe(201);
-    const pipeline = await createRes.json() as { id: string };
-
-    await page.goto(`/pipelines/${pipeline.id}`);
-    await page.waitForLoadState("networkidle");
-
-    const body = await page.locator("body").textContent();
-    expect(body).not.toContain("Something went wrong");
-    expect(page.url()).toContain(pipeline.id);
   });
 
   test("sandbox presets API response is valid JSON (not HTML)", async ({ page }, testInfo) => {

@@ -25,7 +25,7 @@
  * has DATABASE_URL set in CI. They are skipped when DATABASE_URL is absent.
  */
 import { test, expect, request as playwrightRequest } from "@playwright/test";
-import { loginPage, getAuthToken } from "./helpers/auth";
+import { loginPage, getAuthToken, ensureProjectHeaders } from "./helpers/auth";
 
 const BASE_URL_FALLBACK = "http://localhost:3099";
 const HAS_DATABASE = !!process.env.DATABASE_URL;
@@ -48,18 +48,28 @@ async function openArgoCdSection(page: import("@playwright/test").Page) {
   await page.waitForTimeout(300);
 }
 
-/** Create an authenticated API context against the Playwright webServer. */
-async function authenticatedApiContext(baseURL: string) {
+/**
+ * Create an authenticated API context against the Playwright webServer.
+ * /api/settings (which covers /api/settings/argocd) is mounted behind
+ * requireAuth + requireProject (server/routes.ts) — extraHeaders lets
+ * callers merge in x-project-id since this context bypasses the client's
+ * fetch interceptor entirely.
+ */
+async function authenticatedApiContext(baseURL: string, extraHeaders: Record<string, string> = {}) {
   const token = await getAuthToken(baseURL);
   return playwrightRequest.newContext({
     baseURL,
-    extraHTTPHeaders: { Authorization: `Bearer ${token}` },
+    extraHTTPHeaders: { Authorization: `Bearer ${token}`, ...extraHeaders },
   });
 }
 
 test.describe("ArgoCD Settings", () => {
+  let projectHeaders: { "x-project-id": string };
+
   test.beforeEach(async ({ page }, testInfo) => {
-    await loginPage(page, testInfo.project.use.baseURL ?? BASE_URL_FALLBACK);
+    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+    await loginPage(page, baseURL);
+    projectHeaders = await ensureProjectHeaders(page, baseURL);
   });
 
   // ─── Settings page renders ArgoCD section ─────────────────────────────────
@@ -184,6 +194,7 @@ test.describe("ArgoCD Settings", () => {
   test("PUT /api/settings/argocd with SSRF URL (localhost) → 400", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
     const res = await page.request.put(`${baseURL}/api/settings/argocd`, {
+      headers: projectHeaders,
       data: {
         serverUrl: "http://localhost:8080",
         token: "some-token",
@@ -199,6 +210,7 @@ test.describe("ArgoCD Settings", () => {
   test("PUT /api/settings/argocd with private IP 10.x.x.x → 400", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
     const res = await page.request.put(`${baseURL}/api/settings/argocd`, {
+      headers: projectHeaders,
       data: {
         serverUrl: "https://10.0.0.1:8080",
         token: "some-token",
@@ -214,6 +226,7 @@ test.describe("ArgoCD Settings", () => {
   }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
     const res = await page.request.put(`${baseURL}/api/settings/argocd`, {
+      headers: projectHeaders,
       data: {
         serverUrl: "https://192.168.1.50",
         token: "some-token",
@@ -227,6 +240,7 @@ test.describe("ArgoCD Settings", () => {
   test("PUT /api/settings/argocd with invalid URL → 400", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
     const res = await page.request.put(`${baseURL}/api/settings/argocd`, {
+      headers: projectHeaders,
       data: {
         serverUrl: "not-a-url",
         token: "some-token",
@@ -240,6 +254,7 @@ test.describe("ArgoCD Settings", () => {
   test("PUT /api/settings/argocd missing serverUrl → 400", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
     const res = await page.request.put(`${baseURL}/api/settings/argocd`, {
+      headers: projectHeaders,
       data: {
         token: "some-token",
         verifySsl: true,
@@ -256,7 +271,7 @@ test.describe("ArgoCD Settings", () => {
   test("GET /api/settings/argocd returns configured field (DB)", async ({}, testInfo) => {
     test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const ctx = await authenticatedApiContext(baseURL);
+    const ctx = await authenticatedApiContext(baseURL, projectHeaders);
     try {
       const res = await ctx.get("/api/settings/argocd");
       expect(res.status()).toBe(200);
@@ -271,7 +286,7 @@ test.describe("ArgoCD Settings", () => {
   test("GET /api/settings/argocd response is valid JSON not HTML (DB)", async ({}, testInfo) => {
     test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const ctx = await authenticatedApiContext(baseURL);
+    const ctx = await authenticatedApiContext(baseURL, projectHeaders);
     try {
       const res = await ctx.get("/api/settings/argocd");
       expect(res.status()).toBe(200);
@@ -289,7 +304,7 @@ test.describe("ArgoCD Settings", () => {
   test("PUT /api/settings/argocd missing token on first config → 400 (DB)", async ({}, testInfo) => {
     test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const ctx = await authenticatedApiContext(baseURL);
+    const ctx = await authenticatedApiContext(baseURL, projectHeaders);
     try {
       await ctx.delete("/api/settings/argocd");
 
@@ -309,7 +324,7 @@ test.describe("ArgoCD Settings", () => {
   test("DELETE /api/settings/argocd returns 204 when no config exists (DB)", async ({}, testInfo) => {
     test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const ctx = await authenticatedApiContext(baseURL);
+    const ctx = await authenticatedApiContext(baseURL, projectHeaders);
     try {
       await ctx.delete("/api/settings/argocd");
       const res = await ctx.delete("/api/settings/argocd");
@@ -322,7 +337,7 @@ test.describe("ArgoCD Settings", () => {
   test("POST /api/settings/argocd/test returns JSON response (DB)", async ({}, testInfo) => {
     test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const ctx = await authenticatedApiContext(baseURL);
+    const ctx = await authenticatedApiContext(baseURL, projectHeaders);
     try {
       const res = await ctx.post("/api/settings/argocd/test");
 
@@ -337,7 +352,7 @@ test.describe("ArgoCD Settings", () => {
   test("POST /api/settings/argocd/test when not configured returns ok:false (DB)", async ({}, testInfo) => {
     test.skip(!HAS_DATABASE, "Requires DATABASE_URL");
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const ctx = await authenticatedApiContext(baseURL);
+    const ctx = await authenticatedApiContext(baseURL, projectHeaders);
     try {
       await ctx.delete("/api/settings/argocd");
 

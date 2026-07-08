@@ -1,29 +1,53 @@
 /**
  * E2E tests for the Privacy page and API.
+ *
+ * The standalone /privacy page was folded into Settings as a "Privacy &
+ * Compliance" collapsible section (client/src/App.tsx: "/privacy" now
+ * redirects to "/settings" for legacy bookmarks; the actual UI lives in
+ * client/src/components/settings/PrivacySection.tsx, rendered inside a
+ * SettingsSection with defaultOpen=false — same collapsed-by-default
+ * pattern as the ArgoCD section in argocd-settings.spec.ts).
  */
 import { test, expect } from "@playwright/test";
-import { loginPage } from "./helpers/auth";
+import { loginPage, ensureProjectHeaders } from "./helpers/auth";
+
+/** Navigate to Settings and expand the "Privacy & Compliance" collapsible section. */
+async function openPrivacySection(page: import("@playwright/test").Page) {
+  await page.goto("/settings");
+  await page.waitForLoadState("networkidle");
+
+  const sectionTrigger = page.locator("button", { hasText: "Privacy & Compliance" }).first();
+  const expanded = await sectionTrigger.getAttribute("aria-expanded");
+  if (expanded !== "true") {
+    await sectionTrigger.click();
+  }
+  await page.waitForTimeout(300);
+}
 
 test.describe("Privacy", () => {
+  let projectHeaders: { "x-project-id": string };
+
   test.beforeEach(async ({ page }, testInfo) => {
-    await loginPage(page, testInfo.project.use.baseURL ?? "http://localhost:3099");
+    const baseURL = testInfo.project.use.baseURL ?? "http://localhost:3099";
+    await loginPage(page, baseURL);
+    // /api/privacy is mounted behind requireAuth + requireProject (server/routes.ts).
+    projectHeaders = await ensureProjectHeaders(page, baseURL);
   });
 
   // Privacy page rendering ───────────────────────────────────────────────────
 
-  test("privacy page renders at /privacy", async ({ page }) => {
+  test("legacy /privacy bookmark redirects to /settings", async ({ page }) => {
     await page.goto("/privacy");
     await page.waitForLoadState("networkidle");
 
-    expect(page.url()).toContain("/privacy");
+    expect(page.url()).toContain("/settings");
     const body = await page.locator("body").textContent();
     expect(body).toBeTruthy();
     expect(body).not.toContain("Something went wrong");
   });
 
-  test("privacy page does not show a 404 error", async ({ page }) => {
-    await page.goto("/privacy");
-    await page.waitForLoadState("networkidle");
+  test("Privacy & Compliance section renders in Settings without a 404 error", async ({ page }) => {
+    await openPrivacySection(page);
 
     const body = await page.locator("body").textContent();
     expect(body).not.toContain("Page Not Found");
@@ -34,7 +58,7 @@ test.describe("Privacy", () => {
 
   test("GET /api/privacy/patterns returns array", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? "http://localhost:3099";
-    const res = await page.request.get(`${baseURL}/api/privacy/patterns`);
+    const res = await page.request.get(`${baseURL}/api/privacy/patterns`, { headers: projectHeaders });
     expect(res.status()).toBe(200);
     const body = await res.json() as unknown[];
     expect(Array.isArray(body)).toBe(true);
@@ -45,6 +69,7 @@ test.describe("Privacy", () => {
     const text = "my secret api_key=sk-test123";
 
     const res = await page.request.post(`${baseURL}/api/privacy/test`, {
+      headers: projectHeaders,
       data: { text, level: "off" },
     });
     expect(res.status()).toBe(200);
@@ -58,6 +83,7 @@ test.describe("Privacy", () => {
     const text = "OPENAI_KEY=sk-abcdefghijklmnopqrstuvwxyz123456";
 
     const res = await page.request.post(`${baseURL}/api/privacy/test`, {
+      headers: projectHeaders,
       data: { text, level: "standard" },
     });
     expect(res.status()).toBe(200);
@@ -71,6 +97,7 @@ test.describe("Privacy", () => {
     const text = "Please contact admin@example.company.io for access";
 
     const res = await page.request.post(`${baseURL}/api/privacy/test`, {
+      headers: projectHeaders,
       data: { text, level: "standard" },
     });
     expect(res.status()).toBe(200);
@@ -83,6 +110,7 @@ test.describe("Privacy", () => {
     const baseURL = testInfo.project.use.baseURL ?? "http://localhost:3099";
 
     const res = await page.request.post(`${baseURL}/api/privacy/test`, {
+      headers: projectHeaders,
       data: {
         text: "some text",
         level: "standard",
@@ -96,9 +124,8 @@ test.describe("Privacy", () => {
 
   // Privacy page content ────────────────────────────────────────────────────
 
-  test("privacy page body contains privacy-related content", async ({ page }) => {
-    await page.goto("/privacy");
-    await page.waitForLoadState("networkidle");
+  test("Privacy & Compliance section body contains privacy-related content", async ({ page }) => {
+    await openPrivacySection(page);
 
     const body = (await page.locator("body").textContent()) ?? "";
     // Should mention privacy or anonymization
