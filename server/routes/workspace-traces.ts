@@ -1,9 +1,18 @@
 // server/routes/workspace-traces.ts
 // Workspace-scoped trace viewer endpoints — /workspaces/:id/traces
+//
+// Repointed (task #29) from the legacy `traces` table — whose only writer,
+// the pipeline tracer's flushTrace(), was retired along with the pipelines
+// engine (migration 0053) and fully removed in the OTel/core-tracer sweep —
+// to the live consilium task-tracing source (task-tracer.ts / task_traces).
+// The response shape (WorkspaceTraceSummary/Detail, TraceSpan) is unchanged
+// so the client page needs no changes; task_traces rows are adapted into the
+// same OpenInference-flavoured TraceSpan shape via taskSpanToTraceSpan below.
 import { z } from "zod";
 import type { Express } from "express";
 import type { IStorage } from "../storage";
-import type { WorkspaceTraceSummary, WorkspaceTraceDetail, TraceSpan } from "@shared/types";
+import type { WorkspaceTraceSummary, WorkspaceTraceDetail, TraceSpan, TaskTraceSpan } from "@shared/types";
+import type { TaskTraceRow } from "@shared/schema";
 
 // ─── Zod Schemas ──────────────────────────────────────────────────────────────
 
@@ -72,7 +81,7 @@ function aggregateSpanMetrics(spans: TraceSpan[]): {
   const model    = Object.keys(modelCounts).sort((a, b) => modelCounts[b] - modelCounts[a])[0] ?? "";
 
   return {
-    startTime:   startTime === Infinity ? 0 : startTime,
+    startTime: startTime === Infinity ? 0 : startTime,
     endTime,
     totalTokens,
     costUsd,
@@ -81,11 +90,7 @@ function aggregateSpanMetrics(spans: TraceSpan[]): {
   };
 }
 
-function toTraceSummary(
-  traceId: string,
-  runId: string,
-  spans: TraceSpan[],
-): WorkspaceTraceSummary {
+function toTraceSummary(traceId: string, runId: string, spans: TraceSpan[]): WorkspaceTraceSummary {
   const metrics = aggregateSpanMetrics(spans);
   return {
     traceId,
@@ -95,12 +100,58 @@ function toTraceSummary(
   };
 }
 
+/**
+ * Adapt a TaskTracer span (task_traces.spans, TaskTraceSpanType/metadata
+ * shape) into the OpenInference-flavoured TraceSpan the page already renders.
+ * TaskTracer never captured raw prompt/response text or tool-call args — only
+ * token/cost/model metadata — so those page sections simply stay empty
+ * (the page already handles missing attributes gracefully).
+ */
+function taskSpanToTraceSpan(span: TaskTraceSpan): TraceSpan {
+  const kind =
+    span.type === "llm_call" ? "LLM" :
+    span.type === "task"     ? "AGENT" :
+    "CHAIN"; // "stage" | "task_group"
+
+  const attributes: Record<string, string | number> = {
+    "openinference.span.kind": kind,
+  };
+  if (span.metadata.provider) attributes["llm.provider"] = span.metadata.provider;
+  if (span.metadata.modelSlug) attributes["llm.model"] = span.metadata.modelSlug;
+  if (typeof span.metadata.tokensUsed === "number") attributes["llm.token_count.total"] = span.metadata.tokensUsed;
+  if (typeof span.metadata.inputTokens === "number") attributes["llm.token_count.prompt"] = span.metadata.inputTokens;
+  if (typeof span.metadata.outputTokens === "number") attributes["llm.token_count.completion"] = span.metadata.outputTokens;
+  if (typeof span.metadata.estimatedCostUsd === "number") attributes["llm.cost_usd"] = span.metadata.estimatedCostUsd;
+  if (span.metadata.error) attributes["error.message"] = span.metadata.error;
+
+  return {
+    spanId: span.spanId,
+    parentSpanId: span.parentSpanId ?? undefined,
+    name: span.name,
+    startTime: span.startTime,
+    endTime: span.endTime ?? span.startTime,
+    attributes,
+    events: [],
+    status: span.status === "failed" ? "error" : "ok",
+  };
+}
+
+/** task_traces row → WorkspaceTraceSummary. `runId` = groupId (the closest task-groups-v2 analog to a "pipeline run"). */
+function toWorkspaceSummaryFromTaskTrace(row: TaskTraceRow): WorkspaceTraceSummary {
+  const spans = row.spans.map(taskSpanToTraceSpan);
+  return toTraceSummary(row.traceId, row.groupId, spans);
+}
+
 // ─── Route Registration ───────────────────────────────────────────────────────
 
 export function registerWorkspaceTraceRoutes(app: Express, storage: IStorage): void {
   // GET /api/workspaces/:id/traces
-  // List trace summaries for a workspace.  Workspace scoping is enforced by
-  // filtering to runs that belong to this workspace's pipelines.
+  // List trace summaries for a workspace. Scoping: the workspace must exist
+  // AND belong to the caller's project (storage.getWorkspace enforces that via
+  // ALS project context / requireProject on the /api/workspaces mount); traces
+  // are then restricted to task_traces whose group has a task recorded against
+  // THIS workspace id (server/storage.ts getWorkspaceTaskTraces) — no cross-
+  // workspace leakage even within the same project.
   app.get("/api/workspaces/:id/traces", async (req, res) => {
     const wsResult = WorkspaceIdSchema.safeParse(req.params);
     if (!wsResult.success) {
@@ -112,22 +163,20 @@ export function registerWorkspaceTraceRoutes(app: Express, storage: IStorage): v
       return res.status(400).json({ error: queryResult.error.message });
     }
 
+    const { id: workspaceId } = wsResult.data;
     const { limit, offset, runId } = queryResult.data;
 
     try {
-      // Fetch raw trace records (uses global getTraces — filtered below)
-      const allTraces = await storage.getTraces(limit + offset, 0);
+      const workspace = await storage.getWorkspace(workspaceId);
+      if (!workspace) {
+        return res.status(404).json({ error: `Workspace not found: ${workspaceId}` });
+      }
 
-      // If runId filter provided, restrict to that run
-      const filtered = runId
-        ? allTraces.filter((t) => t.runId === runId)
-        : allTraces;
+      const allTraces = await storage.getWorkspaceTaskTraces(workspaceId, limit + offset, 0);
 
+      const filtered = runId ? allTraces.filter((t) => t.groupId === runId) : allTraces;
       const page = filtered.slice(offset, offset + limit);
-
-      const summaries: WorkspaceTraceSummary[] = page.map((t) =>
-        toTraceSummary(t.traceId, t.runId, t.spans),
-      );
+      const summaries: WorkspaceTraceSummary[] = page.map(toWorkspaceSummaryFromTaskTrace);
 
       return res.json({
         traces: summaries,
@@ -142,7 +191,9 @@ export function registerWorkspaceTraceRoutes(app: Express, storage: IStorage): v
   });
 
   // GET /api/workspaces/:id/traces/:run_id
-  // Return full trace detail including span tree.
+  // Return full trace detail including span tree. `run_id` is the task
+  // group's id — the trace lookup is only permitted if that group has a task
+  // scoped to THIS workspace (getWorkspaceTaskTraceByGroupId), otherwise 404.
   app.get("/api/workspaces/:id/traces/:run_id", async (req, res) => {
     const wsResult = WorkspaceIdSchema.safeParse({ id: req.params.id });
     if (!wsResult.success) {
@@ -154,18 +205,25 @@ export function registerWorkspaceTraceRoutes(app: Express, storage: IStorage): v
       return res.status(400).json({ error: runResult.error.message });
     }
 
+    const { id: workspaceId } = wsResult.data;
     const { run_id } = runResult.data;
 
     try {
-      const trace = await storage.getTraceByRunId(run_id);
+      const workspace = await storage.getWorkspace(workspaceId);
+      if (!workspace) {
+        return res.status(404).json({ error: `Workspace not found: ${workspaceId}` });
+      }
+
+      const trace = await storage.getWorkspaceTaskTraceByGroupId(workspaceId, run_id);
       if (!trace) {
         return res.status(404).json({ error: `No trace found for run ${run_id}` });
       }
 
-      const summary = toTraceSummary(trace.traceId, trace.runId, trace.spans);
+      const spans = trace.spans.map(taskSpanToTraceSpan);
+      const summary = toTraceSummary(trace.traceId, trace.groupId, spans);
       const detail: WorkspaceTraceDetail = {
         ...summary,
-        spans: trace.spans,
+        spans,
       };
 
       return res.json(detail);
