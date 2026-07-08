@@ -513,6 +513,88 @@ describe("RemoteAgentManager", () => {
     });
   });
 
+  // ── heartbeat resilience (regression: #26) ─────────────────────
+
+  describe("heartbeat resilience", () => {
+    // Regression for #26: a Postgres ECONNRESET during the heartbeat's
+    // listAgents() read used to reject the discarded setInterval promise,
+    // surfacing as an unhandledRejection and crashing the whole server.
+    it("does not throw when listAgents rejects with a Postgres ECONNRESET", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      mockDb.select.mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockRejectedValue(new Error("read ECONNRESET")),
+        }),
+      });
+
+      const mgr = await getManager();
+
+      // runHeartbeatSweep is exactly what the interval callback invokes each tick.
+      await expect((mgr as any).runHeartbeatSweep()).resolves.toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("failed to list agents"),
+        expect.anything(),
+      );
+      // A failed listing short-circuits: no agent is probed this cycle.
+      expect(mockHealthCheck).not.toHaveBeenCalled();
+    });
+
+    it("continues the sweep when one agent's health check fails", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const bad = makeAgentRow({ id: "bad", enabled: true });
+      const good = makeAgentRow({ id: "good", enabled: true });
+      mockDb.select.mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockReturnValue([bad, good]),
+        }),
+      });
+      mockHealthCheck
+        .mockRejectedValueOnce(new Error("health probe timeout"))
+        .mockResolvedValueOnce({ status: "online", latencyMs: 5 });
+      const updateChain = createQueryChain({ onExecute: () => [] });
+      mockDb.update.mockReturnValue(updateChain);
+
+      const mgr = await getManager();
+      await expect((mgr as any).runHeartbeatSweep()).resolves.toBeUndefined();
+
+      // Both agents were probed despite the first one throwing, and the healthy
+      // agent still received its DB update.
+      expect(mockHealthCheck).toHaveBeenCalledTimes(2);
+      expect(mockDb.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the heartbeat timer alive after a rejected sweep (no process crash)", async () => {
+      const mgr = await getManager();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      mockDb.select.mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnThis(),
+          orderBy: vi.fn().mockRejectedValue(new Error("read ECONNRESET")),
+        }),
+      });
+      // Spy that calls through to the real (self-guarding) sweep, so we can count
+      // invocations deterministically without depending on async warn ordering.
+      const sweepSpy = vi.spyOn(mgr as any, "runHeartbeatSweep");
+
+      vi.useFakeTimers();
+      try {
+        (mgr as any).startHeartbeat(1000);
+        // Two ticks: prove the interval survives a rejected sweep and fires again.
+        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(1000);
+
+        // The interval fired twice and was not torn down by the rejected sweeps.
+        expect(sweepSpy).toHaveBeenCalledTimes(2);
+        expect((mgr as any).heartbeatInterval).not.toBeNull();
+      } finally {
+        await mgr.shutdown();
+        vi.useRealTimers();
+      }
+    });
+  });
+
   // ── listAgents ─────────────────────────────────────────────────
 
   describe("listAgents", () => {

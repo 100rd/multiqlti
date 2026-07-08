@@ -276,11 +276,43 @@ export class RemoteAgentManager {
   // ── Heartbeat ──────────────────────────────────────────────────────
 
   private startHeartbeat(intervalMs: number): void {
-    this.heartbeatInterval = setInterval(async () => {
+    // The timer callback is intentionally NOT async. An async callback returns a
+    // promise that setInterval discards; a rejection from the sweep (e.g. a
+    // Postgres ECONNRESET during listAgents) would then surface as an
+    // unhandledRejection and crash the whole server process. runHeartbeatSweep
+    // already swallows its own errors, and the defensive .catch() below is a
+    // belt-and-braces guard so the heartbeat can never take the process down.
+    this.heartbeatInterval = setInterval(() => {
+      void this.runHeartbeatSweep().catch((err) => {
+        console.warn(
+          "[remote-agent-manager] heartbeat sweep crashed unexpectedly (recovering, not fatal):",
+          err instanceof Error ? err.message : err,
+        );
+      });
+    }, intervalMs);
+  }
+
+  /**
+   * One heartbeat pass over all agents. Never rejects: a DB fault (ECONNRESET)
+   * while listing agents, or a single agent's health-check/update failure, is
+   * logged and the loop continues. A transient fault must not crash the server.
+   */
+  private async runHeartbeatSweep(): Promise<void> {
+    let agents: RemoteAgentConfig[];
+    try {
       // listAgents() reads across all projects; runAsSystem provides context + audit.
-      const agents = await runAsSystem("remote-agent-heartbeat", () => this.listAgents());
-      for (const agent of agents) {
-        if (!agent.enabled) continue;
+      agents = await runAsSystem("remote-agent-heartbeat", () => this.listAgents());
+    } catch (err) {
+      console.warn(
+        "[remote-agent-manager] heartbeat: failed to list agents (skipping this cycle):",
+        err instanceof Error ? err.message : err,
+      );
+      return;
+    }
+
+    for (const agent of agents) {
+      if (!agent.enabled) continue;
+      try {
         const health = await this.discovery.healthCheck(agent);
         await db
           .update(remoteAgents)
@@ -291,8 +323,14 @@ export class RemoteAgentManager {
             updatedAt: new Date(),
           })
           .where(eq(remoteAgents.id, agent.id));
+      } catch (err) {
+        // One agent's failure must not abort the sweep for the others.
+        console.warn(
+          `[remote-agent-manager] heartbeat: agent ${agent.id} update failed (continuing):`,
+          err instanceof Error ? err.message : err,
+        );
       }
-    }, intervalMs);
+    }
   }
 
   // ── Helpers ────────────────────────────────────────────────────────
