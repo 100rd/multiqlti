@@ -427,6 +427,18 @@ export interface IStorage {
   /** The trace for a specific iteration, scoped to `groupId` (MF-3). */
   getTaskTraceByIteration(groupId: string, iterationId: string): Promise<TaskTraceRow | null>;
 
+  // ─── Workspace-scoped task traces (task #29 — WorkspaceTraces repoint) ──────
+  // The legacy `traces` table (Phase 6.5, pipeline-tracer-backed) is write-less
+  // since the pipelines engine retirement (migration 0053); getTraces()/
+  // getTraceByRunId() above intentionally return empty/null. WorkspaceTraces
+  // now reads from `task_traces` instead, scoped via `tasks.workspace_id`
+  // (NOT task_groups, which has no workspace column) — a task_trace is only
+  // visible for a workspace if at least one task in its group ran against it.
+  /** Task traces whose group has a task scoped to `workspaceId`, newest first. */
+  getWorkspaceTaskTraces(workspaceId: string, limit?: number, offset?: number): Promise<TaskTraceRow[]>;
+  /** A single task trace by `groupId`, only if the group has a task scoped to `workspaceId` (else null — closes cross-workspace IDOR). */
+  getWorkspaceTaskTraceByGroupId(workspaceId: string, groupId: string): Promise<TaskTraceRow | null>;
+
   // ─── Consilium Loops (Phase B — auto-versioned FSM, design §4) ──────────────
   /** Insert a loop. The DB partial-unique index rejects a 2nd active loop per
    *  group (Security H-3) — surfaces as a unique-violation the route maps to 409. */
@@ -2091,6 +2103,28 @@ export class MemStorage implements IStorage {
     this.taskTracesMap.set(id, updated);
     this.taskTracesByGroupId.set(updated.groupId, updated);
     return updated;
+  }
+
+  // ─── Workspace-scoped task traces (task #29 — WorkspaceTraces repoint) ──────
+
+  async getWorkspaceTaskTraces(workspaceId: string, limit = 50, offset = 0): Promise<TaskTraceRow[]> {
+    const groupIds = new Set(
+      Array.from(this.tasksMap.values())
+        .filter((t) => t.workspaceId === workspaceId)
+        .map((t) => t.groupId),
+    );
+    return Array.from(this.taskTracesMap.values())
+      .filter((tr) => groupIds.has(tr.groupId))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(offset, offset + limit);
+  }
+
+  async getWorkspaceTaskTraceByGroupId(workspaceId: string, groupId: string): Promise<TaskTraceRow | null> {
+    const hasTask = Array.from(this.tasksMap.values()).some(
+      (t) => t.groupId === groupId && t.workspaceId === workspaceId,
+    );
+    if (!hasTask) return null;
+    return this.taskTracesByGroupId.get(groupId) ?? null;
   }
 
   // ─── Tracker Connections (Issue Tracker Integration) — MemStorage stubs ─────

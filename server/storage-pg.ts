@@ -1422,6 +1422,48 @@ export class PgStorage implements IStorage {
     return row;
   }
 
+  // ─── Workspace-scoped task traces (task #29 — WorkspaceTraces repoint) ──────
+  // task_groups (and task_traces) have no workspace_id / project_id column —
+  // only `tasks.workspace_id` + `tasks.project_id` do. Scope through `tasks`
+  // (withProject there is safe — the column exists) and only pass the
+  // resulting, already-authorized groupIds into the taskTraces query; do NOT
+  // wrap the taskTraces query itself in withProject (that table has no
+  // projectId column and withProject() hard-throws on tables missing it).
+
+  async getWorkspaceTaskTraces(workspaceId: string, limit = 50, offset = 0): Promise<TaskTraceRow[]> {
+    const groupRows = await db
+      .selectDistinct({ groupId: tasks.groupId })
+      .from(tasks)
+      .where(withProject(tasks, eq(tasks.workspaceId, workspaceId)));
+    const groupIds = groupRows.map((r) => r.groupId);
+    if (groupIds.length === 0) return [];
+
+    return db
+      .select()
+      .from(taskTraces)
+      .where(inArray(taskTraces.groupId, groupIds))
+      .orderBy(desc(taskTraces.createdAt))
+      .limit(limit)
+      .offset(offset);
+  }
+
+  async getWorkspaceTaskTraceByGroupId(workspaceId: string, groupId: string): Promise<TaskTraceRow | null> {
+    const [task] = await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(withProject(tasks, and(eq(tasks.groupId, groupId), eq(tasks.workspaceId, workspaceId))))
+      .limit(1);
+    if (!task) return null;
+
+    const [row] = await db
+      .select()
+      .from(taskTraces)
+      .where(eq(taskTraces.groupId, groupId))
+      .orderBy(desc(taskTraces.createdAt))
+      .limit(1);
+    return row ?? null;
+  }
+
   // ─── Tracker Connections (Issue Tracker Integration) ────────────────────────
 
   /**
