@@ -52,7 +52,10 @@ interface ProviderBreakdown {
   callCount: number;
 }
 
-interface PipelineRollup {
+// NOTE (#53 Phase 1): local type renamed PipelineRollup → RunRollup; the
+// `pipelineRunId` field/wire key is kept unchanged this wave (matches
+// server RunRollup — see server/services/cost-service.ts).
+interface RunRollup {
   pipelineRunId: string;
   costUsd: number;
   promptTokens: number;
@@ -88,7 +91,7 @@ interface CostSummaryResponse {
   totalCompletionTokens: number;
   dailySeries: CostSummaryPoint[];
   byProvider: ProviderBreakdown[];
-  topPipelines: PipelineRollup[];
+  topPipelines: RunRollup[];
   budgetStatuses: BudgetStatus[];
 }
 

@@ -43,7 +43,7 @@ function makeCostInput(
     workspaceId,
     provider: "anthropic",
     model: "claude-sonnet-4-6",
-    pipelineRunId: "run-1",
+    runId: "run-1",
     stageId: "stage-1",
     promptTokens: 1000,
     completionTokens: 200,
@@ -411,7 +411,7 @@ describe("CostService.getSummary", () => {
         promptTokens: 0,
         completionTokens: 0,
         costUsd: i * 0.001,
-        pipelineRunId: `run-${i}`,
+        runId: `run-${i}`,
       });
     }
 

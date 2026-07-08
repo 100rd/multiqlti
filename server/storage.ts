@@ -2367,7 +2367,7 @@ export class MemStorage implements IStorage {
     const id = randomUUID();
     const record: McpToolCall = {
       id,
-      pipelineRunId: input.pipelineRunId ?? null,
+      runId: input.runId ?? null,
       stageId: input.stageId ?? null,
       connectionId: input.connectionId,
       toolName: input.toolName,
@@ -2458,7 +2458,7 @@ export class MemStorage implements IStorage {
       workspaceId: input.workspaceId,
       provider: input.provider,
       model: input.model,
-      pipelineRunId: input.pipelineRunId ?? null,
+      runId: input.runId ?? null,
       stageId: input.stageId ?? null,
       promptTokens: input.promptTokens ?? 0,
       completionTokens: input.completionTokens ?? 0,

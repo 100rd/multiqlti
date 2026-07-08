@@ -1097,10 +1097,11 @@ export const mcpToolCalls = pgTable(
       .default(sql`gen_random_uuid()`),
     // Per-project scoping: ADR-001 PR-0c — resolves the column-not-found gap
     // that would cause fail-closed withProject(mcpToolCalls) to throw. Backfilled
-    // from pipeline_runs.project_id via JOIN on pipeline_run_id.
+    // from pipeline_runs.project_id via JOIN on pipeline_run_id (column retained,
+    // TS field renamed to runId — see #53 Phase 1).
     projectId: text("project_id").references(() => projects.id, { onDelete: "cascade" }),
-    /** Nullable — tool calls may occur outside a pipeline run context. */
-    pipelineRunId: varchar("pipeline_run_id"),
+    /** Nullable — tool calls may occur outside a run context. */
+    runId: varchar("pipeline_run_id"),
     /** DAG stage ID within the run, if applicable. */
     stageId: text("stage_id"),
     /** Workspace connection that owns this tool. */
@@ -1119,7 +1120,7 @@ export const mcpToolCalls = pgTable(
   },
   (table) => ({
     connectionIdIdx: index("mcp_tool_calls_connection_id_idx").on(table.connectionId),
-    pipelineRunIdIdx: index("mcp_tool_calls_pipeline_run_id_idx").on(table.pipelineRunId),
+    pipelineRunIdIdx: index("mcp_tool_calls_pipeline_run_id_idx").on(table.runId),
     startedAtIdx: index("mcp_tool_calls_started_at_idx").on(table.startedAt),
     connectionStartedIdx: index("mcp_tool_calls_connection_started_idx").on(
       table.connectionId,
@@ -1194,7 +1195,7 @@ export const costLedger = pgTable(
     workspaceId: varchar("workspace_id").notNull().references(() => workspaces.id, { onDelete: "cascade" }),
     provider: text("provider").notNull(),
     model: text("model").notNull(),
-    pipelineRunId: varchar("pipeline_run_id"),
+    runId: varchar("pipeline_run_id"),
     stageId: text("stage_id"),
     promptTokens: integer("prompt_tokens").notNull().default(0),
     completionTokens: integer("completion_tokens").notNull().default(0),
@@ -1204,7 +1205,7 @@ export const costLedger = pgTable(
   (table) => [
     index("cost_ledger_workspace_ts_idx").on(table.workspaceId, table.ts),
     index("cost_ledger_workspace_provider_idx").on(table.workspaceId, table.provider),
-    index("cost_ledger_run_idx").on(table.pipelineRunId),
+    index("cost_ledger_run_idx").on(table.runId),
   ],
 );
 

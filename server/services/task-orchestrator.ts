@@ -58,7 +58,6 @@ export interface CreateTaskParam {
   description: string;
   executionMode?: "direct_llm";
   dependsOn?: string[]; // task names within this group
-  pipelineId?: string;
   modelSlug?: string;
   teamId?: string;
   input?: Record<string, unknown>;
@@ -95,7 +94,6 @@ export interface StartGroupOptions {
 /** The resolved fields a definition row is created with. */
 interface ResolvedTaskFields {
   executionMode: "direct_llm";
-  pipelineId: string | null;
   modelSlug: string | null;
   teamId: string | null;
   input: Record<string, unknown>;
@@ -223,7 +221,6 @@ export class TaskOrchestrator {
   private resolveTaskFields(t: CreateTaskParam): ResolvedTaskFields {
     return {
       executionMode: t.executionMode ?? "direct_llm",
-      pipelineId: t.pipelineId ?? null,
       modelSlug: t.modelSlug ?? null,
       teamId: t.teamId ?? null,
       input: t.input ?? {},
@@ -259,7 +256,6 @@ export class TaskOrchestrator {
         description: t.description,
         executionMode: fields.executionMode,
         dependsOn: [], // populated in second pass
-        pipelineId: fields.pipelineId,
         workspaceId: fields.workspaceId,
         modelSlug: fields.modelSlug,
         teamId: fields.teamId,

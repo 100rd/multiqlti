@@ -3004,7 +3004,7 @@ export interface ConnectionBlockedError {
 /** Public shape of a recorded MCP tool call — args/result are already redacted. */
 export interface McpToolCall {
   id: string;
-  pipelineRunId: string | null;
+  runId: string | null;
   stageId: string | null;
   connectionId: string;
   toolName: string;
@@ -3041,7 +3041,7 @@ export interface ConnectionUsageMetrics {
 
 /** Input for recording a tool call. */
 export interface RecordMcpToolCallInput {
-  pipelineRunId?: string | null;
+  runId?: string | null;
   stageId?: string | null;
   connectionId: string;
   toolName: string;

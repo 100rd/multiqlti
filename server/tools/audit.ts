@@ -94,7 +94,7 @@ export const MCP_TOOL_CALL_RETENTION_DAYS = Number(
 );
 
 export interface AuditCallInput {
-  pipelineRunId?: string | null;
+  runId?: string | null;
   stageId?: string | null;
   connectionId: string;
   connectionType?: string;
@@ -127,7 +127,7 @@ export async function recordToolCall(
 
   // ── Persist to DB ───────────────────────────────────────────────────────────
   const record: RecordMcpToolCallInput = {
-    pipelineRunId: input.pipelineRunId ?? null,
+    runId: input.runId ?? null,
     stageId: input.stageId ?? null,
     connectionId: input.connectionId,
     toolName: input.toolName,
