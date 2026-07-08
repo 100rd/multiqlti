@@ -19,7 +19,7 @@ interface McpConnection {
 
 /** Context passed to callTool for tracing / audit. */
 export interface McpCallContext {
-  pipelineRunId?: string | null;
+  runId?: string | null;
   stageId?: string | null;
   traceId?: string;
   parentSpanId?: string;
@@ -214,7 +214,7 @@ export class McpClientManager {
       const durationMs = Date.now() - startMs;
       if (this.storage && conn.connectionId) {
         void recordToolCall(this.storage, {
-          pipelineRunId: ctx?.pipelineRunId ?? null,
+          runId: ctx?.runId ?? null,
           stageId: ctx?.stageId ?? null,
           connectionId: conn.connectionId,
           connectionType: conn.connectionType,

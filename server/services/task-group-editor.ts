@@ -52,7 +52,6 @@ export interface TaskPatch {
   description?: string;
   executionMode?: "direct_llm";
   dependsOn?: string[];
-  pipelineId?: string;
   modelSlug?: string;
   teamId?: string;
   input?: Record<string, unknown>;
@@ -64,7 +63,6 @@ export interface NewTaskInput {
   description: string;
   executionMode?: "direct_llm";
   dependsOn?: string[];
-  pipelineId?: string;
   modelSlug?: string;
   teamId?: string;
   input?: Record<string, unknown>;
@@ -117,7 +115,6 @@ export class TaskGroupEditor {
     if (patch.name !== undefined) updates.name = patch.name;
     if (patch.description !== undefined) updates.description = patch.description;
     if (patch.executionMode !== undefined) updates.executionMode = patch.executionMode;
-    if (patch.pipelineId !== undefined) updates.pipelineId = patch.pipelineId;
     if (patch.modelSlug !== undefined) updates.modelSlug = patch.modelSlug;
     if (patch.teamId !== undefined) updates.teamId = patch.teamId;
     if (patch.input !== undefined) updates.input = patch.input;
@@ -163,7 +160,6 @@ export class TaskGroupEditor {
       description: input.description,
       executionMode: fields.executionMode,
       dependsOn,
-      pipelineId: fields.pipelineId,
       modelSlug: fields.modelSlug,
       teamId: fields.teamId,
       input: fields.input,
@@ -176,7 +172,6 @@ export class TaskGroupEditor {
   /** Resolve a new task's definition fields. */
   private resolveTaskFields(input: NewTaskInput): {
     executionMode: "direct_llm";
-    pipelineId: string | null;
     modelSlug: string | null;
     teamId: string | null;
     input: Record<string, unknown>;
@@ -184,7 +179,6 @@ export class TaskGroupEditor {
   } {
     return {
       executionMode: input.executionMode ?? "direct_llm",
-      pipelineId: input.pipelineId ?? null,
       modelSlug: input.modelSlug ?? null,
       teamId: input.teamId ?? null,
       input: input.input ?? {},

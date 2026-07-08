@@ -27,7 +27,7 @@ export interface RecordCostInput {
   workspaceId: string;
   provider: string;
   model: string;
-  pipelineRunId?: string | null;
+  runId?: string | null;
   stageId?: string | null;
   promptTokens: number;
   completionTokens: number;
@@ -61,7 +61,11 @@ export interface ProviderBreakdown {
   callCount: number;
 }
 
-export interface PipelineRollup {
+// NOTE (#53 Phase 1): type renamed PipelineRollup → RunRollup, but the
+// `pipelineRunId` field is a live API wire key (client/src/pages/Costs.tsx
+// reads `topPipelines[].pipelineRunId`) — kept unchanged this wave to avoid a
+// breaking response-shape change. Retire the wire name in Phase 2.
+export interface RunRollup {
   pipelineRunId: string;
   costUsd: number;
   promptTokens: number;
@@ -86,7 +90,7 @@ export interface CostSummaryResponse {
   totalCompletionTokens: number;
   dailySeries: CostSummaryPoint[];
   byProvider: ProviderBreakdown[];
-  topPipelines: PipelineRollup[];
+  topPipelines: RunRollup[];
   budgetStatuses: BudgetStatus[];
 }
 
@@ -244,7 +248,7 @@ export class CostService {
       workspaceId: input.workspaceId,
       provider: input.provider,
       model: input.model,
-      pipelineRunId: input.pipelineRunId ?? null,
+      runId: input.runId ?? null,
       stageId: input.stageId ?? null,
       promptTokens: input.promptTokens,
       completionTokens: input.completionTokens,
@@ -288,7 +292,7 @@ export class CostService {
 
     const dayMap = new Map<string, CostSummaryPoint>();
     const providerMap = new Map<string, ProviderBreakdown>();
-    const pipelineMap = new Map<string, PipelineRollup>();
+    const pipelineMap = new Map<string, RunRollup>();
 
     for (const row of rows) {
       totalCostUsd += row.costUsd;
@@ -318,9 +322,9 @@ export class CostService {
       providerMap.set(row.provider, pb);
 
       // By pipeline
-      if (row.pipelineRunId) {
-        const pr = pipelineMap.get(row.pipelineRunId) ?? {
-          pipelineRunId: row.pipelineRunId,
+      if (row.runId) {
+        const pr = pipelineMap.get(row.runId) ?? {
+          pipelineRunId: row.runId,
           costUsd: 0,
           promptTokens: 0,
           completionTokens: 0,
@@ -330,7 +334,7 @@ export class CostService {
         pr.promptTokens += row.promptTokens;
         pr.completionTokens += row.completionTokens;
         pr.callCount += 1;
-        pipelineMap.set(row.pipelineRunId, pr);
+        pipelineMap.set(row.runId, pr);
       }
     }
 
@@ -386,7 +390,7 @@ export class CostService {
         r.ts.toISOString(),
         r.provider,
         r.model,
-        r.pipelineRunId ?? "",
+        r.runId ?? "",
         r.stageId ?? "",
         r.promptTokens,
         r.completionTokens,

@@ -370,7 +370,7 @@ export class Gateway {
         workspaceId: loggingOptions.workspaceId,
         provider: providerKey,
         model: request.modelSlug,
-        pipelineRunId: loggingOptions.runId ?? null,
+        runId: loggingOptions.runId ?? null,
         stageId: loggingOptions.stageId ?? null,
         promptTokens: 0,        // real token counts not available at this level
         completionTokens: result.tokensUsed,
@@ -775,7 +775,7 @@ export class Gateway {
         workspaceId: loggingOptions.workspaceId,
         provider: providerKey,
         model: request.modelSlug,
-        pipelineRunId: loggingOptions.runId ?? null,
+        runId: loggingOptions.runId ?? null,
         stageId: loggingOptions.stageId ?? null,
         promptTokens: 0,
         completionTokens: tokensUsed,

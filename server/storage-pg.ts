@@ -1747,7 +1747,7 @@ export class PgStorage implements IStorage {
     const [row] = await db
       .insert(mcpToolCalls)
       .values(withProjectInsert(mcpToolCalls, {
-        pipelineRunId: input.pipelineRunId ?? null,
+        runId: input.runId ?? null,
         stageId: input.stageId ?? null,
         connectionId: input.connectionId,
         toolName: input.toolName,
@@ -1832,7 +1832,7 @@ export class PgStorage implements IStorage {
   private rowToMcpToolCall(row: McpToolCallRow): McpToolCall {
     return {
       id: row.id,
-      pipelineRunId: row.pipelineRunId ?? null,
+      runId: row.runId ?? null,
       stageId: row.stageId ?? null,
       connectionId: row.connectionId,
       toolName: row.toolName,
@@ -1853,7 +1853,7 @@ export class PgStorage implements IStorage {
         workspaceId: input.workspaceId,
         provider: input.provider,
         model: input.model,
-        pipelineRunId: input.pipelineRunId ?? null,
+        runId: input.runId ?? null,
         stageId: input.stageId ?? null,
         promptTokens: input.promptTokens ?? 0,
         completionTokens: input.completionTokens ?? 0,

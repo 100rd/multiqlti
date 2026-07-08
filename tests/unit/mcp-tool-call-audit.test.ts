@@ -148,7 +148,7 @@ describe("MemStorage.recordMcpToolCall", () => {
     expect(record.toolName).toBe("github__github_list_prs");
     expect(record.durationMs).toBe(100);
     expect(record.error).toBeNull();
-    expect(record.pipelineRunId).toBeNull();
+    expect(record.runId).toBeNull();
     expect(record.stageId).toBeNull();
   });
 
@@ -171,10 +171,10 @@ describe("MemStorage.recordMcpToolCall", () => {
     expect(record.resultJson).toBeNull();
   });
 
-  it("stores pipelineRunId and stageId", async () => {
-    const input = makeRecordInput({ pipelineRunId: "run-123", stageId: "stage-abc" });
+  it("stores runId and stageId", async () => {
+    const input = makeRecordInput({ runId: "run-123", stageId: "stage-abc" });
     const record = await storage.recordMcpToolCall(input);
-    expect(record.pipelineRunId).toBe("run-123");
+    expect(record.runId).toBe("run-123");
     expect(record.stageId).toBe("stage-abc");
   });
 
@@ -418,18 +418,18 @@ describe("recordToolCall", () => {
     await expect(recordToolCall(storage, makeAuditInput())).resolves.toBeUndefined();
   });
 
-  it("stores pipelineRunId and stageId on the record", async () => {
+  it("stores runId and stageId on the record", async () => {
     const storage = {
       recordMcpToolCall: vi.fn().mockResolvedValue({ id: "1" }),
     } as unknown as IStorage;
 
     await recordToolCall(storage, makeAuditInput({
-      pipelineRunId: "run-abc",
+      runId: "run-abc",
       stageId: "stage-xyz",
     }));
 
     const call = vi.mocked(storage.recordMcpToolCall).mock.calls[0][0];
-    expect(call.pipelineRunId).toBe("run-abc");
+    expect(call.runId).toBe("run-abc");
     expect(call.stageId).toBe("stage-xyz");
   });
 
