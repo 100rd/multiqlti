@@ -67,6 +67,7 @@ describe("dashboard-layout persistence", () => {
           { i: "by-model", x: 0, y: 10, w: 12, h: 7 },
           { i: "by-workspace", x: 0, y: 17, w: 12, h: 7 },
           { i: "request-log", x: 0, y: 24, w: 12, h: 10 },
+          { i: "loop-trust", x: 0, y: 34, w: 12, h: 5 },
           // stale key from a previous app version — must be dropped:
           { i: "legacy-pipeline-runs", x: 0, y: 40, w: 12, h: 4 },
         ],
@@ -81,7 +82,7 @@ describe("dashboard-layout persistence", () => {
     const keys = result!.lg!.map((item) => item.i);
     expect(keys).not.toContain("legacy-pipeline-runs");
     expect(keys.sort()).toEqual(
-      ["by-model", "by-workspace", "request-log", "timeline", "totals"].sort(),
+      ["by-model", "by-workspace", "loop-trust", "request-log", "timeline", "totals"].sort(),
     );
   });
 
@@ -95,6 +96,7 @@ describe("dashboard-layout persistence", () => {
           { i: "by-model", x: 0, y: 10, w: 12, h: 7 },
           // "by-workspace" intentionally missing
           { i: "request-log", x: 0, y: 24, w: 12, h: 10 },
+          { i: "loop-trust", x: 0, y: 34, w: 12, h: 5 },
         ],
       },
     });
@@ -108,9 +110,9 @@ describe("dashboard-layout persistence", () => {
     expect(workspace).toBeDefined();
     // Backfilled from its default position.
     expect(workspace).toEqual(defaultWorkspace);
-    // All five widgets are present.
+    // All six widgets are present.
     expect(result.lg!.map((i) => i.i).sort()).toEqual(
-      ["by-model", "by-workspace", "request-log", "timeline", "totals"].sort(),
+      ["by-model", "by-workspace", "loop-trust", "request-log", "timeline", "totals"].sort(),
     );
   });
 
@@ -122,11 +124,40 @@ describe("dashboard-layout persistence", () => {
         { i: "by-model", x: 6, y: 3, w: 6, h: 7, minW: 4, minH: 3 },
         { i: "by-workspace", x: 0, y: 10, w: 6, h: 7, minW: 4, minH: 3 },
         { i: "request-log", x: 0, y: 17, w: 12, h: 10, minW: 5, minH: 5 },
+        { i: "loop-trust", x: 0, y: 27, w: 12, h: 5, minW: 4, minH: 3 },
       ],
     };
 
     saveLayout(custom);
     expect(loadLayout()).toEqual(custom);
+  });
+
+  // ── Task #52.2: layout-version-bump regression ────────────────────────────────
+  // The new "loop-trust" widget bumped LAYOUT_VERSION 1 → 2. A browser that still
+  // has a pre-bump (version: 1), 5-widget-only layout persisted must NOT crash —
+  // it falls back to DEFAULT_LAYOUT (which now includes "loop-trust"), exactly
+  // like any other version mismatch (guarantee #1 in the file header).
+  it("safely resets a pre-bump (version 1, 5-widget) persisted layout to the new default", () => {
+    seed({
+      version: 1,
+      layouts: {
+        lg: [
+          { i: "totals", x: 0, y: 0, w: 12, h: 3, minW: 4, minH: 2 },
+          { i: "timeline", x: 0, y: 3, w: 12, h: 7, minW: 4, minH: 4 },
+          { i: "by-model", x: 0, y: 10, w: 12, h: 7, minW: 4, minH: 3 },
+          { i: "by-workspace", x: 0, y: 17, w: 12, h: 7, minW: 4, minH: 3 },
+          { i: "request-log", x: 0, y: 24, w: 12, h: 10, minW: 5, minH: 5 },
+        ],
+      },
+    });
+
+    let result: ReturnType<typeof loadLayout>;
+    expect(() => {
+      result = loadLayout();
+    }).not.toThrow();
+
+    expect(result!).toEqual(DEFAULT_LAYOUT);
+    expect(result!.lg!.map((i) => i.i)).toContain("loop-trust");
   });
 
   it("resetLayout clears storage and returns the default", () => {

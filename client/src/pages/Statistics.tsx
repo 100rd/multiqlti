@@ -23,6 +23,7 @@ import {
   saveLayout,
   resetLayout,
 } from "@/lib/dashboard-layout";
+import type { ConsiliumLoopOutcomeStats } from "@shared/schema";
 
 // react-grid-layout ships its own scoped CSS (targets `.react-grid-item` /
 // `.react-resizable-handle` — it does NOT restyle our `.rounded-lg border ...`
@@ -691,6 +692,54 @@ function RequestLog() {
   );
 }
 
+// ─── Loop Trust widget (Task #52.2) ────────────────────────────────────────────
+//
+// Real consilium-loop outcome distribution, replacing the retired mock contour
+// observability page's synthetic yield/escape metrics. `escalated` here is the
+// FSM terminal state (a loop that ran out of consensus and was handed off) —
+// escalation ≠ escape (I8): it is NOT the same concept as a safety "escape".
+
+// Exported (unlike its sibling widgets) so it can be rendered directly in
+// isolation by the RTL test (Task #52.2) without mocking every other
+// widget's endpoint just to mount the whole Statistics page.
+export function LoopTrustWidget() {
+  const { data, isLoading } = useQuery<ConsiliumLoopOutcomeStats>({
+    queryKey: ["stats-loop-trust"],
+    queryFn: () => fetchJson("/api/stats/loop-trust"),
+  });
+
+  if (isLoading || !data) {
+    return (
+      <WidgetShell title="Loop Trust">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="rounded-lg border border-border bg-background/40 p-4 animate-pulse h-20" />
+          ))}
+        </div>
+      </WidgetShell>
+    );
+  }
+
+  const cards = [
+    { label: "Convergence Rate", value: `${(data.convergedRate * 100).toFixed(1)}%` },
+    { label: "Escalation Rate", value: `${(data.escalatedRate * 100).toFixed(1)}%` },
+    { label: "Terminal Loops", value: fmt(data.totalTerminalLoops) },
+  ];
+
+  return (
+    <WidgetShell title="Loop Trust">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {cards.map((c) => (
+          <div key={c.label} className="rounded-lg border border-border bg-background/40 p-4">
+            <p className="text-xs text-muted-foreground">{c.label}</p>
+            <p className="text-2xl font-semibold mt-1">{c.value}</p>
+          </div>
+        ))}
+      </div>
+    </WidgetShell>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 // Classic WidthProvider(Responsive) composition from the `legacy` entry point:
@@ -867,6 +916,9 @@ export default function Statistics() {
           </div>
           <div key="request-log">
             <RequestLog />
+          </div>
+          <div key="loop-trust">
+            <LoopTrustWidget />
           </div>
         </ResponsiveGridLayout>
       </div>
