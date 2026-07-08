@@ -5,7 +5,7 @@ import { registerTriggerRoutes } from "../../server/routes/triggers";
 import type { TriggerService } from "../../server/services/trigger-service";
 import type { IStorage } from "../../server/storage";
 import type { ConsiliumLoopRow } from "../../shared/schema";
-import type { PipelineTrigger, TriggerProvenance } from "../../shared/types";
+import type { Trigger, TriggerProvenance } from "../../shared/types";
 import { TRIGGER_FIRED_LOOPS_LIMIT } from "../../shared/types";
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -13,7 +13,7 @@ import { TRIGGER_FIRED_LOOPS_LIMIT } from "../../shared/types";
 const TRIGGER_ID = "trig-1";
 
 /** A project-scoped (pipeline-less) trigger — assertTriggerAccess passes without a pipeline owner lookup. */
-function makeTrigger(overrides: Partial<PipelineTrigger> = {}): PipelineTrigger {
+function makeTrigger(overrides: Partial<Trigger> = {}): Trigger {
   return {
     id: TRIGGER_ID,
     pipelineId: null,
@@ -61,7 +61,7 @@ function makeStorage(loops: ConsiliumLoopRow[]): IStorage {
   } as unknown as IStorage;
 }
 
-function makeService(trigger: PipelineTrigger | null): TriggerService {
+function makeService(trigger: Trigger | null): TriggerService {
   return {
     getTrigger: vi.fn(async (id: string) => (trigger && trigger.id === id ? trigger : null)),
   } as unknown as TriggerService;
@@ -93,7 +93,7 @@ function buildApp(service: TriggerService, storage: IStorage, authed = true): ex
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe("GET /api/triggers/:id/loops", () => {
-  let trigger: PipelineTrigger;
+  let trigger: Trigger;
 
   beforeEach(() => {
     trigger = makeTrigger();

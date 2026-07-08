@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from "vitest";
 import type {
-  PipelineTrigger,
+  Trigger,
   TriggerType,
   ScheduleTriggerConfig,
   GitHubEventTriggerConfig,
@@ -50,7 +50,7 @@ function generateSecret(): string {
   return Array.from({ length: 64 }, () => hex[Math.floor(Math.random() * 16)]).join("");
 }
 
-function buildTrigger(overrides: Partial<PipelineTrigger> & { type: TriggerType }): PipelineTrigger {
+function buildTrigger(overrides: Partial<Trigger> & { type: TriggerType }): Trigger {
   return {
     id: "t-001",
     pipelineId: null,

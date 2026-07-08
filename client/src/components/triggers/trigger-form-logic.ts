@@ -7,7 +7,7 @@
  * SERVER-SIDE in the review factory — this module only shapes the request.
  */
 import type {
-  PipelineTrigger,
+  Trigger,
   TriggerType,
   ConsiliumReviewPreset,
   ConsiliumReviewTriggerAction,
@@ -158,7 +158,7 @@ export function buildLoopTemplate(state: LoopTemplateState): ConsiliumReviewTrig
  * We coalesce to `[]` and, when the array is empty/absent, fall back to a sensible
  * summary (repository / watchPath alone) rather than a trailing " · ".
  */
-export function configSummary(trigger: PipelineTrigger): string {
+export function configSummary(trigger: Trigger): string {
   switch (trigger.type) {
     case "webhook":
       return trigger.webhookUrl
@@ -190,7 +190,7 @@ export function configSummary(trigger: PipelineTrigger): string {
  * The repo basename + preset the trigger's loop targets, or null when the trigger
  * carries no loop template (webhook/github). Shown on the trigger card.
  */
-export function loopTargetSummary(trigger: PipelineTrigger): string | null {
+export function loopTargetSummary(trigger: Trigger): string | null {
   const action = (trigger.config as { action?: ConsiliumReviewTriggerAction }).action;
   if (!action || action.kind !== "consilium_review") return null;
   const repo = action.repoPath ? action.repoPath.split("/").filter(Boolean).pop() : undefined;

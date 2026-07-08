@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { PipelineTrigger, InsertTrigger, UpdateTrigger, TriggerFiredLoopsResponse } from "@shared/types";
+import type { Trigger, InsertTrigger, UpdateTrigger, TriggerFiredLoopsResponse } from "@shared/types";
 import type { TriggerValidationIssue } from "@/components/triggers/trigger-form-logic";
 // Project-scoped transport: buildAuthHeaders attaches `x-project-id` (the pr-queue
 // 401 lesson — a project-scoped read that omits the header gets rejected).
@@ -54,16 +54,16 @@ export function useTriggers(pipelineId?: string) {
   const url = pipelineId
     ? `/api/triggers?pipelineId=${pipelineId}`
     : "/api/triggers";
-  return useQuery<PipelineTrigger[]>({
+  return useQuery<Trigger[]>({
     queryKey: ["/api/triggers", pipelineId ?? null],
-    queryFn: () => apiRequest("GET", url) as Promise<PipelineTrigger[]>,
+    queryFn: () => apiRequest("GET", url) as Promise<Trigger[]>,
   });
 }
 
 export function useTrigger(id: string) {
-  return useQuery<PipelineTrigger>({
+  return useQuery<Trigger>({
     queryKey: ["/api/triggers", id],
-    queryFn: () => apiRequest("GET", `/api/triggers/${id}`) as Promise<PipelineTrigger>,
+    queryFn: () => apiRequest("GET", `/api/triggers/${id}`) as Promise<Trigger>,
     enabled: !!id,
   });
 }
@@ -87,10 +87,10 @@ export function useTriggerLoops(id: string, enabled = true) {
 
 export function useCreateTrigger() {
   const qc = useQueryClient();
-  return useMutation<PipelineTrigger, Error, InsertTrigger & { _plainSecret?: string }>({
+  return useMutation<Trigger, Error, InsertTrigger & { _plainSecret?: string }>({
     mutationFn: ({ _plainSecret: secret, ...data }) => {
       const payload = secret ? { ...data, secret } : data;
-      return apiRequest("POST", "/api/triggers", payload) as Promise<PipelineTrigger>;
+      return apiRequest("POST", "/api/triggers", payload) as Promise<Trigger>;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/triggers"] });
@@ -100,9 +100,9 @@ export function useCreateTrigger() {
 
 export function useUpdateTrigger() {
   const qc = useQueryClient();
-  return useMutation<PipelineTrigger, Error, { id: string } & UpdateTrigger>({
+  return useMutation<Trigger, Error, { id: string } & UpdateTrigger>({
     mutationFn: ({ id, ...updates }) =>
-      apiRequest("PATCH", `/api/triggers/${id}`, updates) as Promise<PipelineTrigger>,
+      apiRequest("PATCH", `/api/triggers/${id}`, updates) as Promise<Trigger>,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/triggers"] });
     },
@@ -122,9 +122,9 @@ export function useDeleteTrigger() {
 
 export function useEnableTrigger() {
   const qc = useQueryClient();
-  return useMutation<PipelineTrigger, Error, string>({
+  return useMutation<Trigger, Error, string>({
     mutationFn: (id) =>
-      apiRequest("POST", `/api/triggers/${id}/enable`) as Promise<PipelineTrigger>,
+      apiRequest("POST", `/api/triggers/${id}/enable`) as Promise<Trigger>,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/triggers"] });
     },
@@ -133,9 +133,9 @@ export function useEnableTrigger() {
 
 export function useDisableTrigger() {
   const qc = useQueryClient();
-  return useMutation<PipelineTrigger, Error, string>({
+  return useMutation<Trigger, Error, string>({
     mutationFn: (id) =>
-      apiRequest("POST", `/api/triggers/${id}/disable`) as Promise<PipelineTrigger>,
+      apiRequest("POST", `/api/triggers/${id}/disable`) as Promise<Trigger>,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/triggers"] });
     },

@@ -1915,7 +1915,7 @@ export type TriggerConfig =
   | TrackerEventTriggerConfig;
 
 // Public-facing Trigger shape returned from API (no secretEncrypted)
-export interface PipelineTrigger {
+export interface Trigger {
   id: string;
   type: TriggerType;
   config: TriggerConfig;

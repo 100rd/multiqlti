@@ -33,7 +33,7 @@ import {
 } from "./trigger-form-logic";
 import {
   CONSILIUM_REVIEW_PRESETS,
-  type PipelineTrigger,
+  type Trigger,
   type TriggerType,
   type InsertTrigger,
   type ConsiliumReviewPreset,
@@ -57,7 +57,7 @@ interface TriggerFormProps {
   /** The active project's allowlisted workspaces — the loop target picklist. */
   workspaces: TriggerWorkspaceOption[];
   /** When provided, the form is in edit mode */
-  trigger?: PipelineTrigger;
+  trigger?: Trigger;
 }
 
 const PRESET_LABELS: Record<ConsiliumReviewPreset, string> = {
