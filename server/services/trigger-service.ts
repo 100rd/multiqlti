@@ -7,7 +7,7 @@
 import type { IStorage } from "../storage.js";
 import type { TriggerRow } from "@shared/schema";
 import type {
-  PipelineTrigger,
+  Trigger,
   InsertTrigger,
   UpdateTrigger,
   TriggerType,
@@ -42,9 +42,9 @@ export class TriggerService {
     return `${baseUrl}/api/webhooks/${triggerId}`;
   }
 
-  /** Map a DB row to the public-facing PipelineTrigger shape (no secrets). */
-  toPublic(row: TriggerRow): PipelineTrigger {
-    const trigger: PipelineTrigger = {
+  /** Map a DB row to the public-facing Trigger shape (no secrets). */
+  toPublic(row: TriggerRow): Trigger {
+    const trigger: Trigger = {
       id: row.id,
       type: row.type as TriggerType,
       config: row.config as TriggerConfig,
@@ -68,17 +68,17 @@ export class TriggerService {
   // ─── CRUD ─────────────────────────────────────────────────────────────────
 
   /** T1: all triggers in the current project ALS (pipeline-based AND pipeline-less). */
-  async getProjectTriggers(): Promise<PipelineTrigger[]> {
+  async getProjectTriggers(): Promise<Trigger[]> {
     const rows = await this.storage.getProjectTriggers();
     return rows.map((r) => this.toPublic(r));
   }
 
-  async getTrigger(id: string): Promise<PipelineTrigger | null> {
+  async getTrigger(id: string): Promise<Trigger | null> {
     const row = await this.storage.getTrigger(id);
     return row ? this.toPublic(row) : null;
   }
 
-  async createTrigger(data: InsertTrigger): Promise<PipelineTrigger> {
+  async createTrigger(data: InsertTrigger): Promise<Trigger> {
     const secretEncrypted = data.secret ? this.crypto.encrypt(data.secret) : undefined;
     const row = await this.storage.createTrigger({
       type: data.type,
@@ -89,7 +89,7 @@ export class TriggerService {
     return this.toPublic(row);
   }
 
-  async updateTrigger(id: string, updates: UpdateTrigger): Promise<PipelineTrigger | null> {
+  async updateTrigger(id: string, updates: UpdateTrigger): Promise<Trigger | null> {
     const existing = await this.storage.getTrigger(id);
     if (!existing) return null;
 
@@ -117,11 +117,11 @@ export class TriggerService {
     return true;
   }
 
-  async enableTrigger(id: string): Promise<PipelineTrigger | null> {
+  async enableTrigger(id: string): Promise<Trigger | null> {
     return this.updateTrigger(id, { enabled: true });
   }
 
-  async disableTrigger(id: string): Promise<PipelineTrigger | null> {
+  async disableTrigger(id: string): Promise<Trigger | null> {
     return this.updateTrigger(id, { enabled: false });
   }
 

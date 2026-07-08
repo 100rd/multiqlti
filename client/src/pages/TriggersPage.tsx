@@ -6,7 +6,7 @@ import { TriggerCard } from "@/components/triggers/TriggerCard";
 import { TriggerForm, type TriggerWorkspaceOption } from "@/components/triggers/TriggerForm";
 import { useTriggers, useDeleteTrigger } from "@/hooks/use-triggers";
 import { apiRequest } from "@/hooks/use-api";
-import type { PipelineTrigger } from "@shared/types";
+import type { Trigger } from "@shared/types";
 import type { WorkspaceRow } from "@shared/schema";
 
 /**
@@ -28,10 +28,10 @@ export default function TriggersPage() {
   const deleteTrigger = useDeleteTrigger();
 
   const [formOpen, setFormOpen] = useState(false);
-  const [editingTrigger, setEditingTrigger] = useState<PipelineTrigger | undefined>();
+  const [editingTrigger, setEditingTrigger] = useState<Trigger | undefined>();
 
   const subsystemDisabled = (error as (Error & { disabled?: boolean }) | null)?.disabled === true || (error as (Error & { status?: number }) | null)?.status === 503;
-  const triggerList: PipelineTrigger[] = Array.isArray(triggers) ? triggers : [];
+  const triggerList: Trigger[] = Array.isArray(triggers) ? triggers : [];
   const workspaces: TriggerWorkspaceOption[] = Array.isArray(workspaceData)
     ? workspaceData.map((w) => ({ path: w.path, name: w.name }))
     : [];
@@ -42,12 +42,12 @@ export default function TriggersPage() {
     setFormOpen(true);
   }
 
-  function handleEdit(trigger: PipelineTrigger) {
+  function handleEdit(trigger: Trigger) {
     setEditingTrigger(trigger);
     setFormOpen(true);
   }
 
-  function handleDelete(trigger: PipelineTrigger) {
+  function handleDelete(trigger: Trigger) {
     if (!confirm(`Delete this ${trigger.type} trigger? This cannot be undone.`)) return;
     deleteTrigger.mutate(trigger.id);
   }

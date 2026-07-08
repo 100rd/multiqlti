@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { useEnableTrigger, useDisableTrigger, useTriggerLoops } from "@/hooks/use-triggers";
-import type { PipelineTrigger, TriggerType, TriggerFiredLoop } from "@shared/types";
+import type { Trigger, TriggerType, TriggerFiredLoop } from "@shared/types";
 import { configSummary, loopTargetSummary } from "./trigger-form-logic";
 
 // ─── Type badge config ────────────────────────────────────────────────────────
@@ -99,9 +99,9 @@ function FiredLoopRow({ loop, onOpen }: { loop: TriggerFiredLoop; onOpen: (id: s
 // ─── Component ────────────────────────────────────────────────────────────────
 
 interface TriggerCardProps {
-  trigger: PipelineTrigger;
-  onEdit: (trigger: PipelineTrigger) => void;
-  onDelete: (trigger: PipelineTrigger) => void;
+  trigger: Trigger;
+  onEdit: (trigger: Trigger) => void;
+  onDelete: (trigger: Trigger) => void;
 }
 
 export function TriggerCard({ trigger, onEdit, onDelete }: TriggerCardProps) {
