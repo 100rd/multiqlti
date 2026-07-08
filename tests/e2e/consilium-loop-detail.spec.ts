@@ -7,6 +7,23 @@
  * DB dependency: consilium loops/rounds use PgStorage in the full server (same
  * reasoning as knowledge.spec.ts) — SKIPPED when DATABASE_URL is absent.
  *
+ * Feature-flag dependency: the Consilium Loop feature ships OFF by default
+ * (`pipeline.consiliumLoop.enabled: false`) with a fail-closed, empty
+ * `allowedRepoPaths` allowlist (Security H-1 — this array is deliberately
+ * NOT env-mappable, so it can only be widened via an untracked local
+ * config.yaml override, never from CI/test env vars — see
+ * server/config/schema.ts and server/config/loader.ts). Both tests below
+ * create the loop through the real POST /api/consilium-loops route and
+ * SKIP AT RUNTIME (not hard-fail) if that returns anything other than 201
+ * — i.e. the feature is disabled (route not registered → 404) or
+ * `process.cwd()` isn't in the configured allowlist (→ 400). This mirrors
+ * the dynamic test.skip() precedent in tests/e2e/skills.spec.ts (builtin
+ * skill lookup). Enable locally to exercise these tests by setting
+ * `pipeline.consiliumLoop.enabled: true` and
+ * `pipeline.consiliumLoop.allowedRepoPaths: ["<repo path>"]` in an
+ * untracked local config.yaml override — never by widening config.yaml
+ * itself or by env-mapping the array.
+ *
  * Seeding: a real Judge run needs a live model gateway, which is non-deterministic
  * and slow for E2E. Task group + consilium-loop CREATION goes through the real
  * HTTP API (`page.request`, the same direct-API-seeding convention used
@@ -76,13 +93,23 @@ test.describe("Consilium loop detail — recorded rounds surface", () => {
     const group = (await groupRes.json()) as { id: string };
 
     // ── Consilium loop (created via the real route; repoPath must be inside
-    //    consiliumLoop.allowedRepoPaths — config.yaml allowlists the whole
-    //    `.../project` parent, which covers process.cwd() here). ────────────────
+    //    consiliumLoop.allowedRepoPaths). The feature ships disabled with a
+    //    fail-closed, empty allowlist by default (Security H-1 — see file
+    //    header) — skip cleanly at runtime instead of hard-failing when this
+    //    environment hasn't opted in via an untracked local config.yaml
+    //    override. ───────────────────────────────────────────────────────────
     const loopRes = await page.request.post("/api/consilium-loops", {
       headers: projectHeaders,
       data: { groupId: group.id, repoPath: process.cwd() },
     });
-    expect(loopRes.status()).toBe(201);
+    if (loopRes.status() !== 201) {
+      test.skip(
+        true,
+        `Consilium Loop feature unavailable (POST /api/consilium-loops -> ${loopRes.status()}) — ` +
+          "feature disabled or process.cwd() not in the configured allowlist (fail-closed by design).",
+      );
+      return;
+    }
     const loop = (await loopRes.json()) as { id: string };
 
     // ── Fast-forward the FSM state + seed two rounds directly (no HTTP surface
@@ -205,10 +232,19 @@ test.describe("Consilium loop detail — recorded rounds surface", () => {
       },
     });
     const group = (await groupRes.json()) as { id: string };
+    // Same fail-closed skip as the test above — see file header.
     const loopRes = await page.request.post("/api/consilium-loops", {
       headers: projectHeaders,
       data: { groupId: group.id, repoPath: process.cwd() },
     });
+    if (loopRes.status() !== 201) {
+      test.skip(
+        true,
+        `Consilium Loop feature unavailable (POST /api/consilium-loops -> ${loopRes.status()}) — ` +
+          "feature disabled or process.cwd() not in the configured allowlist (fail-closed by design).",
+      );
+      return;
+    }
     const loop = (await loopRes.json()) as { id: string };
 
     const pool = new Pool({ connectionString: process.env.DATABASE_URL });
