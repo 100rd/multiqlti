@@ -4,9 +4,11 @@ import request from "supertest";
 import type { IStorage } from "../../../server/storage.js";
 import { registerWorkspaceTraceRoutes } from "../../../server/routes/workspace-traces.js";
 import type { TraceSpan } from "../../../shared/types.js";
-import { OI, OI_SPAN_KIND } from "../../../server/tracing/openinference.js";
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
+// Attribute keys below are inlined OpenInference semantic-convention literals
+// (see spec: https://github.com/Arize-ai/openinference/tree/main/spec) — this
+// test only needs the string constants, not the (now-removed) tracer module.
 
 const LLM_SPAN: TraceSpan = {
   spanId: "aaaa1111aaaa1111",
@@ -15,11 +17,11 @@ const LLM_SPAN: TraceSpan = {
   endTime: 2500,
   status: "ok",
   attributes: {
-    "openinference.span.kind": OI_SPAN_KIND.LLM,
-    [OI.LLM_PROVIDER]: "anthropic",
-    [OI.LLM_MODEL]: "claude-sonnet-4-6",
-    [OI.LLM_TOTAL_TOKENS]: 150,
-    [OI.LLM_COST_USD]: 0.0005,
+    "openinference.span.kind": "LLM",
+    "llm.provider": "anthropic",
+    "llm.model": "claude-sonnet-4-6",
+    "llm.token_count.total": 150,
+    "llm.cost_usd": 0.0005,
   },
   events: [],
 };
@@ -32,8 +34,8 @@ const TOOL_SPAN: TraceSpan = {
   endTime: 1300,
   status: "ok",
   attributes: {
-    "openinference.span.kind": OI_SPAN_KIND.TOOL,
-    [OI.TOOL_NAME]: "bash_run",
+    "openinference.span.kind": "TOOL",
+    "tool.name": "bash_run",
   },
   events: [],
 };
@@ -205,7 +207,7 @@ describe("GET /api/workspaces/:id/traces/:run_id", () => {
     const llmSpan = res.body.spans.find((s: TraceSpan) => s.name.startsWith("llm."));
     expect(llmSpan).toBeDefined();
     expect(llmSpan.attributes["openinference.span.kind"]).toBe("LLM");
-    expect(llmSpan.attributes[OI.LLM_PROVIDER]).toBe("anthropic");
-    expect(llmSpan.attributes[OI.LLM_MODEL]).toBe("claude-sonnet-4-6");
+    expect(llmSpan.attributes["llm.provider"]).toBe("anthropic");
+    expect(llmSpan.attributes["llm.model"]).toBe("claude-sonnet-4-6");
   });
 });
