@@ -943,6 +943,17 @@ export const ConfigSchema = z.object({
           minSuccessDelta: z.coerce.number().min(0).max(1).default(0.5),
         }).default({}),
       }).default({}),
+      /**
+       * Task #52.2: loop-trust escalation-rate alert threshold (config-driven;
+       * replaces the retired mock contour observability `escapeRateThreshold`
+       * demo default). When `getConsiliumLoopOutcomeStats().escalatedRate`
+       * (share of TERMINAL loops that landed in `escalated`) exceeds this
+       * fraction, the kept `AlertChannel.fireTrustDegradationAlert` fires.
+       * NOTE: escalation ≠ escape (I8) — this is the FSM `escalated` terminal
+       * state, not the old mock's unrelated safety-incident "escape" concept.
+       * 0..1; default 0.02 (2%), mirroring the retired mock's default.
+       */
+      escalationAlertThreshold: z.coerce.number().min(0).max(1).default(0.02),
     }).default({}),
   }).default({}),
 });

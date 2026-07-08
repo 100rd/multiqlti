@@ -1807,6 +1807,39 @@ export interface AppliedSkillRef {
   dropped?: boolean;
 }
 
+/**
+ * Task #52.2: real per-skill applied/converged aggregate, derived from
+ * `consilium_loops.applied_skills` over TERMINAL-state loops only. Replaces the
+ * mock contour observability skill-success-rate demo. `dropped: true` entries in
+ * `applied_skills` are excluded from both `appliedCount` and `convergedCount` — a
+ * dropped skill was never actually applied to the loop's instruction. A skill
+ * that was applied to zero terminal loops has NO entry in the returned array
+ * (never a synthetic 100%/0% rate).
+ */
+export interface ConsiliumLoopSkillStat {
+  /** The skills-table row id (matches `AppliedSkillRef.id`). */
+  skillId: string;
+  /** Count of TERMINAL loops where this skill was applied (not dropped). */
+  appliedCount: number;
+  /** Of those, count whose loop `state === "converged"`. */
+  convergedCount: number;
+  /** `convergedCount / appliedCount`, 0..1. */
+  successRate: number;
+}
+
+/**
+ * Task #52.2: real loop outcome distribution over TERMINAL loops only. Replaces
+ * the mock contour "yield/escape" metrics.
+ */
+export interface ConsiliumLoopOutcomeStats {
+  /** Count of loops in a TERMINAL state (converged/stopped_cap/escalated/failed/cancelled). */
+  totalTerminalLoops: number;
+  /** Share of terminal loops that landed in `converged`, 0..1 (0 when totalTerminalLoops is 0). */
+  convergedRate: number;
+  /** Share of terminal loops that landed in `escalated`, 0..1 (0 when totalTerminalLoops is 0). */
+  escalatedRate: number;
+}
+
 export const consiliumLoops = pgTable(
   "consilium_loops",
   {

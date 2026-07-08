@@ -1,6 +1,14 @@
 import type { Express } from "express";
 import { z } from "zod";
 import type { IStorage } from "../storage";
+import { configLoader } from "../config/loader";
+import { AlertChannel } from "../pipeline/observability/alert-channel";
+
+// Task #52.2: the "second human-wake channel" kept from the retired contour
+// observability mock, now fed by real loop outcomes instead of mock task
+// verdicts. No subscribers are registered by default (same as the mock's
+// unused-by-default AlertChannel) — it only logs via its own console.error.
+const loopTrustAlertChannel = new AlertChannel();
 
 const filtersSchema = z.object({
   page: z.coerce.number().int().min(1).optional().default(1),
@@ -223,6 +231,29 @@ export function registerStatsRoutes(app: Express, storage: IStorage): void {
       }
     } catch (err) {
       console.error("/api/stats/export error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  // GET /api/stats/loop-trust — real consilium-loop outcome distribution
+  // (Task #52.2: replaces the mock contour observability yield/escape metrics).
+  app.get("/api/stats/loop-trust", async (_req, res) => {
+    try {
+      const stats = await storage.getConsiliumLoopOutcomeStats();
+      const threshold = configLoader.get().pipeline.consiliumLoop.escalationAlertThreshold;
+      // escalation ≠ escape (I8): this alert fires on the FSM `escalated` terminal
+      // state rate, NOT a safety-incident "escape" (the retired mock's concept).
+      if (stats.totalTerminalLoops > 0 && stats.escalatedRate > threshold) {
+        loopTrustAlertChannel.fireTrustDegradationAlert({
+          escapeRate: stats.escalatedRate * 100,
+          threshold: threshold * 100,
+          analyzedRuns: stats.totalTerminalLoops,
+          message: `Loop escalation rate of ${(stats.escalatedRate * 100).toFixed(2)}% breached the ${(threshold * 100).toFixed(2)}% threshold.`,
+        });
+      }
+      res.json(stats);
+    } catch (err) {
+      console.error("/api/stats/loop-trust error:", err);
       res.status(500).json({ error: "Internal server error" });
     }
   });

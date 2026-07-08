@@ -303,6 +303,16 @@ export function registerSkillRoutes(app: Express, storage: IStorage) {
     res.json(updated);
   });
 
+  // ─── LOOP-TRUST STATS (batch, Task #52.2 — replaces the mock contour skill
+  // success-rate demo) ─────────────────────────────────────────────────────
+  // Must be registered before GET /api/skills/:id so Express doesn't treat
+  // "stats" as the :id param (same precedent as /api/skills/export above).
+
+  app.get("/api/skills/stats", async (_req, res) => {
+    const stats = await storage.getConsiliumLoopSkillStats();
+    res.json(stats);
+  });
+
   // ─── GET SINGLE SKILL ────────────────────────────────────────────────────
 
   app.get("/api/skills/:id", async (req, res) => {

@@ -17,7 +17,6 @@ import { registerAuthRoutes } from "./routes/auth";
 import { registerSandboxRoutes } from "./routes/sandbox";
 import { registerSettingsRoutes } from "./routes/settings";
 import { registerSpecializationRoutes } from "./routes/specialization";
-import { registerContourObservabilityRoutes } from "./routes/observability";
 import { registerSkillRoutes } from "./routes/skills";
 import { registerActivityRoutes } from "./routes/activity";
 import { registerTriggerRoutes } from "./routes/triggers";
@@ -177,7 +176,6 @@ export async function registerRoutes(
   app.use("/api/sandbox", requireAuth);
   // /api/federation — cross-instance infrastructure, inherently cross-project
   app.use("/api/federation", requireAuth);
-  app.use("/api/observability", requireAuth);
 
   // Register route implementations
   registerModelRoutes(app, storage);
@@ -190,7 +188,6 @@ export async function registerRoutes(
   registerToolRoutes(app, storage);
   registerWorkspaceRoutes(app, gateway, wsManager, storage);
   registerConnectionRoutes(app, storage);
-  registerContourObservabilityRoutes(app);
   registerConnectionsYamlRoutes(app, storage);
   registerInventoryRoutes(app, storage);
   registerWorkspaceTraceRoutes(app, storage);
