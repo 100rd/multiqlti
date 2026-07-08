@@ -113,7 +113,10 @@ jobs:
     if: needs.guard.outputs.run == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     services:
       postgres:
-        image: postgres:16
+        # pgvector/pgvector:pg16, not plain postgres:16 — shared/schema.ts declares
+        # a `vector(...)` column (hybrid RAG memory retrieval) and db:push needs
+        # the extension's shared library available to resolve that column type.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: multiqlti
           POSTGRES_PASSWORD: multiqlti
@@ -136,6 +139,17 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      - name: Enable pgvector extension
+        run: |
+          node -e "
+            const { Client } = require('pg');
+            (async () => {
+              const client = new Client({ connectionString: process.env.DATABASE_URL });
+              await client.connect();
+              await client.query('CREATE EXTENSION IF NOT EXISTS vector');
+              await client.end();
+            })().catch((err) => { console.error(err); process.exit(1); });
+          "
       - run: npm run db:push
       - run: npx playwright install chromium --with-deps
       - run: npm run test:e2e
