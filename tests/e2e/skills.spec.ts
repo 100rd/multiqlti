@@ -3,7 +3,8 @@
  *
  * Covers:
  *   - /skills page renders without errors
- *   - Skills API returns built-in skills
+ *   - Skills API returns an array (built-in seeding was retired in 297d62d;
+ *     no isBuiltin:true fixture exists anymore — see the array-contract test)
  *   - Skills page shows skill cards
  *   - Skill filtering (all / builtin / custom)
  *   - Custom skill CRUD via API
@@ -59,23 +60,43 @@ test.describe("Skills Management", () => {
 
   // ─── Skills API ───────────────────────────────────────────────────────────
 
-  test("GET /api/skills returns an array", async ({ page }, testInfo) => {
+  // Built-in skill seeding (BUILTIN_SKILLS / server/skills/builtin.ts) was
+  // intentionally retired in "chore: prune skills ecosystem, keep the catalog
+  // narrowing hook (Phase 3b)" (297d62d) — migration 0038 deleted the
+  // builtin-* seed rows and nothing seeds isBuiltin:true rows anymore.
+  // `isBuiltin` on a skill row is still a live, meaningful field (it gates
+  // edit/delete/version/rollback for read-only skills — see
+  // server/routes/skills.ts and the git-registry-sync collision guard), but a
+  // fresh project legitimately has zero skills until one is created via
+  // POST /api/skills (always isBuiltin:false) or a registry sync
+  // (sourceType:'git', also isBuiltin:false). There is no built-in-skill
+  // fixture to assert against, so this test now proves the array contract
+  // (200 + array, includes what we create) instead of a nonexistent seed.
+  test("GET /api/skills returns an array containing created skills", async ({ page }, testInfo) => {
     const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
+
+    const createRes = await page.request.post(`${baseURL}/api/skills`, {
+      headers: projectHeaders,
+      data: {
+        name: "E2E Array Contract Skill",
+        description: "Proves GET /api/skills returns an array containing created rows",
+        teamId: "planning",
+        systemPromptOverride: "You are a test assistant.",
+        tools: [],
+        tags: ["e2e"],
+        sharing: "private",
+      },
+    });
+    expect(createRes.status()).toBe(201);
+    const created = await createRes.json() as { id: string };
+
     const res = await page.request.get(`${baseURL}/api/skills`, { headers: projectHeaders });
     expect(res.status()).toBe(200);
 
     const skills = await res.json() as Array<{ id: string; name: string; isBuiltin: boolean }>;
     expect(Array.isArray(skills)).toBe(true);
     expect(skills.length).toBeGreaterThanOrEqual(1);
-  });
-
-  test("GET /api/skills includes built-in skills", async ({ page }, testInfo) => {
-    const baseURL = testInfo.project.use.baseURL ?? BASE_URL_FALLBACK;
-    const res = await page.request.get(`${baseURL}/api/skills`, { headers: projectHeaders });
-    const skills = await res.json() as Array<{ id: string; name: string; isBuiltin: boolean }>;
-
-    const builtins = skills.filter((s) => s.isBuiltin);
-    expect(builtins.length).toBeGreaterThanOrEqual(1);
+    expect(skills.some((s) => s.id === created.id)).toBe(true);
   });
 
   test("GET /api/skills returns skills with required fields", async ({ page }, testInfo) => {
