@@ -57,7 +57,7 @@ import { registerConsiliumLoopRoutes } from "./routes/consilium-loops";
 import { registerConsiliumReviewRoutes } from "./routes/consilium-reviews";
 import { registerStandingRoleRoutes } from "./routes/standing-roles";
 import { createConsiliumReview } from "./services/consilium/review-factory";
-import { maybeLaunchConsiliumReview, maybeLaunchGitHubReview, maybeLaunchRoleWake, resolveSpecWatchConfig, deriveRepoRoot } from "./services/consilium/trigger-dispatch";
+import { maybeLaunchConsiliumReview, maybeLaunchGitHubReview, maybeLaunchGitLabReview, maybeLaunchRoleWake, resolveSpecWatchConfig, deriveRepoRoot } from "./services/consilium/trigger-dispatch";
 import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consilium/consilium-loop-controller";
 import {
   writeSpecStatusRemote,
@@ -500,10 +500,25 @@ export async function registerRoutes(
         // file_change binding is NOT gated here (it stays under consiliumLoop.enabled),
         // so the one live prototype binding is unchanged.
         if (
-          (trigger.type === "schedule" || trigger.type === "github_event" || roleBinding) &&
+          (trigger.type === "schedule" ||
+            trigger.type === "github_event" ||
+            trigger.type === "gitlab_event" ||
+            roleBinding) &&
           !appConfigLoader.get().features.triggers.enabled
         ) {
           log(`[triggers] ${trigger.type} trigger ${trigger.id} not fired — features.triggers.enabled is off`, "triggers");
+          return "recorded" as const;
+        }
+
+        // gitlab_event has its OWN opt-in flag on top of the master switch above —
+        // a brand-new externally-reachable endpoint (/api/gitlab-events) defaults to
+        // off even once features.triggers.enabled is flipped on, so an operator must
+        // explicitly enable GitLab event triggers.
+        if (
+          trigger.type === "gitlab_event" &&
+          !appConfigLoader.get().features.triggers.gitlabEvents?.enabled
+        ) {
+          log(`[triggers] gitlab_event trigger ${trigger.id} not fired — features.triggers.gitlabEvents.enabled is off`, "triggers");
           return "recorded" as const;
         }
 
@@ -570,7 +585,9 @@ export async function registerRoutes(
           ? await maybeLaunchRoleWake(dispatchDeps, trigger, payload)
           : trigger.type === "github_event"
             ? await maybeLaunchGitHubReview(dispatchDeps, trigger, payload)
-            : await maybeLaunchConsiliumReview(dispatchDeps, trigger, payload);
+            : trigger.type === "gitlab_event"
+              ? await maybeLaunchGitLabReview(dispatchDeps, trigger, payload)
+              : await maybeLaunchConsiliumReview(dispatchDeps, trigger, payload);
 
         // T1 policy rail (§4): a fire suppressed by a rail bumps the trigger's
         // suppressed counter (surfaced on the triggers page) instead of blindly

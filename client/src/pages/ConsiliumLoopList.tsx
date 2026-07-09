@@ -347,13 +347,11 @@ export default function ConsiliumLoopList() {
   // Active workspace filter (by resolved name); null = show all.
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null);
 
-  // path → workspace name lookup (trailing-slash-insensitive).
-  const nameByPath = new Map<string, string>();
-  if (Array.isArray(workspaceData)) {
-    for (const ws of workspaceData) nameByPath.set(normalizePath(ws.path), ws.name);
-  }
-  const workspaceName = (repoPath: string): string =>
-    nameByPath.get(normalizePath(repoPath)) ?? repoBasename(repoPath);
+  // Loop sections are keyed by the CLEAN repo basename (last path segment), not the
+  // workspace label — a workspace named e.g. "werush-terraform" must still surface as
+  // the bare repo target "terraform". Path-derived so it holds for every repo,
+  // independent of how any workspace was named.
+  const workspaceName = (repoPath: string): string => repoBasename(repoPath);
 
   // Hand the New-review dialog the project.s workspaces so the user PICKS a repo
   // (dropdown) instead of free-typing a possibly-unallowlisted path.

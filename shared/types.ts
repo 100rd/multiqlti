@@ -1310,7 +1310,7 @@ export interface PipelineDAG {
 
 // ─── Trigger Types (Phase 6.3) ────────────────────────────────────────────────
 
-export type TriggerType = "webhook" | "schedule" | "github_event" | "file_change" | "tracker_event";
+export type TriggerType = "webhook" | "schedule" | "github_event" | "gitlab_event" | "file_change" | "tracker_event";
 
 // Per-type discriminated union for the config JSONB column
 export interface WebhookTriggerConfig {
@@ -1384,6 +1384,29 @@ export interface GitHubEventTriggerConfig {
    * trigger-dispatch.ts `maybeLaunchRoleWake`. Absent ⇒ the legacy github path is
    * BYTE-IDENTICAL.
    */
+  roleConcern?: RoleConcernBinding;
+}
+
+/**
+ * GitLab-native trigger config — the GitLab mirror of GitHubEventTriggerConfig.
+ * GitLab webhooks authenticate with a plain shared-secret token (X-Gitlab-Token),
+ * NOT an HMAC signature, so the secretEncrypted column holds that token verbatim.
+ */
+export interface GitLabEventTriggerConfig {
+  project: string;      // "group/subgroup/repo" — GitLab project.path_with_namespace
+  events: string[];     // GitLab X-Gitlab-Event kinds: "Push Hook" | "Merge Request Hook" | "Pipeline Hook"
+  refFilter?: string;   // optional, e.g. "refs/heads/main"
+  // shared-secret token stored encrypted in secretEncrypted; sent by GitLab as X-Gitlab-Token
+  /**
+   * Loop template a matching GitLab event fires (mirror of the github action).
+   * `repoPath` REQUIRED to launch (re-validated against the fail-closed allowlist
+   * inside the factory); `engineerInstruction` (may embed `${event}`) is UNTRUSTED —
+   * fenced/clamped by the factory. Preset is a DEFAULT; the per-event mapping
+   * (Merge Request Hook → diff-pr-review, Push Hook → post-merge review) overrides it.
+   * Absent ⇒ record-only (events received/recorded, nothing launched).
+   */
+  action?: ConsiliumReviewTriggerAction;
+  /** ROLE-2: when present, a matching event WAKES the named standing role instead of `action`. */
   roleConcern?: RoleConcernBinding;
 }
 
@@ -1911,6 +1934,7 @@ export type TriggerConfig =
   | WebhookTriggerConfig
   | ScheduleTriggerConfig
   | GitHubEventTriggerConfig
+  | GitLabEventTriggerConfig
   | FileChangeTriggerConfig
   | TrackerEventTriggerConfig;
 

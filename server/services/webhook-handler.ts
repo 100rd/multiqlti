@@ -103,6 +103,25 @@ export function verifyHmacSignature(
   }
 }
 
+/**
+ * Verify a GitLab webhook token (`X-Gitlab-Token`) via constant-time comparison.
+ * GitLab does NOT sign the body — it sends a static secret token verbatim, so this
+ * is a plain equality check (not HMAC). Fail-closed: missing token/secret or a
+ * length mismatch is treated as a mismatch (never falls through to a truthy compare).
+ */
+export function verifyGitlabToken(
+  headerToken: string | undefined,
+  secret: string | undefined,
+): boolean {
+  if (!headerToken || !secret) return false;
+
+  const headerBuf = Buffer.from(headerToken, "utf8");
+  const secretBuf = Buffer.from(secret, "utf8");
+  if (headerBuf.length !== secretBuf.length) return false;
+
+  return timingSafeEqual(headerBuf, secretBuf);
+}
+
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 
 /**
@@ -164,18 +183,29 @@ export async function handleWebhookRequest(
   // `X-Webhook-Signature`. Unsigned/tampered request ⇒ 401, fireTrigger NOT called.
   const secret = await deps.getSecret(triggerId);
   if (secret) {
-    const sig = req.headers["x-hub-signature-256"] ?? req.headers["x-webhook-signature"];
-    if (!verifyHmacSignature(req.rawBody, secret, sig as string | undefined)) {
-      res.status(401).json({ error: "Invalid signature" });
-      return;
+    if (trigger.type === "gitlab_event") {
+      // GitLab sends a static token verbatim (no body signing) — constant-time
+      // equality check, NOT HMAC.
+      const token = req.headers["x-gitlab-token"];
+      if (!verifyGitlabToken(token as string | undefined, secret)) {
+        res.status(401).json({ error: "Invalid token" });
+        return;
+      }
+    } else {
+      const sig = req.headers["x-hub-signature-256"] ?? req.headers["x-webhook-signature"];
+      if (!verifyHmacSignature(req.rawBody, secret, sig as string | undefined)) {
+        res.status(401).json({ error: "Invalid signature" });
+        return;
+      }
     }
   }
 
-  // A github_event trigger fires off the GitHub event TYPE (from the X-GitHub-Event
-  // header), so wrap the body in the `{ event, delivery, payload }` envelope the
-  // github dispatch reads (mapping PR/push → a review). Every other trigger type
-  // keeps receiving the bare body. The header is only trusted to SELECT the mapping;
-  // no review fires without the HMAC check above having passed.
+  // A github_event/gitlab_event trigger fires off the provider event TYPE (from the
+  // X-GitHub-Event / X-Gitlab-Event header), so wrap the body in the
+  // `{ event, delivery, payload }` envelope the provider dispatch reads (mapping
+  // PR/push → a review). Every other trigger type keeps receiving the bare body.
+  // The header is only trusted to SELECT the mapping; no review fires without the
+  // signature/token check above having passed.
   const payload: unknown =
     trigger.type === "github_event"
       ? {
@@ -183,7 +213,13 @@ export async function handleWebhookRequest(
           delivery: String(req.headers["x-github-delivery"] ?? "unknown"),
           payload: req.body,
         }
-      : (req.body as unknown);
+      : trigger.type === "gitlab_event"
+        ? {
+            event: String(req.headers["x-gitlab-event"] ?? ""),
+            delivery: String(req.headers["x-gitlab-event-uuid"] ?? "unknown"),
+            payload: req.body,
+          }
+        : (req.body as unknown);
   await deps.fireTrigger(trigger, payload);
   res.status(200).json({ ok: true });
 }

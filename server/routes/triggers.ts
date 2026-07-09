@@ -98,6 +98,18 @@ const GitHubConfigSchema = z.object({
   action: LoopTemplateActionSchema.optional(),
 });
 
+// A gitlab_event trigger — the GitLab mirror of GitHubConfigSchema. `project` is a
+// GitLab path_with_namespace (group/[subgroup/]project, ≥2 segments). `events` are
+// X-Gitlab-Event kinds (e.g. "Merge Request Hook", "Push Hook"). The shared-secret
+// token lives encrypted in secretEncrypted (sent as X-Gitlab-Token) — not here. The
+// factory RE-VALIDATES action.repoPath against the fail-closed allowlist.
+const GitLabConfigSchema = z.object({
+  project: z.string().min(1).max(500).regex(/^[^/]+(\/[^/]+)+$/, "Must be a GitLab project path (group/.../project)"),
+  events: z.array(z.string().min(1).max(100)).min(1).max(50),
+  refFilter: z.string().max(500).optional(),
+  action: LoopTemplateActionSchema.optional(),
+});
+
 // A file_change trigger MAY carry an embedded loop template (`action`). The factory
 // RE-VALIDATES `repoPath` against the fail-closed allowlist, so this schema only
 // shape-checks it — it is NOT the security boundary. Without this field the strict
@@ -183,7 +195,7 @@ const TrackerConfigSchema = z.discriminatedUnion("tracker", [
   ClickUpTrackerConfigSchema,
 ]);
 
-type TriggerTypeValue = "webhook" | "schedule" | "github_event" | "file_change" | "tracker_event";
+type TriggerTypeValue = "webhook" | "schedule" | "github_event" | "gitlab_event" | "file_change" | "tracker_event";
 
 /**
  * Fix 3: Discriminated union validator — picks the correct schema based on type.
@@ -197,6 +209,8 @@ function validateTriggerConfig(type: TriggerTypeValue, config: unknown): unknown
       return ScheduleConfigSchema.parse(config);
     case "github_event":
       return GitHubConfigSchema.parse(config);
+    case "gitlab_event":
+      return GitLabConfigSchema.parse(config);
     case "file_change":
       return FileChangeConfigSchema.parse(config);
     case "tracker_event":
@@ -206,7 +220,7 @@ function validateTriggerConfig(type: TriggerTypeValue, config: unknown): unknown
 
 // ─── Top-level request schemas ────────────────────────────────────────────────
 
-const TriggerTypeEnum = z.enum(["webhook", "schedule", "github_event", "file_change", "tracker_event"]);
+const TriggerTypeEnum = z.enum(["webhook", "schedule", "github_event", "gitlab_event", "file_change", "tracker_event"]);
 
 const CreateTriggerSchema = z.object({
   type: TriggerTypeEnum,

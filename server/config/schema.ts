@@ -123,6 +123,15 @@ export const ConfigSchema = z.object({
         intervalSec: z.number().int().min(60).max(3600).default(300),
       }).default({}),
       /**
+       * gitlab_event opt-in (GitLab mirror of the github_event webhook path). A
+       * brand-new externally-reachable endpoint (/api/gitlab-events) — defaults to
+       * OFF even once the master `enabled` switch above is on, so an operator must
+       * explicitly opt in before any gitlab_event trigger can fire a loop.
+       */
+      gitlabEvents: z.object({
+        enabled: z.boolean().default(false),
+      }).default({}),
+      /**
        * TRACK-1 (github-issues -> committed spec PR). A tracker poller PULLS a
        * GitHub repo's ISSUES via `gh` and, for each labelled + spec-ready issue,
        * opens a committed-spec PR (which SPEC-1's spec-watch fires the loop off on

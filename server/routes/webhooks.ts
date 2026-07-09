@@ -3,6 +3,7 @@
  *
  * POST /api/webhooks/:triggerId        — receive a generic webhook
  * POST /api/github-events              — receive a GitHub event (routes to all matching triggers)
+ * POST /api/gitlab-events              — receive a GitLab event (routes to all matching triggers)
  */
 import type { Express } from "express";
 import { randomUUID } from "crypto";
@@ -15,6 +16,7 @@ import {
   startRateLimitCleanup,
 } from "../services/webhook-handler.js";
 import { handleGitHubEvent } from "../services/github-event-handler.js";
+import { handleGitLabEvent } from "../services/gitlab-event-handler.js";
 import { runAsSystem } from "../context.js";
 
 function correlationId(): string {
@@ -95,6 +97,46 @@ export function registerWebhookRoutes(
       }
       const cid = correlationId();
       console.error(`[webhooks] POST github-events error cid=${cid}`, e);
+      return res.status(500).json({ error: "Internal server error", correlationId: cid });
+    }
+  });
+
+  // POST /api/gitlab-events — GitLab webhook event router (mirror of /api/github-events)
+  app.post("/api/gitlab-events", async (req, res) => {
+    try {
+      // CONTEXT FIX (mirrors github-events): this public endpoint has no ALS context.
+      // `getAllEnabledTriggersByType` (cross-project) AND `getSecret` (→
+      // storage.getTrigger → withProject) BOTH require a system context. Wrap the
+      // whole handler in ONE system context so both reads succeed; fireTrigger nests
+      // its own context.
+      const result = await runAsSystem("gitlab-webhook-event", () =>
+        handleGitLabEvent(
+          req.rawBody,
+          req.headers as Record<string, string | string[] | undefined>,
+          req.body as unknown,
+          {
+            getEnabledTriggersByType: (type) => storage.getAllEnabledTriggersByType(type),
+            getSecret: (id) => triggerService.getSecret(id),
+            fireTrigger,
+          },
+        ),
+      );
+
+      // VETO-3 fix (mirrors github-events): do NOT return internal trigger IDs or raw
+      // error strings to the unauthenticated caller. Log the full result server-side
+      // for audit purposes and return only aggregate counts so callers can confirm
+      // delivery.
+      const cid = correlationId();
+      if (result.errors && result.errors.length > 0) {
+        console.error({ cid, fired: result.fired?.length, errors: result.errors }, "gitlab-events partial failure");
+      }
+      return res.json({ fired: result.fired?.length ?? 0 });
+    } catch (e) {
+      if (e instanceof ZodError) {
+        return res.status(400).json({ error: "Validation failed", issues: e.issues });
+      }
+      const cid = correlationId();
+      console.error(`[webhooks] POST gitlab-events error cid=${cid}`, e);
       return res.status(500).json({ error: "Internal server error", correlationId: cid });
     }
   });

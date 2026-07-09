@@ -24,8 +24,11 @@ import {
   LOOP_FIRING_TYPES,
   GITHUB_EVENT_MAPPINGS,
   GITHUB_DEFAULT_EVENTS,
+  GITLAB_EVENT_MAPPINGS,
+  GITLAB_DEFAULT_EVENTS,
   isTriggerFormValid,
   isGitHubRepoValid,
+  isGitLabProjectValid,
   buildLoopTemplate,
   formatValidationIssues,
   type LoopTemplateState,
@@ -40,6 +43,7 @@ import {
   type ConsiliumReviewTriggerAction,
   type ScheduleTriggerConfig,
   type GitHubEventTriggerConfig,
+  type GitLabEventTriggerConfig,
   type FileChangeTriggerConfig,
 } from "@shared/types";
 
@@ -99,6 +103,12 @@ const GITHUB_EVENT_OPTIONS = [
   "workflow_run",
   "create",
   "delete",
+] as const;
+
+const GITLAB_EVENT_OPTIONS = [
+  "Merge Request Hook",
+  "Push Hook",
+  "Pipeline Hook",
 ] as const;
 
 // ─── Loop-template sub-form (schedule + file_change) ────────────────────────────
@@ -424,6 +434,146 @@ function GitHubConfigFields({
   );
 }
 
+function GitLabConfigFields({
+  project,
+  events,
+  secret,
+  onSecretChange,
+  onChange,
+}: {
+  project: string;
+  events: string[];
+  secret: string;
+  onSecretChange: (v: string) => void;
+  onChange: (patch: Partial<GitLabEventTriggerConfig>) => void;
+}) {
+  function toggleEvent(ev: string) {
+    const next = events.includes(ev)
+      ? events.filter((e) => e !== ev)
+      : [...events, ev];
+    onChange({ events: next });
+  }
+
+  // Inline format feedback: empty is "not yet an error" (the * still gates submit),
+  // a non-empty malformed path shows the error immediately.
+  const projectTouched = project.trim().length > 0;
+  const projectFormatValid = !projectTouched || isGitLabProjectValid(project);
+  const noEvents = events.length === 0;
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[11px] text-muted-foreground">
+        A matching GitLab event fires a consilium review. After you create the trigger you get
+        a webhook URL and token to paste into the project&apos;s{" "}
+        <span className="font-mono">Settings → Webhooks</span>.
+      </p>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="gl-project" className="text-xs">
+          Project <span className="text-destructive">*</span>
+        </Label>
+        <Input
+          id="gl-project"
+          value={project}
+          onChange={(e) => onChange({ project: e.target.value })}
+          placeholder="group/subgroup/project"
+          className="text-xs h-8"
+          required
+          aria-invalid={!projectFormatValid}
+          aria-describedby="gl-project-help"
+        />
+        <p id="gl-project-help" className="text-[10px] text-muted-foreground">
+          Format <span className="font-mono">group/.../project</span> — e.g.{" "}
+          <span className="font-mono">100rd/multiqlti</span>. This is the GitLab
+          project (`path_with_namespace`) whose webhook events fire the review.
+        </p>
+        {!projectFormatValid && (
+          <p className="text-[10px] text-destructive" role="alert">
+            Project must be in <span className="font-mono">group/.../project</span> format
+            (at least one <span className="font-mono">/</span>, no spaces).
+          </p>
+        )}
+      </div>
+
+      <fieldset>
+        <legend className="text-xs font-medium mb-2">
+          Events <span className="text-destructive">*</span>
+        </legend>
+        <div className="grid grid-cols-1 gap-1.5">
+          {GITLAB_EVENT_OPTIONS.map((ev) => (
+            <div key={ev} className="flex items-center gap-2">
+              <Checkbox
+                id={`gl-event-${ev}`}
+                checked={events.includes(ev)}
+                onCheckedChange={() => toggleEvent(ev)}
+              />
+              <Label
+                htmlFor={`gl-event-${ev}`}
+                className="text-xs font-mono cursor-pointer"
+              >
+                {ev}
+              </Label>
+            </div>
+          ))}
+        </div>
+        {noEvents && (
+          <p className="mt-1.5 text-[10px] text-destructive" role="alert">
+            Select at least one event for the trigger to fire.
+          </p>
+        )}
+      </fieldset>
+
+      <div className="rounded-md border border-border p-2.5">
+        <p className="text-[11px] font-medium mb-1">What fires a review</p>
+        <ul className="space-y-0.5">
+          {GITLAB_EVENT_MAPPINGS.map((m) => (
+            <li key={m.event} className="text-[10px] text-muted-foreground">
+              <span className="font-mono">{m.event}</span> → {m.effect}
+            </li>
+          ))}
+        </ul>
+        <p className="text-[10px] text-muted-foreground mt-1">
+          Other events (e.g. Pipeline Hook) are received and acknowledged but launch
+          nothing.
+        </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="gl-secret-input" className="text-xs">
+          Webhook Token <span className="text-muted-foreground">(recommended)</span>
+        </Label>
+        <div className="flex gap-2">
+          <Input
+            id="gl-secret-input"
+            type="password"
+            value={secret}
+            onChange={(e) => onSecretChange(e.target.value)}
+            placeholder="Paste into GitLab → Webhooks → Secret token"
+            className="font-mono text-xs h-8"
+            autoComplete="new-password"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 px-3 shrink-0"
+            onClick={() => onSecretChange(generateSecret())}
+            aria-label="Generate random secret"
+          >
+            <RefreshCw className="h-3.5 w-3.5 mr-1" />
+            Generate
+          </Button>
+        </div>
+        <p className="text-[10px] text-muted-foreground">
+          Sent verbatim as the{" "}
+          <span className="font-mono font-semibold">X-Gitlab-Token</span> header; the
+          receiver rejects any request whose token does not match.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function FileChangeConfigFields({
   watchPath,
   patterns,
@@ -494,6 +644,9 @@ export function TriggerForm({
   const [ghRepo, setGhRepo] = useState("");
   // Server requires events.min(1); a fresh github trigger must not start empty.
   const [ghEvents, setGhEvents] = useState<string[]>([...GITHUB_DEFAULT_EVENTS]);
+  const [glProject, setGlProject] = useState("");
+  // Server requires events.min(1); a fresh gitlab trigger must not start empty.
+  const [glEvents, setGlEvents] = useState<string[]>([...GITLAB_DEFAULT_EVENTS]);
   const [watchPath, setWatchPath] = useState("");
   const [filePatterns, setFilePatterns] = useState<string[]>([]);
   const [template, setTemplate] = useState<LoopTemplateState>({
@@ -535,6 +688,17 @@ export function TriggerForm({
           (trigger.config as GitHubEventTriggerConfig).events ?? []
         : [...GITHUB_DEFAULT_EVENTS],
     );
+    setGlProject(
+      trigger?.type === "gitlab_event"
+        ? (trigger.config as GitLabEventTriggerConfig).project
+        : "",
+    );
+    setGlEvents(
+      trigger?.type === "gitlab_event"
+        ? // Mirrors the ghEvents fallback above (an API-created trigger can omit it).
+          (trigger.config as GitLabEventTriggerConfig).events ?? []
+        : [...GITLAB_DEFAULT_EVENTS],
+    );
     setWatchPath(
       trigger?.type === "file_change"
         ? (trigger.config as FileChangeTriggerConfig).watchPath
@@ -555,10 +719,13 @@ export function TriggerForm({
     });
   }, [open, trigger, workspaces]);
 
-  // github triggers also carry a loop template (the review's target repo), but the
-  // preset is derived per-event, so its picker is hidden and a repo IS required.
-  const showLoopTemplate = LOOP_FIRING_TYPES.has(type) || type === "github_event";
-  const repoRequired = type === "schedule" || type === "github_event";
+  // github/gitlab triggers also carry a loop template (the review's target repo),
+  // but the preset is derived per-event, so its picker is hidden and a repo IS
+  // required.
+  const showLoopTemplate =
+    LOOP_FIRING_TYPES.has(type) || type === "github_event" || type === "gitlab_event";
+  const repoRequired =
+    type === "schedule" || type === "github_event" || type === "gitlab_event";
 
   // ── Build config ────────────────────────────────────────────────────────────
   function buildConfig(): Record<string, unknown> {
@@ -573,6 +740,14 @@ export function TriggerForm({
         return {
           repository: ghRepo,
           events: ghEvents,
+          action: buildLoopTemplate({ ...template, preset: "diff-pr-review" }),
+        };
+      case "gitlab_event":
+        // GitLab mirror of github_event above: the event mapping overrides the
+        // preset at fire time; we persist a sensible default so the shape validates.
+        return {
+          project: glProject,
+          events: glEvents,
           action: buildLoopTemplate({ ...template, preset: "diff-pr-review" }),
         };
       case "file_change":
@@ -591,6 +766,8 @@ export function TriggerForm({
       cron,
       ghRepo,
       ghEvents,
+      glProject,
+      glEvents,
       watchPath,
       preset: template.preset,
       repoPath: template.repoPath,
@@ -616,10 +793,11 @@ export function TriggerForm({
       };
       createTrigger.mutate(payload, {
         onSuccess: (created) => {
-          // Both webhook and github_event triggers get a synthesized URL; reveal it
-          // (+ the secret to paste into GitHub) when a secret was set.
+          // webhook, github_event, and gitlab_event triggers all get a synthesized
+          // URL; reveal it (+ the secret/token to paste into GitHub/GitLab) when a
+          // secret was set.
           if (
-            (type === "webhook" || type === "github_event") &&
+            (type === "webhook" || type === "github_event" || type === "gitlab_event") &&
             created.webhookUrl &&
             webhookSecret
           ) {
@@ -687,6 +865,7 @@ export function TriggerForm({
                 <SelectItem value="file_change" className="text-xs">File Change</SelectItem>
                 <SelectItem value="webhook" className="text-xs">Webhook</SelectItem>
                 <SelectItem value="github_event" className="text-xs">GitHub Event</SelectItem>
+                <SelectItem value="gitlab_event" className="text-xs">GitLab Event</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -713,6 +892,18 @@ export function TriggerForm({
               }}
             />
           )}
+          {type === "gitlab_event" && (
+            <GitLabConfigFields
+              project={glProject}
+              events={glEvents}
+              secret={webhookSecret}
+              onSecretChange={setWebhookSecret}
+              onChange={(patch) => {
+                if (patch.project !== undefined) setGlProject(patch.project);
+                if (patch.events !== undefined) setGlEvents(patch.events);
+              }}
+            />
+          )}
           {type === "file_change" && (
             <FileChangeConfigFields
               watchPath={watchPath}
@@ -724,13 +915,13 @@ export function TriggerForm({
             />
           )}
 
-          {/* Loop template (schedule + file_change + github_event) */}
+          {/* Loop template (schedule + file_change + github_event + gitlab_event) */}
           {showLoopTemplate && (
             <LoopTemplateFields
               state={template}
               workspaces={workspaces}
               repoRequired={repoRequired}
-              hidePreset={type === "github_event"}
+              hidePreset={type === "github_event" || type === "gitlab_event"}
               onChange={(patch) => setTemplate((prev) => ({ ...prev, ...patch }))}
             />
           )}

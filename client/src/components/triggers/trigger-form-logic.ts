@@ -13,6 +13,7 @@ import type {
   ConsiliumReviewTriggerAction,
   ScheduleTriggerConfig,
   GitHubEventTriggerConfig,
+  GitLabEventTriggerConfig,
   FileChangeTriggerConfig,
   TrackerEventTriggerConfig,
 } from "@shared/types";
@@ -39,6 +40,26 @@ export function isGitHubRepoValid(repo: string): boolean {
  * with nothing selected. These two cover the mapped review-firing events.
  */
 export const GITHUB_DEFAULT_EVENTS: readonly string[] = ["pull_request", "push"];
+
+/**
+ * group/.../project format — MIRRORS `GitLabConfigSchema.project` on the server
+ * (`server/routes/triggers.ts`). Kept in sync so the form rejects a malformed
+ * project path BEFORE it hits the API (and the submit button reflects it), instead
+ * of relying on a round-trip 400.
+ */
+export const GITLAB_PROJECT_REGEX = /^[^/]+(\/[^/]+)+$/;
+
+/** Whether `project` is a valid `group/.../project` path (trimmed). */
+export function isGitLabProjectValid(project: string): boolean {
+  return GITLAB_PROJECT_REGEX.test(project.trim());
+}
+
+/**
+ * Events pre-selected for a NEW gitlab_event trigger (GitLab mirror of
+ * GITHUB_DEFAULT_EVENTS). The server schema requires `events.min(1)`, so a fresh
+ * form MUST NOT start empty. These cover the mapped review-firing events.
+ */
+export const GITLAB_DEFAULT_EVENTS: readonly string[] = ["Merge Request Hook", "Push Hook"];
 
 /** A server-side zod issue, as surfaced in the 400 body's `issues[]`. */
 export interface TriggerValidationIssue {
@@ -90,11 +111,13 @@ export function isTriggerFormValid(input: {
   cron: string;
   ghRepo: string;
   ghEvents: string[];
+  glProject: string;
+  glEvents: string[];
   watchPath: string;
   preset: string;
   repoPath: string;
 }): boolean {
-  const { type, cron, ghRepo, ghEvents, watchPath, preset, repoPath } = input;
+  const { type, cron, ghRepo, ghEvents, glProject, glEvents, watchPath, preset, repoPath } = input;
   if (type === "schedule") {
     return cron.trim().length > 0 && preset.length > 0 && repoPath.trim().length > 0;
   }
@@ -109,6 +132,11 @@ export function isTriggerFormValid(input: {
     // so a malformed value is caught here instead of via a round-trip 400.
     return isGitHubRepoValid(ghRepo) && ghEvents.length > 0 && repoPath.trim().length > 0;
   }
+  if (type === "gitlab_event") {
+    // GitLab mirror of the github_event check above: a project path (server enforces
+    // the same regex), at least one event, and a target repoPath for the loop.
+    return isGitLabProjectValid(glProject) && glEvents.length > 0 && repoPath.trim().length > 0;
+  }
   return true; // webhook
 }
 
@@ -120,6 +148,17 @@ export function isTriggerFormValid(input: {
 export const GITHUB_EVENT_MAPPINGS: ReadonlyArray<{ event: string; effect: string }> = [
   { event: "pull_request (opened / synchronize / reopened)", effect: "diff-PR review of the PR head vs its base" },
   { event: "push to the default branch", effect: "post-merge review of the merged diff" },
+];
+
+/**
+ * Human summary of which consilium loop each GitLab event launches (mirror of
+ * GITHUB_EVENT_MAPPINGS) — shown in the form so the operator knows what a
+ * subscription actually does. Events not listed here are received + acknowledged
+ * (200) but launch nothing.
+ */
+export const GITLAB_EVENT_MAPPINGS: ReadonlyArray<{ event: string; effect: string }> = [
+  { event: "Merge Request Hook (open / update / reopen)", effect: "diff-PR review of the MR head vs its base" },
+  { event: "Push Hook to the default branch", effect: "post-merge review of the merged diff" },
 ];
 
 /**
@@ -172,6 +211,11 @@ export function configSummary(trigger: Trigger): string {
       const cfg = trigger.config as GitHubEventTriggerConfig;
       const events = (cfg.events ?? []).join(", ");
       return events ? `${cfg.repository} · ${events}` : cfg.repository;
+    }
+    case "gitlab_event": {
+      const cfg = trigger.config as GitLabEventTriggerConfig;
+      const events = (cfg.events ?? []).join(", ");
+      return events ? `${cfg.project} · ${events}` : cfg.project;
     }
     case "file_change": {
       const cfg = trigger.config as FileChangeTriggerConfig;

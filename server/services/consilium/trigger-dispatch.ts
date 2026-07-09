@@ -82,6 +82,7 @@ import type {
   ConsiliumReviewTriggerAction,
   ConsiliumReviewPreset,
   GitHubEventTriggerConfig,
+  GitLabEventTriggerConfig,
   TriggerProvenance,
   RoleProvenance,
   SpecProvenance,
@@ -90,6 +91,7 @@ import type {
   StandingRoleConcern,
 } from "@shared/types";
 import { mapGitHubEventToReview } from "./github-event-map.js";
+import { mapGitLabEventToReview } from "./gitlab-event-map.js";
 import { composeRoleTriggerInstruction } from "./role-compose.js";
 import {
   readSpecFile,
@@ -910,6 +912,99 @@ export async function maybeLaunchGitHubReview(
     engineerInstruction,
     objectiveExtra,
     // §6: a human passport label so #457 shows "fired by github trigger: PR #N".
+    eventSummary: eventLabel,
+    payload,
+  });
+}
+
+// ─── GitLab-event trigger → consilium review (GitLab mirror of the GitHub seam) ─
+//
+// The `payload` the gitlab-event-handler hands to `fireTrigger` is the ENVELOPE
+// `{ event, delivery, payload }` — the raw GitLab JSON body is under `.payload`.
+// The shared-secret token has ALREADY been verified upstream (gitlab-event-handler.ts /
+// webhook-handler.ts) — this seam NEVER runs before a good token. The
+// event→(preset, ref, baseline, label) decision is the PURE `mapGitLabEventToReview`;
+// the launch itself reuses the SAME dedup/owner/factory core as every other trigger.
+
+/** Extract the raw GitLab JSON body from the `{ event, delivery, payload }` envelope. */
+function gitlabBody(payload: unknown): unknown {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  return (payload as Record<string, unknown>).payload;
+}
+
+/**
+ * Launch a consilium review for a matching GitLab webhook event.
+ *   - "noop-event"  → the event is not mapped to a review (other MR action, push to
+ *                     a non-default branch, Pipeline Hook, …) — logged, NOT an error,
+ *                     NOT a review (a webhook subscribed to everything is safe).
+ *   - "skipped"     → subsystem off / no projectId / no repoPath in the loop template
+ *                     / no resolvable owner — logged.
+ *   - "skipped-dedup"→ a non-terminal loop already runs for this repo (T5 dedup).
+ *   - "launched"    → the factory was invoked (diff-pr-review on the MR head, or a
+ *                     post-merge review on the default branch).
+ *   - "failed"      → the factory threw (allowlist/workspace rejection, bad ref) —
+ *                     caught + logged (never crashes the receiver).
+ *
+ * The kill-switch (`features.triggers.enabled`) is enforced by the route BEFORE this
+ * is called, mirroring the schedule/github gate — a running server never silently
+ * starts firing gitlab loops.
+ */
+export async function maybeLaunchGitLabReview(
+  deps: ConsiliumTriggerDispatchDeps,
+  trigger: TriggerRow,
+  payload: unknown,
+): Promise<ConsiliumDispatchResult> {
+  const eventType = payloadString(payload, "event") ?? "";
+  const body = gitlabBody(payload);
+
+  // PURE mapping: decide the review shape (or a no-op reason) from the event.
+  const mapped = mapGitLabEventToReview(eventType, body);
+  if (mapped.kind === "noop") {
+    deps.log(`gitlab trigger ${trigger.id} — no-op for ${eventType || "?"}: ${mapped.reason}`);
+    return "noop-event";
+  }
+
+  if (!deps.reviewDeps) {
+    deps.log(`gitlab trigger ${trigger.id} skipped — consilium loop disabled`);
+    return "skipped";
+  }
+
+  const projectId = trigger.projectId;
+  if (!projectId) {
+    deps.log(`gitlab trigger ${trigger.id} skipped — trigger has no projectId`);
+    return "skipped";
+  }
+
+  // The loop template (embedded in the gitlab config) supplies the TARGET repo. A
+  // gitlab trigger has no watchPath to derive it from, so repoPath is REQUIRED; the
+  // factory re-validates it against the fail-closed allowlist + the project's
+  // workspaces. The action.preset is IGNORED — the event mapping chooses the preset.
+  const config = trigger.config as GitLabEventTriggerConfig;
+  const action = config.action;
+  const repoPath = action?.repoPath;
+  if (!repoPath) {
+    deps.log(`gitlab trigger ${trigger.id} skipped — loop template has no repoPath`);
+    return "skipped";
+  }
+
+  const { preset, ref, baselineCommit, eventLabel } = mapped.mapping;
+
+  // G1: the UNTRUSTED event label (MR !N: title) enters the objective ONLY via the
+  // sanitized engineerInstruction/objectiveExtra seam (interpolate `${event}` into the
+  // operator instruction when present, else pass the bare label). The factory
+  // control-strips + byte-clamps + fences it — same discipline as the file_change path.
+  const engineerInstruction = interpolateEvent(action?.engineerInstruction, eventLabel);
+  const objectiveExtra = engineerInstruction ? undefined : eventLabel;
+
+  return launchReviewWithDedup(deps, trigger, {
+    projectId,
+    repoPath,
+    preset: preset as ConsiliumReviewPreset,
+    ref,
+    baselineCommit,
+    engineerInstruction,
+    objectiveExtra,
+    // §6: a human passport label so #457 shows "fired by gitlab trigger: MR !N".
     eventSummary: eventLabel,
     payload,
   });
