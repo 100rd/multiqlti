@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 import { formatDistanceToNow } from "date-fns";
 import {
-  Pencil, Trash2, Zap, Clock, Github, FolderSearch,
+  Pencil, Trash2, Zap, Clock, Github, Gitlab, FolderSearch,
   ChevronRight, ChevronDown, GitPullRequest, ArrowUpRight, AlertTriangle,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
@@ -31,6 +31,11 @@ const TYPE_META: Record<TriggerType, { label: string; className: string; Icon: R
     label: "GitHub Event",
     className: "bg-gray-500/15 text-gray-700 border-gray-500/30",
     Icon: Github,
+  },
+  gitlab_event: {
+    label: "GitLab Event",
+    className: "bg-orange-500/15 text-orange-700 border-orange-500/30",
+    Icon: Gitlab,
   },
   file_change: {
     label: "File Change",

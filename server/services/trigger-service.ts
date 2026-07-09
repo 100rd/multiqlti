@@ -58,7 +58,11 @@ export class TriggerService {
       updatedAt: row.updatedAt,
     };
 
-    if (trigger.type === "webhook" || trigger.type === "github_event") {
+    if (
+      trigger.type === "webhook" ||
+      trigger.type === "github_event" ||
+      trigger.type === "gitlab_event"
+    ) {
       trigger.webhookUrl = this.webhookUrl(row.id);
     }
 

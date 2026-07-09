@@ -465,7 +465,7 @@ export type SkillVersionRow = typeof skillVersions.$inferSelect;
 
 // ─── Pipeline Triggers (Phase 6.3) ───────────────────────────────────────────
 
-export const TRIGGER_TYPES = ["webhook", "schedule", "github_event", "file_change", "tracker_event"] as const;
+export const TRIGGER_TYPES = ["webhook", "schedule", "github_event", "gitlab_event", "file_change", "tracker_event"] as const;
 
 
 export const triggers = pgTable(
