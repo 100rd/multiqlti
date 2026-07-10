@@ -36,10 +36,13 @@ const MOCK_DB = vi.hoisted(() => ({
   workspaceConnectionsRows: [] as Record<string, unknown>[],
   workspacesRows: [] as Record<string, unknown>[],
   credentialLeasesRows: [] as Record<string, unknown>[],
+  // Secrets Vault Phase 1 — rows resolved by db.select().from(secrets)....
+  secretsRows: [] as Record<string, unknown>[],
 
   // Spy arrays for write operations.
   inserted: [] as { table: string; values: Record<string, unknown> }[],
   updated: [] as { table: string; set: Record<string, unknown>; where: unknown }[],
+  deleted: [] as { table: string; where: unknown }[],
 
   // Next UUID to return from insert().returning()
   nextLeaseId: "lease-uuid-1",
@@ -111,14 +114,25 @@ vi.mock("../../../server/db.js", () => {
           const rowsForTable = () => {
             if (tableName === "workspaces")           return MOCK_DB.workspacesRows;
             if (tableName === "credential_leases")    return MOCK_DB.credentialLeasesRows;
+            if (tableName === "secrets")               return MOCK_DB.secretsRows;
             return [];
           };
 
           innerChain.where = vi.fn().mockImplementation(() => innerChain);
           innerChain.orderBy = vi.fn().mockImplementation(() => rowsForTable());
-          (innerChain as any).then = (resolve: (v: unknown) => void) => {
-            resolve(rowsForTable());
-            return Promise.resolve(rowsForTable());
+          // Propagate the resolver's return value (not just the raw rows) so
+          // explicit `.then(([row]) => row ?? null)` call sites (Secrets Vault
+          // Phase 1: putCredential/getSecretForProject) get the *transformed*
+          // value, not the raw array (which is always truthy, even empty).
+          (innerChain as any).then = (
+            resolve: (v: unknown) => unknown,
+            reject?: (e: unknown) => unknown,
+          ) => {
+            try {
+              return Promise.resolve(resolve(rowsForTable()));
+            } catch (e) {
+              return reject ? Promise.resolve(reject(e)) : Promise.reject(e);
+            }
           };
           return innerChain;
         });
@@ -136,6 +150,9 @@ vi.mock("../../../server/db.js", () => {
             const returning = () => {
               if (tableName === "credential_leases") {
                 return [{ ...vals, id: MOCK_DB.nextLeaseId }];
+              }
+              if (tableName === "secrets") {
+                return [{ ...vals, id: "secret-uuid-1" }];
               }
               return [{ ...vals, id: "log-uuid-1" }];
             };
@@ -170,7 +187,16 @@ vi.mock("../../../server/db.js", () => {
           updateEntry.where = w;
           return chain;
         });
-        chain.returning = vi.fn().mockReturnValue([]);
+        chain.returning = vi.fn().mockImplementation(() => {
+          // Secrets Vault Phase 1 — rotate path: merge the pre-existing row
+          // (set by the test via MOCK_DB.secretsRows) with the .set() patch so
+          // putCredential's `const [row] = await db.update(secrets)....returning()`
+          // gets a realistic post-update row back (id, version, rotatedAt, etc).
+          if (tableName === "secrets" && MOCK_DB.secretsRows[0]) {
+            return [{ ...MOCK_DB.secretsRows[0], ...updateEntry.set }];
+          }
+          return [];
+        });
         (chain as any).then = (resolve: (v: unknown) => void) => {
           resolve(undefined);
           return Promise.resolve(undefined);
@@ -179,9 +205,15 @@ vi.mock("../../../server/db.js", () => {
         return chain;
       }),
 
-      delete: vi.fn().mockImplementation(() => ({
-        where: vi.fn().mockReturnValue(Promise.resolve()),
-      })),
+      delete: vi.fn().mockImplementation((table: unknown) => {
+        const tableName = (table as Record<symbol, string>)[TABLE] ?? "";
+        return {
+          where: vi.fn().mockImplementation((w: unknown) => {
+            MOCK_DB.deleted.push({ table: tableName, where: w });
+            return Promise.resolve();
+          }),
+        };
+      }),
     },
     pool: { on: vi.fn() },
     withProject: (_t: unknown, cond?: unknown) => cond ?? {},
@@ -264,14 +296,34 @@ function makeLease(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+/** Secrets Vault (Phase 1) row fixture — matches `shared/schema.ts`'s `secrets` table. */
+function makeSecret(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: "secret-uuid-1",
+    projectId: PROJECT_A,
+    name: "API_KEY",
+    description: "An API key",
+    scope: "runtime",
+    provider: "vault",
+    valueEncrypted: "v2:enc-existing-value",
+    version: 1,
+    createdBy: PROJECT_A,
+    createdAt: new Date("2026-01-01"),
+    rotatedAt: null,
+    ...overrides,
+  };
+}
+
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
 function resetMock() {
   MOCK_DB.workspaceConnectionsRows = [];
   MOCK_DB.workspacesRows = [];
   MOCK_DB.credentialLeasesRows = [];
+  MOCK_DB.secretsRows = [];
   MOCK_DB.inserted = [];
   MOCK_DB.updated = [];
+  MOCK_DB.deleted = [];
   MOCK_DB.nextLeaseId = "lease-uuid-1";
 }
 
@@ -678,6 +730,209 @@ describe("DbCryptoCredentialProvider", () => {
         (i) => i.table === "credential_access_log",
       );
       expect(auditRows).toHaveLength(0);
+    });
+  });
+
+  // ── Secrets Vault Phase 1: putCredential / deleteCredential / getSecretValue ──
+  //
+  // putCredential/deleteCredential used to throw "not implemented" for the
+  // `secrets` (vault) table; Phase 1 unstubbed them into a real
+  // upsert-by-(projectId, name) / project-scoped delete against the `secrets`
+  // table, each writing a credential_access_log audit row. These tests assert
+  // the real new behavior end-to-end against the mocked db.
+
+  describe("putCredential (vault secrets)", () => {
+    it("creates a new secret (version 1) when no row exists for (projectId, name)", async () => {
+      MOCK_DB.secretsRows = [];
+
+      const result = await runAsProject(PROJECT_A, () =>
+        provider.putCredential({
+          projectId: PROJECT_A,
+          provider: "vault",
+          scope: "runtime",
+          description: "An API key",
+          secret: "sk-plaintext-123",
+          name: "API_KEY",
+        }),
+      );
+
+      // Encrypted via the mocked crypto.encrypt(), never the raw plaintext.
+      const insertRows = MOCK_DB.inserted.filter((i) => i.table === "secrets");
+      expect(insertRows).toHaveLength(1);
+      expect(insertRows[0].values.valueEncrypted).toBe("v2:sk-plaintext-123");
+      expect(insertRows[0].values.version).toBe(1);
+      expect(insertRows[0].values.name).toBe("API_KEY");
+
+      expect(result.hasSecret).toBe(true);
+      expect(result.version).toBe(1);
+      expect(result.name).toBe("API_KEY");
+
+      const auditRows = MOCK_DB.inserted.filter(
+        (i) => i.table === "credential_access_log",
+      );
+      expect(auditRows).toHaveLength(1);
+      expect(auditRows[0].values.action).toBe("secret_created");
+      expect(auditRows[0].values.success).toBe(true);
+    });
+
+    it("rotates an existing secret: bumps version, sets rotatedAt, audits secret_rotated", async () => {
+      MOCK_DB.secretsRows = [makeSecret({ version: 2, rotatedAt: null })];
+
+      const result = await runAsProject(PROJECT_A, () =>
+        provider.putCredential({
+          projectId: PROJECT_A,
+          provider: "vault",
+          scope: "runtime",
+          description: "Rotated key",
+          secret: "sk-new-plaintext",
+          name: "API_KEY",
+        }),
+      );
+
+      const updateRows = MOCK_DB.updated.filter((u) => u.table === "secrets");
+      expect(updateRows).toHaveLength(1);
+      expect(updateRows[0].set.version).toBe(3);
+      expect(updateRows[0].set.valueEncrypted).toBe("v2:sk-new-plaintext");
+      expect(updateRows[0].set.rotatedAt).toBeInstanceOf(Date);
+
+      expect(result.version).toBe(3);
+      expect(result.hasSecret).toBe(true);
+
+      const auditRows = MOCK_DB.inserted.filter(
+        (i) => i.table === "credential_access_log",
+      );
+      expect(auditRows).toHaveLength(1);
+      expect(auditRows[0].values.action).toBe("secret_rotated");
+      expect(auditRows[0].values.success).toBe(true);
+    });
+
+    it("throws when `name` is omitted (connection-backed credentials use a different API)", async () => {
+      await runAsProject(PROJECT_A, async () => {
+        await expect(
+          provider.putCredential({
+            projectId: PROJECT_A,
+            provider: "vault",
+            scope: "runtime",
+            description: "no name",
+            secret: "sk-x",
+          }),
+        ).rejects.toThrow(/name/i);
+      });
+    });
+
+    it("throws ForbiddenError when projectId !== context", async () => {
+      await runAsProject(PROJECT_A, async () => {
+        await expect(
+          provider.putCredential({
+            projectId: PROJECT_B,
+            provider: "vault",
+            scope: "runtime",
+            description: "cross-project",
+            secret: "sk-x",
+            name: "API_KEY",
+          }),
+        ).rejects.toThrow(ForbiddenError);
+      });
+    });
+  });
+
+  describe("deleteCredential (vault secrets)", () => {
+    it("deletes an existing secret (project-scoped) and audits secret_deleted", async () => {
+      MOCK_DB.secretsRows = [makeSecret()];
+
+      await runAsProject(PROJECT_A, () =>
+        provider.deleteCredential(PROJECT_A, "secret-uuid-1"),
+      );
+
+      const deleteRows = MOCK_DB.deleted.filter((d) => d.table === "secrets");
+      expect(deleteRows).toHaveLength(1);
+
+      const auditRows = MOCK_DB.inserted.filter(
+        (i) => i.table === "credential_access_log",
+      );
+      expect(auditRows).toHaveLength(1);
+      expect(auditRows[0].values.action).toBe("secret_deleted");
+      expect(auditRows[0].values.credentialId).toBe("secret-uuid-1");
+      expect(auditRows[0].values.success).toBe(true);
+    });
+
+    it("throws when the secret does not exist in this project (no silent no-op)", async () => {
+      MOCK_DB.secretsRows = [];
+
+      await runAsProject(PROJECT_A, async () => {
+        await expect(
+          provider.deleteCredential(PROJECT_A, "unknown-secret"),
+        ).rejects.toThrow(/not found/i);
+      });
+
+      expect(MOCK_DB.deleted.filter((d) => d.table === "secrets")).toHaveLength(0);
+    });
+
+    it("throws ForbiddenError when projectId !== context", async () => {
+      await runAsProject(PROJECT_A, async () => {
+        await expect(
+          provider.deleteCredential(PROJECT_B, "secret-uuid-1"),
+        ).rejects.toThrow(ForbiddenError);
+      });
+    });
+  });
+
+  describe("getSecretValue", () => {
+    it("decrypts and returns the plaintext value, auditing secret_accessed", async () => {
+      MOCK_DB.secretsRows = [makeSecret()];
+
+      const result = await runAsProject(PROJECT_A, () =>
+        provider.getSecretValue({
+          projectId: PROJECT_A,
+          credentialId: "secret-uuid-1",
+          purpose: "test-purpose",
+          requestedBy: USER,
+        }),
+      );
+
+      // decrypt mock returns JSON.stringify({ API_TOKEN: "secret-value-123" })
+      expect(result).toBe(JSON.stringify({ API_TOKEN: "secret-value-123" }));
+
+      const auditRows = MOCK_DB.inserted.filter(
+        (i) => i.table === "credential_access_log",
+      );
+      expect(auditRows).toHaveLength(1);
+      expect(auditRows[0].values.action).toBe("secret_accessed");
+      expect(auditRows[0].values.success).toBe(true);
+      expect(auditRows[0].values.requestedBy).toBe(USER);
+    });
+
+    it("throws and audits a failure when the secret is not found or has no value", async () => {
+      MOCK_DB.secretsRows = [];
+
+      await runAsProject(PROJECT_A, async () => {
+        await expect(
+          provider.getSecretValue({
+            projectId: PROJECT_A,
+            credentialId: "unknown-secret",
+            purpose: "test-purpose",
+          }),
+        ).rejects.toThrow(/not found/i);
+      });
+
+      const auditRows = MOCK_DB.inserted.filter(
+        (i) => i.table === "credential_access_log",
+      );
+      expect(auditRows).toHaveLength(1);
+      expect(auditRows[0].values.action).toBe("secret_accessed");
+      expect(auditRows[0].values.success).toBe(false);
+    });
+
+    it("throws ForbiddenError when projectId !== context", async () => {
+      await runAsProject(PROJECT_A, async () => {
+        await expect(
+          provider.getSecretValue({
+            projectId: PROJECT_B,
+            credentialId: "secret-uuid-1",
+            purpose: "test-purpose",
+          }),
+        ).rejects.toThrow(ForbiddenError);
+      });
     });
   });
 

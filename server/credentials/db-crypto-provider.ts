@@ -15,12 +15,13 @@
 import { eq, and, lt } from "drizzle-orm";
 import { db } from "../db.js";
 import { getProjectId, requestContext } from "../context.js";
-import { decrypt } from "../crypto.js";
+import { encrypt, decrypt } from "../crypto.js";
 import {
   workspaceConnections,
   workspaces,
   credentialLeases,
   credentialAccessLog,
+  secrets,
 } from "../../shared/schema.js";
 import type {
   CredentialMetadata,
@@ -37,7 +38,7 @@ import { ForbiddenError } from "./types.js";
  * getProjectId() already throws in system context and when context is absent —
  * those errors propagate as-is (they are also security barriers).
  */
-function assertProject(projectId: string): void {
+export function assertProject(projectId: string): void {
   const ctx = getProjectId();
   if (ctx !== projectId) {
     throw new ForbiddenError(
@@ -51,7 +52,7 @@ function assertProject(projectId: string): void {
  * Write one row to credential_access_log.  Uses db directly (no withProject) so
  * it works both from project-context methods and from the system-scoped sweeper.
  */
-async function writeAccessLog(entry: {
+export async function writeAccessLog(entry: {
   leaseId?: string | null;
   credentialId: string;
   projectId: string;
@@ -132,6 +133,36 @@ function toMetadata(
   };
 }
 
+/** Convert a `secrets` vault row to CredentialMetadata. NEVER includes valueEncrypted. */
+export function toSecretMetadata(
+  row: typeof secrets.$inferSelect,
+  projectId: string,
+): CredentialMetadata {
+  return {
+    id: row.id,
+    projectId,
+    provider: row.provider ?? "vault",
+    scope: row.scope ?? "",
+    description: row.description ?? "",
+    hasSecret: row.valueEncrypted !== null,
+    lastRotatedAt: row.rotatedAt ?? row.createdAt,
+    name: row.name,
+    version: row.version,
+  };
+}
+
+/** Resolve a vault secret row that belongs to the given project, or null. */
+export async function getSecretForProject(
+  credentialId: string,
+  projectId: string,
+): Promise<typeof secrets.$inferSelect | null> {
+  const [row] = await db
+    .select()
+    .from(secrets)
+    .where(and(eq(secrets.id, credentialId), eq(secrets.projectId, projectId)));
+  return row ?? null;
+}
+
 // ─── DbCryptoCredentialProvider ───────────────────────────────────────────────
 
 export class DbCryptoCredentialProvider implements CredentialProvider {
@@ -163,7 +194,13 @@ export class DbCryptoCredentialProvider implements CredentialProvider {
       .innerJoin(workspaces, eq(workspaces.id, workspaceConnections.workspaceId))
       .where(eq(workspaces.projectId, projectId));
 
-    const metadata = rows.map((r) => toMetadata(r, projectId));
+    const connectionMetadata = rows.map((r) => toMetadata(r, projectId));
+
+    const secretRows = await db
+      .select()
+      .from(secrets)
+      .where(eq(secrets.projectId, projectId));
+    const secretMetadata = secretRows.map((r) => toSecretMetadata(r, projectId));
 
     await writeAccessLog({
       credentialId: "*",
@@ -173,7 +210,7 @@ export class DbCryptoCredentialProvider implements CredentialProvider {
       success: true,
     });
 
-    return metadata;
+    return [...connectionMetadata, ...secretMetadata];
   }
 
   /**
@@ -188,16 +225,19 @@ export class DbCryptoCredentialProvider implements CredentialProvider {
     assertProject(projectId);
 
     const row = await getConnectionForProject(credentialId, projectId);
+    const secretRow = row ? null : await getSecretForProject(credentialId, projectId);
 
     await writeAccessLog({
       credentialId,
       projectId,
       action: "get_metadata",
       requestedBy: projectId,
-      success: row !== null,
+      success: row !== null || secretRow !== null,
     });
 
-    return row ? toMetadata(row, projectId) : null;
+    if (row) return toMetadata(row, projectId);
+    if (secretRow) return toSecretMetadata(secretRow, projectId);
+    return null;
   }
 
   // ── EXEC-TIME ───────────────────────────────────────────────────────────────
@@ -386,42 +426,173 @@ export class DbCryptoCredentialProvider implements CredentialProvider {
     return plaintext;
   }
 
-  // ── CREDENTIAL STORE ─────────────────────────────────────────────────────────
+  // ── CREDENTIAL STORE (Secrets Vault, Phase 1) ────────────────────────────────
 
   /**
-   * putCredential — not implemented in Wave 1.
+   * Create or rotate a vault secret, upserted by (projectId, name).
    *
-   * The `workspaceConnections` store requires a `workspaceId` that the broker
-   * interface does not carry.  This method will be fully implemented in Wave 2
-   * when the Vault backend (which has its own key-value store) is wired in.
-   *
-   * Callers who need to create workspace connections should use the workspace
-   * connections API directly (POST /api/workspaces/:id/connections).
+   * `name` is required — vault secrets are named; connection-backed credentials
+   * (workspaceConnections) are managed via the workspace connections API instead.
+   * Every call encrypts `secret` and writes it to `valueEncrypted`, bumping
+   * `version` and setting `rotatedAt` on update (version starts at 1 on create).
+   * Writes a credential_access_log row (action='secret_created'|'secret_rotated').
    */
-  async putCredential(_p: {
+  async putCredential(p: {
     projectId: string;
     provider: string;
     scope: string;
     description: string;
     secret: string;
+    name?: string;
   }): Promise<CredentialMetadata> {
-    throw new Error(
-      "putCredential is not implemented in Wave 1. " +
-        "Use the workspace connections API to create credentials. " +
-        "This method will be implemented in Wave 2 (Vault backend).",
-    );
+    assertProject(p.projectId);
+
+    if (!p.name) {
+      throw new Error(
+        "putCredential: `name` is required to create/rotate a vault secret. " +
+          "Connection-backed credentials are managed via the workspace connections API.",
+      );
+    }
+
+    const ciphertext = encrypt(p.secret);
+    const existing = await db
+      .select()
+      .from(secrets)
+      .where(and(eq(secrets.projectId, p.projectId), eq(secrets.name, p.name)))
+      .then(([row]) => row ?? null);
+
+    const now = new Date();
+    const [row] = existing
+      ? await db
+          .update(secrets)
+          .set({
+            provider: p.provider,
+            scope: p.scope,
+            description: p.description,
+            valueEncrypted: ciphertext,
+            version: existing.version + 1,
+            rotatedAt: now,
+          })
+          .where(eq(secrets.id, existing.id))
+          .returning()
+      : await db
+          .insert(secrets)
+          .values({
+            projectId: p.projectId,
+            name: p.name,
+            provider: p.provider,
+            scope: p.scope,
+            description: p.description,
+            valueEncrypted: ciphertext,
+            version: 1,
+            createdBy: p.projectId,
+          })
+          .returning();
+
+    await writeAccessLog({
+      credentialId: row.id,
+      projectId: p.projectId,
+      action: existing ? "secret_rotated" : "secret_created",
+      requestedBy: p.projectId,
+      success: true,
+    });
+
+    return toSecretMetadata(row, p.projectId);
   }
 
   /**
-   * deleteCredential — not implemented in Wave 1.
-   * Use the workspace connections DELETE endpoint instead.
+   * Delete a vault secret (project-scoped). Throws if the secret does not
+   * exist in this project (no cross-project deletion, no silent no-op).
+   * Writes a credential_access_log row (action='secret_deleted').
    */
-  async deleteCredential(_projectId: string, _credentialId: string): Promise<void> {
-    throw new Error(
-      "deleteCredential is not implemented in Wave 1. " +
-        "Use the workspace connections API to delete credentials. " +
-        "This method will be implemented in Wave 2 (Vault backend).",
-    );
+  async deleteCredential(projectId: string, credentialId: string): Promise<void> {
+    assertProject(projectId);
+
+    const existing = await getSecretForProject(credentialId, projectId);
+    if (!existing) {
+      throw new Error(
+        `deleteCredential: secret ${credentialId} not found in project ${projectId}.`,
+      );
+    }
+
+    await db.delete(secrets).where(eq(secrets.id, credentialId));
+
+    await writeAccessLog({
+      credentialId,
+      projectId,
+      action: "secret_deleted",
+      requestedBy: projectId,
+      success: true,
+    });
+  }
+
+  /**
+   * Decrypt and return the current value of a vault secret.
+   * Writes a credential_access_log row (action='secret_accessed'), including
+   * on failure (not-found / decrypt error), mirroring accessSecret's audit
+   * discipline. This is a sanctioned crypto.decrypt() call site.
+   */
+  async getSecretValue(p: {
+    projectId: string;
+    credentialId: string;
+    purpose: string;
+    requestedBy?: string;
+  }): Promise<string> {
+    assertProject(p.projectId);
+    const requestedBy = p.requestedBy ?? p.projectId;
+
+    const row = await getSecretForProject(p.credentialId, p.projectId);
+    if (!row || row.valueEncrypted === null) {
+      await writeAccessLog({
+        credentialId: p.credentialId,
+        projectId: p.projectId,
+        action: "secret_accessed",
+        requestedBy,
+        justification: p.purpose,
+        success: false,
+        errorMessage: "secret not found or has no value",
+      }).catch((auditErr: unknown) => {
+        console.warn("[credential-broker] audit write failed:", auditErr);
+      });
+      throw new Error(
+        `getSecretValue: secret ${p.credentialId} not found in project ${p.projectId}, or has no value.`,
+      );
+    }
+
+    let plaintext: string;
+    try {
+      // ─── Sanctioned crypto.decrypt() call site (kept inside db-crypto-provider). ───
+      plaintext = decrypt(row.valueEncrypted);
+    } catch (e) {
+      await writeAccessLog({
+        credentialId: p.credentialId,
+        projectId: p.projectId,
+        action: "secret_accessed",
+        requestedBy,
+        justification: p.purpose,
+        success: false,
+        errorMessage: (e as Error).message,
+      }).catch((auditErr: unknown) => {
+        console.warn(
+          "[credential-broker] audit write failed on decrypt error:",
+          auditErr,
+        );
+      });
+      throw e;
+    }
+
+    await writeAccessLog({
+      credentialId: p.credentialId,
+      projectId: p.projectId,
+      action: "secret_accessed",
+      requestedBy,
+      justification: p.purpose,
+      success: true,
+    }).catch((auditErr: unknown) => {
+      console.warn("[credential-broker] audit write failed:", auditErr);
+    });
+
+    return plaintext;
   }
 }
 
@@ -506,5 +677,16 @@ export async function expireStaleLeases(): Promise<number> {
 
 // ─── Singleton export ─────────────────────────────────────────────────────────
 
-/** Default singleton — import this in Wave-2 wiring. */
-export const credentialProvider: CredentialProvider = new DbCryptoCredentialProvider();
+/**
+ * Default singleton — import this in Wave-2 wiring.
+ *
+ * Phase 2 (secrets-manager pluggable backend): the concrete implementation
+ * (DbCryptoCredentialProvider vs OpenBaoCredentialProvider) is now selected by
+ * `createCredentialProvider` (see factory.ts) based on `config.credentials.backend`.
+ * Re-exported here — rather than constructed here — so every existing importer
+ * of `credentialProvider` from this module path keeps working unchanged.
+ * (This creates an intentional import cycle between db-crypto-provider.ts and
+ * factory.ts; safe because DbCryptoCredentialProvider is fully defined, above,
+ * before this re-export is evaluated.)
+ */
+export { credentialProvider } from "./factory.js";

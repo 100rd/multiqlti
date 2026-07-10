@@ -2054,6 +2054,10 @@ export const CREDENTIAL_ACCESS_ACTIONS = [
   "lease_expired",
   // [Wave-2] Non-lease direct secret accesses through the broker (ADR-001 PR-1d).
   "secret_accessed",
+  // [Secrets Vault Phase 1] Credential-store writes against the `secrets` table.
+  "secret_created",
+  "secret_rotated",
+  "secret_deleted",
 ] as const;
 export type CredentialAccessAction = typeof CREDENTIAL_ACCESS_ACTIONS[number];
 
@@ -2123,6 +2127,57 @@ export const credentialAccessLog = pgTable(
 
 export type CredentialAccessLogRow = typeof credentialAccessLog.$inferSelect;
 export type InsertCredentialAccessLog = typeof credentialAccessLog.$inferInsert;
+
+// ─── Secrets Vault (Phase 1 — project-scoped credential store) ──────────────
+//
+// Named, versioned secrets owned directly by a project (distinct from the
+// workspaceConnections-backed credentials).  `valueEncrypted` is written and
+// read ONLY inside server/credentials/db-crypto-provider.ts (the sanctioned
+// crypto.encrypt()/decrypt() call site) — never accepted as plaintext input
+// from a Zod-validated insert, hence the insert schema below omits it.
+//
+// Deploy: psql "$DATABASE_URL" -f migrations/0058_secrets_vault.sql
+
+export const secrets = pgTable(
+  "secrets",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    scope: text("scope"),
+    provider: text("provider"),
+    /** AES-256-GCM ciphertext (crypto.ts `v2:` format). Null until first rotate. */
+    valueEncrypted: text("value_encrypted"),
+    version: integer("version").notNull().default(1),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    rotatedAt: timestamp("rotated_at"),
+  },
+  (table) => ({
+    projectNameIdx: uniqueIndex("secrets_project_name_idx").on(
+      table.projectId,
+      table.name,
+    ),
+  }),
+);
+
+export const insertSecretSchema = createInsertSchema(secrets).omit({
+  id: true,
+  projectId: true,
+  valueEncrypted: true,
+  version: true,
+  createdBy: true,
+  createdAt: true,
+  rotatedAt: true,
+});
+
+export type SecretRow = typeof secrets.$inferSelect;
+export type InsertSecretRow = z.infer<typeof insertSecretSchema>;
 
 // ─── Standing Roles (ROLE-1 — standing-role.md §3/§8) ────────────────────────
 //

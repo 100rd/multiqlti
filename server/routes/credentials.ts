@@ -14,16 +14,93 @@
  */
 
 import type { Express } from "express";
+import { z } from "zod";
 import { db, withProject } from "../db.js";
 import {
   credentialLeases,
   credentialAccessLog,
   CREDENTIAL_LEASE_STATUSES,
+  secrets,
 } from "../../shared/schema.js";
 import { credentialProvider } from "../credentials/db-crypto-provider.js";
 import { getProjectId } from "../context.js";
+import { requireRole } from "../auth/middleware.js";
 import { desc, eq, and } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
+
+// ─── Write-endpoint schemas (Secrets Vault, Phase 1) ───────────────────────────
+
+const CONTROL_CHARS_RE = new RegExp("[\\u0000-\\u001F\\u007F-\\u009F]", "g");
+
+/** Vault secret name: leading letter/underscore, then word chars/./-, <=129 chars. */
+const SECRET_NAME_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,128}$/;
+const MAX_META_LEN = 256;
+
+const CreateSecretBodySchema = z.object({
+  name: z.string().regex(SECRET_NAME_RE, "invalid secret name"),
+  value: z.string().min(1).max(8192),
+  description: z.string().max(MAX_META_LEN).optional(),
+  scope: z.string().max(MAX_META_LEN).optional(),
+  provider: z.string().max(MAX_META_LEN).optional(),
+});
+
+const UpdateSecretBodySchema = z.object({
+  value: z.string().min(1).max(8192).optional(),
+  description: z.string().max(MAX_META_LEN).optional(),
+  scope: z.string().max(MAX_META_LEN).optional(),
+  provider: z.string().max(MAX_META_LEN).optional(),
+});
+
+const SecretIdParamsSchema = z.object({
+  id: z.string().min(1),
+});
+
+/**
+ * Control-strip (C0/DEL/C1) + collapse whitespace + trim + clamp an untrusted
+ * metadata field (description/scope/provider). Mirrors the pattern used by
+ * consilium-loops.ts's sanitizeReason/sanitizeCommitPrefix. Returns undefined
+ * for a non-string or empty-after-strip input.
+ */
+function sanitizeMeta(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const cleaned = raw
+    .replace(CONTROL_CHARS_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_META_LEN);
+  return cleaned.length ? cleaned : undefined;
+}
+
+/** The metadata shape returned by every write endpoint. VALUE is never included. */
+interface SecretMetadataResponse {
+  id: string;
+  projectId: string;
+  name: string;
+  provider: string;
+  scope: string;
+  description: string;
+  hasSecret: boolean;
+  version: number;
+  createdAt: Date;
+  rotatedAt: Date | null;
+}
+
+function toSecretResponse(
+  row: typeof secrets.$inferSelect,
+): SecretMetadataResponse {
+  return {
+    id: row.id,
+    projectId: row.projectId,
+    name: row.name,
+    provider: row.provider ?? "vault",
+    scope: row.scope ?? "",
+    description: row.description ?? "",
+    hasSecret: row.valueEncrypted !== null,
+    version: row.version,
+    createdAt: row.createdAt,
+    rotatedAt: row.rotatedAt,
+  };
+}
 
 export function registerCredentialRoutes(app: Express): void {
   // ── GET /api/credentials ──────────────────────────────────────────────────────
@@ -122,6 +199,153 @@ export function registerCredentialRoutes(app: Express): void {
         .orderBy(desc(credentialLeases.issuedAt));
 
       res.json(rows);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // ── POST /api/credentials ─────────────────────────────────────────────────────
+  // Create a new vault secret. Admin only. VALUE is never returned.
+  app.post("/api/credentials", requireRole("admin"), async (req, res) => {
+    const body = CreateSecretBodySchema.safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: body.error.message });
+      return;
+    }
+
+    try {
+      const projectId = getProjectId();
+
+      const [existing] = await db
+        .select({ id: secrets.id })
+        .from(secrets)
+        .where(
+          and(eq(secrets.projectId, projectId), eq(secrets.name, body.data.name)),
+        );
+      if (existing) {
+        res.status(409).json({
+          error: `Secret with name "${body.data.name}" already exists`,
+        });
+        return;
+      }
+
+      const metadata = await credentialProvider.putCredential({
+        projectId,
+        name: body.data.name,
+        secret: body.data.value,
+        description: sanitizeMeta(body.data.description) ?? "",
+        scope: sanitizeMeta(body.data.scope) ?? "",
+        provider: sanitizeMeta(body.data.provider) ?? "",
+      });
+
+      const [row] = await db
+        .select()
+        .from(secrets)
+        .where(and(eq(secrets.id, metadata.id), eq(secrets.projectId, projectId)));
+      res.status(201).json(toSecretResponse(row));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // ── PATCH /api/credentials/:id ─────────────────────────────────────────────────
+  // Update metadata and/or rotate a vault secret (value present = rotate).
+  // Admin only. VALUE is never returned.
+  app.patch("/api/credentials/:id", requireRole("admin"), async (req, res) => {
+    const params = SecretIdParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      res.status(400).json({ error: params.error.message });
+      return;
+    }
+    const body = UpdateSecretBodySchema.safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: body.error.message });
+      return;
+    }
+
+    try {
+      const projectId = getProjectId();
+
+      const [existing] = await db
+        .select()
+        .from(secrets)
+        .where(and(eq(secrets.id, params.data.id), eq(secrets.projectId, projectId)));
+      if (!existing) {
+        res.status(404).json({ error: "Secret not found" });
+        return;
+      }
+
+      if (body.data.value !== undefined) {
+        // Rotate (+ optionally update metadata) through the broker — bumps
+        // version and rotatedAt, and writes a 'secret_rotated' audit row.
+        const metadata = await credentialProvider.putCredential({
+          projectId,
+          name: existing.name,
+          secret: body.data.value,
+          description: sanitizeMeta(body.data.description) ?? existing.description ?? "",
+          scope: sanitizeMeta(body.data.scope) ?? existing.scope ?? "",
+          provider: sanitizeMeta(body.data.provider) ?? existing.provider ?? "",
+        });
+        const [row] = await db
+          .select()
+          .from(secrets)
+          .where(and(eq(secrets.id, metadata.id), eq(secrets.projectId, projectId)));
+        res.json(toSecretResponse(row));
+        return;
+      }
+
+      // Metadata-only update — no rotation, no crypto touch, no version bump.
+      const [updated] = await db
+        .update(secrets)
+        .set({
+          description:
+            body.data.description !== undefined
+              ? sanitizeMeta(body.data.description) ?? null
+              : existing.description,
+          scope:
+            body.data.scope !== undefined
+              ? sanitizeMeta(body.data.scope) ?? null
+              : existing.scope,
+          provider:
+            body.data.provider !== undefined
+              ? sanitizeMeta(body.data.provider) ?? null
+              : existing.provider,
+        })
+        .where(and(eq(secrets.id, params.data.id), eq(secrets.projectId, projectId)))
+        .returning();
+
+      res.json(toSecretResponse(updated));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // ── DELETE /api/credentials/:id ────────────────────────────────────────────────
+  // Delete a vault secret. Admin only.
+  app.delete("/api/credentials/:id", requireRole("admin"), async (req, res) => {
+    const params = SecretIdParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      res.status(400).json({ error: params.error.message });
+      return;
+    }
+
+    try {
+      const projectId = getProjectId();
+
+      const [existing] = await db
+        .select({ id: secrets.id })
+        .from(secrets)
+        .where(and(eq(secrets.id, params.data.id), eq(secrets.projectId, projectId)));
+      if (!existing) {
+        res.status(404).json({ error: "Secret not found" });
+        return;
+      }
+
+      await credentialProvider.deleteCredential(projectId, params.data.id);
+      res.status(204).end();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: message });

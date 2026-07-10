@@ -50,6 +50,10 @@ export interface CredentialMetadata {
   hasSecret: boolean;
   /** Last time the connection (and thus its secrets) was updated. */
   lastRotatedAt?: Date;
+  /** Vault secret name (secrets.name). Undefined for connection-backed credentials. */
+  name?: string;
+  /** Vault secret version, bumped on every rotate. Undefined for connection-backed credentials. */
+  version?: number;
 }
 
 // ─── Exec-time shapes ────────────────────────────────────────────────────────
@@ -160,6 +164,19 @@ export interface CredentialProvider {
    */
   accessSecret(params: AccessSecretParams): Promise<string>;
 
+  /**
+   * Decrypt and return the current value of a vault secret (the `secrets`
+   * table), scoped to the project and audited (action='secret_accessed').
+   * Distinct from accessSecret: this resolves the ciphertext itself (by
+   * credentialId) rather than taking a pre-fetched ciphertext.
+   */
+  getSecretValue(p: {
+    projectId: string;
+    credentialId: string;
+    purpose: string;
+    requestedBy?: string;
+  }): Promise<string>;
+
   // ── EXEC-TIME ─────────────────────────────────────────────────────────────
 
   /** Mark a lease revoked.  No-op if already revoked (idempotent). */
@@ -173,13 +190,18 @@ export interface CredentialProvider {
 
   // ── CREDENTIAL STORE ──────────────────────────────────────────────────────
 
-  /** Create or update a credential for the project (project-scoped write). */
+  /**
+   * Create or update a credential for the project (project-scoped write).
+   * `name` identifies a vault secret (upserted by (projectId, name)); omit it
+   * only for legacy/connection-backed callers that do not target the vault.
+   */
   putCredential(p: {
     projectId: string;
     provider: string;
     scope: string;
     description: string;
     secret: string;
+    name?: string;
   }): Promise<CredentialMetadata>;
 
   /** Delete a credential for the project (project-scoped write). */
