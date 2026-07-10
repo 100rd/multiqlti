@@ -19,6 +19,7 @@ import type {
   ConsiliumLoopController,
   DevelopErrorCode,
   PlanErrorCode,
+  ReReviewErrorCode,
 } from "../services/consilium/consilium-loop-controller.js";
 import { ARCHETYPES } from "@shared/types";
 import { CONSILIUM_LOOP_TERMINAL_STATES } from "@shared/schema";
@@ -385,6 +386,24 @@ export function registerConsiliumLoopRoutes(
     return mapDevelopError(res, result.code);
   });
 
+  // ── Re-review (Large Research gate ONLY: operator requests ANOTHER review
+  // round instead of developing) ───────────────────────────────────────────
+  // Owner-or-admin (authorizeConsiliumLoop, 404-on-mismatch, mirrors /develop).
+  // Refuses (typed → HTTP) unless the loop is gated (`reviewGate`), RESTING in
+  // `deciding`, and under its round cap. On success the loop is already back in
+  // `reviewing` (round bumped) by the time this responds — the client polls
+  // GET /api/consilium-loops/:id as usual.
+  app.post("/api/consilium-loops/:id/rereview", async (req: Request, res: Response) => {
+    const auth = await authorizeConsiliumLoop(req, res, storage, String(req.params.id));
+    if (!auth) return;
+    const result = await controller.requestReReview(auth.loop.id);
+    if (result.ok) {
+      const isAdmin = req.user?.role === "admin";
+      return res.json(maskLoop({ ...result.loop }, !!isAdmin));
+    }
+    return mapReReviewError(res, result.code);
+  });
+
   // ── Plan (Stage 1 §6: OUT-OF-BAND intent→archetype planner) ─────────────────
   // Owner-or-admin (authorizeConsiliumLoop, 404-on-mismatch). Idempotent: a no-op
   // returning the existing archetype unless `?replan=1`. NO_VERDICT (409) when the
@@ -624,6 +643,29 @@ function mapDevelopError(res: Response, code: DevelopErrorCode): Response {
       return res.status(404).json({ error: "Consilium loop not found" });
     default:
       return res.status(400).json({ error: "develop rejected" });
+  }
+}
+
+/**
+ * Map a typed {@link ReReviewErrorCode} to HTTP. Every refusal other than a
+ * vanished loop (404) is a 409 conflict with the loop's current gate/state/round
+ * — the loop is not review-gated, is not resting in `deciding`, is already at
+ * its round cap, or a concurrent update won the CAS race.
+ */
+function mapReReviewError(res: Response, code: ReReviewErrorCode): Response {
+  switch (code) {
+    case "NOT_GATED":
+      return res.status(409).json({ error: "this loop is not a review-gated (Large Research) loop" });
+    case "WRONG_STATE":
+      return res.status(409).json({ error: "loop is not resting in deciding — re-review is not applicable" });
+    case "ROUND_CAP":
+      return res.status(409).json({ error: "loop is already at its round cap (maxRounds)" });
+    case "CAS_LOST":
+      return res.status(409).json({ error: "re-review could not be applied (concurrent update)" });
+    case "NOT_FOUND":
+      return res.status(404).json({ error: "Consilium loop not found" });
+    default:
+      return res.status(400).json({ error: "re-review rejected" });
   }
 }
 

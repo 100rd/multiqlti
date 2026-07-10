@@ -1885,6 +1885,17 @@ export const consiliumLoops = pgTable(
     // site (never a shell string — argv/body-file only). Null/absent ⇒ byte-identical
     // to today's subjects/titles (no prefix).
     commitPrefix: text("commit_prefix"),
+    // "Large Research" preset gate (migration 0059, additive): TRUE ONLY for
+    // loops launched under the `large-research` preset (`createConsiliumReview`).
+    // When true, `consilium-loop-controller.ts` PAUSES the loop in `deciding`
+    // after each review round instead of auto-developing — the operator either
+    // requests another review round (`POST /rereview`, comment-steered) or
+    // proceeds to development (`POST /develop`, extended to allow promotion
+    // from `deciding` for gated loops). NOT derived from the group name (unlike
+    // panel/objective) because the controller's hot tick path reads it directly.
+    // Default false ⇒ every existing/non-gated loop's autonomous
+    // deciding→developing path is BYTE-IDENTICAL to today.
+    reviewGate: boolean("review_gate").notNull().default(false),
     // Single-verifier re-review (migration 0044): HOW rounds AFTER the first are
     // run — 'full-dispute' (the default) or 'single-verifier'. NULLABLE; null ⇒
     // resolve from the operator default (pipeline.consiliumLoop.verifyReview.enabled).

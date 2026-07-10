@@ -52,7 +52,7 @@ import { runAsSystem, runAsProject } from "../../context.js";
 import type { ConsiliumLoopRow, ConsiliumLoopRoundRow, ConsiliumLoopState, TaskGroupIterationRow, InsertTask } from "@shared/schema";
 import { ARCHETYPES } from "@shared/types";
 import type { Archetype } from "@shared/types";
-import type { ActionPoint, ConvergenceVerdict, RoundVerdict, RoundParticipant, ReviewMode } from "@shared/types";
+import type { ActionPoint, ConvergenceVerdict, RoundVerdict, RoundParticipant, RoundComment, ReviewMode } from "@shared/types";
 import { P0_PRIORITY } from "@shared/types";
 import type { TaskOrchestrator } from "../task-orchestrator.js";
 import { HUMAN_NOTE_HEADING } from "../task-orchestrator.js";
@@ -90,8 +90,17 @@ export type LoopEvent =
   | { kind: "merge_approved" }
   // HUMAN-only: an authorized re-open of a verdict-terminal loop back to
   // DEVELOPING (injected ONLY by `controller.develop`, NEVER by `deriveEvent` —
-  // the poller must never emit it). Round-preserving + CAS-guarded.
+  // the poller must never emit it). Round-preserving + CAS-guarded. Also used
+  // (gated ⇒ `opts.reviewGate`) to promote a review-gated loop RESTING in
+  // `deciding` — see the `develop_requested` reducer branch.
   | { kind: "develop_requested" }
+  // Large Research gate ONLY: an authorized HUMAN request for ANOTHER review
+  // round on a gated loop resting in `deciding` (injected ONLY by
+  // `controller.requestReReview`, NEVER by `deriveEvent`). `deciding` →
+  // `building_context`, exactly like the existing `merge_approved` re-entry —
+  // the round bump happens downstream at the sole bump site (`startReviewRound`,
+  // building_context → reviewing).
+  | { kind: "rereview_requested" }
   // A cancel MAY carry a human-supplied `reason` and the resolved `actor` label
   // (both already clamped + control-stripped at the route — untrusted). Absent on
   // an auto-cancel (an API POST with no body); the reducer still records a
@@ -120,6 +129,19 @@ export type DevelopErrorCode =
 export type DevelopResult =
   | { ok: true; loop: ConsiliumLoopRow }
   | { ok: false; code: DevelopErrorCode };
+
+/** Stable, route-mappable failure codes for {@link ConsiliumLoopController.requestReReview}. */
+export type ReReviewErrorCode =
+  | "NOT_FOUND" // loop vanished between auth and the controller read → 404
+  | "NOT_GATED" // loop was not launched under a review-gated preset → 409
+  | "WRONG_STATE" // loop is not RESTING in `deciding` → 409
+  | "ROUND_CAP" // loop.round already at (or past) maxRounds → 409
+  | "CAS_LOST"; // concurrent op won the deciding→building_context CAS / lock → 409
+
+/** Typed result of an authorized RE-REVIEW request (no exceptions on the happy path). */
+export type ReReviewResult =
+  | { ok: true; loop: ConsiliumLoopRow }
+  | { ok: false; code: ReReviewErrorCode };
 
 // ─── Intent→archetype PLANNER (Stage 1, design §6) ──────────────────────────
 
@@ -565,7 +587,7 @@ export function composeCancelExplanation(at: Date, actor?: string, reason?: stri
 export function reduce(
   state: ConsiliumLoopState,
   event: LoopEvent,
-  opts?: { verifyBeforeMerge?: boolean },
+  opts?: { verifyBeforeMerge?: boolean; reviewGate?: boolean },
 ): LoopTransition | null {
   // §3E verify-before-merge (kill-switched, default OFF ⇒ every branch below is
   // byte-identical to today). When ON it (a) routes the CONFIRMATION review BEFORE the
@@ -594,9 +616,25 @@ export function reduce(
   // never emit it), exactly like `merge_approved`. `completedAt`/`error` are
   // cleared so the re-opened loop reads as active again. Any other state → no-op.
   if (event.kind === "develop_requested") {
-    if (state === "stopped_cap" || state === "converged" || state === "escalated") {
+    // Large Research gate ONLY (`opts.reviewGate`, set by `controller.develop`
+    // from `loop.reviewGate`): a gated loop RESTING in `deciding` is ALSO
+    // promotable — the operator chose to skip further review rounds and ship
+    // what's there. Ungated callers never pass `reviewGate: true`, so this
+    // branch is unreachable for every existing/non-gated loop (byte-identical).
+    const gateDeciding = (opts?.reviewGate ?? false) && state === "deciding";
+    if (state === "stopped_cap" || state === "converged" || state === "escalated" || gateDeciding) {
       return { from: state, to: "developing", extra: { completedAt: null, error: null } };
     }
+    return null;
+  }
+
+  // Large Research gate ONLY: an authorized re-review request bumps a gated
+  // loop RESTING in `deciding` back into review (see `LoopEvent.rereview_requested`
+  // doc). `controller.requestReReview` is the SOLE caller and pre-validates
+  // gate/state/round-cap — this branch is unreachable for a non-gated loop
+  // because that command is never invoked for one.
+  if (event.kind === "rereview_requested") {
+    if (state === "deciding") return { from: "deciding", to: "building_context" };
     return null;
   }
 
@@ -700,10 +738,45 @@ function isTerminal(state: ConsiliumLoopState): boolean {
   );
 }
 
-/** The VERDICT-terminal states an authorized human `develop()` may re-open. A
- *  `failed`/`cancelled` loop is NOT promotable (no verdict to implement). */
-function isDevelopPromotable(state: ConsiliumLoopState): boolean {
-  return state === "stopped_cap" || state === "converged" || state === "escalated";
+/**
+ * The VERDICT-terminal states an authorized human `develop()` may re-open. A
+ * `failed`/`cancelled` loop is NOT promotable (no verdict to implement).
+ *
+ * Large Research gate ONLY (`reviewGate` param, `loop.reviewGate`): a gated
+ * loop RESTING in `deciding` is ALSO promotable — the operator may proceed to
+ * development instead of requesting another review round. Defaults to false,
+ * so every other/non-gated caller sees the exact same terminal-only set as
+ * before (byte-identical).
+ */
+function isDevelopPromotable(state: ConsiliumLoopState, reviewGate = false): boolean {
+  return (
+    state === "stopped_cap" ||
+    state === "converged" ||
+    state === "escalated" ||
+    (reviewGate && state === "deciding")
+  );
+}
+
+const COMMENTS_NOTE_HEADING = "Operator comments (Result thread)";
+
+/**
+ * Large Research gate ONLY (see `buildOperatorNote`): render the LATEST round's
+ * Result-comments thread (`ConsiliumLoopRoundRow.comments`) as plain, UNTRUSTED
+ * text — control-stripped, never parsed as instructions — for folding into the
+ * next round's operator note. Pure function (no I/O) so it is directly
+ * unit-testable against a `rounds` fixture. Returns `undefined` when there are
+ * no rounds yet, or the latest round has no non-blank comments.
+ */
+function buildCommentsNote(rounds: ConsiliumLoopRoundRow[]): string | undefined {
+  if (rounds.length === 0) return undefined;
+  const latest = rounds[rounds.length - 1];
+  const comments = latest.comments;
+  if (!comments || comments.length === 0) return undefined;
+  const lines = comments
+    .filter((c): c is RoundComment => !!c.body && c.body.trim().length > 0)
+    .map((c) => `- ${stripControlMultiline(c.author || "operator").trim()}: ${stripControlMultiline(c.body).trim()}`);
+  if (lines.length === 0) return undefined;
+  return `${COMMENTS_NOTE_HEADING}:\n${lines.join("\n")}`;
 }
 
 // ─── Controller (impure shell around the pure reducer) ──────────────────────
@@ -981,8 +1054,15 @@ export class ConsiliumLoopController {
    * `round` is unchanged — M-2) and authorized-only (the `develop_requested` event
    * is fed ONLY here, never by `deriveEvent`/the poller).
    *
+   * Large Research gate: when `loop.reviewGate` is true, a loop RESTING in
+   * `deciding` (see `tickInner`'s gate check) is ALSO promotable — the operator
+   * chooses to proceed to development instead of requesting another review
+   * round (`requestReReview`). Every other/non-gated loop keeps the exact
+   * terminal-only promotion set (byte-identical).
+   *
    * Layered guards (all BEFORE any side effect; nothing minted on rejection):
-   *   - WRONG_STATE unless the loop is a promotable verdict-terminal state.
+   *   - WRONG_STATE unless the loop is a promotable verdict-terminal state (or,
+   *     when gated, resting in `deciding`).
    *   - NO_ACTION_POINTS unless the verdict carries a non-empty FULL action-point
    *     list (ALL priorities, like the removed execute-sdlc button — a CONVERGED
    *     loop with non-P0 items is therefore promotable).
@@ -1003,7 +1083,7 @@ export class ConsiliumLoopController {
   async develop(loopId: string): Promise<DevelopResult> {
     const loop = await this.storage.getLoop(loopId);
     if (!loop) return { ok: false, code: "NOT_FOUND" };
-    if (!isDevelopPromotable(loop.state)) return { ok: false, code: "WRONG_STATE" };
+    if (!isDevelopPromotable(loop.state, loop.reviewGate)) return { ok: false, code: "WRONG_STATE" };
 
     // FULL action points (ALL priorities) — SERVER-READ from the verdict; the
     // close-out reads only `openActionPoints`, but openP0 feeds the round audit.
@@ -1048,7 +1128,7 @@ export class ConsiliumLoopController {
       if (this.inFlight.has(loopId)) return { ok: false, code: "CAS_LOST" };
       this.inFlight.add(loopId);
       try {
-        const transition = reduce(loop.state, { kind: "develop_requested" });
+        const transition = reduce(loop.state, { kind: "develop_requested" }, { reviewGate: loop.reviewGate });
         if (!transition) return { ok: false, code: "WRONG_STATE" };
         const verdict: ConvergenceVerdict = {
           converged: false,
@@ -1084,6 +1164,67 @@ export class ConsiliumLoopController {
       // the derived count takes over with no window where a live run is uncounted;
       // a failed/rejected path that never dispatched simply frees the slot.
       this.devCommandReservations -= 1;
+    }
+  }
+
+  /**
+   * Large Research gate: authorized HUMAN request for ANOTHER review round on a
+   * gated loop RESTING in `deciding` (mirrors `develop()`'s shape/guards).
+   * Comment-steer (the operator's Result-comments thread on the CURRENT round)
+   * reaches the new round via `buildOperatorNote`.
+   *
+   * Layered guards (all BEFORE any side effect; nothing minted on rejection):
+   *   - NOT_GATED unless `loop.reviewGate` is true.
+   *   - WRONG_STATE unless the loop is RESTING in `deciding`.
+   *   - ROUND_CAP unless `loop.round < loop.maxRounds` (the tick's own cap
+   *     precedence would otherwise have already driven the loop to
+   *     `stopped_cap` at the cap round — this is a defensive belt-and-suspenders
+   *     check, not the primary cap enforcement).
+   *   - CAS_LOST: the in-process single-flight lock (mirrors `develop()`'s R5) or
+   *     a lost CAS on either of the two transitions below.
+   *
+   * On the CAS winner it drives `deciding` → `building_context` → `reviewing`
+   * SYNCHRONOUSLY (reusing the SAME pure `reduce` transitions + `runSideEffect`
+   * dispatch the tick would run across two polls) so the round bump + review
+   * dispatch happen NOW rather than waiting for the next poll. `startReviewRound`
+   * (invoked by `runSideEffect` for the `building_context`→`reviewing` leg) is the
+   * SOLE round-bump site — unchanged from the autonomous path.
+   */
+  async requestReReview(loopId: string): Promise<ReReviewResult> {
+    const loop = await this.storage.getLoop(loopId);
+    if (!loop) return { ok: false, code: "NOT_FOUND" };
+    if (!loop.reviewGate) return { ok: false, code: "NOT_GATED" };
+    if (loop.state !== "deciding") return { ok: false, code: "WRONG_STATE" };
+    if (loop.round >= loop.maxRounds) return { ok: false, code: "ROUND_CAP" };
+
+    // R5 in-process single-flight lock (belt-and-suspenders with the CAS below) —
+    // a concurrent tick/develop/requestReReview for THIS loop is rejected rather
+    // than double-driven.
+    if (this.inFlight.has(loopId)) return { ok: false, code: "CAS_LOST" };
+    this.inFlight.add(loopId);
+    try {
+      const toBuilding = reduce(loop.state, { kind: "rereview_requested" });
+      if (!toBuilding) return { ok: false, code: "WRONG_STATE" };
+      const wonBuilding = await this.commit(loop, toBuilding);
+      if (!wonBuilding) return { ok: false, code: "CAS_LOST" };
+      this.log(
+        wonBuilding.id,
+        `requestReReview: CAS won deciding->building_context (round ${wonBuilding.round} before bump)`,
+      );
+
+      // Drive the SAME building_context→reviewing leg the tick runs on the NEXT
+      // poll — synchronously, so the round bump + review dispatch fire now.
+      const toReviewing = reduce(wonBuilding.state, { kind: "context_built" });
+      if (!toReviewing) return { ok: true, loop: wonBuilding }; // defensive; should not happen
+      const wonReviewing = await this.commit(wonBuilding, toReviewing);
+      if (!wonReviewing) return { ok: false, code: "CAS_LOST" };
+
+      const extra = await this.runSideEffect(wonReviewing, toReviewing, { kind: "context_built" });
+      const updated =
+        Object.keys(extra).length === 0 ? wonReviewing : await this.storage.updateLoop(wonReviewing.id, extra);
+      return { ok: true, loop: updated };
+    } finally {
+      this.inFlight.delete(loopId);
     }
   }
 
@@ -1467,6 +1608,20 @@ export class ConsiliumLoopController {
       verifyBeforeMerge: this.verifyBeforeMergeEnabled(),
     });
     if (!transition) return null;
+
+    // Large Research gate: a review-gated loop's `deciding` NEVER auto-advances
+    // to `developing` autonomously — it RESTS in `deciding` for the operator
+    // (`requestReReview` / `develop`). converged/cap (above)/anti-stall
+    // (escalated) still resolve exactly as today even when gated — only the
+    // "hand off to DEV" branch of `decide()` is intercepted here. Still record
+    // the round (idempotent) so the Result/verdict is visible while paused; the
+    // loop itself is returned UNCHANGED (no CAS, no side effect). Non-gated
+    // loops never take this branch (`loop.reviewGate` is false) ⇒ byte-identical.
+    if (event.kind === "decided" && loop.reviewGate && transition.to === "developing") {
+      await this.recordRound(loop, event.verdict);
+      this.log(loopId, `gated loop resting in deciding (round ${loop.round}/${loop.maxRounds})`);
+      return loop;
+    }
 
     // H-3 (BLOCKER fix): CLAIM the transition with the CAS FIRST, then run any
     // non-idempotent side effect (createTaskGroup / startGroup / the SDLC executor
@@ -2820,13 +2975,23 @@ export class ConsiliumLoopController {
       this.log(loop.id, `buildOperatorNote: getLoopRounds failed (no note injected): ${err instanceof Error ? err.message : String(err)}`);
       return undefined;
     }
+    let humanNote: string | undefined;
     for (let i = rounds.length - 1; i >= 0; i--) {
       const note = rounds[i].humanNote;
       if (note && note.trim().length > 0) {
-        return `${HUMAN_NOTE_HEADING}:\n${note.trim()}`;
+        humanNote = `${HUMAN_NOTE_HEADING}:\n${note.trim()}`;
+        break;
       }
     }
-    return undefined;
+    // Large Research gate ONLY: fold the LATEST round's Result-comments thread
+    // (untrusted plain text — stripped, never treated as instructions) in AFTER
+    // any humanNote, so a re-review sees both the legacy note and the operator's
+    // steering comments. Non-gated loops are byte-identical to before this change
+    // (buildCommentsNote is never consulted).
+    if (!loop.reviewGate) return humanNote;
+    const commentsNote = buildCommentsNote(rounds);
+    if (!commentsNote) return humanNote;
+    return humanNote ? `${humanNote}\n\n${commentsNote}` : commentsNote;
   }
 
   /**

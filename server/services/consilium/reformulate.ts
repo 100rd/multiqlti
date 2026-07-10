@@ -77,6 +77,8 @@ const PRESET_FOCUS: Record<ConsiliumReviewPreset, string> = {
     "a diff / PR review of a change (what the diff does: correctness, regressions, security, missing tests, blast radius)",
   "full-viability":
     "a full-viability review of the system against its spec set (does the implementation realise the specs; are the specs coherent and buildable)",
+  "large-research":
+    "a large research review of the repository's CURRENT state, spanning multiple operator-paced rounds (architecture, design tradeoffs, unstated assumptions, systemic risks, open research questions)",
 };
 
 /** A defence-in-depth fallback focus for an unknown preset (should never happen — the route enum-validates). */

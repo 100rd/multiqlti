@@ -1431,6 +1431,9 @@ export class MemStorage implements IStorage {
       reviewRef: data.reviewRef ?? null,
       // Per-loop commit-message/MR-title prefix (migration 0057, nullable).
       commitPrefix: data.commitPrefix ?? null,
+      // "Large Research" preset gate (migration 0059); default false ⇒ every
+      // other preset's autonomous path is unaffected.
+      reviewGate: data.reviewGate ?? false,
       // ADR-0003 I1 (re-scoped, GH #445 P1): additive class metadata (mirrors the
       // DB default). Nothing reads either field yet.
       class: data.class ?? "R0",

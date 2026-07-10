@@ -273,6 +273,15 @@ export type ConsiliumLoopDetail = ConsiliumLoopListItem & {
    * backend or a degraded read — consumers render it defensively.
    */
   composition?: LoopComposition | null;
+  /**
+   * "Large Research" preset (opt-in, human-gated): true when this loop pauses in
+   * `deciding` for an operator to add comments and request another review round
+   * instead of auto-advancing to `developing`. Client-local mirror of the
+   * `consilium_loops.review_gate` column the parallel backend change adds —
+   * collapse into the canonical `ConsiliumLoopRow` once that lands. Absent/false
+   * on every other preset, so the gate UI simply doesn't render.
+   */
+  reviewGate?: boolean | null;
 };
 
 export type { ConsiliumLoopState, ConsiliumLoopRow, ConsiliumLoopRoundRow };
@@ -410,6 +419,26 @@ export function useDevelopLoop() {
   const qc = useQueryClient();
   return useMutation<ConsiliumLoopRow, Error, string>({
     mutationFn: (id) => apiRequest("POST", `${LIST_KEY}/${id}/develop`),
+    onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: [LIST_KEY, id] });
+      qc.invalidateQueries({ queryKey: [LIST_KEY] });
+    },
+  });
+}
+
+/**
+ * "Large Research" preset operator gate: from a `reviewGate`-paused `deciding`
+ * loop, bump the round and start ANOTHER review round (folding in whatever the
+ * operator wrote via `useAddRoundComment` as extra steer) instead of letting the
+ * loop auto-advance to `developing`. Owner-or-admin, same as `useDevelopLoop`.
+ * The server is the final arbiter: 409 (WRONG_STATE — not gated / not in
+ * `deciding` / round already at `maxRounds`) is thrown as an Error whose message
+ * is the server `error` string, surfaced verbatim by the caller as a toast.
+ */
+export function useRequestReReview() {
+  const qc = useQueryClient();
+  return useMutation<ConsiliumLoopRow, Error, string>({
+    mutationFn: (id) => apiRequest("POST", `${LIST_KEY}/${id}/rereview`),
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: [LIST_KEY, id] });
       qc.invalidateQueries({ queryKey: [LIST_KEY] });

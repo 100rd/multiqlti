@@ -60,6 +60,7 @@ import {
   useCancelLoop,
   useApproveMerge,
   useDevelopLoop,
+  useRequestReReview,
   usePlanLoop,
   useSetArchetype,
   isTerminalLoopState,
@@ -111,14 +112,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-  DialogFooter,
-} from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
@@ -1100,16 +1093,8 @@ function ResultPanel({
 
   return (
     <Card className="border-amber-500/40">
-      <CardHeader className="pb-3 flex flex-row items-center justify-between gap-2">
+      <CardHeader className="pb-3">
         <CardTitle className="text-sm">Result</CardTitle>
-        {/* Result comments — only meaningful once there's a round to attach to. */}
-        {latest && (
-          <ResultComments
-            loopId={loop.id}
-            round={latest.round}
-            comments={Array.isArray(latest.comments) ? latest.comments : []}
-          />
-        )}
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Last-round degradation signal from `loop.error`. The CANCELLED and
@@ -1214,6 +1199,22 @@ function ResultPanel({
                 No open action points recorded for this round.
               </p>
             )}
+            {/* Result comments — inline, below the action-point list (moved out
+                of the CardHeader). Only meaningful once there's a round to
+                attach to. */}
+            <ResultComments
+              loopId={loop.id}
+              round={latest.round}
+              comments={Array.isArray(latest.comments) ? latest.comments : []}
+            />
+            {/* "Large Research" preset operator gate: paused in `deciding`, the
+                loop does NOT auto-advance — the operator reads the verdict +
+                comments above, then either starts another review round (with
+                their comments folded in as steer) or promotes straight to
+                development. Renders nothing for every other preset/state. */}
+            {loop.reviewGate === true && loop.state === "deciding" && (
+              <ReviewGateActions loopId={loop.id} round={loop.round} maxRounds={loop.maxRounds} />
+            )}
           </div>
         )}
       </CardContent>
@@ -1221,13 +1222,14 @@ function ResultPanel({
   );
 }
 
-// ─── Result comments (button + dialog) ─────────────────────────────────────────
+// ─── Result comments (inline collapsible) ──────────────────────────────────────
 //
 // A thread-like note surface attached to a round's Result: a "Comments (N)"
-// button opens a Dialog listing existing comments (author + relative time +
-// body) with a Textarea + "Add comment" action underneath. POSTs via
-// `useAddRoundComment`, which invalidates the loop detail query on success so
-// the new comment rides back on the next `rounds[].comments` read.
+// toggle (mirrors the Rounds-table "Dispute" disclosure — inline, not a Dialog)
+// expands to the existing comments (author + relative time + body) with a
+// Textarea + "Add comment" action underneath. POSTs via `useAddRoundComment`,
+// which invalidates the loop detail query on success so the new comment rides
+// back on the next `rounds[].comments` read.
 //
 // SECURITY: `body` is UNTRUSTED operator free text — rendered as INERT plain
 // text (`whitespace-pre-wrap`), never `dangerouslySetInnerHTML`/HTML/eval.
@@ -1262,22 +1264,28 @@ function ResultComments({
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="outline" size="sm" className="shrink-0" data-testid="result-comments-button">
-          <MessageSquare className="h-4 w-4 mr-2" />
-          Comments{comments.length > 0 ? ` (${comments.length})` : ""}
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Result comments</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4 py-2">
+    <div className="space-y-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 font-medium tracking-wide text-muted-foreground hover:text-foreground"
+        data-testid="result-comments-button"
+      >
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5" />
+        )}
+        <MessageSquare className="h-3.5 w-3.5" />
+        Comments{comments.length > 0 ? ` (${comments.length})` : ""}
+      </button>
+      {open && (
+        <div className="space-y-3 rounded-md border p-3">
           {comments.length > 0 ? (
-            <ul className="max-h-72 space-y-3 overflow-y-auto" data-testid="result-comments-list">
+            <ul className="space-y-3" data-testid="result-comments-list">
               {comments.map((c) => (
-                <li key={c.id} className="rounded-md border p-3 text-sm" data-testid="result-comment-item">
+                <li key={c.id} className="text-sm" data-testid="result-comment-item">
                   <div className="mb-1 flex items-baseline justify-between gap-2">
                     {/* author is server-derived; createdAt is server-generated — INERT text */}
                     <span className="font-medium">{c.author}</span>
@@ -1302,23 +1310,118 @@ function ResultComments({
               maxLength={8000}
               data-testid="result-comment-input"
             />
+            <div className="flex justify-end">
+              <Button
+                size="sm"
+                onClick={handleAdd}
+                disabled={!draft.trim() || addComment.isPending}
+                data-testid="result-comment-submit"
+              >
+                {addComment.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Add comment
+              </Button>
+            </div>
           </div>
         </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>
-            Close
-          </Button>
-          <Button
-            onClick={handleAdd}
-            disabled={!draft.trim() || addComment.isPending}
-            data-testid="result-comment-submit"
-          >
-            {addComment.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Add comment
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      )}
+    </div>
+  );
+}
+
+// ─── Review-gate actions ("Large Research" preset operator gate) ──────────────
+//
+// Rendered ONLY while `loop.reviewGate` is true AND the loop is paused in
+// `deciding` (the "Large Research" preset does not auto-advance from deciding —
+// it rests there for the operator). The operator reads the round's verdict +
+// Comments above, then either:
+//   • starts ANOTHER review round via `useRequestReReview` (folds in whatever
+//     was just added via `ResultComments` as extra steer — server-side), or
+//   • promotes the current verdict straight to development via the SAME
+//     `useDevelopLoop` mutation the header "Hand off to SDLC" action drives.
+// The server is the final arbiter on both (409 on WRONG_STATE / round-at-cap /
+// NO_ACTION_POINTS) — this gate is only a UX nicety mirroring `round`/`maxRounds`.
+//
+// SECURITY: no user-authored text is rendered here — `round`/`maxRounds` are
+// server-computed integers.
+function ReviewGateActions({
+  loopId,
+  round,
+  maxRounds,
+}: {
+  loopId: string;
+  round: number;
+  maxRounds: number;
+}) {
+  const reReview = useRequestReReview();
+  const developLoop = useDevelopLoop();
+  const { toast } = useToast();
+  const atCap = round >= maxRounds;
+
+  async function handleReReview() {
+    try {
+      await reReview.mutateAsync(loopId);
+      toast({
+        title: "Re-review requested",
+        description: "A new review round has started with your comments.",
+      });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Could not request re-review",
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  async function handleDevelop() {
+    try {
+      await developLoop.mutateAsync(loopId);
+      toast({
+        title: "Handed off to SDLC",
+        description: "The developing round has started — follow the progress below.",
+      });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Could not start develop round",
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 pt-1" data-testid="review-gate-actions">
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={handleReReview}
+        disabled={reReview.isPending || atCap}
+        data-testid="review-gate-rereview-button"
+      >
+        {reReview.isPending ? (
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+        ) : (
+          <RefreshCw className="mr-2 h-4 w-4" />
+        )}
+        Re-review with my comments
+      </Button>
+      <span className="text-[11px] text-muted-foreground tabular-nums">
+        round {round} / {maxRounds}
+      </span>
+      <Button
+        size="sm"
+        onClick={handleDevelop}
+        disabled={developLoop.isPending}
+        data-testid="review-gate-develop-button"
+      >
+        {developLoop.isPending ? (
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+        ) : (
+          <Hammer className="mr-2 h-4 w-4" />
+        )}
+        Proceed to development
+      </Button>
+    </div>
   );
 }
 
