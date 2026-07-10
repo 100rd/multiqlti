@@ -92,6 +92,50 @@ export interface RunReviewTasksParams {
  * no deps ⇒ `primary`, else ⇒ `rebuttal`); the judge task's parsed `.output` is the
  * verdict feeding `readConvergence` / `readJudgeVerdict`. NEVER throws.
  */
+/**
+ * Render a reviewer's SUBSTANTIVE output into readable transcript text for the
+ * per-participant card. The model returns `{ summary, output }`; `summary` is a
+ * one-line status ("Completed review") — useless to a human — while the real
+ * analysis (verdict + strengths/concerns/action points) lives in `output`.
+ * We surface that so an operator can see exactly what each reviewer concluded,
+ * not just the judge's synthesis. Falls back to `summary` when `output` is thin
+ * or unstructured. INERT model text — the UI renders it as plain text.
+ */
+function formatParticipantText(parsed: ReturnType<typeof parseDirectLlmResponse>): string {
+  const o = parsed.output;
+  if (!o || typeof o !== "object") return parsed.summary;
+  const rec = o as Record<string, unknown>;
+  const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+  const bullets = (v: unknown): string[] =>
+    Array.isArray(v)
+      ? v
+          .map((x) =>
+            typeof x === "string"
+              ? x.trim()
+              : x && typeof x === "object"
+                ? str((x as Record<string, unknown>).title) || str((x as Record<string, unknown>).text)
+                : "",
+          )
+          .filter((s) => s !== "")
+      : [];
+
+  const parts: string[] = [];
+  const verdict = str(rec.recommendation) || str(rec.decision) || str(rec.verdict);
+  if (verdict) parts.push(`Verdict: ${verdict}`);
+  const summ = str(rec.summary) || parsed.summary;
+  if (summ) parts.push(summ);
+  const section = (label: string, key: string): void => {
+    const items = bullets(rec[key]);
+    if (items.length > 0) parts.push(`${label}:\n${items.map((s) => `• ${s}`).join("\n")}`);
+  };
+  section("Strengths", "pros");
+  section("Concerns", "cons");
+  section("Action points", "actionPoints");
+
+  const text = parts.join("\n\n").trim();
+  return text !== "" ? text : parsed.summary;
+}
+
 export async function runReviewTasks(params: RunReviewTasksParams): Promise<ReviewRunResult> {
   const { tasks, judgeTaskName, groupName, groupInput, gateway, timeoutMs } = params;
   const outputs = new Map<string, unknown>(); // task name → its parsed `.output`
@@ -138,7 +182,7 @@ export async function runReviewTasks(params: RunReviewTasksParams): Promise<Revi
               name: t.name,
               model: t.modelSlug ?? "",
               role: deps.length > 0 ? "rebuttal" : "primary",
-              text: parsed.summary,
+              text: formatParticipantText(parsed),
             });
           }
         }),

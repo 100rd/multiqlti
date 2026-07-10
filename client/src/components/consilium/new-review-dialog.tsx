@@ -97,6 +97,12 @@ const PRESETS = [
     description:
       "Assesses the whole system against its SPEC SET — does the implementation realise the specs, are they buildable.",
   },
+  {
+    value: "large-research",
+    label: "Large Research",
+    description:
+      "Multi-level research review — pauses for your comments between rounds before development.",
+  },
 ] as const;
 type Preset = (typeof PRESETS)[number]["value"];
 

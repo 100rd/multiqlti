@@ -1443,6 +1443,13 @@ export const CONSILIUM_REVIEW_PRESETS = [
   "sdlc-cross-review",
   "diff-pr-review",
   "full-viability",
+  // "Large Research" (opt-in, additive): a research-oriented preset whose loops
+  // PAUSE in `deciding` after each review round for an operator (comment-steer
+  // + re-review, or proceed to development) instead of auto-developing. The
+  // operator-gate itself lives on the LOOP (`consilium_loops.review_gate`, set
+  // true ONLY for this preset in `createConsiliumReview`) — see
+  // `consilium-loop-controller.ts`. Existing presets/loops are unaffected.
+  "large-research",
 ] as const;
 export type ConsiliumReviewPreset = (typeof CONSILIUM_REVIEW_PRESETS)[number];
 

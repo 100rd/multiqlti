@@ -102,6 +102,13 @@ export const MAX_REVIEW_SKILLS = 5;
 const GROUP_NAME_BASENAME_MAX = 120;
 /** Review-only default: one round, no DEV handoff (overridable per call). */
 export const DEFAULT_REVIEW_MAX_ROUNDS = 1;
+/**
+ * Large Research default (overridable per call, still clamped 1..6 by
+ * `clampRounds`): a multi-round, operator-gated research review benefits from
+ * more than one round of headroom before it hits the cap. Other presets keep
+ * `DEFAULT_REVIEW_MAX_ROUNDS`.
+ */
+export const LARGE_RESEARCH_DEFAULT_MAX_ROUNDS = 4;
 /** A baseline commit must be a strict hex sha — never a ref (S3). */
 const SHA_RE = /^[0-9a-f]{7,64}$/;
 
@@ -142,6 +149,9 @@ export const PRESET_PANELS: Record<ConsiliumReviewPreset, ConsiliumPanel> = {
   "sdlc-cross-review": CROSS_REVIEW_PANEL,
   "diff-pr-review": CROSS_REVIEW_PANEL,
   "full-viability": CROSS_REVIEW_PANEL,
+  // MVP: reuse the proven 2-model panel (Opus + Gemini). A future 3rd seat is a
+  // one-line addition (see `CROSS_REVIEW_PANEL` comment above).
+  "large-research": CROSS_REVIEW_PANEL,
 };
 
 // ─── Task descriptions (SERVER CONSTANTS) ───────────────────────────────────
@@ -1115,6 +1125,18 @@ const FULL_VIABILITY_HEADER =
   "and buildable? Cover architecture, security, data model, operability, and the " +
   "biggest risks to shipping. The Judge will prioritise the findings.";
 
+const LARGE_RESEARCH_HEADER =
+  "# Consilium large research review\n\n" +
+  "Conduct a deep, multi-layered RESEARCH review of the repository's CURRENT state " +
+  "(a bounded snapshot is embedded below as round-1 context; later rounds argue from " +
+  "the operator's steering comments and any attached diff). Go beyond a surface pass: " +
+  "interrogate architecture, design tradeoffs, unstated assumptions, systemic risks, " +
+  "and open research questions — not just line-level issues. This review runs across " +
+  "MULTIPLE rounds with an OPERATOR pausing between each to read the findings, add " +
+  "steering comments, and request another round before anything is developed. Surface " +
+  "concrete, actionable findings with `file:line` evidence where applicable; the Judge " +
+  "will prioritise them.";
+
 /**
  * Compose the group `input` (objective) for a preset. `repoPath` is the
  * ALREADY-validated canonical path. `objectiveExtra` is UNTRUSTED (clamped).
@@ -1139,6 +1161,13 @@ export async function composeObjective(
     objective = FULL_VIABILITY_HEADER + embedSpecSet(repoPath, specBudget) + extraBlock;
   } else if (preset === "diff-pr-review") {
     objective = DIFF_HEADER + extraBlock;
+  } else if (preset === "large-research") {
+    // Large Research: embed a bounded working-tree digest (mirrors sdlc-cross-review)
+    // under the research-oriented header — round 1 gets real content; later rounds
+    // fold the operator's steering comments via `objectiveExtra`/operator note.
+    const fixedBytes = Buffer.byteLength(LARGE_RESEARCH_HEADER + extraBlock, "utf8");
+    const digestBudget = Math.max(0, INPUT_CAP_BYTES - fixedBytes);
+    objective = LARGE_RESEARCH_HEADER + (await composeRepoDigest(repoPath, digestBudget)) + extraBlock;
   } else {
     // sdlc-cross-review: embed a bounded working-tree digest so a one-shot review
     // has real content to review (the content bug). Budget it under the input cap.
@@ -1176,6 +1205,11 @@ export async function composeObjectiveAtRef(
     objective = FULL_VIABILITY_HEADER + (await embedSpecSetAtRef(git, ref, specBudget)) + extraBlock;
   } else if (preset === "diff-pr-review") {
     objective = DIFF_HEADER + extraBlock;
+  } else if (preset === "large-research") {
+    // Large Research: repo digest read AT the ref (git, not fs), research header.
+    const fixedBytes = Buffer.byteLength(LARGE_RESEARCH_HEADER + extraBlock, "utf8");
+    const digestBudget = Math.max(0, INPUT_CAP_BYTES - fixedBytes);
+    objective = LARGE_RESEARCH_HEADER + (await composeRepoDigestAtRef(git, ref, digestBudget)) + extraBlock;
   } else {
     // sdlc-cross-review: embed the repo digest read AT the ref (git, not fs).
     const fixedBytes = Buffer.byteLength(SDLC_HEADER + extraBlock, "utf8");
@@ -1420,10 +1454,24 @@ export async function createConsiliumReview(
   // 2) The consilium loop over that group. A review-only maxRounds:1 loop never
   //    reaches DEVELOPING; when it does, the skilled SDLC executor is the only
   //    develop path (gated by pipeline.consiliumLoop.implement.enabled).
+  // Large Research preset-defaults (opt-in, additive): when the caller didn't
+  // explicitly set `maxRounds`, give the operator-gated research loop more
+  // round headroom than the review-only default (still clamped 1..6). Other
+  // presets are UNCHANGED — `params.maxRounds` (or the plain default) flows
+  // through exactly as before.
+  const isLargeResearch = params.preset === "large-research";
+  const resolvedMaxRounds =
+    params.maxRounds ?? (isLargeResearch ? LARGE_RESEARCH_DEFAULT_MAX_ROUNDS : undefined);
+
   const loop = await storage.createLoop({
     groupId: group.id,
     repoPath: resolvedRepo,
-    maxRounds: clampRounds(params.maxRounds),
+    maxRounds: clampRounds(resolvedMaxRounds),
+    // Large Research ONLY: pause in `deciding` after each round for the
+    // operator (re-review with comments, or proceed to development) instead of
+    // auto-developing — see consilium-loop-controller.ts. Every other preset
+    // leaves this false/undefined ⇒ today's fully-autonomous path.
+    reviewGate: isLargeResearch,
     lastReviewedCommit: baseline,
     // BRANCH-targeted review: the chosen ref (null ⇒ working-tree HEAD).
     reviewRef,

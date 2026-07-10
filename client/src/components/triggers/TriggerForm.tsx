@@ -68,6 +68,7 @@ const PRESET_LABELS: Record<ConsiliumReviewPreset, string> = {
   "sdlc-cross-review": "SDLC cross-review",
   "diff-pr-review": "Diff / PR review",
   "full-viability": "Full viability",
+  "large-research": "Large Research",
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

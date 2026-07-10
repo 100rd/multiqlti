@@ -193,6 +193,9 @@ function makeLoop(over: Partial<ConsiliumLoopRow>): ConsiliumLoopRow {
     createdAt: new Date(),
     updatedAt: new Date(),
     completedAt: null,
+    // Large Research gate (migration 0059): default false ⇒ every existing
+    // fixture stays on the byte-identical autonomous path unless a test opts in.
+    reviewGate: false,
     ...over,
   };
 }
@@ -820,6 +823,66 @@ describe("reduce — develop_requested (round-preserving terminal re-open)", () 
   }
 });
 
+// ─── Large Research gate: rereview_requested + gated develop_requested ───────
+
+describe("reduce — develop_requested with opts.reviewGate (Large Research gate)", () => {
+  it("deciding + develop_requested + {reviewGate:true} → DEVELOPING (completedAt/error cleared, round preserved)", () => {
+    const t = reduce("deciding", { kind: "develop_requested" }, { reviewGate: true });
+    expect(t).not.toBeNull();
+    expect(t?.from).toBe("deciding");
+    expect(t?.to).toBe("developing");
+    expect(t?.extra).toMatchObject({ completedAt: null, error: null });
+    expect(t?.extra && "round" in t.extra).toBe(false);
+  });
+
+  it("deciding + develop_requested + {reviewGate:false} → null (explicit opt-out, same as no opts)", () => {
+    expect(reduce("deciding", { kind: "develop_requested" }, { reviewGate: false })).toBeNull();
+  });
+
+  it("deciding + develop_requested WITHOUT opts → null (byte-identical to the pre-gate signature)", () => {
+    expect(reduce("deciding", { kind: "develop_requested" })).toBeNull();
+  });
+
+  for (const from of ["stopped_cap", "converged", "escalated"] as const) {
+    it(`${from} + develop_requested + {reviewGate:true} → DEVELOPING (terminal path unaffected by the gate opt)`, () => {
+      const t = reduce(from, { kind: "develop_requested" }, { reviewGate: true });
+      expect(t?.to).toBe("developing");
+    });
+  }
+
+  for (const from of ["pending", "building_context", "reviewing", "developing", "awaiting_merge", "failed", "cancelled"] as const) {
+    it(`${from} + develop_requested + {reviewGate:true} → null (gate ONLY promotes from deciding)`, () => {
+      expect(reduce(from, { kind: "develop_requested" }, { reviewGate: true })).toBeNull();
+    });
+  }
+});
+
+describe("reduce — rereview_requested (Large Research gate: deciding → building_context)", () => {
+  it("deciding + rereview_requested → BUILDING_CONTEXT", () => {
+    const t = reduce("deciding", { kind: "rereview_requested" });
+    expect(t).not.toBeNull();
+    expect(t?.from).toBe("deciding");
+    expect(t?.to).toBe("building_context");
+  });
+
+  for (const from of [
+    "pending",
+    "building_context",
+    "reviewing",
+    "developing",
+    "awaiting_merge",
+    "stopped_cap",
+    "converged",
+    "escalated",
+    "failed",
+    "cancelled",
+  ] as const) {
+    it(`${from} + rereview_requested → null (only resting in deciding is re-reviewable)`, () => {
+      expect(reduce(from, { kind: "rereview_requested" })).toBeNull();
+    });
+  }
+});
+
 const JUDGE_WITH_APS = {
   verdict: "needs work",
   action_points: [
@@ -980,6 +1043,197 @@ describe("controller.develop — authorized terminal re-open", () => {
     const over = await controller.develop("L4");
     expect(over).toEqual({ ok: false, code: "BUSY" });
     expect(runSdlc).toHaveBeenCalledTimes(3); // L4 never dispatched
+  });
+});
+
+// ─── Large Research gate: develop-from-deciding is gated-only ───────────────
+
+describe("controller.develop — deciding promotion is gated-only (Large Research)", () => {
+  it("gated loop resting in deciding: develop() promotes it → developing (round preserved)", async () => {
+    const loop = makeLoop({ state: "deciding", round: 2, maxRounds: 4, currentIterationNumber: 2, reviewGate: true });
+    const { storage } = makeDevStorage(loop);
+    const runSdlc = vi.fn(async () => ({ prRef: "https://github.com/o/r/pull/9", headCommit: "abc1234" }));
+    const controller = makeDevController(storage, runSdlc);
+
+    const res = await controller.develop(loop.id);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.loop.state).toBe("developing");
+    expect(res.loop.round).toBe(2); // round PRESERVED (M-2), same as the terminal re-open path
+    expect(runSdlc).toHaveBeenCalledTimes(1);
+  });
+
+  it("NON-gated loop resting in deciding: develop() refuses WRONG_STATE (byte-identical to today)", async () => {
+    const loop = makeLoop({ state: "deciding", round: 2, maxRounds: 4, currentIterationNumber: 2, reviewGate: false });
+    const { storage } = makeDevStorage(loop);
+    const runSdlc = vi.fn(async () => ({ prRef: "https://github.com/o/r/pull/9", headCommit: "abc1234" }));
+    const controller = makeDevController(storage, runSdlc);
+
+    const res = await controller.develop(loop.id);
+    expect(res).toEqual({ ok: false, code: "WRONG_STATE" });
+    expect(runSdlc).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Large Research gate: tick() rests in `deciding` instead of auto-developing ──
+
+describe("controller.tick — Large Research gate intercepts deciding→developing", () => {
+  it("NON-gated: deciding with open P0s + room left → tick AUTO-DEVELOPS (byte-identical autonomous path)", async () => {
+    const loop = makeLoop({ state: "deciding", round: 2, maxRounds: 6, currentIterationNumber: 2, reviewGate: false });
+    const { storage, cas } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
+    const runCloseout = vi.fn(async () => ({ prRef: "https://github.com/x/y/pull/3", headCommit: "abc" }));
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+      readIterationVerdict: async () => verdict(false, 2), // open P0s, room left → DEVELOPING
+      runCloseout,
+    });
+    const res = await controller.tick(loop.id);
+    expect(res?.state).toBe("developing");
+    expect(cas).toHaveBeenCalledWith("loop1", "deciding", "developing", expect.anything());
+  });
+
+  it("GATED: deciding with open P0s + room left → tick RESTS in deciding (no CAS, no dev dispatch)", async () => {
+    const loop = makeLoop({ state: "deciding", round: 2, maxRounds: 6, currentIterationNumber: 2, reviewGate: true });
+    const { storage, cas } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
+    const runCloseout = vi.fn(async () => ({ prRef: "https://github.com/x/y/pull/4", headCommit: "abc" }));
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+      readIterationVerdict: async () => verdict(false, 2), // same verdict as the non-gated case above
+      runCloseout,
+    });
+    const res = await controller.tick(loop.id);
+    expect(res?.state).toBe("deciding"); // unchanged — rested, not promoted
+    expect(res?.round).toBe(2);
+    expect(cas).not.toHaveBeenCalledWith("loop1", "deciding", "developing", expect.anything());
+    expect(runCloseout).not.toHaveBeenCalled();
+  });
+
+  it("GATED but CONVERGED still resolves terminally (only the develop hand-off branch is intercepted)", async () => {
+    const loop = makeLoop({ state: "deciding", round: 2, maxRounds: 6, currentIterationNumber: 2, reviewGate: true });
+    const { storage } = makeFakeStorage(loop, [{ round: 1, openP0: 1 }]);
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+      readIterationVerdict: async () => verdict(true, 0),
+    });
+    const res = await controller.tick(loop.id);
+    expect(res?.state).toBe("converged");
+  });
+
+  it("GATED at cap round with open P0s → STOPPED_CAP still wins (cap precedence unaffected by the gate)", async () => {
+    const loop = makeLoop({ state: "deciding", round: 6, maxRounds: 6, currentIterationNumber: 6, reviewGate: true });
+    const { storage, cas } = makeFakeStorage(loop, [
+      { round: 1, openP0: 3 },
+      { round: 2, openP0: 2 },
+    ]);
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+      readIterationVerdict: async () => verdict(false, 2),
+    });
+    const res = await controller.tick(loop.id);
+    expect(res?.state).toBe("stopped_cap");
+    expect(cas).toHaveBeenCalledWith("loop1", "deciding", "stopped_cap", expect.anything());
+  });
+});
+
+// ─── Large Research gate: requestReReview command ────────────────────────────
+
+describe("controller.requestReReview — Large Research gate", () => {
+  it("NOT_FOUND when the loop does not exist", async () => {
+    const storage = { getLoop: vi.fn(async () => undefined) };
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+    });
+    const res = await controller.requestReReview("nope");
+    expect(res).toEqual({ ok: false, code: "NOT_FOUND" });
+  });
+
+  it("NOT_GATED when the loop is not review-gated", async () => {
+    const loop = makeLoop({ state: "deciding", round: 1, maxRounds: 4, reviewGate: false });
+    const { storage } = makeFakeStorage(loop);
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+    });
+    const res = await controller.requestReReview(loop.id);
+    expect(res).toEqual({ ok: false, code: "NOT_GATED" });
+  });
+
+  it("WRONG_STATE when the gated loop is not resting in deciding", async () => {
+    const loop = makeLoop({ state: "reviewing", round: 1, maxRounds: 4, reviewGate: true, currentIterationNumber: 1 });
+    const { storage } = makeFakeStorage(loop);
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+    });
+    const res = await controller.requestReReview(loop.id);
+    expect(res).toEqual({ ok: false, code: "WRONG_STATE" });
+  });
+
+  it("ROUND_CAP when the gated loop is already at its round cap", async () => {
+    const loop = makeLoop({ state: "deciding", round: 4, maxRounds: 4, reviewGate: true, currentIterationNumber: 4 });
+    const { storage } = makeFakeStorage(loop);
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+    });
+    const res = await controller.requestReReview(loop.id);
+    expect(res).toEqual({ ok: false, code: "ROUND_CAP" });
+  });
+
+  it("CAS win: bumps the round and re-enters reviewing (deciding → building_context → reviewing)", async () => {
+    // Real repo cwd + null baseline (mirrors the existing "BUILDING_CONTEXT tick"
+    // fixture) so buildDiffContext resolves HEAD deterministically and the
+    // reviewing side effect actually runs.
+    const loop = makeLoop({
+      state: "deciding",
+      round: 1,
+      maxRounds: 4,
+      reviewGate: true,
+      repoPath: process.cwd(),
+      lastReviewedCommit: null,
+      currentIterationNumber: 1,
+    });
+    const { storage, cas } = makeFakeStorage(loop, [{ round: 1, openP0: 2 }]);
+    const startGroup = vi.fn(async () => ({ group: {}, iteration: { iterationNumber: 2 } }));
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup, startGroupAsync: startGroup, createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+    });
+
+    const res = await controller.requestReReview(loop.id);
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error("expected ok");
+    expect(res.loop.state).toBe("reviewing");
+    expect(res.loop.round).toBe(2); // bumped by startReviewRound, the sole round-bump site
+    expect(startGroup).toHaveBeenCalledTimes(1);
+    expect(cas).toHaveBeenCalledWith("loop1", "deciding", "building_context", expect.anything());
+  });
+
+  it("CAS_LOST: a concurrent winner of the deciding→building_context CAS is refused", async () => {
+    const loop = makeLoop({ state: "deciding", round: 1, maxRounds: 4, reviewGate: true, currentIterationNumber: 1 });
+    const { storage, cas } = makeFakeStorage(loop);
+    cas.mockImplementation(async () => undefined); // lost the race
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+    });
+    const res = await controller.requestReReview(loop.id);
+    expect(res).toEqual({ ok: false, code: "CAS_LOST" });
   });
 });
 

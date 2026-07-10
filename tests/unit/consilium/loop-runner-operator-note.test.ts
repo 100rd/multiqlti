@@ -53,6 +53,9 @@ function makeLoop(over: Partial<ConsiliumLoopRow>): ConsiliumLoopRow {
     createdAt: new Date(),
     updatedAt: new Date(),
     completedAt: null,
+    // Large Research gate (migration 0059): default false ⇒ every existing
+    // fixture stays on the byte-identical note-only path unless a test opts in.
+    reviewGate: false,
     ...over,
   } as ConsiliumLoopRow;
 }
@@ -261,5 +264,126 @@ describe("#18 — runner-mode carries the operator's steering note into round > 
     const call = buildDiffContextMock.mock.calls[0][0] as { priorFindings?: string };
     expect(call.priorFindings ?? "").not.toContain(HUMAN_NOTE_HEADING);
     expect(call.priorFindings ?? "").not.toContain("should NEVER reach the legacy review input");
+  });
+});
+
+describe("Large Research gate — buildOperatorNote folds the latest round's Result comments (gated loops only)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    buildDiffContextMock.mockReset();
+    buildDiffContextMock.mockResolvedValue({ ok: true, input: "assembled input", truncated: false });
+    runReviewTasksMock.mockReset();
+    runReviewTasksMock.mockResolvedValue({ converged: false, openP0: 1, openActionPoints: [], verdict: null, participants: null });
+  });
+
+  it("gated loop: the LATEST round's comments are folded in AFTER any humanNote", async () => {
+    const round1 = roundRow({
+      round: 1,
+      humanNote: "Keep the retry budget at 3.",
+      comments: [
+        { id: "c1", author: "operator", body: "Dig deeper into the caching layer.", createdAt: new Date().toISOString() },
+        { id: "c2", author: "operator", body: "Also check the retry jitter.", createdAt: new Date().toISOString() },
+      ],
+    });
+    const storage = {
+      getLoopRounds: vi.fn(async () => [round1]),
+      getTaskGroup: vi.fn(async () => ({ id: "grp1", name: "[consilium-review:large-research] x", input: "objective" })),
+    };
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: configFactory,
+      gateway: {} as never,
+    });
+
+    const loop = makeLoop({ round: 2, reviewGate: true });
+    await (controller as unknown as Priv).runReviewFromLoop(loop);
+
+    const call = buildDiffContextMock.mock.calls[0][0] as { priorFindings?: string };
+    expect(call.priorFindings).toBeDefined();
+    expect(call.priorFindings).toContain(HUMAN_NOTE_HEADING);
+    expect(call.priorFindings).toContain("Keep the retry budget at 3.");
+    expect(call.priorFindings).toContain("Operator comments (Result thread)");
+    expect(call.priorFindings).toContain("Dig deeper into the caching layer.");
+    expect(call.priorFindings).toContain("Also check the retry jitter.");
+    // Ordering: humanNote section precedes the comments section.
+    const noteIdx = (call.priorFindings as string).indexOf(HUMAN_NOTE_HEADING);
+    const commentsIdx = (call.priorFindings as string).indexOf("Operator comments (Result thread)");
+    expect(noteIdx).toBeGreaterThanOrEqual(0);
+    expect(commentsIdx).toBeGreaterThan(noteIdx);
+  });
+
+  it("gated loop with NO humanNote but comments present: comments alone are folded in", async () => {
+    const round1 = roundRow({
+      round: 1,
+      humanNote: null,
+      comments: [{ id: "c1", author: "operator", body: "Look harder at the auth flow.", createdAt: new Date().toISOString() }],
+    });
+    const storage = {
+      getLoopRounds: vi.fn(async () => [round1]),
+      getTaskGroup: vi.fn(async () => ({ id: "grp1", name: "[consilium-review:large-research] x", input: "objective" })),
+    };
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: configFactory,
+      gateway: {} as never,
+    });
+
+    const loop = makeLoop({ round: 2, reviewGate: true });
+    await (controller as unknown as Priv).runReviewFromLoop(loop);
+
+    const call = buildDiffContextMock.mock.calls[0][0] as { priorFindings?: string };
+    expect(call.priorFindings).toContain("Look harder at the auth flow.");
+    expect(call.priorFindings ?? "").not.toContain(HUMAN_NOTE_HEADING);
+  });
+
+  it("NON-gated loop: comments on the round are IGNORED — byte-identical to the pre-gate note-only behavior", async () => {
+    const round1 = roundRow({
+      round: 1,
+      humanNote: null,
+      comments: [{ id: "c1", author: "operator", body: "This must never leak into a non-gated loop's context.", createdAt: new Date().toISOString() }],
+    });
+    const storage = {
+      getLoopRounds: vi.fn(async () => [round1]),
+      getTaskGroup: vi.fn(async () => ({ id: "grp1", name: "[consilium-review:sdlc-cross-review] x", input: "objective" })),
+    };
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: configFactory,
+      gateway: {} as never,
+    });
+
+    const loop = makeLoop({ round: 2, reviewGate: false });
+    await (controller as unknown as Priv).runReviewFromLoop(loop);
+
+    const call = buildDiffContextMock.mock.calls[0][0] as { priorFindings?: string };
+    expect(call.priorFindings ?? "").not.toContain("This must never leak into a non-gated loop's context.");
+    expect(call.priorFindings ?? "").not.toContain("Operator comments (Result thread)");
+  });
+
+  it("gated loop with blank/whitespace-only comments: no comments section is added", async () => {
+    const round1 = roundRow({
+      round: 1,
+      humanNote: null,
+      comments: [{ id: "c1", author: "operator", body: "   ", createdAt: new Date().toISOString() }],
+    });
+    const storage = {
+      getLoopRounds: vi.fn(async () => [round1]),
+      getTaskGroup: vi.fn(async () => ({ id: "grp1", name: "[consilium-review:large-research] x", input: "objective" })),
+    };
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: configFactory,
+      gateway: {} as never,
+    });
+
+    const loop = makeLoop({ round: 2, reviewGate: true });
+    await (controller as unknown as Priv).runReviewFromLoop(loop);
+
+    const call = buildDiffContextMock.mock.calls[0][0] as { priorFindings?: string };
+    expect(call.priorFindings ?? "").not.toContain("Operator comments (Result thread)");
   });
 });
