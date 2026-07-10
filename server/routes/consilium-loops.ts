@@ -12,6 +12,7 @@
  * only registers it (and the poller) behind the kill-switch.
  */
 import type { Express, Request, Response } from "express";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { IStorage } from "../storage.js";
 import type {
@@ -44,7 +45,14 @@ const CreateLoopSchema = z.object({
   maxRounds: z.coerce.number().int().min(1).max(6).optional(),
   // H-2: a baseline supplied at create time MUST be a strict hex sha (no refs).
   lastReviewedCommit: z.string().regex(SHA_RE).optional(),
+  // OPTIONAL per-loop commit-message/MR-title prefix (e.g. a Jira issue key) —
+  // sanitized by `sanitizeCommitPrefix` below; empty/whitespace-only is stored as
+  // absent (no prefix).
+  commitPrefix: z.string().optional(),
 });
+
+/** Max stored commit prefix (control-stripped, collapsed, trimmed, then clamped). */
+const MAX_COMMIT_PREFIX = 64;
 
 // Stage 1 (§6): the human archetype OVERRIDE body — enum-clamped (no model call).
 /** Max stored cancellation reason (truncated, not rejected — see `sanitizeReason`). */
@@ -76,6 +84,26 @@ function sanitizeReason(raw: unknown): string | undefined {
   return cleaned.length ? cleaned : undefined;
 }
 
+/**
+ * Sanitize an untrusted per-loop commit-message/MR-title prefix: control-strip
+ * (C0/DEL/C1), collapse whitespace, trim, then CLAMP (not reject) to
+ * {@link MAX_COMMIT_PREFIX}. Returns undefined for a non-string or
+ * empty-after-strip input so the loop is created with NO prefix (byte-identical
+ * to today's commit subjects/PR title). Mirrors `sanitizeReason` above; this
+ * value is later re-sanitized defensively at every git-commit/MR-title call site
+ * (never a shell string — argv/body-file only).
+ */
+export function sanitizeCommitPrefix(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const cleaned = raw
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_COMMIT_PREFIX);
+  return cleaned.length ? cleaned : undefined;
+}
+
 const ArchetypeOverrideSchema = z.object({
   archetype: z.enum(ARCHETYPES),
 });
@@ -87,6 +115,14 @@ const ArchetypeOverrideSchema = z.object({
  */
 const RoundNoteSchema = z.object({
   humanNote: z.string().max(20_000),
+});
+
+/** Max stored Result comment body (mirrors the client's soft counter). */
+const MAX_COMMENT_LEN = 8_000;
+
+/** Body for POST round comment. UNTRUSTED operator free text; stored as-is. */
+const RoundCommentSchema = z.object({
+  body: z.string().trim().min(1).max(MAX_COMMENT_LEN),
 });
 
 /** Mask the loop row for non-admins: hide createdBy attribution. */
@@ -138,6 +174,7 @@ export function registerConsiliumLoopRoutes(
           repoPath: body.repoPath,
           maxRounds: body.maxRounds ?? cfg.maxRounds,
           lastReviewedCommit: body.lastReviewedCommit ?? null,
+          commitPrefix: sanitizeCommitPrefix(body.commitPrefix) ?? null,
           createdBy: req.user.id,
           // ADR-0003 I1 (re-scoped, GH #445 P1): additive class metadata only —
           // no escalation, no gating reads this yet. Coder-enabled (worktree
@@ -416,6 +453,43 @@ export function registerConsiliumLoopRoutes(
         return res.json({ round, humanNote });
       } catch {
         return res.status(500).json({ error: "Failed to save round note" });
+      }
+    },
+  );
+
+  // ── Result comments ──────────────────────────────────────────────────────────
+  // Owner-or-admin. Thread-like operator notes on a round's Result (verdict/PR
+  // outcome), appended (never edited/removed) to `consilium_loop_rounds.comments`.
+  // Mirrors the round-note route's auth + round-existence-check shape. The
+  // `body` is UNTRUSTED operator free text — stored as-is; the client renders it
+  // as inert plain text (whitespace-pre-wrap), never HTML/eval. The comment rides
+  // back on the existing loop GET's `rounds[].comments` wire — no new read route.
+  app.post(
+    "/api/consilium-loops/:id/rounds/:round/comments",
+    validateBody(RoundCommentSchema),
+    async (req: Request, res: Response) => {
+      const auth = await authorizeConsiliumLoop(req, res, storage, String(req.params.id));
+      if (!auth) return;
+      const round = Number(req.params.round);
+      if (!Number.isInteger(round) || round < 1) {
+        return res.status(404).json({ error: "Round not found" });
+      }
+      const body = req.body as z.infer<typeof RoundCommentSchema>;
+      try {
+        const rounds = await storage.getLoopRounds(auth.loop.id);
+        if (!rounds.some((r) => r.round === round)) {
+          return res.status(404).json({ error: "Round not found" });
+        }
+        const comment = {
+          id: randomUUID(),
+          author: req.user?.name || req.user?.email || "Unknown",
+          body: body.body,
+          createdAt: new Date().toISOString(),
+        };
+        await storage.addLoopRoundComment(auth.loop.id, round, comment);
+        return res.status(201).json({ round, comment });
+      } catch {
+        return res.status(500).json({ error: "Failed to save comment" });
       }
     },
   );

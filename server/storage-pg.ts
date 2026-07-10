@@ -111,7 +111,7 @@ import {
 // import so the shared `@shared/schema` import block above stays a single merge point.
 import { standingRoles, type StandingRoleRow, type InsertStandingRole } from "@shared/schema";
 import type { LessonRecallFilter } from "./memory/lessons/types";
-import type { TraceSpan, SkillVersionRecord, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace, ActionPoint, SkillProposalStatus } from "@shared/types";
+import type { TraceSpan, SkillVersionRecord, InsertSkillVersion, SharedSession, CreateSharedSessionInput, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace, ActionPoint, SkillProposalStatus, RoundComment } from "@shared/types";
 
 import { encrypt } from "./crypto";
 // [ADR-001 Wave-2] credentialProvider routes all decrypt() calls through the broker.
@@ -1051,6 +1051,18 @@ export class PgStorage implements IStorage {
     await db
       .update(consiliumLoopRounds)
       .set({ humanNote })
+      .where(and(eq(consiliumLoopRounds.loopId, loopId), eq(consiliumLoopRounds.round, round)));
+  }
+
+  async addLoopRoundComment(loopId: string, round: number, comment: RoundComment): Promise<void> {
+    // Result comments: same (loop, round) scoping as humanNote/report. Appends
+    // atomically via jsonb `||` concat (coalesce guards a NULL existing array) so
+    // two concurrent adds never clobber each other (unlike a read-modify-write).
+    await db
+      .update(consiliumLoopRounds)
+      .set({
+        comments: drizzleSql`coalesce(${consiliumLoopRounds.comments}, '[]'::jsonb) || ${JSON.stringify([comment])}::jsonb`,
+      })
       .where(and(eq(consiliumLoopRounds.loopId, loopId), eq(consiliumLoopRounds.round, round)));
   }
 

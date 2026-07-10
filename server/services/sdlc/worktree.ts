@@ -152,11 +152,30 @@ export async function createSdlcWorktree(opts: CreateWorktreeOptions): Promise<C
   }
 }
 
+const WORKTREE_COLLISION_RE = /already (exists|used by worktree|checked out)/i;
+
 /**
  * `git worktree add -b <branch> <path> <baseRef>`. Options precede the
- * positionals so an (already-gated) value can never be mis-parsed as a flag. If
- * the branch already exists (a re-driven round / a stale ref), recover by
- * force-recreating it from `baseRef` with `-B` so the round is coherent.
+ * positionals so an (already-gated) value can never be mis-parsed as a flag.
+ *
+ * Recovery ladder on an "already used by worktree" collision (a re-driven
+ * round, a killed run, or a stale ref):
+ *   1. `worktree prune` + retry with `-B` — handles the common case where the
+ *      OLD worktree's on-disk directory is already gone (prune drops its now-
+ *      dangling admin entry, `-B` force-recreates the branch ref).
+ *   2. If the collision persists, the old directory is still PRESENT on disk
+ *      (a killed run whose `removeSdlcWorktree` `finally` never got to run) —
+ *      `prune` alone cannot clear that. Look up whichever worktree currently
+ *      holds THIS branch (`worktree list --porcelain`) and force-drop it
+ *      (`worktree remove --force` + `rm -rf` belt-and-braces), then retry once
+ *      more. This is safe to do unconditionally here: `createSdlcWorktree` is
+ *      only re-invoked for a given loop+round once the caller's in-process
+ *      registry / cross-instance DB claim (see BUG-1 in
+ *      consilium-loop-controller.ts) has already ruled out a LIVE concurrent
+ *      run on that exact branch — so any worktree still holding it at this
+ *      point is abandoned, never a live sibling run.
+ *   3. If it STILL collides, bubble the error up untouched (fail-closed —
+ *      never silently widen or clobber past this point).
  */
 async function addWorktree(
   gitRaw: GitRunner,
@@ -167,11 +186,52 @@ async function addWorktree(
 ): Promise<void> {
   try {
     await gitRaw(repo, ["worktree", "add", "-b", branch, worktreeDir, baseRef]);
+    return;
   } catch (err) {
-    if (!/already (exists|used by worktree|checked out)/i.test(errMsg(err))) throw err;
-    await gitRaw(repo, ["worktree", "prune"]).catch(() => undefined);
-    await gitRaw(repo, ["worktree", "add", "-B", branch, worktreeDir, baseRef]);
+    if (!WORKTREE_COLLISION_RE.test(errMsg(err))) throw err;
   }
+
+  await gitRaw(repo, ["worktree", "prune"]).catch(() => undefined);
+  try {
+    await gitRaw(repo, ["worktree", "add", "-B", branch, worktreeDir, baseRef]);
+    return;
+  } catch (err) {
+    if (!WORKTREE_COLLISION_RE.test(errMsg(err))) throw err;
+  }
+
+  const stalePath = await findWorktreePathForBranch(gitRaw, repo, branch);
+  if (stalePath) {
+    await gitRaw(repo, ["worktree", "remove", "--force", stalePath]).catch(() => undefined);
+    await rm(stalePath, { recursive: true, force: true }).catch(() => undefined);
+    await gitRaw(repo, ["worktree", "prune"]).catch(() => undefined);
+  }
+  // Final attempt — a remaining failure here is a genuine, unrecoverable
+  // collision (or the branch is checked out somewhere we couldn't locate);
+  // let it bubble up rather than loop or clobber further.
+  await gitRaw(repo, ["worktree", "add", "-B", branch, worktreeDir, baseRef]);
+}
+
+/**
+ * Find the absolute path of the worktree (if any) currently checked out on
+ * `branch`, via `git worktree list --porcelain` (stable machine format: blocks
+ * separated by blank lines, each with a `worktree <path>` line and, when the
+ * worktree has a branch checked out, a `branch refs/heads/<name>` line).
+ * Best-effort — a parse/exec failure yields `null` (no stale path found), never
+ * throws, so a lookup miss just falls through to the final plain retry above.
+ */
+async function findWorktreePathForBranch(
+  gitRaw: GitRunner,
+  repo: string,
+  branch: string,
+): Promise<string | null> {
+  const out = await gitRaw(repo, ["worktree", "list", "--porcelain"]).catch(() => "");
+  const wantRef = `refs/heads/${branch}`;
+  for (const block of out.split(/\n{2,}/)) {
+    const pathLine = block.match(/^worktree (.+)$/m)?.[1];
+    const branchLine = block.match(/^branch (.+)$/m)?.[1];
+    if (pathLine && branchLine === wantRef) return pathLine;
+  }
+  return null;
 }
 
 /**

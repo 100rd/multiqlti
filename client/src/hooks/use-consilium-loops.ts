@@ -25,11 +25,13 @@ import type {
   Archetype,
   OpenRemainder,
   RoundParticipant,
+  RoundComment,
   ResearchReport,
   ResearchClaim,
   ResearchCitation,
   ResearchSource,
 } from "@shared/types";
+export type { RoundComment };
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Re-export the schema row types under client-facing names. The list endpoint
@@ -177,6 +179,11 @@ export type ConsiliumLoopRoundDetail = ConsiliumLoopRoundRow & {
   /** The round-sourced dispute transcript — see {@link RoundParticipant}. Null on
    *  old pre-Phase-2 rounds (they fall back to the iteration-sourced view). */
   participants?: RoundParticipant[] | null;
+  /**
+   * Result comments — the operator's thread-like notes on this round's Result.
+   * Absent/null when the column doesn't exist yet or no comment was added.
+   */
+  comments?: RoundComment[] | null;
 };
 
 // ─── Composition (Observability GAP 2 — the "who does what" of a round) ───────
@@ -333,6 +340,11 @@ export interface CreateLoopInput {
   repoPath: string;
   maxRounds?: number;
   lastReviewedCommit?: string;
+  // Optional Jira issue key (e.g. "PROJ-123") prepended to every commit the loop
+  // makes — required by repos whose pre-receive hook gates on a Jira key. Not on
+  // the shared ConsiliumLoop type; client-local until the backend contract lands
+  // there too.
+  commitPrefix?: string;
 }
 
 export function useCreateConsiliumLoop() {
@@ -454,6 +466,27 @@ export function useSetArchetype() {
     onSuccess: (_data, { id }) => {
       qc.invalidateQueries({ queryKey: [LIST_KEY, id] });
       qc.invalidateQueries({ queryKey: [LIST_KEY] });
+    },
+  });
+}
+
+/**
+ * Result comments — add an operator's thread-like note to a round's Result
+ * (POST .../rounds/:round/comments). On success we invalidate the loop detail
+ * query so the new comment rides back on the existing `rounds[].comments` wire
+ * (no local cache surgery — the round row is small and refetch is cheap).
+ */
+export function useAddRoundComment() {
+  const qc = useQueryClient();
+  return useMutation<
+    { round: number; comment: RoundComment },
+    Error,
+    { id: string; round: number; body: string }
+  >({
+    mutationFn: ({ id, round, body }) =>
+      apiRequest("POST", `${LIST_KEY}/${id}/rounds/${round}/comments`, { body }),
+    onSuccess: (_data, { id }) => {
+      qc.invalidateQueries({ queryKey: [LIST_KEY, id] });
     },
   });
 }

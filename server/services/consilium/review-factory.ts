@@ -1264,6 +1264,14 @@ export interface CreateConsiliumReviewParams {
    * shell/branch/PR sink.
    */
   reviewMode?: ReviewMode;
+  /**
+   * OPTIONAL per-loop commit-message/MR-title prefix (e.g. a Jira issue key) --
+   * persisted on the loop's `commit_prefix` column and prepended (single space)
+   * to every SDLC-coder commit subject AND the Draft-PR/MR title for this loop.
+   * Already sanitized by the caller (route); absent/undefined => null (byte-
+   * identical subjects/title, no prefix).
+   */
+  commitPrefix?: string;
 }
 
 /** Clamp a caller-supplied round count into the schema's 1..6 window. */
@@ -1431,6 +1439,9 @@ export async function createConsiliumReview(
     // Single-verifier re-review: the per-loop mode (null ⇒ operator default resolves
     // it at round time; an explicit value always wins). INERT dispatch selector.
     reviewMode: params.reviewMode ?? null,
+    // OPTIONAL per-loop commit-message/MR-title prefix (already sanitized by
+    // the caller); null => byte-identical commit subjects/PR-MR title.
+    commitPrefix: params.commitPrefix ?? null,
     createdBy: params.createdBy,
     // ADR-0003 I1 (re-scoped, GH #445 P1): additive class metadata only — no
     // escalation, no gating reads this yet. Coder-enabled (worktree write /

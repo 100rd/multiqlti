@@ -4,7 +4,7 @@
  * shared Dialog primitive + a controlled form + a toast on settle).
  *
  * It POSTs `{ repoPath, preset, maxRounds?, baselineCommit?, ref?, engineerInstruction?,
- * skillIds? }` to `/api/consilium-reviews` via the shared apiRequest transport
+ * skillIds?, commitPrefix? }` to `/api/consilium-reviews` via the shared apiRequest transport
  * (carries auth + `x-project-id`, same as every project-scoped call). The optional
  * `skillIds` are operator-selected skills whose directives the server appends to the
  * engineer instruction (fenced-as-data, byte-budgeted).
@@ -211,6 +211,13 @@ export function NewConsiliumReviewDialog({
   // `reviewMode` only when a non-empty explicit choice is made (additive/back-compat).
   const [reviewMode, setReviewMode] = useState<"" | "full-dispute" | "single-verifier">("");
   const [baselineCommit, setBaselineCommit] = useState("");
+  // Optional Jira issue key (e.g. "PROJ-123") — becomes the `commitPrefix` sent
+  // to the create endpoint, which the server prepends to every commit the loop
+  // makes. Needed by GitLab repos whose pre-receive hook requires a Jira key.
+  // No workspace-scoped Jira projectKey is available at create time (tracker
+  // connections are keyed by task group, which doesn't exist yet here), so this
+  // is a free-text fallback rather than a prefilled prefix + number input.
+  const [jiraIssue, setJiraIssue] = useState("");
   // Optional free-text instruction (tone / requirements for the evaluation). Sent
   // as `engineerInstruction` only when non-empty; the server fences it as data. This
   // is ALWAYS the canonical field that is submitted — in "magic" mode it is
@@ -411,6 +418,7 @@ export function NewConsiliumReviewDialog({
       engineerInstruction?: string;
       skillIds?: string[];
       reviewMode?: "full-dispute" | "single-verifier";
+      commitPrefix?: string;
     } = { repoPath: path, preset };
 
     const rounds = Number(maxRounds);
@@ -443,6 +451,11 @@ export function NewConsiliumReviewDialog({
     // Review mode → `reviewMode` only when an EXPLICIT choice is made; "" leaves it
     // to the server's operator default (verifyReview.enabled), preserving today's flow.
     if (reviewMode) body.reviewMode = reviewMode;
+
+    // Jira issue → `commitPrefix`. Trimmed; omitted entirely when blank (optional
+    // field, never blocks submit).
+    const jiraPrefix = jiraIssue.trim();
+    if (jiraPrefix) body.commitPrefix = jiraPrefix;
 
     try {
       setSubmitting(true);
@@ -663,6 +676,28 @@ export function NewConsiliumReviewDialog({
               onChange={(e) => setMaxRounds(e.target.value)}
               data-testid="new-review-max-rounds"
             />
+          </div>
+
+          {/* Jira issue — OPTIONAL commit-message prefix. Some GitLab repos gate
+              pushes on a pre-receive hook requiring a Jira key in the commit
+              message; this lets the operator attach one at create time. Sent as
+              `commitPrefix` (trimmed, omitted when blank) — the server threads it
+              through to every commit the loop makes. */}
+          <div className="space-y-2">
+            <Label htmlFor="new-review-jira-issue">
+              Jira issue <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="new-review-jira-issue"
+              value={jiraIssue}
+              onChange={(e) => setJiraIssue(e.target.value)}
+              placeholder="PROJ-123"
+              data-testid="new-review-jira-issue"
+            />
+            <p className="text-xs text-muted-foreground">
+              Prepended to every commit — required by repos with a Jira-key commit
+              hook. Leave empty if not required.
+            </p>
           </div>
 
           {/* Re-review mode — HOW rounds AFTER the first are run. Optional: the

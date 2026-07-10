@@ -70,7 +70,7 @@ import {
   type PracticeCardReviewState,
   type PracticeCardStatus,
 } from "@shared/schema";
-import type { McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace, ActionPoint, SkillProposalStatus } from "@shared/types";
+import type { McpServerConfig, TraceSpan, TaskTraceSpan, SkillVersionRecord, InsertSkillVersion as InsertSkillVersionType, SharedSession, CreateSharedSessionInput, SharePermissions, ShareRole, WorkspaceConnection, CreateWorkspaceConnectionInput, UpdateWorkspaceConnectionInput, McpToolCall, ConnectionUsageMetrics, RecordMcpToolCallInput, SessionConflict, DecisionLogEntry, RaiseConflictInput, CastConflictVoteInput, DebateJudgement, ExperimentBranchResult, ResolutionOutcome, ResearchReport, ExecutionTrace, ActionPoint, SkillProposalStatus, RoundComment } from "@shared/types";
 import type { LessonRecallFilter } from "./memory/lessons/types";
 // ROLE-1 (standing-role.md §3/§8): the StandingRole record types. Separate localized
 // import so the shared `@shared/schema` import block above stays a single merge point.
@@ -562,6 +562,15 @@ export interface IStorage {
    * row is absent. Idempotent / best-effort (mirror of updateLoopRoundTestSummary).
    */
   updateLoopRoundHumanNote(loopId: string, round: number, humanNote: string | null): Promise<void>;
+
+  /**
+   * Result comments: append an operator's thread-like comment to a round's
+   * Result. Additive over the audit row recorded on entering `developing`;
+   * no-op when the (loop, round) row is absent. Idempotent / best-effort (mirror
+   * of updateLoopRoundHumanNote) — appends to the existing `comments` array,
+   * creating it when absent.
+   */
+  addLoopRoundComment(loopId: string, round: number, comment: RoundComment): Promise<void>;
 
   // Experience plane — the "Dream" distillation, WRITE side (DREAM-1).
   // The distiller observer reads terminal loops read-only and writes verification-grounded
@@ -1420,6 +1429,8 @@ export class MemStorage implements IStorage {
       repoPath: data.repoPath,
       lastReviewedCommit: data.lastReviewedCommit ?? null,
       reviewRef: data.reviewRef ?? null,
+      // Per-loop commit-message/MR-title prefix (migration 0057, nullable).
+      commitPrefix: data.commitPrefix ?? null,
       // ADR-0003 I1 (re-scoped, GH #445 P1): additive class metadata (mirrors the
       // DB default). Nothing reads either field yet.
       class: data.class ?? "R0",
@@ -1631,6 +1642,7 @@ export class MemStorage implements IStorage {
       humanNote: data.humanNote ?? null,
       report: data.report ?? null,
       executionTrace: data.executionTrace ?? null,
+      comments: data.comments ?? null,
       createdAt: new Date(),
     };
     this.consiliumLoopRoundsMap.set(row.id, row);
@@ -1683,6 +1695,18 @@ export class MemStorage implements IStorage {
     for (const r of this.consiliumLoopRoundsMap.values()) {
       if (r.loopId === loopId && r.round === round) {
         this.consiliumLoopRoundsMap.set(r.id, { ...r, humanNote });
+        return;
+      }
+    }
+  }
+
+  async addLoopRoundComment(loopId: string, round: number, comment: RoundComment): Promise<void> {
+    for (const r of this.consiliumLoopRoundsMap.values()) {
+      if (r.loopId === loopId && r.round === round) {
+        const existing = Array.isArray((r as { comments?: RoundComment[] | null }).comments)
+          ? ((r as { comments?: RoundComment[] | null }).comments as RoundComment[])
+          : [];
+        this.consiliumLoopRoundsMap.set(r.id, { ...r, comments: [...existing, comment] });
         return;
       }
     }

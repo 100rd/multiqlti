@@ -43,6 +43,21 @@
  *          are SERVER CONSTANTS (never model text). Applying them is BEST-EFFORT:
  *          a `gh` that rejects them degrades to a plain Draft PR — metadata never
  *          fails the PR.
+ *
+ * GitLab (Wglab): `openDraftPr` first runs `detectForge` (origin URL host
+ * sniff, conservative default "github") and, for a "gitlab" origin, takes a
+ * SEPARATE `glab`-based path (`openDraftMr`) instead of the `gh` path above —
+ * the `gh` path below this point is UNCHANGED for github origins. `glab mr
+ * create` resolves the (possibly nested-group) GitLab project from `origin`
+ * via `cwd: repoPath`, so there is no owner/repo slug to parse/validate for
+ * gitlab (H-7's `OWNER_REPO_RE`/`resolveOwnerRepo` stay github-only). Same
+ * B-3/B-3+ gates apply (checked once, before the forge branch); env is
+ * sanitized the same way (`sanitizedGitlabEnv` strips inherited `GITLAB_*`,
+ * re-adds only `GITLAB_TOKEN`/`GITLAB_HOST`); `glab` absent/unauth/failing
+ * never throws — same branch-only-fallback posture as `gh`. M-6/M-7 mirror:
+ * `glab mr view <branch>` (accepts a branch name directly) reuses an existing
+ * MR before create, and recovers the URL the same way on an already-exists
+ * create race.
  */
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -80,7 +95,7 @@ export interface GitPushClient {
 export type ExecFileFn = (
   file: string,
   args: string[],
-  options?: { timeout?: number; env?: NodeJS.ProcessEnv },
+  options?: { timeout?: number; env?: NodeJS.ProcessEnv; cwd?: string },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 const execFileAsync: ExecFileFn = promisify(execFile);
@@ -248,6 +263,141 @@ async function resolveOwnerRepo(git: GitPushClient): Promise<string | WrapFail> 
   return slug;
 }
 
+// ─── GitLab (glab) outbound Draft-MR path — mirrors the gh path above ─────────
+//
+// `glab` resolves the (possibly nested-group) GitLab project from the CWD's
+// `origin` remote itself, so unlike `gh` there is no owner/repo slug to parse
+// or validate here (H-7's `OWNER_REPO_RE`/`resolveOwnerRepo` stay github-only,
+// used only by the gh path below).
+
+export type Forge = "github" | "gitlab";
+
+/** glab's own token/host vars — kept, mirroring gh's `KEEP_TOKEN_VARS`. */
+const KEEP_GITLAB_VARS = ["GITLAB_TOKEN", "GITLAB_HOST"] as const;
+
+/**
+ * H-7b mirror for glab: strip every inherited `GITLAB_*` the wrapper didn't
+ * set (a poisoned `GITLAB_HOST` could redirect `glab` to an attacker host and
+ * leak the token), then re-add only the intended token/host vars. PATH/HOME
+ * etc. are left untouched so `glab` still finds its own config file.
+ */
+function sanitizedGitlabEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.startsWith("GITLAB_")) continue; // drop ALL inherited GITLAB_* first.
+    env[k] = v;
+  }
+  for (const tokenVar of KEEP_GITLAB_VARS) {
+    if (process.env[tokenVar]) env[tokenVar] = process.env[tokenVar];
+  }
+  return env;
+}
+
+/**
+ * Sniff the forge from the repo's `origin` remote URL. Conservative: only a
+ * URL host containing "gitlab" resolves to `"gitlab"`; missing origin, a read
+ * error, or any other host (incl. github.com) resolves to `"github"` — the
+ * pre-existing gh path's behavior is UNCHANGED for every caller that doesn't
+ * have a gitlab origin.
+ */
+export async function detectForge(repoPath: string, gitClient?: GitPushClient): Promise<Forge> {
+  const git = gitClient ?? makeGit(repoPath);
+  try {
+    const remotes = await git.getRemotes(true);
+    const origin = remotes.find((r) => r.name === "origin");
+    const url = origin?.refs.push ?? origin?.refs.fetch ?? "";
+    return /gitlab/i.test(url) ? "gitlab" : "github";
+  } catch {
+    return "github";
+  }
+}
+
+/** Pull the first http(s) URL out of `glab` stdout (mirrors `parsePrUrl`). */
+function parseMrUrl(stdout: string): string | undefined {
+  return stdout.match(/https?:\/\/\S+/)?.[0];
+}
+
+/** True when a `glab mr create` error means an MR for the branch already exists (M-7 mirror). */
+function isAlreadyExistsMr(message: string): boolean {
+  return /already (exists|has an open|been created)|open merge request already exists/i.test(message);
+}
+
+/**
+ * M-6 mirror: return the URL of an existing MR for `branch` via
+ * `glab mr view <branch>` — `glab` accepts a branch name directly (no
+ * owner/repo needed). Run with `cwd: repoPath` so `glab` resolves the project
+ * from origin. Not-found / `glab` absent/unauth is NOT fatal — treated as "no
+ * existing MR" (the caller decides what happens next).
+ */
+async function findExistingMr(
+  repoPath: string,
+  branch: string,
+  run: ExecFileFn,
+  env: NodeJS.ProcessEnv,
+): Promise<string | undefined> {
+  try {
+    const { stdout } = await run("glab", ["mr", "view", branch], { timeout: 30_000, env, cwd: repoPath });
+    return parseMrUrl(stdout);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The `glab mr create` call + M-7-mirror already-exists recovery. `glab` has
+ * no `--body-file`/`-F` equivalent for the description, so `--description`
+ * takes the body string directly as an argv element — still `execFile` with
+ * an args array (never a shell string), so this carries no injection risk;
+ * it only differs from gh's `--body-file` in not hiding the content from
+ * `ps`. Server-fixed flags first; `--draft` (H-6 mirror) so a human always
+ * merges. Never throws.
+ */
+async function createDraftMr(
+  repoPath: string,
+  opts: OpenDraftPrOptions,
+  run: ExecFileFn,
+  env: NodeJS.ProcessEnv,
+): Promise<PrResult> {
+  const args = [
+    "mr", "create", "--draft",
+    "--source-branch", opts.head,
+    "--target-branch", opts.base,
+    "--title", opts.title,
+    "--description", opts.body,
+  ];
+  try {
+    const { stdout } = await run("glab", args, { timeout: 60_000, env, cwd: repoPath });
+    const mrUrl = parseMrUrl(stdout);
+    if (!mrUrl) return { ok: false, kind: "gh-failed", message: "glab returned no MR URL" };
+    return { ok: true, prUrl: mrUrl };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (isAlreadyExistsMr(message)) {
+      const recovered = await findExistingMr(repoPath, opts.head, run, env); // M-7 mirror.
+      if (recovered) return { ok: true, prUrl: recovered };
+    }
+    return { ok: false, kind: "gh-failed", message: scrub(message) };
+  }
+}
+
+/**
+ * GitLab counterpart of the gh path in `openDraftPr`: B-3/B-3+ gates already
+ * ran in the caller before the forge branch, so `opts` is already safe here.
+ * No origin/owner-repo derivation (H-7a is github-only) — `cwd: repoPath` lets
+ * `glab` resolve the project itself. Never throws; `glab` absent/unauth/
+ * failing degrades the same way `gh` does (caller falls back to branch-only).
+ */
+async function openDraftMr(
+  repoPath: string,
+  opts: OpenDraftPrOptions,
+  execFileFn: ExecFileFn,
+): Promise<PrResult> {
+  const env = sanitizedGitlabEnv();
+  const existing = await findExistingMr(repoPath, opts.head, execFileFn, env); // M-6 mirror.
+  if (existing) return { ok: true, prUrl: existing };
+  return createDraftMr(repoPath, opts, execFileFn, env);
+}
+
 // ─── pushBranch (B-4 / B-3+ / H-7b) ─────────────────────────────────────────────
 
 /**
@@ -350,6 +500,13 @@ export async function openDraftPr(
   // so a malformed/poisoned base can't be parsed by `gh` as a flag (option injection).
   if (opts.base.startsWith("-")) {
     return { ok: false, kind: "bad-title", message: "rejected leading-dash base (B-3+ flag injection)" };
+  }
+
+  // GitLab origin → the glab Draft-MR path above; conservative default is
+  // "github" (see `detectForge`), so this is a no-op branch for every github
+  // caller — the rest of this function (the gh path) is UNCHANGED.
+  if ((await detectForge(repoPath, gitClient)) === "gitlab") {
+    return openDraftMr(repoPath, opts, execFileFn);
   }
 
   const env = sanitizedEnv(); // H-7b
