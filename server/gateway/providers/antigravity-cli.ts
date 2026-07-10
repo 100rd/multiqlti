@@ -128,6 +128,8 @@ export class AntigravityCliError extends Error {
 export function buildCliArgs(input: AntigravityCliInput): string[] {
   const timeoutSeconds = Math.ceil(input.timeoutMs / MS_PER_SECOND);
   return [
+    "--mode",
+    "plan",
     `--print=${input.prompt}`,
     `--model=${input.model}`,
     `--print-timeout=${timeoutSeconds}s`,

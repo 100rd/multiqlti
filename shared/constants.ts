@@ -342,6 +342,18 @@ export const DEFAULT_MODELS = [
     capabilities: ["testing", "summarization", "lightweight", "fast"],
     isActive: true,
   },
+
+  // ─── Codex (local subscription CLI, `codex exec`) ───
+  {
+    name: "Codex (CLI default)",
+    slug: "codex",
+    modelId: "codex",
+    provider: "codex" as const,
+    endpoint: null,
+    contextLimit: 400000,
+    capabilities: ["planning", "architecture", "development", "code_review", "reasoning", "general"],
+    isActive: true,
+  },
 ];
 
 export const DEFAULT_TEMPERATURE = 0.7;

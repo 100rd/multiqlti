@@ -75,8 +75,8 @@ describe("isCloudProvider()", () => {
 });
 
 describe("visible-provider allowlist", () => {
-  it("mirrors the server VISIBLE_PROVIDER_KEYS set (anthropic/antigravity/google)", () => {
-    expect([...VISIBLE_PROVIDER_KEYS]).toEqual(["anthropic", "antigravity", "google"]);
+  it("mirrors the server VISIBLE_PROVIDER_KEYS set (anthropic/antigravity/google/codex)", () => {
+    expect([...VISIBLE_PROVIDER_KEYS]).toEqual(["anthropic", "antigravity", "google", "codex"]);
   });
 
   it("isVisibleProvider() returns true only for allowlisted providers", () => {
