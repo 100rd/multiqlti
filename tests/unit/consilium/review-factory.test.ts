@@ -988,11 +988,19 @@ describe("composeInstructionWithSkills — delimiter, byte clamp, drop-whole-ski
 // ─── Large Research preset (opt-in, additive): panel + objective + gate ─────
 
 describe("large-research preset — panel selection + objective header (Part 1, additive)", () => {
-  it("PRESET_PANELS['large-research'] is the SAME proven cross-review panel as sdlc-cross-review", () => {
-    expect(PRESET_PANELS["large-research"]).toBe(PRESET_PANELS["sdlc-cross-review"]);
-    const tasks = buildCrossReviewTasks(PRESET_PANELS["large-research"]);
-    expect(tasks).toHaveLength(5);
+  it("PRESET_PANELS['large-research'] is a DISTINCT 3-model panel (Opus + Gemini + Codex, judged by Opus)", () => {
+    const panel = PRESET_PANELS["large-research"];
+    expect(panel).not.toBe(PRESET_PANELS["sdlc-cross-review"]);
+    expect(panel.reviewers.map((r) => r.modelSlug)).toEqual([
+      "claude-opus",
+      "gemini-3-1-pro-high",
+      "codex",
+    ]);
+    expect(panel.judgeModelSlug).toBe("claude-opus");
+    const tasks = buildCrossReviewTasks(panel);
+    // 3 seats → 3 primaries + each seat rebuts the other two + 1 judge.
     expect(tasks.filter((t) => t.name === "Judge verdict")).toHaveLength(1);
+    expect(tasks.length).toBeGreaterThan(5);
   });
 
   it("composeObjective('large-research', ...) emits the large-research header (repo-digest embed)", async () => {
