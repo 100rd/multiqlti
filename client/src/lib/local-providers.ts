@@ -65,7 +65,7 @@ export function isCloudProvider(provider: string): boolean {
  * Used by client surfaces that build a model list from a static source instead
  * of the (already server-filtered) /api/models endpoints.
  */
-export const VISIBLE_PROVIDER_KEYS = ["anthropic", "antigravity", "google"] as const;
+export const VISIBLE_PROVIDER_KEYS = ["anthropic", "antigravity", "google", "codex"] as const;
 
 /** True when `provider` is on the visible-provider allowlist. */
 export function isVisibleProvider(provider: string): boolean {

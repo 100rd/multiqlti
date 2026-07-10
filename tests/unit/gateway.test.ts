@@ -292,7 +292,7 @@ describe("Gateway — provider visibility allowlist", () => {
 
   it("VISIBLE_PROVIDER_KEYS = only the subscription-CLI providers", async () => {
     const { VISIBLE_PROVIDER_KEYS } = await import("../../server/gateway/index.js");
-    expect([...VISIBLE_PROVIDER_KEYS].sort()).toEqual(["anthropic", "antigravity", "google"]);
+    expect([...VISIBLE_PROVIDER_KEYS].sort()).toEqual(["anthropic", "antigravity", "codex", "google"]);
     for (const hidden of ["vllm", "ollama", "lmstudio", "xai"]) {
       expect(VISIBLE_PROVIDER_KEYS.has(hidden)).toBe(false);
     }
