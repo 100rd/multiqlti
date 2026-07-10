@@ -2446,6 +2446,24 @@ export interface RoundParticipant {
 }
 
 /**
+ * Result comments — an operator's thread-like note attached to a round's Result
+ * (verdict/PR outcome), persisted alongside the round on `consilium_loop_rounds.
+ * comments` (jsonb array, additive/nullable — absent on pre-column rounds).
+ * Appended, never edited/removed, by `POST .../rounds/:round/comments`.
+ *
+ * SECURITY: `body` is UNTRUSTED operator free text — stored as-is (server bounds
+ * length), rendered as INERT plain text (whitespace-pre-wrap), never HTML/eval.
+ * `author` is the server-derived display name/email of the authenticated caller,
+ * never client-supplied.
+ */
+export interface RoundComment {
+  id: string;
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
+/**
  * Finding #5 — the READ-TIME (never-persisted) summary of the STILL-OPEN action
  * points carried by a TERMINAL loop's LAST recorded round. Convergence is keyed
  * on `P0` BY DESIGN (a loop converges the moment no P0 remains), but the judge

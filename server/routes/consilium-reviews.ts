@@ -26,6 +26,7 @@ import {
   MAX_RAW_WANT_LEN,
 } from "../services/consilium/reformulate.js";
 import { REVIEW_REF_RE, INVALID_REF_MESSAGE } from "../services/consilium/ref-validator.js";
+import { sanitizeCommitPrefix } from "./consilium-loops.js";
 
 const SHA_RE = /^[0-9a-f]{7,64}$/;
 
@@ -55,6 +56,10 @@ const CreateReviewSchema = z.object({
   // server resolves it from the operator default (verifyReview.enabled). A server
   // enum (z.enum) so only the two known values pass; anything else is a clean 400.
   reviewMode: z.enum(REVIEW_MODES).optional(),
+  // OPTIONAL per-loop commit-message/MR-title prefix (e.g. a Jira issue key) --
+  // sanitized by the SAME sanitizeCommitPrefix helper the loops route uses;
+  // empty/whitespace-only is treated as absent (no prefix).
+  commitPrefix: z.string().optional(),
 });
 
 /**
@@ -138,6 +143,9 @@ export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliu
           skillIds: body.skillIds,
           // Single-verifier re-review: OPTIONAL per-loop mode (persisted on the loop).
           reviewMode: body.reviewMode,
+          // OPTIONAL per-loop commit-message/MR-title prefix (sanitized here, same
+          // helper + clamp as the /api/consilium-loops create route).
+          commitPrefix: sanitizeCommitPrefix(body.commitPrefix),
         });
         return res.status(201).json(loop);
       } catch (err) {

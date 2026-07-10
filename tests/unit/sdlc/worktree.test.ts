@@ -149,6 +149,56 @@ describe("createSdlcWorktree — happy path", () => {
     const forced = git.calls.find((c) => c[0] === "worktree" && c[1] === "add" && c[2] === "-B");
     expect(forced).toEqual(["worktree", "add", "-B", BRANCH, res.worktreeDir, "main"]);
   });
+
+  it("force-removes a STILL-PRESENT stale worktree dir when prune alone can't clear it (killed-run recovery)", async () => {
+    // Arrange: the branch is registered to an abandoned worktree whose on-disk
+    // dir is still there (a killed run that never reached `removeSdlcWorktree`),
+    // so `prune` (no-op — the dir exists) + the first `-B` retry BOTH still
+    // collide. Only a `worktree list` lookup + a forced `remove` of the stale
+    // path should let the FINAL `-B` attempt succeed.
+    const stalePath = "/tmp/sdlc-wt-OLD/tree";
+    let addAttempts = 0;
+    const git = fakeGit((args) => {
+      if (args[0] === "worktree" && args[1] === "add") {
+        addAttempts += 1;
+        if (addAttempts < 3) {
+          throw new Error(`fatal: '${BRANCH}' is already used by worktree at '${stalePath}'`);
+        }
+        return "";
+      }
+      if (args[0] === "worktree" && args[1] === "list") {
+        return [
+          "worktree /allowlisted/omniscience",
+          "HEAD 0000000000000000000000000000000000000000",
+          "branch refs/heads/main",
+          "",
+          `worktree ${stalePath}`,
+          "HEAD 1111111111111111111111111111111111111111",
+          `branch refs/heads/${BRANCH}`,
+          "",
+        ].join("\n");
+      }
+      return "";
+    });
+
+    // Act
+    const res = await createSdlcWorktree({
+      repoPath: REPO,
+      branch: BRANCH,
+      baseRef: "main",
+      allowedRepoPaths: ROOTS,
+      gitRaw: git.raw,
+      mkdtempFn: fakeMkdtemp,
+    });
+
+    // Assert: it located + force-removed the stale worktree, then succeeded.
+    expect(res.branch).toBe(BRANCH);
+    const forcedRemove = git.calls.find(
+      (c) => c[0] === "worktree" && c[1] === "remove" && c[2] === "--force",
+    );
+    expect(forcedRemove).toEqual(["worktree", "remove", "--force", stalePath]);
+    expect(addAttempts).toBe(3);
+  });
 });
 
 describe("resolveDefaultBranch", () => {

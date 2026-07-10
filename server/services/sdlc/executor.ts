@@ -298,6 +298,15 @@ export interface SdlcHandoffRequest {
   loopId: string;
   /** Round number — feeds the branch + commit/PR title. */
   round: number;
+  /**
+   * OPTIONAL per-loop commit-message/MR-title prefix (e.g. a Jira issue key,
+   * `consilium_loops.commit_prefix`) — prepended (single space) to every commit
+   * subject this executor writes AND the Draft-PR/MR title, so a push to a repo
+   * whose pre-receive hook requires an issue key can land. Absent/empty ⇒
+   * byte-identical to today's subjects/title (no prefix). Already sanitized at
+   * the create route; re-sanitized defensively at each call site below.
+   */
+  commitPrefix?: string;
   /** The round's open action points to implement (one coder run EACH). */
   actionPoints: readonly ActionPoint[];
   /** Fail-closed repo allowlist (H-5). */
@@ -612,9 +621,30 @@ function sanitizeLine(value: string, max: number): string {
     .slice(0, max);
 }
 
+/** Max applied commit-prefix length (mirrors the create-route clamp). */
+const COMMIT_PREFIX_MAX = 64;
+
+/**
+ * Defensively re-sanitize an already-persisted `commitPrefix` immediately before
+ * it enters a commit subject / PR title (argv element via simple-git / gh / glab
+ * -- never a shell string). Empty-after-clean => undefined (no-prefix path stays
+ * byte-identical).
+ */
+function sanitizedCommitPrefix(prefix?: string): string | undefined {
+  if (!prefix) return undefined;
+  const cleaned = sanitizeLine(prefix, COMMIT_PREFIX_MAX);
+  return cleaned.length ? cleaned : undefined;
+}
+
+/** Prepend a sanitized commit prefix to a subject/title (single space) when present. */
+function withCommitPrefix(subject: string, prefix?: string): string {
+  const p = sanitizedCommitPrefix(prefix);
+  return p ? `${p} ${subject}` : subject;
+}
+
 /** Build the server-derived PR title (NO model text — B-3 class guard). */
-export function buildPrTitle(round: number): string {
-  return `Consilium round ${round}: SDLC changes`;
+export function buildPrTitle(round: number, commitPrefix?: string): string {
+  return withCommitPrefix(`Consilium round ${round}: SDLC changes`, commitPrefix);
 }
 
 /**
@@ -630,6 +660,7 @@ export function buildApCommitMessage(
   total: number,
   isPartial: boolean,
   note?: string,
+  commitPrefix?: string,
 ): { subject: string; body: string } {
   const priority = sanitizeLine(ap.priority ?? "-", PRIORITY_MAX) || "-";
   const subject = `Consilium round ${round}: ${priority} ${sanitizeLine(ap.title ?? "", COMMIT_SUBJECT_TITLE_MAX)}`.trim();
@@ -644,7 +675,7 @@ export function buildApCommitMessage(
   if (note) lines.push(`Note: ${sanitizeLine(note, 200)}`);
   const rationale = sanitizeLine(ap.rationale ?? "", COMMIT_BODY_RATIONALE_MAX);
   if (rationale) lines.push(`Rationale: ${rationale}`);
-  return { subject: subject.slice(0, 200), body: lines.join("\n").slice(0, COMMIT_BODY_MAX) };
+  return { subject: withCommitPrefix(subject, commitPrefix).slice(0, 200), body: lines.join("\n").slice(0, COMMIT_BODY_MAX) };
 }
 
 /** Inputs to the enriched Draft-PR body (all values server-controlled EXCEPT the
@@ -1336,7 +1367,7 @@ async function runActionPoint(
   //     timed-out/errored run that still produced edits → "partial".
   const isPartial = threw || (coder !== null && !coder.ok);
   const note = isPartial ? (runNote ?? coder?.error ?? "coder did not finish") : undefined;
-  const { subject, body } = buildApCommitMessage(req.round, ap, index, total, isPartial, note);
+  const { subject, body } = buildApCommitMessage(req.round, ap, index, total, isPartial, note, req.commitPrefix);
   // Beat: about to commit THIS action point's work (still the active row).
   io.progress.beat({
     phase: "committing",
@@ -1931,7 +1962,7 @@ async function commitFinalFixes(
     await gitRaw(wt.worktreeDir, [
       "commit",
       "-m",
-      `Consilium round ${req.round}: final-state re-verification fixes`,
+      withCommitPrefix(`Consilium round ${req.round}: final-state re-verification fixes`, req.commitPrefix),
       "-m",
       "Fixes applied by the final-state re-verification loop after all action points were implemented (Stage A).",
     ]);
@@ -2213,7 +2244,7 @@ async function pushAndOpenPr(
   const pr = await io.openPr(wt.worktreeDir, {
     base,
     head: branch,
-    title: buildPrTitle(req.round), // server-derived; NO model text.
+    title: buildPrTitle(req.round, req.commitPrefix), // server-derived; NO model text.
     body: buildPrStatusBody({
       loopId: req.loopId,
       round: req.round,

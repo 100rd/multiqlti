@@ -2125,6 +2125,9 @@ export class ConsiliumLoopController {
       repoPath: loop.repoPath,
       loopId: loop.id,
       round: loop.round,
+      // OPTIONAL per-loop prefix (e.g. a Jira key), threaded to every SDLC-coder
+      // git subject line + the Merge-Request title.
+      commitPrefix: loop.commitPrefix ?? undefined,
       actionPoints: routedActionPoints,
       allowedRepoPaths: cfg.allowedRepoPaths,
       ownerId: loop.createdBy ?? "",

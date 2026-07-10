@@ -17,7 +17,7 @@ import {
 import { vector } from "drizzle-orm/pg-core/columns/vector_extension/vector";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-import type { TriggerConfig, TriggerType, TriggerProvenance, TraceSpan, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, RoundVerdict, RoundParticipant, ExecutionTrace, ReviewMode, ExperienceScope, ExperienceEvidence, ExperienceVerification, ExperienceProvenance, ExperienceFreshness, ExperienceConfidence, ExperienceConsolidation, SkillProposalStatus, SkillProposalProvenance, SkillProposalEvidence } from "./types.js";
+import type { TriggerConfig, TriggerType, TriggerProvenance, TraceSpan, SkillVersionConfig, TaskTraceSpan, TrackerProvider, ActionPoint, Archetype, ArchetypeSource, ResearchReport, RoundVerdict, RoundParticipant, RoundComment, ExecutionTrace, ReviewMode, ExperienceScope, ExperienceEvidence, ExperienceVerification, ExperienceProvenance, ExperienceFreshness, ExperienceConfidence, ExperienceConsolidation, SkillProposalStatus, SkillProposalProvenance, SkillProposalEvidence } from "./types.js";
 
 // ─── RBAC ────────────────────────────────────────────
 
@@ -1876,6 +1876,15 @@ export const consiliumLoops = pgTable(
     // tip + tree this review targets (content read AT THAT REF, no checkout).
     // null ⇒ working-tree HEAD (existing behavior; full back-compat).
     reviewRef: text("review_ref"),
+    // Per-loop commit-message/MR-title prefix (migration 0057): OPTIONAL operator
+    // string prepended (single space) to every SDLC-coder git commit subject AND the
+    // Merge-Request title for THIS loop — lets a loop targeting a repo whose
+    // pre-receive hook requires an issue key (e.g. a Jira key) pass the push.
+    // Sanitized (control-stripped/collapsed/trimmed/clamped ≤64) at write time in the
+    // create route AND defensively re-sanitized at every git-commit/MR-title call
+    // site (never a shell string — argv/body-file only). Null/absent ⇒ byte-identical
+    // to today's subjects/titles (no prefix).
+    commitPrefix: text("commit_prefix"),
     // Single-verifier re-review (migration 0044): HOW rounds AFTER the first are
     // run — 'full-dispute' (the default) or 'single-verifier'. NULLABLE; null ⇒
     // resolve from the operator default (pipeline.consiliumLoop.verifyReview.enabled).
@@ -2001,6 +2010,12 @@ export const consiliumLoopRounds = pgTable(
     // by `updateLoopRoundExecutionTrace` after settle (mirror of report/testSummary).
     // NULL for pre-Stage-4 rounds / rounds with no skilled run. Clamped before write.
     executionTrace: jsonb("execution_trace").$type<ExecutionTrace>(),
+    // Result comments: an operator's thread-like notes on this round's Result,
+    // appended (never edited/removed) by POST .../rounds/:round/comments. Nullable
+    // jsonb array — absent on pre-column rounds, additive over every other field
+    // above (same out-of-band settle discipline as humanNote/report). UNTRUSTED
+    // operator free text; rendered client-side as inert plain text only.
+    comments: jsonb("comments").$type<RoundComment[]>(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({

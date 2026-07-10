@@ -124,6 +124,36 @@ export interface DevCloseoutRequest {
   openActionPoints: readonly ActionPoint[];
   /** Default PR base; falls back to "main" (the repo's main branch). */
   base?: string;
+  /**
+   * OPTIONAL per-loop commit-message/MR-title prefix (e.g. a Jira issue key) --
+   * prepended (single space) to the pushed commit subject AND the Draft-PR/MR
+   * title below. Absent/empty => byte-identical to today's subject/title.
+   */
+  commitPrefix?: string;
+}
+
+const COMMIT_PREFIX_MAX = 64;
+
+/**
+* Defensively re-sanitize an already-persisted commitPrefix before it enters a
+* commit subject / MR title (argv element via simple-git/gh/glab -- never a
+* shell string). Empty-after-clean => undefined (no-prefix path unchanged).
+*/
+function sanitizedCommitPrefix(prefix?: string): string | undefined {
+  if (!prefix) return undefined;
+  const cleaned = prefix
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, COMMIT_PREFIX_MAX);
+  return cleaned.length ? cleaned : undefined;
+}
+
+/** Prepend a sanitized commit prefix to a subject/title (single space) when present. */
+function withCommitPrefix(subject: string, prefix?: string): string {
+  const p = sanitizedCommitPrefix(prefix);
+  return p ? `${p} ${subject}` : subject;
 }
 
 const ARTIFACT_TITLE_MAX = 200;
@@ -229,7 +259,7 @@ export class DevPrCloseout {
     await this.deps.manager.writeFile(ws, fileName, renderArtifact(req.round, req.openActionPoints));
     const git = this.gitFor(ws.path);
     await git.add(["--", fileName]); // B-5: stage EXACTLY the one artifact.
-    await git.commit(`consilium round ${req.round}: open action points`);
+    await git.commit(withCommitPrefix(`consilium round ${req.round}: open action points`, req.commitPrefix));
   }
 
   /** M-6: a re-driven round may already hold the branch — switch, don't fail. */
@@ -268,7 +298,7 @@ export class DevPrCloseout {
     const pr = await this.openPr(req.repoPath, {
       base,
       head: branchName,
-      title: `Consilium round ${req.round}: open action points`,
+      title: withCommitPrefix(`Consilium round ${req.round}: open action points`, req.commitPrefix),
       body: renderArtifact(req.round, req.openActionPoints),
     });
     if (!pr.ok) {

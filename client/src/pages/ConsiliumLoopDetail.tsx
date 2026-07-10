@@ -52,6 +52,7 @@ import {
   Radio,
   Info,
   CheckCircle2,
+  MessageSquare,
 } from "lucide-react";
 import {
   useConsiliumLoop,
@@ -111,6 +112,15 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -118,8 +128,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { ConsiliumLoopState } from "@/hooks/use-consilium-loops";
+import { useAddRoundComment } from "@/hooks/use-consilium-loops";
 import { IterationDetailView } from "@/components/task-groups/iterations-panel";
-import type { ActionPoint, Archetype, OpenRemainder, RoundParticipant } from "@shared/types";
+import type { ActionPoint, Archetype, OpenRemainder, RoundParticipant, RoundComment } from "@shared/types";
 import { ARCHETYPES } from "@shared/types";
 import { summarizeNonP0Remainder } from "@shared/consilium-remainder";
 import {
@@ -1030,6 +1041,34 @@ function LoopStatusCallout({ loop }: { loop: ConsiliumLoopDetailRow }) {
   );
 }
 
+// `loop.prRef` is set by the server (dev-closeout/pr-wrapper) to the PR/MR URL
+// returned by `gh`/`glab`, so it is normally already an `https://` URL. This
+// resolver is a defensive layer: it (a) accepts a bare `owner/repo#N` (GitHub)
+// or `.../proj!N` (GitLab) short ref and turns it into a real URL, and (b)
+// refuses to hand back anything that isn't an http(s) URL — guarding against a
+// `javascript:`/`data:` (or otherwise malformed) prRef ever being used as an
+// href. Returns null when the value can't be resolved to a safe http(s) URL,
+// in which case callers should fall back to plain text.
+function resolvePrUrl(prRef: string | null | undefined): string | null {
+  if (!prRef) return null;
+  const trimmed = prRef.trim();
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+
+  const mrMatch = trimmed.match(/^([\w.-]+(?:\/[\w.-]+)*)!(\d+)$/);
+  if (mrMatch) {
+    const [, project, num] = mrMatch;
+    return `https://gitlab.com/${project}/-/merge_requests/${num}`;
+  }
+
+  const prMatch = trimmed.match(/^([\w.-]+)\/([\w.-]+)#(\d+)$/);
+  if (prMatch) {
+    const [, owner, repo, num] = prMatch;
+    return `https://github.com/${owner}/${repo}/pull/${num}`;
+  }
+
+  return null;
+}
+
 // What did the latest SDLC round actually produce? The stepper shows WHERE the
 // loop is; this panel shows WHAT to decide on. It is rendered near the top so a
 // human arriving at `awaiting_merge` is never met with a blank gate. Every field
@@ -1037,7 +1076,8 @@ function LoopStatusCallout({ loop }: { loop: ConsiliumLoopDetailRow }) {
 // openP0 / openActionPoints) — nothing is invented.
 //
 // SECURITY: error text and action-point titles are model/loop-authored and are
-// rendered as INERT React text; the PR link uses rel="noopener noreferrer".
+// rendered as INERT React text; the PR link is resolved through resolvePrUrl
+// (http/https only) and uses rel="noopener noreferrer".
 function ResultPanel({
   loop,
   terminal,
@@ -1060,8 +1100,16 @@ function ResultPanel({
 
   return (
     <Card className="border-amber-500/40">
-      <CardHeader className="pb-3">
+      <CardHeader className="pb-3 flex flex-row items-center justify-between gap-2">
         <CardTitle className="text-sm">Result</CardTitle>
+        {/* Result comments — only meaningful once there's a round to attach to. */}
+        {latest && (
+          <ResultComments
+            loopId={loop.id}
+            round={latest.round}
+            comments={Array.isArray(latest.comments) ? latest.comments : []}
+          />
+        )}
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Last-round degradation signal from `loop.error`. The CANCELLED and
@@ -1088,15 +1136,17 @@ function ResultPanel({
               <p className="text-sm font-medium">Draft PR ready for review</p>
               <p className="font-mono text-xs text-muted-foreground truncate">{loop.prRef}</p>
             </div>
-            <a
-              href={loop.prRef}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 shrink-0"
-            >
-              <ExternalLink className="h-4 w-4" />
-              Open Draft PR
-            </a>
+            {resolvePrUrl(loop.prRef) ? (
+              <a
+                href={resolvePrUrl(loop.prRef)!}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 shrink-0"
+              >
+                <ExternalLink className="h-4 w-4" />
+                Open Draft PR
+              </a>
+            ) : null}
           </div>
         ) : awaiting ? (
           <div className="rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
@@ -1168,6 +1218,107 @@ function ResultPanel({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// ─── Result comments (button + dialog) ─────────────────────────────────────────
+//
+// A thread-like note surface attached to a round's Result: a "Comments (N)"
+// button opens a Dialog listing existing comments (author + relative time +
+// body) with a Textarea + "Add comment" action underneath. POSTs via
+// `useAddRoundComment`, which invalidates the loop detail query on success so
+// the new comment rides back on the next `rounds[].comments` read.
+//
+// SECURITY: `body` is UNTRUSTED operator free text — rendered as INERT plain
+// text (`whitespace-pre-wrap`), never `dangerouslySetInnerHTML`/HTML/eval.
+// `author` is server-derived (never client-supplied).
+function ResultComments({
+  loopId,
+  round,
+  comments,
+}: {
+  loopId: string;
+  round: number;
+  comments: RoundComment[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const addComment = useAddRoundComment();
+  const { toast } = useToast();
+
+  const handleAdd = async () => {
+    const body = draft.trim();
+    if (!body) return;
+    try {
+      await addComment.mutateAsync({ id: loopId, round, body });
+      setDraft("");
+    } catch (e) {
+      toast({
+        title: "Failed to add comment",
+        description: e instanceof Error ? e.message : undefined,
+        variant: "destructive",
+      });
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm" className="shrink-0" data-testid="result-comments-button">
+          <MessageSquare className="h-4 w-4 mr-2" />
+          Comments{comments.length > 0 ? ` (${comments.length})` : ""}
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Result comments</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          {comments.length > 0 ? (
+            <ul className="max-h-72 space-y-3 overflow-y-auto" data-testid="result-comments-list">
+              {comments.map((c) => (
+                <li key={c.id} className="rounded-md border p-3 text-sm" data-testid="result-comment-item">
+                  <div className="mb-1 flex items-baseline justify-between gap-2">
+                    {/* author is server-derived; createdAt is server-generated — INERT text */}
+                    <span className="font-medium">{c.author}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}
+                    </span>
+                  </div>
+                  {/* UNTRUSTED operator text — inert plain text, never HTML/eval */}
+                  <p className="whitespace-pre-wrap break-words text-muted-foreground">{c.body}</p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground">No comments yet.</p>
+          )}
+          <div className="space-y-2">
+            <Textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="Add a thought on this result…"
+              rows={3}
+              maxLength={8000}
+              data-testid="result-comment-input"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Close
+          </Button>
+          <Button
+            onClick={handleAdd}
+            disabled={!draft.trim() || addComment.isPending}
+            data-testid="result-comment-submit"
+          >
+            {addComment.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Add comment
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1685,9 +1836,9 @@ function DevelopProgressPanel({
       </p>
 
       {/* Draft PR link appears once the executor has opened it (near completion). */}
-      {loop.prRef && (
+      {loop.prRef && resolvePrUrl(loop.prRef) && (
         <a
-          href={loop.prRef}
+          href={resolvePrUrl(loop.prRef)!}
           target="_blank"
           rel="noopener noreferrer"
           className="inline-flex items-center gap-1 text-sm font-medium text-primary underline underline-offset-2"
@@ -2645,15 +2796,19 @@ export default function ConsiliumLoopDetail() {
                   </span>
                 )}
                 {loop.prRef && (
-                  <a
-                    href={loop.prRef}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 text-primary hover:underline text-sm font-mono break-all"
-                  >
-                    <ExternalLink className="h-3.5 w-3.5 shrink-0" />
-                    {loop.prRef}
-                  </a>
+                  resolvePrUrl(loop.prRef) ? (
+                    <a
+                      href={resolvePrUrl(loop.prRef)!}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-primary hover:underline text-sm font-mono break-all"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                      {loop.prRef}
+                    </a>
+                  ) : (
+                    <span className="block font-mono text-sm break-all">{loop.prRef}</span>
+                  )
                 )}
                 <span className="block text-xs text-muted-foreground">
                   Requires the maintainer or admin role
