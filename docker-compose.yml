@@ -217,6 +217,27 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # ── OpenBao (Vault-compatible secrets backend, OPTIONAL — secrets-manager Phase 2) ──
+  # Dev-mode only (in-memory, unsealed on boot, single root token). NOT started by
+  # any of the default profiles (full/cloud-only/dev) -- opt in with:
+  #   docker compose --profile secrets up -d openbao
+  # Then set MULTI_CREDENTIALS_BACKEND=openbao, MULTI_CREDENTIALS_OPENBAO_ADDR=http://openbao:8200,
+  # and OPENBAO_TOKEN=dev-root-token on the multiqlti service.
+  openbao:
+    image: openbao/openbao:latest
+    profiles: [secrets]
+    cap_add:
+      - IPC_LOCK
+    environment:
+      OPENBAO_DEV_ROOT_TOKEN_ID: dev-root-token
+      OPENBAO_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    command: server -dev
+    ports:
+      - "8200:8200"
+    networks:
+      - internal
+    restart: unless-stopped
+
   # ── Prometheus ──────────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:latest

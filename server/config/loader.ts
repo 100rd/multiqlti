@@ -115,6 +115,14 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { envKey: "MULTI_PROVIDERS_ANTIGRAVITY_TIMEOUT_MS",configPath: ["providers", "antigravity", "timeoutMs"],       kind: "number"  },
   { envKey: "MULTI_FEATURES_SANDBOX_ENABLED",        configPath: ["features", "sandbox", "enabled"],              kind: "boolean" },
   { envKey: "MULTI_ENCRYPTION_KEY",                  configPath: ["encryption", "key"],                           kind: "string"  },
+  // Credential VALUE store backend selection (secrets-manager Phase 2).
+  // NOTE: the OpenBao TOKEN is NOT env-mapped here -- it is read directly from
+  // process.env at call time (see schema `credentials.openbao.tokenEnv`).
+  { envKey: "MULTI_CREDENTIALS_BACKEND",             configPath: ["credentials", "backend"],                       kind: "string"  },
+  { envKey: "MULTI_CREDENTIALS_OPENBAO_ADDR",        configPath: ["credentials", "openbao", "addr"],              kind: "string"  },
+  { envKey: "MULTI_CREDENTIALS_OPENBAO_MOUNT",       configPath: ["credentials", "openbao", "mount"],             kind: "string"  },
+  { envKey: "MULTI_CREDENTIALS_OPENBAO_NAMESPACE",   configPath: ["credentials", "openbao", "namespace"],         kind: "string"  },
+  { envKey: "MULTI_CREDENTIALS_OPENBAO_TOKEN_ENV",   configPath: ["credentials", "openbao", "tokenEnv"],          kind: "string"  },
   { envKey: "MULTI_FEDERATION_ENABLED",              configPath: ["federation", "enabled"],                       kind: "boolean" },
   { envKey: "MULTI_FEDERATION_INSTANCE_ID",          configPath: ["federation", "instanceId"],                    kind: "string"  },
   { envKey: "MULTI_FEDERATION_INSTANCE_NAME",        configPath: ["federation", "instanceName"],                  kind: "string"  },

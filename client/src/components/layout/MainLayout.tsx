@@ -98,7 +98,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
         ]
       : []),
     { icon: BarChart3, label: "Statistics", href: "/" },
-    { icon: KeyRound, label: "Credential Access", href: "/credentials" },
+    { icon: KeyRound, label: "Secrets", href: "/credentials" },
     { icon: Settings, label: "Settings", href: "/settings" },
     { icon: Radio, label: "Config Sync", href: "/settings/peers" },
     // Admin-only: User Management

@@ -197,6 +197,35 @@ export const ConfigSchema = z.object({
     key: z.string().min(32).optional(),
   }).default({}),
   /**
+   * Credential/secrets VALUE store backend selection (secrets-manager Phase 2).
+   *
+   * `credentials.backend` selects where secret VALUES live:
+   *   - "db"      — existing AES-encrypted `secrets.valueEncrypted` column (default).
+   *   - "openbao" — OpenBao (Vault-compatible) KV v2 store; the `secrets` table still
+   *                 holds METADATA only (valueEncrypted stays NULL for openbao rows).
+   *
+   * Nothing changes by default: the backend is "db" unless explicitly switched.
+   *
+   * The OpenBao auth token is NEVER stored in config — it is read at call time from
+   * the environment variable named by `openbao.tokenEnv` (defaults to OPENBAO_TOKEN).
+   */
+  credentials: z.object({
+    backend: z.enum(["db", "openbao"]).default("db"),
+    openbao: z.object({
+      /** OpenBao server address, e.g. "http://127.0.0.1:8200". Required when backend=openbao. */
+      addr: z.string().url().optional(),
+      /** KV v2 mount path (no leading/trailing slash). */
+      mount: z.string().default("secret"),
+      /** Optional OpenBao namespace (Enterprise-compatible; usually unset in dev). */
+      namespace: z.string().optional(),
+      /**
+       * Name of the environment variable that holds the OpenBao auth token. The
+       * token value itself is never persisted in config. Defaults to OPENBAO_TOKEN.
+       */
+      tokenEnv: z.string().default("OPENBAO_TOKEN"),
+    }).default({}),
+  }).default({}),
+  /**
    * Memory / retrieval backend selection (memory-architecture ADR, Track A).
    *
    * `retrieval.backend` selects the world-knowledge retrieval path:

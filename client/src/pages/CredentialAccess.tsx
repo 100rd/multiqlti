@@ -18,6 +18,13 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useProjects } from "@/hooks/use-projects";
+import type { CredentialMetadata } from "@/hooks/use-credentials";
+import {
+  CreateCredentialDialog,
+  DeleteCredentialDialog,
+  EditCredentialDialog,
+  RotateCredentialDialog,
+} from "@/components/credentials/CredentialDialogs";
 import {
   Card,
   CardContent,
@@ -26,6 +33,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -55,22 +63,19 @@ import {
   FileText,
   KeyRound,
   Lock,
+  Pencil,
+  Plus,
+  RotateCw,
   ShieldOff,
+  Trash2,
   XCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── API types ─────────────────────────────────────────────────────────────────
 
-interface Credential {
-  id: string;
-  projectId: string;
-  provider: string;
-  scope: string;
-  description: string;
-  hasSecret: boolean;
-  lastRotatedAt?: string | null;
-}
+/** Credential metadata (see hooks/use-credentials.ts for the canonical shape). */
+type Credential = CredentialMetadata;
 
 interface AccessLogEntry {
   id: string;
@@ -198,6 +203,10 @@ export default function CredentialAccess() {
   const projectId = currentProject?.id ?? null;
 
   const [logLimit, setLogLimit] = useState<number>(100);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [rotateTarget, setRotateTarget] = useState<Credential | null>(null);
+  const [editTarget, setEditTarget] = useState<Credential | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Credential | null>(null);
 
   // ── Credential inventory ────────────────────────────────────────────────
   // projectId is included in the queryKey so react-query automatically refetches
@@ -249,11 +258,11 @@ export default function CredentialAccess() {
         <div className="flex items-start gap-3">
           <Lock className="h-6 w-6 text-primary mt-0.5 shrink-0" />
           <div>
-            <h1 className="text-xl font-semibold">Credential Access</h1>
+            <h1 className="text-xl font-semibold">Secrets</h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              Per-project credential inventory, audit log, and active leases.
-              Secret values are <strong>never</strong> exposed here — metadata
-              only.
+              Manage project secrets — create, rotate, and revoke credentials
+              used by pipelines and integrations. Secret values are{" "}
+              <strong>never</strong> exposed here — metadata only.
             </p>
           </div>
         </div>
@@ -261,9 +270,20 @@ export default function CredentialAccess() {
         {/* ── Section 1: Credential inventory ──────────────────────────────── */}
         <Card>
           <CardHeader className="pb-3">
-            <div className="flex items-center gap-2">
-              <KeyRound className="h-4 w-4 text-muted-foreground" />
-              <CardTitle className="text-base">Credentials</CardTitle>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <KeyRound className="h-4 w-4 text-muted-foreground" />
+                <CardTitle className="text-base">Credentials</CardTitle>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-xs h-7"
+                onClick={() => setCreateOpen(true)}
+              >
+                <Plus className="h-3.5 w-3.5 mr-1.5" />
+                Add secret
+              </Button>
             </div>
             <CardDescription>
               Registered credentials for this project. The secret value is
@@ -284,17 +304,22 @@ export default function CredentialAccess() {
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead>Name</TableHead>
                       <TableHead>Provider</TableHead>
                       <TableHead>Scope</TableHead>
                       <TableHead>Description</TableHead>
                       <TableHead>Secret</TableHead>
                       <TableHead>Last Rotated</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {credentialsQuery.data.map((cred) => (
                       <TableRow key={cred.id}>
-                        <TableCell className="font-medium font-mono text-xs">
+                        <TableCell className="font-medium text-xs">
+                          {cred.name ?? "—"}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-muted-foreground">
                           {cred.provider}
                         </TableCell>
                         <TableCell className="font-mono text-xs text-muted-foreground">
@@ -321,7 +346,38 @@ export default function CredentialAccess() {
                           )}
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                          {formatDateTime(cred.lastRotatedAt)}
+                          {formatDateTime(cred.rotatedAt)}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7"
+                              aria-label="Rotate secret"
+                              onClick={() => setRotateTarget(cred)}
+                            >
+                              <RotateCw className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7"
+                              aria-label="Edit secret"
+                              onClick={() => setEditTarget(cred)}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7 text-destructive hover:text-destructive"
+                              aria-label="Delete secret"
+                              onClick={() => setDeleteTarget(cred)}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -542,6 +598,20 @@ export default function CredentialAccess() {
         </Card>
 
       </div>
+
+      <CreateCredentialDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <RotateCredentialDialog
+        credential={rotateTarget}
+        onOpenChange={(v) => !v && setRotateTarget(null)}
+      />
+      <EditCredentialDialog
+        credential={editTarget}
+        onOpenChange={(v) => !v && setEditTarget(null)}
+      />
+      <DeleteCredentialDialog
+        credential={deleteTarget}
+        onOpenChange={(v) => !v && setDeleteTarget(null)}
+      />
     </ScrollArea>
   );
 }
