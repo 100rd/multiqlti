@@ -132,6 +132,8 @@ export interface ConsiliumPanel {
 const OPUS: ReviewerModel = { name: "Opus", modelSlug: "claude-opus" };
 /** Gemini 3.1 Pro (high reasoning). */
 const GEMINI: ReviewerModel = { name: "Gemini", modelSlug: "gemini-3-1-pro-high" };
+/** Local Codex CLI seat (uses the user's ~/.codex default model). */
+const CODEX: ReviewerModel = { name: "Codex", modelSlug: "codex" };
 
 /**
  * The proven 2-model cross-review panel (Opus 4.8 + Gemini 3.1 Pro, judge =
@@ -144,6 +146,17 @@ const CROSS_REVIEW_PANEL: ConsiliumPanel = {
   judgeModelSlug: OPUS.modelSlug,
 };
 
+/**
+ * Large Research panel — a 3-model dispute (Opus + Gemini + local Codex), judged
+ * by Opus. The extra seat gives the operator-paced research preset a third
+ * independent perspective; the DAG builder generalises (each seat rebuts every
+ * other, judge waits on all). Standard presets keep the proven 2-model panel.
+ */
+const LARGE_RESEARCH_PANEL: ConsiliumPanel = {
+  reviewers: [OPUS, GEMINI, CODEX],
+  judgeModelSlug: OPUS.modelSlug,
+};
+
 /** Per-preset panel. All three presets share the proven 2-model panel today. */
 export const PRESET_PANELS: Record<ConsiliumReviewPreset, ConsiliumPanel> = {
   "sdlc-cross-review": CROSS_REVIEW_PANEL,
@@ -151,7 +164,7 @@ export const PRESET_PANELS: Record<ConsiliumReviewPreset, ConsiliumPanel> = {
   "full-viability": CROSS_REVIEW_PANEL,
   // MVP: reuse the proven 2-model panel (Opus + Gemini). A future 3rd seat is a
   // one-line addition (see `CROSS_REVIEW_PANEL` comment above).
-  "large-research": CROSS_REVIEW_PANEL,
+  "large-research": LARGE_RESEARCH_PANEL,
 };
 
 // ─── Task descriptions (SERVER CONSTANTS) ───────────────────────────────────
