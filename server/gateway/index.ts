@@ -7,6 +7,7 @@ import { VllmProvider } from "./providers/vllm";
 import { OllamaProvider } from "./providers/ollama";
 import { ClaudeProvider } from "./providers/claude";
 import { ClaudeCliProvider } from "./providers/claude-cli";
+import { CodexCliProvider } from "./providers/codex-cli";
 import { GeminiProvider } from "./providers/gemini";
 import { AntigravityProvider } from "./providers/antigravity";
 import { DEFAULT_ANTIGRAVITY_MODEL, DEFAULT_ANTIGRAVITY_TIMEOUT_MS } from "./providers/antigravity-cli";
@@ -33,6 +34,7 @@ export const VISIBLE_PROVIDER_KEYS: ReadonlySet<string> = new Set([
   "anthropic",
   "antigravity",
   "google",
+  "codex",
 ]);
 
 export interface GatewayPrivacyOptions {
@@ -102,6 +104,10 @@ export class Gateway {
     if (providers.xai.apiKey) {
       this.registry.set("xai", new GrokProvider(providers.xai.apiKey));
     }
+
+    // Codex: local subscription CLI (`codex exec`), always registered like the
+    // Anthropic CLI default — no endpoint/API key gating, 0 OpenAI API spend.
+    this.registry.set("codex", new CodexCliProvider());
   }
 
   /**
@@ -466,6 +472,7 @@ export class Gateway {
       xai: visible("xai"),
       antigravity: visible("antigravity"),
       lmstudio: visible("lmstudio"),
+      codex: visible("codex"),
       vllmEndpoint: endpointFor("vllm", providers.vllm.endpoint),
       ollamaEndpoint: endpointFor("ollama", providers.ollama.endpoint),
       lmstudioEndpoint: endpointFor("lmstudio", lmStudioProvider?.endpoint),
