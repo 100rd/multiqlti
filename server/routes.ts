@@ -305,7 +305,13 @@ export async function registerRoutes(
         await flipSpecStatus({ specPath, specRepoPath, from: "in-progress", to: target.to, reason: target.reason });
       },
     });
-    registerConsiliumLoopRoutes(app, storage, consiliumLoopController, () => appConfigLoader.get());
+    registerConsiliumLoopRoutes(
+      app,
+      storage,
+      consiliumLoopController,
+      () => appConfigLoader.get(),
+      taskOrchestrator,
+    );
     // POST /api/consilium-reviews — the UI "New consilium review" button. Same
     // factory + same fail-closed allowlist as the trigger path. Registered ONLY
     // inside the kill-switch block (inert otherwise), mounted behind

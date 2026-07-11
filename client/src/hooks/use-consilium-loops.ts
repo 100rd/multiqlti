@@ -448,6 +448,31 @@ export function useRetryThrottledLoop() {
   });
 }
 
+/** The `POST /:id/rerun` response — the freshly-cloned loop's id. */
+export interface RerunLoopResult {
+  id: string;
+}
+
+/**
+ * Clone a TERMINAL loop (failed/cancelled/stopped_cap/escalated/converged) into
+ * a brand-new loop with the same inputs, so an operator can retry a dead-end run
+ * without re-entering the launch form by hand. Owner-or-admin, same shape as
+ * `useCancelLoop`/`useRetryThrottledLoop`. Server-enforced: 409 (WRONG_STATE)
+ * when the source loop isn't actually terminal — `apiRequest` throws that as an
+ * Error whose message is the server's `error` string, surfaced verbatim by the
+ * caller's toast. On success we invalidate the LIST (the new loop shows up
+ * there); the caller is responsible for navigating to the new loop's id.
+ */
+export function useRerunLoop() {
+  const qc = useQueryClient();
+  return useMutation<RerunLoopResult, Error, string>({
+    mutationFn: (id) => apiRequest("POST", `${LIST_KEY}/${id}/rerun`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: [LIST_KEY] });
+    },
+  });
+}
+
 /**
  * The HITL gate. Server-enforced maintainer/admin only — a plain owner gets 403,
  * which `apiRequest` throws as an Error (the caller surfaces a role-aware toast).

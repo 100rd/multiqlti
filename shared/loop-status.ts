@@ -123,6 +123,18 @@ function openWorkClause(loop: LoopStatusInput): string {
   return "some items may still be open";
 }
 
+/**
+ * The GENERIC failure text the controller stamps on `loop.error` when a review
+ * run dies with no more specific message (`REVIEW_RUN_FAILED` in
+ * consilium-loop-controller.ts). Detected here so `failed` can hand the
+ * operator an ACTIONABLE explanation of what that opaque three words actually
+ * means, instead of just echoing them back verbatim.
+ */
+const GENERIC_REVIEW_RUN_FAILED = "review run failed";
+
+/** Appended to every `failed` explanation — the loop has no in-place resume. */
+const RERUN_SUGGESTION = "Re-run to start a fresh loop with the same settings.";
+
 /** Humanize a raw state token as a last-resort title (never render blank). */
 function humanizeState(state: string): string {
   return state
@@ -238,15 +250,34 @@ export function explainLoopState(loop: LoopStatusInput): LoopStatusExplanation {
       };
     }
 
-    case "failed":
+    case "failed": {
+      // A `failed` loop has no in-place resume (unlike `throttled`, which
+      // retries, or the verdict terminals, which develop) — a re-run cloning
+      // the SAME config into a fresh loop is the only way forward, so every
+      // branch below ends with that suggestion.
+      if (!loop.error) {
+        return {
+          title: "Failed",
+          tone: "bad",
+          detail: `The last round failed with an unrecoverable error. See the round details below. ${RERUN_SUGGESTION}`,
+        };
+      }
+      if (loop.error === GENERIC_REVIEW_RUN_FAILED) {
+        // The generic controller-authored message names no specific cause —
+        // explain what it actually covers instead of echoing three opaque words.
+        return {
+          title: "Failed",
+          tone: "bad",
+          detail: `The review run failed — a reviewer model errored or the run was interrupted (e.g. a restart mid-review). ${RERUN_SUGGESTION}`,
+        };
+      }
+      // A specific error (#466-style): surface it verbatim, then the suggestion.
       return {
         title: "Failed",
         tone: "bad",
-        // Reuse #466: render the loop's own error as the explanation.
-        detail: loop.error
-          ? loop.error
-          : "The last round failed with an unrecoverable error. See the round details below.",
+        detail: `${loop.error} — re-run to start a fresh loop.`,
       };
+    }
 
     case "cancelled":
       return {
