@@ -364,6 +364,25 @@ export const ConfigSchema = z.object({
         maxRepoMapBytes: z.coerce.number().int().min(512).max(200_000).default(6_000),
       }).default({}),
       /**
+       * Workspace repo-conventions preamble: reads a workspace repo's OWN convention file
+       * (`AGENTS.md`, falling back to `CLAUDE.md` — the first that exists wins, never
+       * concatenated) and injects it into BOTH the REVIEW input and the DEV (coder) system
+       * prompt, so the loop honours the repo's own agent conventions the same way a human
+       * contributor would. Read-only, best-effort (`repo-conventions.ts`): hard byte-bounded,
+       * secret-redacted, and fenced as data (same discipline as `repoMap`). Default OFF ⇒
+       * BYTE-IDENTICAL: no review section is added and no dev systemPrompt changes. Also
+       * gated (like every enhancement here) under the parent `consiliumLoop.enabled`.
+       */
+      repoConventions: z.object({
+        /** Kill-switch: false (default) → no conventions read anywhere (byte-identical off). */
+        enabled: z.boolean().default(false),
+        /**
+         * Hard byte cap on the read convention file, checked via `statSync` before the
+         * secret-redaction/fencing pass. 512B..64KB.
+         */
+        maxConventionsBytes: z.coerce.number().int().min(512).max(65_536).default(8_000),
+      }).default({}),
+      /**
        * Phase 2 (defect-B): run the per-round review via the DIRECT in-process
        * review-runner (`review-runner.ts`) instead of the task-group
        * `startGroupAsync` engine. Default OFF ⇒ BYTE-IDENTICAL to today: the review

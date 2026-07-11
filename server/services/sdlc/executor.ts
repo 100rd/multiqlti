@@ -78,6 +78,7 @@ import {
 import { SdlcCoder, type CoderResult, type CoderOptions } from "./coder.js";
 import { verifyInWorktree, type TestRunResult } from "./test-runner.js";
 import { stripControlMultiline, backtickFence } from "../consilium/review-factory.js";
+import { readConventionsFile } from "../consilium/repo-conventions.js";
 import { isRateLimitError } from "../../gateway/rate-limit.js";
 
 const COMMIT_SUBJECT_TITLE_MAX = 100;
@@ -392,6 +393,27 @@ export interface SdlcHandoffRequest {
    * it NEVER pushes a broken merge (adversarial risk: silent dropped changes).
    */
   integrateBase?: boolean;
+  /**
+   * Repo-conventions preamble (`AGENTS.md`, falling back to `CLAUDE.md`) for the DEV
+   * (coder) system prompt — read ONCE per round from the round's worktree (server-
+   * minted, no allowlist check needed) and merged ahead of the role/skill system
+   * prompt at every coder call site (initial skilled/unskilled coder, verify→fix
+   * iterations, AND the final-state fix coder) so all of them see the same repo
+   * conventions a human contributor would. ABSENT or `{ enabled: false }` ⇒ NO
+   * conventions are read and NO systemPrompt changes anywhere (byte-for-byte today's
+   * develop path). Threaded by the controller ONLY when
+   * `consiliumLoop.repoConventions.enabled` is true.
+   */
+  repoConventions?: RepoConventionsConfig | null;
+}
+
+/** Repo-conventions config threaded into {@link runSdlcHandoff} (mirror of
+ *  `pipeline.consiliumLoop.repoConventions`). */
+export interface RepoConventionsConfig {
+  /** Master kill-switch (default false at the config layer). */
+  enabled: boolean;
+  /** Hard byte cap on the read convention file (config-clamped 512B..64KB). */
+  maxConventionsBytes: number;
 }
 
 /** Parallel-develop config threaded into {@link runSdlcHandoff} (mirror of
@@ -1009,6 +1031,16 @@ export async function runSdlcHandoff(
       gitRaw,
     });
     try {
+      // Repo-conventions preamble (`AGENTS.md` / `CLAUDE.md`): read ONCE per round from
+      // the round's worktree (server-minted — no allowlist check needed, unlike the
+      // review side's caller-supplied repoPath) so every coder call site below (skilled
+      // + unskilled initial coder, verify→fix iterations, final-state fix coder) reuses
+      // the SAME string rather than re-reading per invocation. ABSENT/disabled ⇒
+      // `undefined` ⇒ every downstream systemPrompt stays byte-for-byte unchanged.
+      const repoConventions = req.repoConventions?.enabled
+        ? (readConventionsFile(wt.worktreeDir, req.repoConventions.maxConventionsBytes) ?? undefined)
+        : undefined;
+
       // Stage 2a: resolve the archetype's ordered skilled steps ONCE for the round.
       // Empty (research / infra / null / unknown, or the kill-switch off ⇒ archetype
       // is null) ⇒ runActionPoint takes the UNCHANGED single unskilled coder path.
@@ -1042,7 +1074,7 @@ export async function runSdlcHandoff(
       // Stage B: per-criterion method routing context (INERT unless perCriterionMethod on).
       const routing = { enabled: req.perCriterionMethod ?? false, judgeVerify: deps.judgeVerify };
       // The per-AP IO shared by the fan-out workers, the sequential default, and the fallback.
-      const apIo: ApImplementIo = { gitRaw, runCoder, progress, skilledSteps, verify: verifyCtx, routing };
+      const apIo: ApImplementIo = { gitRaw, runCoder, progress, skilledSteps, verify: verifyCtx, routing, repoConventions };
 
       // Parallel-develop (design §4): when the switch is on AND there is >1 AP to fan out,
       // run the round in DEPENDENCY-AWARE WAVES — each AP in its OWN worktree branched off
@@ -1104,7 +1136,7 @@ export async function runSdlcHandoff(
           progress,
           total,
           completedBefore: committedCount,
-        });
+        }, repoConventions);
         if (await commitFinalFixes(gitRaw, wt, req)) committedCount += 1;
       }
 
@@ -1190,6 +1222,25 @@ export async function runSdlcHandoff(
  * outcome so the round continues and partial work is preserved. Emits a `coding`
  * beat before the coder runs and a `committing` beat before the commit.
  */
+/**
+ * Merge the round's repo-conventions preamble (already byte-bounded, secret-redacted,
+ * and fenced-as-data by `repo-conventions.ts`) ahead of a role/skill system prompt:
+ * conventions first, a blank line, then the role prompt — mirroring `buildCoderPrompt`'s
+ * own systemPrompt-prepend convention so the conventions read as an outer preamble.
+ * Absent conventions ⇒ `rolePrompt` passes through UNCHANGED (byte-for-byte). Absent
+ * `rolePrompt` (the unskilled coder path, which sends none today) ⇒ the conventions
+ * alone become the systemPrompt; both absent ⇒ `undefined` (no systemPrompt at all,
+ * today's unskilled-path behavior).
+ */
+function withRepoConventions(
+  conventions: string | null | undefined,
+  rolePrompt: string | undefined,
+): string | undefined {
+  const conv = conventions?.trim();
+  if (!conv) return rolePrompt;
+  return rolePrompt && rolePrompt.trim().length > 0 ? `${conv}\n\n${rolePrompt}` : conv;
+}
+
 async function runActionPoint(
   io: {
     gitRaw: GitRunner;
@@ -1205,6 +1256,13 @@ async function runActionPoint(
     verify: VerifyContext | null;
     /** Stage B: per-criterion method routing (enabled + the judge verifier seam). */
     routing: { enabled: boolean; judgeVerify?: JudgeVerifyFn };
+    /**
+     * Repo-conventions preamble (`AGENTS.md` / `CLAUDE.md`), read ONCE per round by the
+     * caller. Merged ahead of the role/skill system prompt at every coder call site
+     * below (`withRepoConventions`). Absent/disabled ⇒ every systemPrompt stays
+     * byte-for-byte unchanged.
+     */
+    repoConventions?: string;
   },
   wt: CreateWorktreeResult,
   req: SdlcHandoffRequest,
@@ -1295,7 +1353,9 @@ async function runActionPoint(
         coder = await io.runCoder(wt.worktreeDir, [ap], {
           timeoutMs: req.coderTimeoutMs,
           allowedTools: bound.allowedTools, // capability-scoped (NARROWS only).
-          systemPrompt: bound.systemPrompt, // baked-in default (+ skill override).
+          // baked-in default (+ skill override), preceded by the repo-conventions
+          // preamble when present (conventions first, blank line, then the role prompt).
+          systemPrompt: withRepoConventions(io.repoConventions, bound.systemPrompt),
         });
       } catch (err) {
         threw = true;
@@ -1322,7 +1382,12 @@ async function runActionPoint(
       fixBudget,
     });
     try {
-      coder = await io.runCoder(wt.worktreeDir, [ap], { timeoutMs: req.coderTimeoutMs });
+      coder = await io.runCoder(wt.worktreeDir, [ap], {
+        timeoutMs: req.coderTimeoutMs,
+        // No role prompt on the unskilled path — conventions (if any) become the
+        // WHOLE systemPrompt; absent ⇒ `undefined` (byte-for-byte today's call).
+        systemPrompt: withRepoConventions(io.repoConventions, undefined),
+      });
     } catch (err) {
       threw = true;
       const raw = err instanceof Error ? err.message : String(err);
@@ -1354,7 +1419,7 @@ async function runActionPoint(
       total,
       title: progressTitle,
       completedBefore: io.completedBefore,
-    });
+    }, io.repoConventions);
   }
 
   // Outcome base (incl. the Stage-2a skills audit — undefined on the unskilled path
@@ -1426,6 +1491,9 @@ interface ApImplementIo {
   skilledSteps: readonly BoundSkillStep[];
   verify: VerifyContext | null;
   routing: { enabled: boolean; judgeVerify?: JudgeVerifyFn };
+  /** Repo-conventions preamble, read ONCE per round — reused across every fan-out
+   *  worker/worktree via this shared IO shape (never re-read per AP). */
+  repoConventions?: string;
 }
 
 /** Context for the wave executor — the per-AP IO plus the worktree fan-out machinery. */
@@ -1906,6 +1974,9 @@ async function runFinalVerification(
     /** Commits produced by the action points before final verification. */
     completedBefore: number;
   },
+  /** Repo-conventions preamble, read ONCE per round by the caller (undefined ⇒ the
+   *  fix coder's systemPrompt stays byte-for-byte unchanged). */
+  repoConventions?: string,
 ): Promise<FinalVerification> {
   // Live progress beat for the FINAL phase (was silent → looked like a frozen
   // `committing`). `fixIteration` = 0 for the initial whole-suite run, 1..N per fix.
@@ -1942,7 +2013,10 @@ async function runFinalVerification(
       const fixed = await runCoder(wt.worktreeDir, req.actionPoints, {
         timeoutMs: req.coderTimeoutMs,
         allowedTools: vc.fixerStep.allowedTools, // capability ceiling (no widening).
-        systemPrompt: buildFixPrompt(vc.fixerStep.systemPrompt, result.summary, result.phase),
+        systemPrompt: withRepoConventions(
+          repoConventions,
+          buildFixPrompt(vc.fixerStep.systemPrompt, result.summary, result.phase),
+        ),
       });
       if (!fixed.ok) break; // a fix coder that errored stops the loop; work preserved.
     } catch {
@@ -2024,6 +2098,9 @@ async function runVerifyFixLoop(
     title: string;
     completedBefore: number;
   },
+  /** Repo-conventions preamble, read ONCE per round by the caller (undefined ⇒ the
+   *  fix coder's systemPrompt stays byte-for-byte unchanged). */
+  repoConventions?: string,
 ): Promise<ApVerification> {
   const criterion = sanitizeLine(ap.acceptanceCriterion ?? "", CRITERION_MAX);
   // Emit a verification beat (test-runner / fix-coder) for the ACTIVE AP; the tracker
@@ -2066,7 +2143,10 @@ async function runVerifyFixLoop(
       const fixed = await runCoder(wt.worktreeDir, [ap], {
         timeoutMs: req.coderTimeoutMs,
         allowedTools: vc.fixerStep.allowedTools, // capability ceiling (no widening).
-        systemPrompt: buildFixPrompt(vc.fixerStep.systemPrompt, result.summary, result.phase),
+        systemPrompt: withRepoConventions(
+          repoConventions,
+          buildFixPrompt(vc.fixerStep.systemPrompt, result.summary, result.phase),
+        ),
       });
       if (!fixed.ok) break; // a fix coder that errored stops the loop; work preserved.
     } catch {
