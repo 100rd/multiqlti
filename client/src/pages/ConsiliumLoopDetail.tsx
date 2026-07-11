@@ -19,7 +19,7 @@
  * Every external link (PR + citations + sources) uses rel="noopener noreferrer".
  */
 import { useEffect, useRef, useState } from "react";
-import { useParams, Link } from "wouter";
+import { useParams, Link, useLocation } from "wouter";
 import { formatDistanceToNow } from "date-fns";
 import {
   Repeat,
@@ -54,6 +54,7 @@ import {
   CheckCircle2,
   MessageSquare,
   PauseCircle,
+  RotateCcw,
 } from "lucide-react";
 import {
   useConsiliumLoop,
@@ -65,6 +66,7 @@ import {
   usePlanLoop,
   useSetArchetype,
   useRetryThrottledLoop,
+  useRerunLoop,
   isTerminalLoopState,
   isVerdictTerminalLoopState,
   type ConsiliumLoopRoundRow,
@@ -1020,6 +1022,21 @@ const STATUS_TONE_STYLE: Record<
   },
 };
 
+/**
+ * Terminal states where cloning into a fresh run is a sensible next action —
+ * every dead-end (failed/cancelled/capped/escalated) plus a clean `converged`
+ * run an operator wants to redo (e.g. against new commits). Read alongside
+ * `explainLoopState`, never a replacement for it — the button AUGMENTS the
+ * existing title/detail message, it never hides it.
+ */
+const RERUNNABLE_STATES: ReadonlySet<ConsiliumLoopState> = new Set<ConsiliumLoopState>([
+  "failed",
+  "cancelled",
+  "stopped_cap",
+  "escalated",
+  "converged",
+]);
+
 function LoopStatusCallout({ loop }: { loop: ConsiliumLoopDetailRow }) {
   // Agent-limit throttling (MVP): `throttled` gets a dedicated INTERACTIVE
   // callout (it carries a Retry action, which the pure `explainLoopState` text
@@ -1031,15 +1048,63 @@ function LoopStatusCallout({ loop }: { loop: ConsiliumLoopDetailRow }) {
   const { title, tone, detail } = explainLoopState(loop);
   const s = STATUS_TONE_STYLE[tone];
   const Icon = s.Icon;
+  const canRerun = RERUNNABLE_STATES.has(loop.state as ConsiliumLoopState);
   return (
     <div className={`flex items-start gap-2 rounded-md border p-3 text-sm ${s.card}`}>
       <Icon className={`h-4 w-4 shrink-0 mt-0.5 ${s.icon}`} aria-hidden="true" />
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <p className={`font-medium ${s.title}`}>{title}</p>
         {/* INERT loop/user-authored text (error/cancellation note) or a code template. */}
         <p className={`break-words ${s.body}`}>{detail}</p>
       </div>
+      {canRerun && <RerunLoopButton loopId={loop.id} />}
     </div>
+  );
+}
+
+/**
+ * Re-run action appended to a TERMINAL loop's status callout: clones the loop
+ * into a fresh run (`POST /:id/rerun`) and navigates to the new loop on
+ * success, so an operator doesn't have to re-enter the launch form by hand
+ * after a failed/cancelled/capped/escalated/converged run. Server-enforced:
+ * 409 (WRONG_STATE — the loop is no longer terminal, e.g. another operator
+ * already re-ran it) surfaces the server's `error` text verbatim via toast,
+ * the same treatment as the other loop-action handlers on this page.
+ */
+function RerunLoopButton({ loopId }: { loopId: string }) {
+  const { toast } = useToast();
+  const [, navigate] = useLocation();
+  const rerunLoop = useRerunLoop();
+
+  async function handleRerun() {
+    try {
+      const { id } = await rerunLoop.mutateAsync(loopId);
+      navigate(`/consilium-loops/${id}`);
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Could not re-run loop",
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      onClick={handleRerun}
+      disabled={rerunLoop.isPending}
+      className="shrink-0"
+      data-testid="loop-rerun-button"
+    >
+      {rerunLoop.isPending ? (
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+      ) : (
+        <RotateCcw className="mr-2 h-4 w-4" />
+      )}
+      Re-run
+    </Button>
   );
 }
 

@@ -201,17 +201,35 @@ describe("explainLoopState — escalated", () => {
 });
 
 describe("explainLoopState — failed / cancelled reuse the loop error (#466, not regressed)", () => {
-  it("failed → bad tone, detail IS the loop error", () => {
+  it("failed with a SPECIFIC error → bad tone, surfaces the error verbatim + suggests a re-run", () => {
     const out = explainLoopState(loop({ state: "failed", error: "worker crashed at step 3" }));
     expect(out.tone).toBe("bad");
     expect(out.title).toBe("Failed");
-    expect(out.detail).toBe("worker crashed at step 3");
+    expect(out.detail).toContain("worker crashed at step 3");
+    expect(out.detail).toMatch(/re-run/i);
   });
 
-  it("failed with no error → a safe fallback (still non-blank)", () => {
+  it("failed with the GENERIC controller message → an actionable explanation, not the opaque three words", () => {
+    const out = explainLoopState(loop({ state: "failed", error: "review run failed" }));
+    expect(out.tone).toBe("bad");
+    expect(out.title).toBe("Failed");
+    expect(out.detail).toMatch(/reviewer model errored|interrupted/i);
+    expect(out.detail).toMatch(/re-run/i);
+  });
+
+  it("failed with no error → a safe fallback (still non-blank), also suggests a re-run", () => {
     const out = explainLoopState(loop({ state: "failed", error: null }));
     expect(out.tone).toBe("bad");
     expect(out.detail).toMatch(/unrecoverable error/i);
+    expect(out.detail).toMatch(/re-run/i);
+  });
+
+  it("every failed variant's detail is non-blank and mentions re-running", () => {
+    for (const error of [null, "review run failed", "some other specific error"]) {
+      const out = explainLoopState(loop({ state: "failed", error }));
+      expect(out.detail.length).toBeGreaterThan(0);
+      expect(out.detail.toLowerCase()).toContain("re-run");
+    }
   });
 
   it("cancelled → neutral (NOT a failure), detail IS the cancellation note", () => {

@@ -22,7 +22,7 @@ import type {
   ReReviewErrorCode,
   RetryThrottledErrorCode,
 } from "../services/consilium/consilium-loop-controller.js";
-import { ARCHETYPES } from "@shared/types";
+import { ARCHETYPES, type ConsiliumReviewPreset } from "@shared/types";
 import { CONSILIUM_LOOP_TERMINAL_STATES } from "@shared/schema";
 import { computeOpenRemainder } from "@shared/consilium-remainder";
 import { isPrBearingLoop, type PrQueueItem } from "@shared/pr-queue";
@@ -38,6 +38,11 @@ import {
   parseConsiliumPreset,
   type LoopComposition,
 } from "../services/consilium/composition.js";
+import {
+  createConsiliumReview,
+  type CreateConsiliumReviewDeps,
+} from "../services/consilium/review-factory.js";
+import type { TaskOrchestrator } from "../services/task-orchestrator.js";
 
 const SHA_RE = /^[0-9a-f]{7,64}$/;
 
@@ -139,6 +144,14 @@ export function registerConsiliumLoopRoutes(
   storage: IStorage,
   controller: ConsiliumLoopController,
   config: () => AppConfig,
+  // Re-run (POST /:id/rerun) clones a TERMINAL loop's config through the SAME
+  // `createConsiliumReview` factory the normal /api/consilium-reviews create path
+  // uses (reviewGate/panel/objective/large-research re-derived from the preset,
+  // never hand-rolled) — that factory needs the task orchestrator dep. OPTIONAL
+  // so the pre-existing 4-arg call sites (tests) keep compiling untouched; the
+  // real `routes.ts` registration always passes it, and the rerun route itself
+  // 500s (rather than crashing) if it's somehow absent.
+  orchestrator?: TaskOrchestrator,
 ): void {
   // ── Create ────────────────────────────────────────────────────────────────
   app.post(
@@ -420,6 +433,80 @@ export function registerConsiliumLoopRoutes(
       return res.json(maskLoop({ ...result.loop }, !!isAdmin));
     }
     return mapRetryThrottledError(res, result.code);
+  });
+
+  // ── Re-run (clone a TERMINAL loop's config into a brand-new loop) ───────────
+  // Owner-or-admin (authorizeConsiliumLoop, 404-on-mismatch, mirrors /develop).
+  // A terminal loop is a dead end today: /develop only re-opens the VERDICT
+  // terminals (converged/stopped_cap/escalated) and /retry only resumes
+  // `throttled` (non-terminal) — `failed`/`cancelled` (and any other terminal
+  // state an operator just wants a clean do-over of) have no path forward.
+  // Rerun refuses (409) unless the SOURCE loop is terminal, then clones its
+  // config — repoPath, preset (recovered from its group NAME, same recovery
+  // the GET :id `composition` block uses; a legacy/unparseable name falls back
+  // to the safe default preset rather than failing), maxRounds, commitPrefix —
+  // through the SAME `createConsiliumReview` factory the normal create paths
+  // use, so reviewGate/panel/objective/large-research are re-derived from the
+  // preset exactly as a fresh create would (never a hand-rolled loop insert).
+  // The factory always starts what it builds, so the new loop autostarts.
+  app.post("/api/consilium-loops/:id/rerun", async (req: Request, res: Response) => {
+    const auth = await authorizeConsiliumLoop(req, res, storage, String(req.params.id));
+    if (!auth) return;
+    if (!req.user?.id) return res.status(401).json({ error: "Authentication required" });
+    if (!req.projectId) return res.status(400).json({ error: "x-project-id header is required" });
+    if (!orchestrator) {
+      return res.status(500).json({ error: "rerun is not available (task orchestrator not wired)" });
+    }
+
+    const source = auth.loop;
+    if (!(CONSILIUM_LOOP_TERMINAL_STATES as readonly string[]).includes(source.state)) {
+      return res.status(409).json({
+        error:
+          "loop is not in a terminal state (failed / cancelled / converged / stopped_cap / escalated) — rerun is not applicable",
+      });
+    }
+
+    // Recover the preset from the source loop's group NAME. A group whose name
+    // predates (or was never given) the `[consilium-review:<preset>]` prefix
+    // falls back to the safe default preset — a legacy loop can still be
+    // rerun, just without a guaranteed byte-identical panel/objective.
+    let preset: ConsiliumReviewPreset;
+    try {
+      const group = await storage.getTaskGroup(source.groupId);
+      preset = parseConsiliumPreset(group?.name) ?? "sdlc-cross-review";
+    } catch {
+      preset = "sdlc-cross-review";
+    }
+
+    try {
+      const reviewFactoryDeps: CreateConsiliumReviewDeps = { storage, orchestrator, controller, config };
+      const newLoop = await createConsiliumReview(reviewFactoryDeps, {
+        projectId: req.projectId,
+        repoPath: source.repoPath,
+        preset,
+        createdBy: req.user.id,
+        maxRounds: source.maxRounds,
+        commitPrefix: source.commitPrefix ?? undefined,
+      });
+      return res.status(201).json({ id: newLoop.id });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // The source loop's repoPath may no longer be allowlisted / a registered
+      // workspace by the time it's rerun (config or workspace list can drift
+      // between the original run and now) — surface an ACTIONABLE 400 mirroring
+      // the create route's own mapping, rather than an opaque 500.
+      if (/is not a workspace of this project/i.test(message)) {
+        return res.status(400).json({
+          error: `repoPath "${source.repoPath}" is no longer a registered workspace of this project.`,
+        });
+      }
+      if (/allowlist|outside every allowed|denied system|traversal|fail-closed/i.test(message)) {
+        return res.status(400).json({
+          error: `repoPath "${source.repoPath}" is no longer in the allowed repo paths — add it to consiliumLoop.allowedRepoPaths in config.yaml (then restart).`,
+        });
+      }
+      return res.status(500).json({ error: "Failed to re-run loop" });
+    }
   });
 
   // ── Plan (Stage 1 §6: OUT-OF-BAND intent→archetype planner) ─────────────────
