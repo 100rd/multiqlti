@@ -76,6 +76,7 @@ import { buildBranchName } from "./pr-wrapper.js";
 import { assertRepoIsProjectWorkspace, backtickFence, stripControlMultiline, buildSingleVerifierTask, VERIFIER_TASK_NAME, buildCrossReviewTasks, PRESET_PANELS, JUDGE_TASK_NAME } from "./review-factory.js";
 import { parseConsiliumPreset } from "./composition.js";
 import { runReviewTasks } from "./review-runner.js";
+import { isRateLimitError } from "../../gateway/rate-limit.js";
 
 // ─── FSM events (design §3 "Event / guard" column) ──────────────────────────
 
@@ -85,8 +86,23 @@ export type LoopEvent =
   | { kind: "context_built" }
   | { kind: "review_completed"; verdict: ConvergenceVerdict }
   | { kind: "review_failed"; error: string }
+  // CONSERVATIVE (rate-limit.ts): the review-runner's catch classified the error as a
+  // CLEAR usage/rate-limit signature. Routes reviewing→throttled (a NON-terminal,
+  // resting state) INSTEAD OF review_failed→failed — everything else (any other error)
+  // still emits `review_failed` unchanged (byte-identical).
+  | { kind: "review_throttled" }
   | { kind: "decided"; verdict: ConvergenceVerdict; priorOpenP0: number[] }
-  | { kind: "dev_completed"; prRef: string | null; headCommit: string; error?: string; integrationBase?: string }
+  | {
+      kind: "dev_completed";
+      prRef: string | null;
+      headCommit: string;
+      error?: string;
+      integrationBase?: string;
+      // CONSERVATIVE (rate-limit.ts): set only when the coder close-out degraded
+      // because of a CLEAR usage/rate-limit signature — routes developing→throttled
+      // instead of the existing developing→awaiting_merge(error) path.
+      rateLimited?: boolean;
+    }
   | { kind: "merge_approved" }
   // HUMAN-only: an authorized re-open of a verdict-terminal loop back to
   // DEVELOPING (injected ONLY by `controller.develop`, NEVER by `deriveEvent` —
@@ -101,6 +117,13 @@ export type LoopEvent =
   // the round bump happens downstream at the sole bump site (`startReviewRound`,
   // building_context → reviewing).
   | { kind: "rereview_requested" }
+  // HUMAN-only: an authorized RESUME of a `throttled` loop (injected ONLY by
+  // `controller.retryThrottled`, NEVER by `deriveEvent` — `throttled` is a RESTING
+  // state the poller never advances). `throttledPhase` says which phase to resume —
+  // "review" re-enters `building_context` (SAME round, no bump — mirrors
+  // `rereview_requested`'s round-preservation); "develop" re-enters `developing`
+  // directly (mirrors `develop_requested`'s round-preservation).
+  | { kind: "retry_requested"; throttledPhase: "review" | "develop" }
   // A cancel MAY carry a human-supplied `reason` and the resolved `actor` label
   // (both already clamped + control-stripped at the route — untrusted). Absent on
   // an auto-cancel (an API POST with no body); the reducer still records a
@@ -142,6 +165,21 @@ export type ReReviewErrorCode =
 export type ReReviewResult =
   | { ok: true; loop: ConsiliumLoopRow }
   | { ok: false; code: ReReviewErrorCode };
+
+/** Stable, route-mappable failure codes for {@link ConsiliumLoopController.retryThrottled}. */
+export type RetryThrottledErrorCode =
+  | "NOT_FOUND" // loop vanished between auth and the controller read → 404
+  | "WRONG_STATE" // loop is not resting in `throttled` → 409
+  | "NO_ACTION_POINTS" // develop-phase resume: the verdict carries no action points → 400
+  | "REPO_NOT_ALLOWED" // develop-phase resume: repoPath outside the allowlist → 400
+  | "REPO_NOT_WORKSPACE" // develop-phase resume: allowlisted but not a project workspace → 400
+  | "CAS_LOST" // concurrent op won the throttled→X CAS / in-process lock → 409
+  | "BUSY"; // develop-phase resume: R1 global human-dev concurrency cap reached → 429
+
+/** Typed result of an authorized THROTTLED-RESUME (no exceptions on the happy path). */
+export type RetryThrottledResult =
+  | { ok: true; loop: ConsiliumLoopRow }
+  | { ok: false; code: RetryThrottledErrorCode };
 
 // ─── Intent→archetype PLANNER (Stage 1, design §6) ──────────────────────────
 
@@ -491,6 +529,9 @@ export interface ReviewRunResult {
   verdict: RoundVerdict | null;
   participants: RoundParticipant[] | null;
   error?: string;
+  /** CONSERVATIVE (rate-limit.ts): set only when `error` is a CLEAR usage/rate-limit
+   *  signature — routes the reviewing→throttled pause instead of review_failed. */
+  rateLimited?: boolean;
 }
 
 /**
@@ -529,6 +570,14 @@ function degradedReviewResult(error: string): ReviewRunResult {
  * (the peer of the other curated terminal explanations), NOT the raw reason.
  */
 const REVIEW_RUN_FAILED = "review run failed";
+
+/**
+ * Security L1: the FIXED GENERIC explanation surfaced to `consilium_loops.error`
+ * when a loop PAUSES in `throttled` (a CLEAR usage/rate-limit signature during
+ * review or develop). The raw model/CLI stderr is LOGGED only (`this.log`) — it
+ * must never reach the persisted, UI-rendered `loop.error`.
+ */
+const THROTTLED_ERROR_MESSAGE = "Agent usage/rate limit reached — paused; retry when your quota resets.";
 
 /**
  * Decide whether the open-P0 count failed to decrease across two consecutive
@@ -638,6 +687,21 @@ export function reduce(
     return null;
   }
 
+  // HUMAN re-open: an authorized `retry_requested` resumes a `throttled` loop into
+  // the phase it paused in. `throttledPhase` is CLEARED (null) along with `error` so
+  // the resumed loop reads as active again — mirrors `develop_requested`'s
+  // completedAt/error clear. `controller.retryThrottled` is the SOLE caller (never
+  // `deriveEvent` — `throttled` is a RESTING state the poller never advances).
+  // ROUND-PRESERVING: the review-phase resume does NOT pass through
+  // `startReviewRound`'s default bump (the caller relaunches with `{relaunch:true}`,
+  // M-2), and the develop-phase resume re-enters `developing` directly (round
+  // unchanged), exactly like `develop_requested`.
+  if (event.kind === "retry_requested") {
+    if (state !== "throttled") return null;
+    const to = event.throttledPhase === "develop" ? "developing" : "building_context";
+    return { from: "throttled", to, extra: { throttledPhase: null, error: null } };
+  }
+
   switch (state) {
     case "pending":
       if (event.kind === "start") return { from: "pending", to: "building_context" };
@@ -652,6 +716,16 @@ export function reduce(
       if (event.kind === "review_failed") {
         return { from: "reviewing", to: "failed", extra: { error: event.error, completedAt: new Date() } };
       }
+      // CONSERVATIVE (rate-limit.ts): a CLEAR usage/rate-limit signature pauses the
+      // loop in `throttled` (NON-terminal, resting) INSTEAD OF the review_failed→failed
+      // path above. Every non-limit review error still takes review_failed unchanged.
+      if (event.kind === "review_throttled") {
+        return {
+          from: "reviewing",
+          to: "throttled",
+          extra: { throttledPhase: "review", error: THROTTLED_ERROR_MESSAGE },
+        };
+      }
       return null;
 
     case "deciding":
@@ -660,6 +734,16 @@ export function reduce(
 
     case "developing":
       if (event.kind === "dev_completed") {
+        // CONSERVATIVE (rate-limit.ts): a CLEAR usage/rate-limit signature on the coder
+        // close-out pauses the loop in `throttled` INSTEAD OF the awaiting_merge(error)
+        // path below. Every non-limit close-out error is unaffected (byte-identical).
+        if (event.rateLimited) {
+          return {
+            from: "developing",
+            to: "throttled",
+            extra: { throttledPhase: "develop", error: THROTTLED_ERROR_MESSAGE },
+          };
+        }
         // H-2: the SDLC close-out ran in the BACKGROUND while the loop sat in
         // `developing`; the event carries the REAL prRef/headCommit (+ optional
         // error) the coder produced. The CAS persists them atomically with the
@@ -1225,6 +1309,122 @@ export class ConsiliumLoopController {
       return { ok: true, loop: updated };
     } finally {
       this.inFlight.delete(loopId);
+    }
+  }
+
+  /**
+   * Authorized HUMAN resume of a loop RESTING in `throttled` (a CLEAR usage/rate-limit
+   * pause — see rate-limit.ts). Resumes into the phase it paused in
+   * (`loop.throttledPhase`, persisted at the throttling transition):
+   *   - "review": re-enters `building_context`→`reviewing` SYNCHRONOUSLY (mirrors
+   *     `requestReReview`), then relaunches the SAME round DIRECTLY via
+   *     `startReviewRound(loop, { relaunch: true })` — bypassing the generic
+   *     `runSideEffect` building_context→reviewing leg (which always bumps the round,
+   *     M-2: a throttled resume must not buy another `maxRounds`).
+   *   - "develop": re-enters `developing` directly (mirrors `develop()`'s terminal
+   *     re-open) and re-dispatches the SAME action points — subject to the same R1
+   *     BUSY cap + repo re-validation `develop()` enforces (a real coder run is about
+   *     to be re-launched).
+   *
+   * Refuses (typed → 409 at the route) unless the loop is resting in `throttled`.
+   * Never called by `deriveEvent`/the poller — `throttled` is a RESTING state.
+   */
+  async retryThrottled(loopId: string): Promise<RetryThrottledResult> {
+    const loop = await this.storage.getLoop(loopId);
+    if (!loop) return { ok: false, code: "NOT_FOUND" };
+    if (loop.state !== "throttled") return { ok: false, code: "WRONG_STATE" };
+    return loop.throttledPhase === "develop"
+      ? this.retryThrottledDevelop(loop)
+      : this.retryThrottledReview(loop);
+  }
+
+  /** Review-phase branch of {@link retryThrottled} — mirrors `requestReReview()`'s shape. */
+  private async retryThrottledReview(loop: ConsiliumLoopRow): Promise<RetryThrottledResult> {
+    if (this.inFlight.has(loop.id)) return { ok: false, code: "CAS_LOST" };
+    this.inFlight.add(loop.id);
+    try {
+      const toBuilding = reduce(loop.state, { kind: "retry_requested", throttledPhase: "review" });
+      if (!toBuilding) return { ok: false, code: "WRONG_STATE" };
+      const wonBuilding = await this.commit(loop, toBuilding);
+      if (!wonBuilding) return { ok: false, code: "CAS_LOST" };
+      this.log(
+        wonBuilding.id,
+        `retryThrottled: CAS won throttled->building_context (round ${wonBuilding.round}, review resume)`,
+      );
+
+      const toReviewing = reduce(wonBuilding.state, { kind: "context_built" });
+      if (!toReviewing) return { ok: true, loop: wonBuilding }; // defensive; should not happen
+      const wonReviewing = await this.commit(wonBuilding, toReviewing);
+      if (!wonReviewing) return { ok: false, code: "CAS_LOST" };
+
+      // M-2 round-preservation: relaunch the SAME round DIRECTLY, bypassing the generic
+      // `runSideEffect` leg (`startReviewRound(loop)` with no `relaunch` bumps the round —
+      // a throttled resume must not buy another round).
+      const extra = await this.startReviewRound(wonReviewing, { relaunch: true });
+      if (extra.terminal) {
+        const failed = await this.failUnresolvedReview(
+          wonReviewing,
+          String(extra.error ?? "diff ref unresolvable"),
+        );
+        return failed ? { ok: true, loop: failed } : { ok: false, code: "CAS_LOST" };
+      }
+      const updated =
+        Object.keys(extra).length === 0 ? wonReviewing : await this.storage.updateLoop(wonReviewing.id, extra);
+      return { ok: true, loop: updated };
+    } finally {
+      this.inFlight.delete(loop.id);
+    }
+  }
+
+  /** Develop-phase branch of {@link retryThrottled} — mirrors `develop()`'s guards/CAS. */
+  private async retryThrottledDevelop(loop: ConsiliumLoopRow): Promise<RetryThrottledResult> {
+    const actionPoints = await this.resolveDevActionPoints(loop);
+    if (actionPoints.length === 0) return { ok: false, code: "NO_ACTION_POINTS" };
+
+    const cfg = this.loopConfig();
+    let resolvedRepo: string;
+    try {
+      resolvedRepo = assertAllowedRepoPath(loop.repoPath, cfg.allowedRepoPaths);
+    } catch {
+      return { ok: false, code: "REPO_NOT_ALLOWED" };
+    }
+    try {
+      await assertRepoIsProjectWorkspace(resolvedRepo, this.storage);
+    } catch {
+      return { ok: false, code: "REPO_NOT_WORKSPACE" };
+    }
+
+    // R1: same global human-dev concurrency cap `develop()` enforces — a throttled
+    // resume is about to re-launch a real coder run.
+    if (this.inFlightDevCommandCount() + this.devCommandReservations >= MAX_CONCURRENT_DEV_HANDOFFS) {
+      return { ok: false, code: "BUSY" };
+    }
+    this.devCommandReservations += 1;
+    try {
+      if (this.inFlight.has(loop.id)) return { ok: false, code: "CAS_LOST" };
+      this.inFlight.add(loop.id);
+      try {
+        const transition = reduce(loop.state, { kind: "retry_requested", throttledPhase: "develop" });
+        if (!transition) return { ok: false, code: "WRONG_STATE" };
+        const verdict: ConvergenceVerdict = {
+          converged: false,
+          openP0: actionPoints.filter((ap) => ap.priority === P0_PRIORITY).length,
+          openActionPoints: [...actionPoints],
+        };
+        const won = await this.commit(loop, transition);
+        if (!won) return { ok: false, code: "CAS_LOST" };
+        this.log(
+          won.id,
+          `retryThrottled: CAS won ${transition.from}->developing (round ${won.round}, develop resume)`,
+        );
+        const extra = await this.startDevHandoff(won, verdict, true);
+        const updated = Object.keys(extra).length === 0 ? won : await this.storage.updateLoop(won.id, extra);
+        return { ok: true, loop: updated };
+      } finally {
+        this.inFlight.delete(loop.id);
+      }
+    } finally {
+      this.devCommandReservations -= 1;
     }
   }
 
@@ -1962,6 +2162,13 @@ export class ConsiliumLoopController {
       if (!run.done || !run.result) return null; // in-flight ⇒ wait (no transition yet)
       const result = run.result;
       if (result.error) {
+        // CONSERVATIVE (rate-limit.ts): a CLEAR usage/rate-limit signature pauses the
+        // loop (throttled) instead of failing it — L1: raw scrubbed detail → LOGS
+        // only either way; `loop.error` never carries it.
+        if (result.rateLimited) {
+          this.log(loop.id, `review run rate-limited (round ${loop.round}): ${result.error}`);
+          return { kind: "review_throttled" };
+        }
         // L1: raw scrubbed detail → LOGS only; `loop.error` gets the fixed generic.
         this.log(loop.id, `review run degraded (round ${loop.round}): ${result.error}`);
         return { kind: "review_failed", error: REVIEW_RUN_FAILED };
@@ -2022,11 +2229,13 @@ export class ConsiliumLoopController {
   private deriveDevEvent(loop: ConsiliumLoopRow): LoopEvent | null {
     const run = this.sdlcRuns.get(loop.id);
     if (!run || run.round !== loop.round || !run.done || !run.result) return null;
-    const { prRef, headCommit, error, integrationBase } = run.result;
+    const { prRef, headCommit, error, integrationBase, rateLimited } = run.result;
     // §3E: `integrationBase` (the base sha merged into the round branch) rides the event so
     // the developing→building_context side effect can baseline the confirmation review at
     // `base..roundBranch`. Undefined when verify-before-merge is off ⇒ unused (byte-identical).
-    return { kind: "dev_completed", prRef, headCommit, error, integrationBase };
+    // `rateLimited` (rate-limit.ts): CONSERVATIVE flag from a zero-commit close-out —
+    // routes developing→throttled instead of awaiting_merge(error) in `reduce`.
+    return { kind: "dev_completed", prRef, headCommit, error, integrationBase, rateLimited };
   }
 
   /**
@@ -2804,13 +3013,14 @@ export class ConsiliumLoopController {
     const runner = this.deps.runReview ?? ((l: ConsiliumLoopRow) => this.runReviewFromLoop(l));
     void runner(loop)
       .then((result) => this.settleReviewRun(loop.id, run, result))
-      .catch((err: unknown) =>
-        this.settleReviewRun(
-          loop.id,
-          run,
-          degradedReviewResult(scrubErr(err instanceof Error ? err.message : String(err))),
-        ),
-      );
+      .catch((err: unknown) => {
+        const raw = err instanceof Error ? err.message : String(err);
+        const result = degradedReviewResult(scrubErr(raw));
+        // Defense-in-depth: `runReviewTasks` already never throws (its own catch
+        // classifies rate-limit), but a `deps.runReview` test fake or an out-of-band
+        // rejection lands here too — CONSERVATIVE, same classifier, same fixed shape.
+        this.settleReviewRun(loop.id, run, isRateLimitError(raw) ? { ...result, rateLimited: true } : result);
+      });
   }
 
   /**
