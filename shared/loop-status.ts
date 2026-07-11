@@ -260,6 +260,17 @@ export function explainLoopState(loop: LoopStatusInput): LoopStatusExplanation {
           : "This loop was cancelled by an operator. No reason was recorded.",
       };
 
+    case "throttled":
+      // Agent usage/rate limit hit during review/develop → NON-terminal RESTING
+      // pause (not a failure). The operator retries when their quota resets.
+      return {
+        title: "Throttled",
+        tone: "warning",
+        detail: loop.error
+          ? loop.error
+          : "An agent usage/rate limit was reached — the loop is paused. Retry when your quota resets.",
+      };
+
     default: {
       // Exhaustive over the current union; a future/unknown token still gets a
       // safe, non-blank explanation so the callout NEVER renders empty.

@@ -1771,6 +1771,12 @@ export const CONSILIUM_LOOP_STATES = [
   "deciding",
   "developing",
   "awaiting_merge",
+  // CONSERVATIVE agent-limit throttling: NON-terminal, RESTING pause (see
+  // rate-limit.ts / `throttledPhase`) entered from `reviewing`/`developing` on a
+  // CLEAR usage/rate-limit signature. An operator resumes it (`POST /retry`,
+  // `controller.retryThrottled`); the poller never advances it (a RESTING state,
+  // like `deciding` under the review gate).
+  "throttled",
   "converged",
   "stopped_cap",
   "escalated",
@@ -1946,6 +1952,11 @@ export const consiliumLoops = pgTable(
     // Latest convergence count (anti-stall mirror of the per-round history).
     openP0: integer("open_p0"),
     error: text("error"),
+    // Agent-limit throttling (additive, migration 0060): which phase to resume when
+    // `state === "throttled"` — set on the reviewing/developing→throttled transition,
+    // cleared (null) on `retryThrottled`'s resume. Null whenever the loop is not
+    // (and has never been) throttled.
+    throttledPhase: text("throttled_phase").$type<"review" | "develop">(),
     createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),

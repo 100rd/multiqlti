@@ -20,6 +20,7 @@ import type {
   DevelopErrorCode,
   PlanErrorCode,
   ReReviewErrorCode,
+  RetryThrottledErrorCode,
 } from "../services/consilium/consilium-loop-controller.js";
 import { ARCHETYPES } from "@shared/types";
 import { CONSILIUM_LOOP_TERMINAL_STATES } from "@shared/schema";
@@ -404,6 +405,23 @@ export function registerConsiliumLoopRoutes(
     return mapReReviewError(res, result.code);
   });
 
+  // ── Retry (agent-limit throttling: operator resumes a `throttled` loop) ────
+  // Owner-or-admin (authorizeConsiliumLoop, 404-on-mismatch, mirrors /develop).
+  // Refuses (typed → HTTP) unless the loop is RESTING in `throttled`. On success
+  // the loop is already back in `building_context`/`developing` (whichever phase
+  // it paused in) by the time this responds — the client polls GET
+  // /api/consilium-loops/:id as usual.
+  app.post("/api/consilium-loops/:id/retry", async (req: Request, res: Response) => {
+    const auth = await authorizeConsiliumLoop(req, res, storage, String(req.params.id));
+    if (!auth) return;
+    const result = await controller.retryThrottled(auth.loop.id);
+    if (result.ok) {
+      const isAdmin = req.user?.role === "admin";
+      return res.json(maskLoop({ ...result.loop }, !!isAdmin));
+    }
+    return mapRetryThrottledError(res, result.code);
+  });
+
   // ── Plan (Stage 1 §6: OUT-OF-BAND intent→archetype planner) ─────────────────
   // Owner-or-admin (authorizeConsiliumLoop, 404-on-mismatch). Idempotent: a no-op
   // returning the existing archetype unless `?replan=1`. NO_VERDICT (409) when the
@@ -666,6 +684,41 @@ function mapReReviewError(res: Response, code: ReReviewErrorCode): Response {
       return res.status(404).json({ error: "Consilium loop not found" });
     default:
       return res.status(400).json({ error: "re-review rejected" });
+  }
+}
+
+/**
+ * Map a typed {@link RetryThrottledErrorCode} to HTTP. Mirrors `mapDevelopError`'s
+ * shape — the develop-phase resume re-checks the SAME repo/action-point/busy guards
+ * `develop()` enforces (a real coder run is about to be re-launched).
+ */
+function mapRetryThrottledError(res: Response, code: RetryThrottledErrorCode): Response {
+  switch (code) {
+    case "WRONG_STATE":
+      return res.status(409).json({ error: "loop is not resting in throttled — retry is not applicable" });
+    case "CAS_LOST":
+      return res.status(409).json({ error: "retry could not be applied (concurrent update)" });
+    case "BUSY":
+      res.setHeader("Retry-After", "30");
+      return res.status(429).json({
+        error: "SDLC executor busy — too many concurrent dev runs, retry shortly.",
+      });
+    case "NO_ACTION_POINTS":
+      return res
+        .status(400)
+        .json({ error: "no action points to develop: this loop's verdict has no action points." });
+    case "REPO_NOT_WORKSPACE":
+      return res
+        .status(400)
+        .json({ error: "the loop's repoPath is not a registered workspace of this project." });
+    case "REPO_NOT_ALLOWED":
+      return res
+        .status(400)
+        .json({ error: "the loop's repoPath is not in the configured allowlist." });
+    case "NOT_FOUND":
+      return res.status(404).json({ error: "Consilium loop not found" });
+    default:
+      return res.status(400).json({ error: "retry rejected" });
   }
 }
 

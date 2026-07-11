@@ -53,6 +53,7 @@ import {
   Info,
   CheckCircle2,
   MessageSquare,
+  PauseCircle,
 } from "lucide-react";
 import {
   useConsiliumLoop,
@@ -63,6 +64,7 @@ import {
   useRequestReReview,
   usePlanLoop,
   useSetArchetype,
+  useRetryThrottledLoop,
   isTerminalLoopState,
   isVerdictTerminalLoopState,
   type ConsiliumLoopRoundRow,
@@ -120,7 +122,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { ConsiliumLoopState } from "@/hooks/use-consilium-loops";
+import type { ConsiliumLoopState, ClientLoopState } from "@/hooks/use-consilium-loops";
 import { useAddRoundComment } from "@/hooks/use-consilium-loops";
 import { IterationDetailView } from "@/components/task-groups/iterations-panel";
 import type { ActionPoint, Archetype, OpenRemainder, RoundParticipant, RoundComment } from "@shared/types";
@@ -244,7 +246,7 @@ const ROUND_STEP_IDX: Record<string, number> = {
 
 // Verdict-terminal states all exit FROM "deciding" — they never developed in the
 // final round (distinct from failed/cancelled, which can stop anywhere).
-const VERDICT_TERMINAL: ReadonlySet<ConsiliumLoopState> = new Set<ConsiliumLoopState>([
+const VERDICT_TERMINAL: ReadonlySet<ClientLoopState> = new Set<ClientLoopState>([
   "converged",
   "stopped_cap",
   "escalated",
@@ -253,7 +255,7 @@ const VERDICT_TERMINAL: ReadonlySet<ConsiliumLoopState> = new Set<ConsiliumLoopS
 function roundStepStatuses(args: {
   isLast: boolean;
   hasRoundRow: boolean;
-  state: ConsiliumLoopState;
+  state: ClientLoopState;
   prRef: string | null | undefined;
 }): StepStatus[] {
   const { isLast, hasRoundRow, state, prRef } = args;
@@ -1019,6 +1021,13 @@ const STATUS_TONE_STYLE: Record<
 };
 
 function LoopStatusCallout({ loop }: { loop: ConsiliumLoopDetailRow }) {
+  // Agent-limit throttling (MVP): `throttled` gets a dedicated INTERACTIVE
+  // callout (it carries a Retry action, which the pure `explainLoopState` text
+  // helper can't). The message itself stays single-source — both this callout
+  // and `explainLoopState`'s `throttled` case surface the server's `loop.error`.
+  if (loop.state === "throttled") {
+    return <ThrottledCallout loop={loop} />;
+  }
   const { title, tone, detail } = explainLoopState(loop);
   const s = STATUS_TONE_STYLE[tone];
   const Icon = s.Icon;
@@ -1030,6 +1039,79 @@ function LoopStatusCallout({ loop }: { loop: ConsiliumLoopDetailRow }) {
         {/* INERT loop/user-authored text (error/cancellation note) or a code template. */}
         <p className={`break-words ${s.body}`}>{detail}</p>
       </div>
+    </div>
+  );
+}
+
+/** Plain-English note for WHICH phase the loop was paused mid-way through. */
+const THROTTLED_PHASE_LABEL: Record<"review" | "develop", string> = {
+  review: "paused during review",
+  develop: "paused during development",
+};
+
+/**
+ * Agent-limit throttling (MVP): the loop hit an agent usage/rate limit and
+ * PAUSED (non-terminal) instead of failing outright. `loop.error` carries the
+ * server's generic "quota reached" message; the optional phase note comes from
+ * `loop.throttledPhase`. Retry (`POST /:id/retry`, owner/admin) resumes the
+ * loop from where it paused — a 409 (no longer `throttled`, e.g. another
+ * operator already retried it) surfaces the server's error text verbatim via
+ * the toast, exactly like the other loop-action handlers below.
+ *
+ * SECURITY: `loop.error` is a fixed, server-authored template (never model
+ * prose) — rendered as INERT React text, same treatment as every other state's
+ * `detail`.
+ */
+function ThrottledCallout({ loop }: { loop: ConsiliumLoopDetailRow }) {
+  const { toast } = useToast();
+  const retryLoop = useRetryThrottledLoop();
+  const s = STATUS_TONE_STYLE.warning;
+  const phaseLabel = loop.throttledPhase ? THROTTLED_PHASE_LABEL[loop.throttledPhase] : null;
+
+  async function handleRetry() {
+    try {
+      await retryLoop.mutateAsync(loop.id);
+      toast({ title: "Loop resumed" });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Could not retry loop",
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return (
+    <div
+      className={`flex items-start gap-2 rounded-md border p-3 text-sm ${s.card}`}
+      data-testid="loop-throttled-callout"
+    >
+      <PauseCircle className={`h-4 w-4 shrink-0 mt-0.5 ${s.icon}`} aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <p className={`font-medium ${s.title}`}>
+          Paused — agent limit reached{phaseLabel ? ` (${phaseLabel})` : ""}
+        </p>
+        {/* INERT server-authored text (generic quota message). */}
+        <p className={`break-words ${s.body}`}>
+          {loop.error ??
+            "Agent usage/rate limit reached — paused; retry when your quota resets."}
+        </p>
+      </div>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={handleRetry}
+        disabled={retryLoop.isPending}
+        className="shrink-0"
+        data-testid="loop-throttled-retry-button"
+      >
+        {retryLoop.isPending ? (
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+        ) : (
+          <RefreshCw className="mr-2 h-4 w-4" />
+        )}
+        Retry
+      </Button>
     </div>
   );
 }
@@ -2466,7 +2548,7 @@ function CompositionCard({ composition }: { composition: LoopComposition }) {
 // Mounted ONLY while `reviewing`/`deciding` (so it unmounts — and stops polling —
 // the moment the round settles into a row); IterationDetailView fetches lazily and
 // polls on its own 3s cadence, so this adds no new polling machinery.
-const LIVE_ROUND_STATES: ReadonlySet<ConsiliumLoopState> = new Set<ConsiliumLoopState>([
+const LIVE_ROUND_STATES: ReadonlySet<ClientLoopState> = new Set<ClientLoopState>([
   "reviewing",
   "deciding",
 ]);

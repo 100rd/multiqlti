@@ -1457,6 +1457,9 @@ export class MemStorage implements IStorage {
       headCommitAtReview: data.headCommitAtReview ?? null,
       openP0: data.openP0 ?? null,
       error: data.error ?? null,
+      // Agent-limit throttling (migration 0060): which phase to resume when
+      // `state === "throttled"`; null for every non-throttled loop.
+      throttledPhase: data.throttledPhase ?? null,
       createdBy: data.createdBy ?? null,
       createdAt: now,
       updatedAt: now,

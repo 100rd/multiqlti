@@ -19,6 +19,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { scrubSecrets } from "../secret-scrub";
+import { isRateLimitError } from "../rate-limit.js";
 
 const DEFAULT_MAX_CONCURRENCY = 4;
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -45,6 +46,16 @@ export class CliExecutionError extends Error {
   ) {
     super(message);
     this.name = "CliExecutionError";
+  }
+
+  /**
+   * CONSERVATIVE: true only when the message+stderr carries a CLEAR
+   * usage/rate-limit signature (see `isRateLimitError`). Callers use this to
+   * route a review/develop failure to the loop's `throttled` pause instead of
+   * the existing degrade/fail path; every other failure is unaffected.
+   */
+  get rateLimited(): boolean {
+    return isRateLimitError(`${this.message}\n${this.stderr}`);
   }
 }
 

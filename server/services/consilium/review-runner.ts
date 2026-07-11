@@ -23,6 +23,7 @@ import type { RoundParticipant } from "@shared/types";
 import type { ReviewRunResult } from "./consilium-loop-controller.js";
 import { buildSystemPrompt, parseDirectLlmResponse } from "../orchestrator/direct-llm-prompt.js";
 import { readConvergence, readJudgeVerdict } from "../orchestrator/convergence.js";
+import { isRateLimitError } from "../../gateway/rate-limit.js";
 
 /** The gateway slice the runner needs — the completeStreaming shape of PlannerGateway. */
 export interface ReviewGateway {
@@ -199,6 +200,11 @@ export async function runReviewTasks(params: RunReviewTasksParams): Promise<Revi
       participants: boundParticipants(participants),
     };
   } catch (err) {
-    return degraded(scrub(err instanceof Error ? err.message : String(err)));
+    const raw = err instanceof Error ? err.message : String(err);
+    const result = degraded(scrub(raw));
+    // CONSERVATIVE: only a CLEAR usage/rate-limit signature sets `rateLimited` —
+    // every other failure keeps the existing degraded/`review_failed` path
+    // byte-identical (see rate-limit.ts).
+    return isRateLimitError(raw) ? { ...result, rateLimited: true } : result;
   }
 }

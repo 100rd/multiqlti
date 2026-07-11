@@ -82,6 +82,15 @@ export interface DevCloseoutResult {
    * _trace` on the same settle wire as `testSummary`/`report`. Display-only.
    */
   executionTrace?: ExecutionTrace;
+  /**
+   * CONSERVATIVE (rate-limit.ts): set only when the SDLC close-out this result wraps
+   * (`runSdlcHandoff`'s `SdlcHandoffResult`) degraded on a CLEAR usage/rate-limit
+   * signature. Routes the controller's developing→throttled pause instead of the
+   * existing awaiting_merge(error) path; every other degraded close-out is
+   * unaffected (byte-identical). Absent for this file's own D.5 artifact-only path
+   * (it does not call a coder, so it can never be rate-limited itself).
+   */
+  rateLimited?: boolean;
 }
 
 // ─── Injectable seams (unit tests inject fakes — no real repo / gh) ──────────

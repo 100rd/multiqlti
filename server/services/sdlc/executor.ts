@@ -78,6 +78,7 @@ import {
 import { SdlcCoder, type CoderResult, type CoderOptions } from "./coder.js";
 import { verifyInWorktree, type TestRunResult } from "./test-runner.js";
 import { stripControlMultiline, backtickFence } from "../consilium/review-factory.js";
+import { isRateLimitError } from "../../gateway/rate-limit.js";
 
 const COMMIT_SUBJECT_TITLE_MAX = 100;
 const COMMIT_BODY_TITLE_MAX = 120;
@@ -141,6 +142,12 @@ export interface ApOutcome {
    * so the legacy outcome shape is preserved byte-for-byte when verification is off.
    */
   verification?: ApVerification;
+  /**
+   * CONSERVATIVE (rate-limit.ts): set only when this AP's coder invocation threw with
+   * a CLEAR usage/rate-limit signature. Aggregated by `pushAndOpenPr`'s zero-commit
+   * branch into `SdlcHandoffResult.rateLimited` — every other failure is unaffected.
+   */
+  rateLimited?: boolean;
 }
 
 /**
@@ -480,6 +487,14 @@ export interface SdlcHandoffResult {
    * field surfaces it structurally for observability/tests. NEVER blocks PR creation.
    */
   finalVerification?: FinalVerification;
+  /**
+   * CONSERVATIVE (rate-limit.ts): set only on the ZERO-commit degraded close-out
+   * (`prRef: null`) when EVERY outcome that recorded a rate-limit signature — i.e.
+   * the coder invocation(s) failed on a CLEAR usage/rate-limit signature, not any
+   * other failure. Routes the loop's developing→throttled pause; every other
+   * degraded/no-PR close-out is unaffected (byte-identical).
+   */
+  rateLimited?: boolean;
 }
 
 /** Injectable seams (unit tests inject fakes — no real repo / claude / gh). */
@@ -1257,6 +1272,10 @@ async function runActionPoint(
   let threw = false;
   let coder: CoderResult | null = null;
   let runNote: string | undefined;
+  // CONSERVATIVE (rate-limit.ts): only a CLEAR usage/rate-limit signature on a THROWN
+  // coder invocation sets this — every other failure (timeout, spawn error, non-limit
+  // CLI error) leaves it false and keeps the existing degraded/no-PR path unchanged.
+  let apRateLimited = false;
   const ranSkills: string[] = [];
   if (io.skilledSteps.length > 0) {
     for (const bound of io.skilledSteps) {
@@ -1280,7 +1299,9 @@ async function runActionPoint(
         });
       } catch (err) {
         threw = true;
-        runNote = scrub(err instanceof Error ? err.message : String(err));
+        const raw = err instanceof Error ? err.message : String(err);
+        runNote = scrub(raw);
+        if (isRateLimitError(raw)) apRateLimited = true;
         break; // a crashed step stops the chain; partial edits still committed
       }
       if (!coder.ok) {
@@ -1304,7 +1325,9 @@ async function runActionPoint(
       coder = await io.runCoder(wt.worktreeDir, [ap], { timeoutMs: req.coderTimeoutMs });
     } catch (err) {
       threw = true;
-      runNote = scrub(err instanceof Error ? err.message : String(err));
+      const raw = err instanceof Error ? err.message : String(err);
+      runNote = scrub(raw);
+      if (isRateLimitError(raw)) apRateLimited = true;
     }
   }
 
@@ -1343,6 +1366,7 @@ async function runActionPoint(
     title,
     skills: ranSkills.length > 0 ? ranSkills : undefined,
     verification,
+    rateLimited: apRateLimited ? true : undefined,
   };
 
   // 2. Stage whatever the run produced (partial or complete) and check for change.
@@ -2211,7 +2235,17 @@ async function pushAndOpenPr(
   if (committedCount === 0) {
     // Every action point failed / produced nothing — no branch to PR (as today).
     const failed = outcomes.find((o) => o.note)?.note;
-    return { prRef: null, headCommit: "", error: failed ? `no commits produced: ${failed}` : "no changes produced" };
+    // CONSERVATIVE (rate-limit.ts): only when EVERY outcome hit a CLEAR usage/rate-limit
+    // signature do we flag the whole close-out as rate-limited — a mix of a rate-limited
+    // AP and an unrelated failure is NOT a clear signal, so it keeps today's degraded
+    // no-PR path unchanged (byte-identical).
+    const rateLimited = outcomes.length > 0 && outcomes.every((o) => o.rateLimited === true);
+    return {
+      prRef: null,
+      headCommit: "",
+      error: failed ? `no commits produced: ${failed}` : "no changes produced",
+      ...(rateLimited ? { rateLimited: true } : {}),
+    };
   }
 
   const headCommit = (await io.gitRaw(wt.worktreeDir, ["rev-parse", "HEAD"])).trim();

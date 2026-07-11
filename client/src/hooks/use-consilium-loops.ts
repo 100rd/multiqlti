@@ -37,8 +37,20 @@ export type { RoundComment };
 // Re-export the schema row types under client-facing names. The list endpoint
 // masks `createdBy` for non-admins, so that field is optional on the wire.
 
-export type ConsiliumLoopListItem = Omit<ConsiliumLoopRow, "createdBy"> & {
+/**
+ * Agent-limit throttling (MVP): a loop can PAUSE in a `throttled` state when an
+ * agent usage/rate limit is hit mid-review or mid-develop, instead of failing
+ * outright. `"throttled"` is a parallel BACKEND schema addition (`shared/
+ * schema.ts` CONSILIUM_LOOP_STATES) that hasn't landed on this branch yet, so it
+ * is mirrored CLIENT-SIDE here (same pattern as the Stage-4 `ExecutionTrace`
+ * mirror above) to keep this branch `tsc --noEmit`-clean in isolation. Collapse
+ * into `ConsiliumLoopState` directly once the backend change merges.
+ */
+export type ClientLoopState = ConsiliumLoopState | "throttled";
+
+export type ConsiliumLoopListItem = Omit<ConsiliumLoopRow, "createdBy" | "state"> & {
   createdBy?: string | null;
+  state: ClientLoopState;
 };
 
 /**
@@ -282,6 +294,15 @@ export type ConsiliumLoopDetail = ConsiliumLoopListItem & {
    * on every other preset, so the gate UI simply doesn't render.
    */
   reviewGate?: boolean | null;
+  /**
+   * Agent-limit throttling (MVP): WHICH phase the loop was mid-way through when
+   * the agent usage/rate limit paused it — `"review"` (building_context/
+   * reviewing/deciding) or `"develop"` (developing). Null/absent when the loop
+   * isn't `throttled` (or on a pre-throttling backend). Client-local mirror of
+   * the parallel backend's loop-GET field — collapse into the canonical
+   * `ConsiliumLoopRow` once that lands.
+   */
+  throttledPhase?: "review" | "develop" | null;
 };
 
 export type { ConsiliumLoopState, ConsiliumLoopRow, ConsiliumLoopRoundRow };
@@ -295,7 +316,13 @@ const TERMINAL_STATES: ReadonlySet<ConsiliumLoopState> = new Set<ConsiliumLoopSt
   "cancelled",
 ]);
 
-export function isTerminalLoopState(state: ConsiliumLoopState): boolean {
+/**
+ * `throttled` is a deliberate PAUSE (agent usage/rate limit), never terminal —
+ * the loop resumes via `POST /:id/retry`, so the page must keep polling and
+ * show it as active-but-paused, never as a stopped/finished loop.
+ */
+export function isTerminalLoopState(state: ClientLoopState): boolean {
+  if (state === "throttled") return false;
   return TERMINAL_STATES.has(state);
 }
 
@@ -308,7 +335,8 @@ export function isTerminalLoopState(state: ConsiliumLoopState): boolean {
 const VERDICT_TERMINAL_STATES: ReadonlySet<ConsiliumLoopState> =
   new Set<ConsiliumLoopState>(["converged", "stopped_cap", "escalated"]);
 
-export function isVerdictTerminalLoopState(state: ConsiliumLoopState): boolean {
+export function isVerdictTerminalLoopState(state: ClientLoopState): boolean {
+  if (state === "throttled") return false;
   return VERDICT_TERMINAL_STATES.has(state);
 }
 
@@ -381,6 +409,25 @@ export function useCancelLoop() {
   const qc = useQueryClient();
   return useMutation<ConsiliumLoopRow, Error, string>({
     mutationFn: (id) => apiRequest("POST", `${LIST_KEY}/${id}/cancel`),
+    onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: [LIST_KEY, id] });
+      qc.invalidateQueries({ queryKey: [LIST_KEY] });
+    },
+  });
+}
+
+/**
+ * Agent-limit throttling (MVP): resume a loop PAUSED in `throttled` (an agent
+ * usage/rate limit was hit mid-review or mid-develop). Owner-or-admin, same
+ * shape as `useCancelLoop`/`useDevelopLoop`. Server-enforced: 409 (WRONG_STATE)
+ * when the loop isn't actually `throttled` — `apiRequest` throws that as an
+ * Error whose message is the server's `error` string, surfaced verbatim by the
+ * caller's toast.
+ */
+export function useRetryThrottledLoop() {
+  const qc = useQueryClient();
+  return useMutation<ConsiliumLoopRow, Error, string>({
+    mutationFn: (id) => apiRequest("POST", `${LIST_KEY}/${id}/retry`),
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: [LIST_KEY, id] });
       qc.invalidateQueries({ queryKey: [LIST_KEY] });

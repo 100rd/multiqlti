@@ -12,7 +12,7 @@
  * SECURITY: pure presentation. No model-authored text passes through here.
  */
 import { Badge } from "@/components/ui/badge";
-import type { ConsiliumLoopState } from "@/hooks/use-consilium-loops";
+import type { ConsiliumLoopState, ClientLoopState } from "@/hooks/use-consilium-loops";
 import { isTerminalLoopState } from "@/hooks/use-consilium-loops";
 
 interface StateStyle {
@@ -24,7 +24,14 @@ interface StateStyle {
   dot: string;
 }
 
-export const LOOP_STATE_STYLE: Record<ConsiliumLoopState, StateStyle> = {
+/** Never-crash fallback for a state token this map doesn't (yet) know about. */
+const UNKNOWN_STATE_STYLE: StateStyle = {
+  label: "Unknown",
+  badge: "bg-slate-500 text-white",
+  dot: "bg-slate-400",
+};
+
+export const LOOP_STATE_STYLE: Record<ClientLoopState, StateStyle> = {
   pending: { label: "Pending", badge: "bg-slate-500 text-white", dot: "bg-slate-400" },
   building_context: {
     label: "Building context",
@@ -56,6 +63,11 @@ export const LOOP_STATE_STYLE: Record<ConsiliumLoopState, StateStyle> = {
   escalated: { label: "Escalated", badge: "bg-orange-500 text-white", dot: "bg-orange-500" },
   failed: { label: "Failed", badge: "bg-red-600 text-white", dot: "bg-red-500" },
   cancelled: { label: "Cancelled", badge: "bg-slate-400 text-white", dot: "bg-slate-400" },
+  // Agent-limit throttling (MVP): a deliberate, non-terminal PAUSE (agent usage/
+  // rate limit hit) — amber like `awaiting_merge`, but the dot doesn't pulse
+  // (nothing is actively running while paused) so it reads distinctly from the
+  // "in progress" states.
+  throttled: { label: "Throttled", badge: "bg-amber-500 text-black", dot: "bg-amber-500" },
 };
 
 /** The non-terminal lifecycle, in FSM order — drives the detail-page stepper. */
@@ -73,7 +85,7 @@ export const LOOP_LIFECYCLE: ConsiliumLoopState[] = [
  * the detail row satisfy this structurally.
  */
 export interface LoopStateContext {
-  state: ConsiliumLoopState;
+  state: ClientLoopState;
   maxRounds: number;
   openP0: number | null;
 }
@@ -105,19 +117,19 @@ export function loopStateLabel(loop: LoopStateContext): StateStyle {
       };
     }
   }
-  return LOOP_STATE_STYLE[loop.state];
+  return LOOP_STATE_STYLE[loop.state] ?? UNKNOWN_STATE_STYLE;
 }
 
 // ─── State-only variants (no loop context available) ────────────────────────
 
-export function LoopStateBadge({ state }: { state: ConsiliumLoopState }) {
-  const style = LOOP_STATE_STYLE[state];
+export function LoopStateBadge({ state }: { state: ClientLoopState }) {
+  const style = LOOP_STATE_STYLE[state] ?? UNKNOWN_STATE_STYLE;
   return <Badge className={style.badge}>{style.label}</Badge>;
 }
 
 /** Compact dot + label, matching the pipeline rail's chip style. */
-export function LoopStateChip({ state }: { state: ConsiliumLoopState }) {
-  const style = LOOP_STATE_STYLE[state];
+export function LoopStateChip({ state }: { state: ClientLoopState }) {
+  const style = LOOP_STATE_STYLE[state] ?? UNKNOWN_STATE_STYLE;
   return <ChipBody style={style} terminal={isTerminalLoopState(state)} />;
 }
 

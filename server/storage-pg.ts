@@ -1,4 +1,4 @@
-import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, isNotNull, inArray, sql as drizzleSql } from "drizzle-orm";
+import { eq, desc, and, or, ilike, lt, ne, gte, lte, asc, isNull, isNotNull, inArray, notInArray, sql as drizzleSql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { db, withProject, withProjectList, withProjectInsert, withProjectOrGlobal } from "./db";
 import { unscopedSystemQuery, getProjectId } from "./context";
@@ -812,10 +812,10 @@ export class PgStorage implements IStorage {
       .from(consiliumLoops)
       .where(withProject(consiliumLoops, and(
           eq(consiliumLoops.groupId, groupId),
-          inArray(
-            consiliumLoops.state,
-            ["pending", "building_context", "reviewing", "deciding", "developing", "awaiting_merge"],
-          ),
+          // Derived from the terminal-state list (not a hardcoded allowlist) so any
+          // new non-terminal RESTING state — e.g. `throttled` — is automatically
+          // treated as "active", matching MemStorage's dynamic check.
+          notInArray(consiliumLoops.state, [...CONSILIUM_LOOP_TERMINAL_STATES]),
         ),))
       .limit(1);
     return row;
