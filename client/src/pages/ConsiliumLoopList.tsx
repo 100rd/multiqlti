@@ -26,17 +26,18 @@
  * `openActionPoints`/`createdAt`. Nothing invented.
  *
  * P4 — the workspace name is a human label. Loops only carry `repoPath` (no
- * workspaceId), so we fetch the workspaces list (shared apiRequest transport,
- * which attaches `x-project-id`) and match by `path`, falling back to the repo
- * basename. The first workspace's path also seeds the New-review dialog. A
- * top filter bar (local state) narrows the tree to a single workspace.
+ * workspaceId), so we fetch the workspaces list (shared `useWorkspaces`, which
+ * attaches `x-project-id`) and resolve each loop's workspace NAME via
+ * `resolveWorkspaceName` (match by `path`, falling back to the repo basename).
+ * Sections + the top filter bar are keyed by that resolved workspace name; the
+ * bar narrows the tree to a single workspace. The first workspace's path also
+ * seeds the New-review dialog.
  *
  * SECURITY: loop-derived text (repoPath, prRef) and the workspace name are
  * rendered as INERT React text; the PR link uses rel="noopener noreferrer".
  */
 import { useState } from "react";
 import { useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
   Repeat,
@@ -53,22 +54,10 @@ import {
   type ConsiliumLoopListItem,
   type ConsiliumLoopRoundRow,
 } from "@/hooks/use-consilium-loops";
-import { apiRequest } from "@/hooks/use-api";
 import { LoopStateChipFor } from "@/components/consilium/loop-state";
 import { NewConsiliumReviewDialog } from "@/components/consilium/new-review-dialog";
-import type { WorkspaceRow } from "@shared/schema";
-
-/** Last path segment of an allowlisted repo path, for a compact display. */
-function repoBasename(repoPath: string): string {
-  const trimmed = repoPath.replace(/\/+$/, "");
-  const seg = trimmed.split("/").pop();
-  return seg || repoPath;
-}
-
-/** Trailing-slash-insensitive path key, so `/repo` and `/repo/` match. */
-function normalizePath(p: string): string {
-  return p.replace(/\/+$/, "");
-}
+import { useWorkspaces } from "@/hooks/use-workspaces";
+import { resolveWorkspaceName } from "@/lib/workspace-name";
 
 /** Relative "2h ago" label; empty string for missing/unparseable timestamps. */
 function whenLabel(ts: string | Date | null | undefined): string {
@@ -97,19 +86,6 @@ function OpenP0({ openP0 }: { openP0: number | null | undefined }) {
       {openP0}
     </span>
   );
-}
-
-/**
- * Workspaces for the active project — used to resolve a human name for a loop's
- * repoPath AND to seed the New-review dialog's repo path. Uses the shared
- * apiRequest transport so `x-project-id` is attached (same as every other
- * project-scoped hook).
- */
-function useWorkspaces() {
-  return useQuery<WorkspaceRow[]>({
-    queryKey: ["/api/workspaces"],
-    queryFn: () => apiRequest("GET", "/api/workspaces"),
-  });
 }
 
 type LoopGroup = {
@@ -347,11 +323,12 @@ export default function ConsiliumLoopList() {
   // Active workspace filter (by resolved name); null = show all.
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null);
 
-  // Loop sections are keyed by the CLEAN repo basename (last path segment), not the
-  // workspace label — a workspace named e.g. "werush-terraform" must still surface as
-  // the bare repo target "terraform". Path-derived so it holds for every repo,
-  // independent of how any workspace was named.
-  const workspaceName = (repoPath: string): string => repoBasename(repoPath);
+  // Loop sections + filter chips are keyed by the loop's WORKSPACE NAME, resolved
+  // from its repoPath against the project's workspaces (fallback: the repo
+  // basename when no workspace row matches). This is the label the operator named
+  // and recognizes — see resolveWorkspaceName.
+  const workspaceName = (repoPath: string): string =>
+    resolveWorkspaceName(repoPath, workspaceData);
 
   // Hand the New-review dialog the project.s workspaces so the user PICKS a repo
   // (dropdown) instead of free-typing a possibly-unallowlisted path.

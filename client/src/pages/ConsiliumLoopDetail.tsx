@@ -126,6 +126,8 @@ import {
 } from "@/components/ui/select";
 import type { ConsiliumLoopState, ClientLoopState } from "@/hooks/use-consilium-loops";
 import { useAddRoundComment } from "@/hooks/use-consilium-loops";
+import { useWorkspaces } from "@/hooks/use-workspaces";
+import { resolveWorkspaceName } from "@/lib/workspace-name";
 import { IterationDetailView } from "@/components/task-groups/iterations-panel";
 import type { ActionPoint, Archetype, OpenRemainder, RoundParticipant, RoundComment } from "@shared/types";
 import { ARCHETYPES } from "@shared/types";
@@ -2381,7 +2383,13 @@ function fmtRelative(raw: string | Date | null | undefined): { rel: string; abs:
   return { rel: formatDistanceToNow(d, { addSuffix: true }), abs: d.toLocaleString() };
 }
 
-function LaunchPassportCard({ loop }: { loop: ConsiliumLoopDetailRow }) {
+function LaunchPassportCard({
+  loop,
+  workspaceName,
+}: {
+  loop: ConsiliumLoopDetailRow;
+  workspaceName: string;
+}) {
   const created = fmtRelative(loop.createdAt);
   const preset = loop.composition?.preset ?? null;
   return (
@@ -2429,6 +2437,11 @@ function LaunchPassportCard({ loop }: { loop: ConsiliumLoopDetailRow }) {
             ) : (
               <span className="text-xs text-muted-foreground">working-tree HEAD</span>
             )}
+          </Fact>
+          <Fact label="Workspace">
+            <span className="font-medium text-xs" data-testid="launch-workspace-name">
+              {workspaceName}
+            </span>
           </Fact>
           <Fact label="Repo">
             <span className="font-mono text-xs break-all" title={loop.repoPath}>
@@ -2711,6 +2724,11 @@ export default function ConsiliumLoopDetail() {
   const { user } = useAuth();
   const { toast } = useToast();
   const { data: loop, isLoading, error } = useConsiliumLoop(id);
+  const { data: workspaceData } = useWorkspaces();
+  // Human WORKSPACE NAME this loop runs in, resolved from its repoPath (fallback:
+  // repo basename). Empty while the loop is still loading — the header/passport
+  // that read it only render once `loop` is present.
+  const workspaceLabel = loop ? resolveWorkspaceName(loop.repoPath, workspaceData) : "";
 
   const startLoop = useStartLoop();
   const cancelLoop = useCancelLoop();
@@ -2855,6 +2873,10 @@ export default function ConsiliumLoopDetail() {
               <LoopStateBadgeFor loop={loop} />
             </div>
             <p className="font-mono text-[11px] text-muted-foreground">{loop.id}</p>
+            <p className="text-[11px] text-muted-foreground" data-testid="loop-workspace-name">
+              Workspace:{" "}
+              <span className="font-medium text-foreground/80">{workspaceLabel}</span>
+            </p>
           </div>
 
           {/* Actions */}
@@ -2952,7 +2974,7 @@ export default function ConsiliumLoopDetail() {
         )}
 
         {/* GAP 1 — Launch passport: HOW this loop was launched, consolidated. */}
-        <LaunchPassportCard loop={loop} />
+        <LaunchPassportCard loop={loop} workspaceName={workspaceLabel} />
 
         {/* FSM progress */}
         <Card>
