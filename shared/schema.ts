@@ -2123,6 +2123,30 @@ export const credentialLeases = pgTable(
 export type CredentialLease = typeof credentialLeases.$inferSelect;
 export type InsertCredentialLease = typeof credentialLeases.$inferInsert;
 
+// ADR-003 §D2 — the named secrets a consilium loop is ALLOWED to use. Binding a
+// secret to a loop at creation is the operator's explicit approval; `issueLease`
+// (Phase 3b/3c) refuses any credential not in this bound set. Metadata only — the
+// secret VALUE never lives here (it stays in `secrets.valueEncrypted`, read solely
+// through the broker's sanctioned decrypt path).
+export const consiliumLoopSecrets = pgTable(
+  "consilium_loop_secrets",
+  {
+    loopId: varchar("loop_id")
+      .notNull()
+      .references(() => consiliumLoops.id, { onDelete: "cascade" }),
+    credentialId: text("credential_id").notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.loopId, table.credentialId] }),
+    loopIdx: index("consilium_loop_secrets_loop_id_idx").on(table.loopId),
+  }),
+);
+
+export type ConsiliumLoopSecret = typeof consiliumLoopSecrets.$inferSelect;
+export type InsertConsiliumLoopSecret = typeof consiliumLoopSecrets.$inferInsert;
+
 export const credentialAccessLog = pgTable(
   "credential_access_log",
   {
