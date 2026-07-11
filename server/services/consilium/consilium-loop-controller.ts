@@ -61,6 +61,7 @@ import { effectiveVerificationEnabled, resolveImplementForRepo } from "../../con
 import { readConvergence, readJudgeVerdict, extractActionPoints, normalizeActionPointMethods, applyCriteriaQa } from "../orchestrator/convergence.js";
 import { buildDiffContext } from "./diff-context.js";
 import { buildRepoMap, createDbRepoMapSource, listTouchedFiles, repoMapGit } from "./repo-map.js";
+import { readConventionsFile } from "./repo-conventions.js";
 import { findLoopWorkspace } from "./workspace-bind.js";
 import type { DevCloseoutResult } from "./dev-closeout.js";
 import { runSdlcHandoff, type SdlcProgress, type JudgeVerifyFn, type JudgeVerifyInput } from "../sdlc/executor.js";
@@ -2616,6 +2617,14 @@ export class ConsiliumLoopController {
       parallel: parallelOn
         ? { enabled: true, maxConcurrency: cfg.implement.parallel.maxConcurrency }
         : null,
+      // Repo-conventions preamble (AGENTS.md / CLAUDE.md) for the DEV/coder system
+      // prompt. Gated by its OWN kill-switch on TOP of the parent consiliumLoop.enabled
+      // — null when off ⇒ the executor reads no convention file, byte-for-byte
+      // unchanged. The executor resolves the worktree dir itself (server-minted, no
+      // allowlist check needed) and reads ONCE per round.
+      repoConventions: cfg.repoConventions?.enabled
+        ? { enabled: true, maxConventionsBytes: cfg.repoConventions.maxConventionsBytes }
+        : null,
     }, {
       getSkills: () => this.storage.getSkills(),
       // Stage B: the judge-method verifier seam (wired to the gateway) — provided ONLY when
@@ -2776,6 +2785,7 @@ export class ConsiliumLoopController {
     // exported symbols + 1-hop importers), read-only over the workspace symbol index.
     // Kill-switched (default OFF ⇒ undefined ⇒ byte-identical review input).
     const repoMap = await this.buildReviewRepoMap(loop, cfg);
+    const repoConventions = await this.buildReviewConventions(loop, cfg);
     const ctx = await buildDiffContext({
       repoPath: loop.repoPath,
       baselineCommit: loop.lastReviewedCommit,
@@ -2788,6 +2798,7 @@ export class ConsiliumLoopController {
       priorFindings,
       testSummary,
       repoMap,
+      repoConventions,
     });
     if (!ctx.ok) {
       // A DETERMINISTIC unresolved ref (the diff baseline/head sha is absent from
@@ -2880,6 +2891,36 @@ export class ConsiliumLoopController {
       this.log(
         loop.id,
         `repoMap skipped (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Repo-conventions preamble for the REVIEW input: the workspace repo's OWN
+   * `AGENTS.md` (falling back to `CLAUDE.md`), read via `repo-conventions.ts`.
+   * Kill-switched (`consiliumLoop.repoConventions.enabled`, default OFF ⇒
+   * `undefined` ⇒ byte-identical review input) and gated under the parent
+   * `consiliumLoop.enabled` (this method is only ever reached through the loop
+   * controller). Reads the WORKING TREE at `loop.repoPath` — a branch/ref-targeted
+   * at-ref read (`git show <ref>:AGENTS.md`) is OUT OF SCOPE for this change.
+   * BEST-EFFORT: absent files or ANY failure ⇒ `undefined`, never throws, and a
+   * conventions problem must never fail a review round.
+   */
+  private async buildReviewConventions(
+    loop: ConsiliumLoopRow,
+    cfg: AppConfig["pipeline"]["consiliumLoop"],
+  ): Promise<string | undefined> {
+    const rc = cfg.repoConventions;
+    if (!rc?.enabled) return undefined;
+    try {
+      // H-1 parity: re-validate the persisted repoPath ourselves before touching disk.
+      const resolvedRepo = assertAllowedRepoPath(loop.repoPath, cfg.allowedRepoPaths);
+      return readConventionsFile(resolvedRepo, rc.maxConventionsBytes) ?? undefined;
+    } catch (err) {
+      this.log(
+        loop.id,
+        `repoConventions skipped (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
       );
       return undefined;
     }
@@ -3165,6 +3206,7 @@ export class ConsiliumLoopController {
         ? await this.latestRoundTestSummary(loop)
         : undefined;
     const repoMap = await this.buildReviewRepoMap(loop, cfg);
+    const repoConventions = await this.buildReviewConventions(loop, cfg);
     const ctx = await buildDiffContext({
       repoPath: loop.repoPath,
       baselineCommit: loop.lastReviewedCommit,
@@ -3175,6 +3217,7 @@ export class ConsiliumLoopController {
       priorFindings,
       testSummary,
       repoMap,
+      repoConventions,
     });
     if (!ctx.ok) return degradedReviewResult(ctx.message);
     // Panel from the group's preset (recovered from the group NAME — the SAME source

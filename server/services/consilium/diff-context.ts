@@ -93,6 +93,15 @@ export interface DiffContextRequest {
    * section (byte-identical to today). Never executed, never logged.
    */
   repoMap?: string;
+  /**
+   * Workspace repo-conventions preamble: the workspace repo's OWN `AGENTS.md` (falling
+   * back to `CLAUDE.md`), read by `repo-conventions.ts`. Placed AFTER the objective and
+   * BEFORE the repo map so debaters read the repo's own conventions first. Already hard
+   * byte-bounded, secret-redacted, and fenced by the builder — NOT folded into the
+   * `truncated` flag (that flag tracks diff clipping only). Absent/blank ⇒ NO section
+   * (byte-identical to today). Never executed, never logged.
+   */
+  repoConventions?: string;
   /** Injected git client (tests pass a fake); defaults to simple-git(repoPath). */
   gitClient?: GitDiffClient;
 }
@@ -315,10 +324,27 @@ function assembleInput(
   priorFindings: string | undefined,
   maxDiffBytes: number,
   repoMap: string | undefined,
+  repoConventions: string | undefined,
 ): { input: string; truncated: boolean } {
   const obj = objective.trim();
   const sections = [obj.length > 0 ? obj : "_No objective supplied; review the changes below._"];
   let truncated = parts?.truncated ?? false;
+  // Workspace repo-conventions preamble (AGENTS.md / CLAUDE.md, read by
+  // repo-conventions.ts): placed right after the objective and BEFORE the repo map so
+  // debaters read the repo's own conventions before structural context. Already hard
+  // byte-bounded, secret-redacted, and fenced by the builder; we apply the SAME
+  // defensive re-redact + maxDiffBytes clamp used for repoMap below (H-4 parity). Its
+  // own internal omission note carries any file truncation, so — like repoMap — we
+  // deliberately do NOT fold it into the shared `truncated` flag. Absent/blank ⇒ no
+  // section (byte-identical to before).
+  if (repoConventions && repoConventions.trim().length > 0) {
+    const redacted = redactSecrets(repoConventions.trim());
+    const overflow = Buffer.byteLength(redacted, "utf8") > maxDiffBytes;
+    const text = overflow
+      ? Buffer.from(redacted, "utf8").subarray(0, maxDiffBytes).toString("utf8")
+      : redacted;
+    sections.push(`## Repository conventions (AGENTS.md / CLAUDE.md)\n\n${text}`);
+  }
   // OPTION A: the scoped repository map goes BETWEEN the objective and the diff so
   // the model reads structural context (touched files → symbols + importers) before
   // the changes. The builder already redacted + byte-bounded it; we re-run
@@ -428,7 +454,7 @@ export async function buildDiffContext(
       return fail("unknown", "objective is empty and there is no diff (round 1); refusing to emit a blank review input");
     }
     // Round 1 has no diff, so there are no "touched files" to map ⇒ no repoMap.
-    const built = assembleInput(req.objective, null, req.testSummary, undefined, req.maxDiffBytes, undefined);
+    const built = assembleInput(req.objective, null, req.testSummary, undefined, req.maxDiffBytes, undefined, undefined);
     return { ok: true, input: built.input, headCommit: head, baselineCommit: null, truncated: built.truncated };
   }
 
@@ -438,7 +464,7 @@ export async function buildDiffContext(
   const parts = await collectDiff(git, baseline, head, req.maxDiffBytes);
   if (!("stat" in parts)) return parts;
 
-  const built = assembleInput(req.objective, parts, req.testSummary, req.priorFindings, req.maxDiffBytes, req.repoMap);
+  const built = assembleInput(req.objective, parts, req.testSummary, req.priorFindings, req.maxDiffBytes, req.repoMap, req.repoConventions);
   return {
     ok: true,
     input: built.input,

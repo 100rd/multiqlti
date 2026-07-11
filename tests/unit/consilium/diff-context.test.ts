@@ -402,3 +402,66 @@ describe("buildDiffContext — Option A repository-map section", () => {
     expect(res.input).not.toContain("## Repository map");
   });
 });
+
+describe("buildDiffContext — repo-conventions section", () => {
+  const CONV = "```\nBe kind to tests.\n```";
+  const MAP = "- `server/a.ts`: `foo` [function]\n  imported by: `server/b.ts`";
+
+  it("injects conventions AFTER the objective and BEFORE the repo map", async () => {
+    const res = await buildDiffContext({
+      repoPath: REPO,
+      baselineCommit: BASE_SHA,
+      objective: "Obj",
+      allowedRepoPaths: ALLOW,
+      maxDiffBytes: 10_000,
+      repoMap: MAP,
+      repoConventions: CONV,
+      gitClient: fakeGit(),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.input).toContain("## Repository conventions (AGENTS.md / CLAUDE.md)");
+    expect(res.input).toContain("Be kind to tests.");
+    // ordering: objective < conventions < repo map < changes
+    const iObj = res.input.indexOf("Obj");
+    const iConv = res.input.indexOf("## Repository conventions");
+    const iMap = res.input.indexOf("## Repository map");
+    const iDiff = res.input.indexOf("## Changes since last review");
+    expect(iObj).toBeGreaterThanOrEqual(0);
+    expect(iConv).toBeGreaterThan(iObj);
+    expect(iMap).toBeGreaterThan(iConv);
+    expect(iDiff).toBeGreaterThan(iMap);
+  });
+
+  it("absent repoConventions ⇒ NO section (byte-identical to before)", async () => {
+    const withArg = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, repoConventions: undefined, gitClient: fakeGit() });
+    const without = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, gitClient: fakeGit() });
+    expect(withArg.ok && without.ok).toBe(true);
+    if (!withArg.ok || !without.ok) return;
+    expect(withArg.input).toBe(without.input);
+    expect(withArg.input).not.toContain("## Repository conventions");
+  });
+
+  it("a blank repoConventions emits NO section", async () => {
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, repoConventions: "   \n  ", gitClient: fakeGit() });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.input).not.toContain("## Repository conventions");
+  });
+
+  it("defensively redacts a secret that reaches assembly in the conventions text", async () => {
+    const secret = "AKIAIOSFODNN7EXAMPLEKEYDATA1234567890";
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, repoConventions: `AWS_SECRET_ACCESS_KEY=${secret}`, gitClient: fakeGit() });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.input).not.toContain(secret);
+    expect(res.input).toContain("<REDACTED:");
+  });
+
+  it("round 1 (null baseline) never emits a conventions section even if one is passed", async () => {
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: null, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, repoConventions: CONV, gitClient: fakeGit() });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.input).not.toContain("## Repository conventions");
+  });
+});

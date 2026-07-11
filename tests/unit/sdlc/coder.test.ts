@@ -153,6 +153,41 @@ describe("buildCoderPrompt — untrusted text stays in the prompt only", () => {
   });
 });
 
+// The repo-conventions preamble (AGENTS.md / CLAUDE.md, read by repo-conventions.ts)
+// is merged into `systemPrompt` on the EXECUTOR side (executor.ts's `withRepoConventions`
+// helper: conventions, a blank line, then the role prompt) BEFORE it ever reaches
+// `buildCoderPrompt` — this file adds NO new merging logic (per the "no CLI flag,
+// untrusted text stays on stdin" constraint). These tests verify the EXISTING
+// `opts.systemPrompt` prepend-and-clamp behavior continues to work correctly for that
+// already-merged (conventions + role prompt) string.
+describe("buildCoderPrompt — systemPrompt carries an executor-merged repo-conventions block", () => {
+  const aps: ActionPoint[] = [{ title: "Add the redactor", priority: "P1" }];
+
+  it("prepends the merged conventions+role-prompt block ahead of the action points", () => {
+    const merged = "```\nRepo convention: no console.log.\n```\n\nYou are the coder skill.";
+    const prompt = buildCoderPrompt(aps, { systemPrompt: merged });
+    expect(prompt).toContain("Repo convention: no console.log.");
+    expect(prompt).toContain("You are the coder skill.");
+    const iConv = prompt.indexOf("Repo convention:");
+    const iRole = prompt.indexOf("You are the coder skill.");
+    const iBody = prompt.indexOf("Add the redactor");
+    expect(iConv).toBeGreaterThanOrEqual(0);
+    expect(iRole).toBeGreaterThan(iConv); // conventions precede the role prompt
+    expect(iBody).toBeGreaterThan(iRole); // both precede the action-point body
+  });
+
+  it("clamps an over-long merged (conventions + role prompt) block", () => {
+    const merged = "x".repeat(10_000);
+    const prompt = buildCoderPrompt(aps, { systemPrompt: merged });
+    expect(prompt).not.toContain("x".repeat(5_000));
+  });
+
+  it("absent systemPrompt ⇒ prompt is BYTE-FOR-BYTE identical to the legacy (no-conventions) call", () => {
+    expect(buildCoderPrompt(aps)).toBe(buildCoderPrompt(aps, {}));
+    expect(buildCoderPrompt(aps)).toBe(buildCoderPrompt(aps, { systemPrompt: undefined }));
+  });
+});
+
 describe("parseCoderOutput", () => {
   it("ok on a clean result JSON, with token accounting", () => {
     const stdout = JSON.stringify({
