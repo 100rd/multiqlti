@@ -46,6 +46,10 @@ export interface ReviewGateway {
 const MAX_PARTICIPANTS = 24;
 const MAX_PARTICIPANT_TEXT = 8_000;
 
+// Part B (throttled v2, per-seat fallback): fewest surviving NON-judge reviewers
+// after usage-limit seat drops before the WHOLE run throttles (quorum gate below).
+const MIN_REVIEWERS = 2;
+
 /** executeDirectLlm's per-call knobs (reproduced exactly for prompt/behaviour parity). */
 const REVIEW_TEMPERATURE = 0.7;
 const REVIEW_MAX_TOKENS = 4096;
@@ -71,6 +75,12 @@ function degraded(error: string): ReviewRunResult {
   return { converged: false, openP0: 0, openActionPoints: [], verdict: null, participants: null, error };
 }
 
+/** The slice of `Model` (shared/schema.ts) the fallback picker needs. */
+export interface ReviewModelCatalogEntry {
+  slug: string;
+  provider: string;
+}
+
 export interface RunReviewTasksParams {
   /** The review DAG — `buildCrossReviewTasks(panel)`, or `[buildSingleVerifierTask(...)]`. */
   tasks: CreateTaskParam[];
@@ -83,6 +93,29 @@ export interface RunReviewTasksParams {
   gateway: ReviewGateway;
   /** Per-call wall-clock cap (pipeline.taskGroups.taskTimeoutMs), like executeDirectLlm. */
   timeoutMs: number;
+  /**
+   * Part B (throttled v2, per-seat fallback): the VISIBLE active-model catalog
+   * (`storage.getActiveModels()`, mapped to `{slug, provider}`) used to auto-rotate a
+   * seat's model when its assigned model hits a usage/rate limit mid-review. Omitted
+   * (or empty) yields no fallback candidates — a rate-limited seat then has nothing to
+   * rotate to and is dropped (non-judge) / throttles the run (judge), same as before
+   * this catalog is wired through.
+   */
+  activeModels?: ReviewModelCatalogEntry[];
+}
+
+/**
+ * Part B: candidate fallback models for a rate-limited seat — active models on a
+ * DIFFERENT provider than the failing slug, excluding any slug already claimed by
+ * another seat this run. Order preserved from the caller's catalog order.
+ */
+function pickFallbackCandidates(
+  failingSlug: string,
+  activeModels: ReviewModelCatalogEntry[],
+  claimedSlugs: ReadonlySet<string>,
+): ReviewModelCatalogEntry[] {
+  const failingProvider = activeModels.find((m) => m.slug === failingSlug)?.provider;
+  return activeModels.filter((m) => m.provider !== failingProvider && !claimedSlugs.has(m.slug));
 }
 
 /**
@@ -139,18 +172,46 @@ function formatParticipantText(parsed: ReturnType<typeof parseDirectLlmResponse>
 
 export async function runReviewTasks(params: RunReviewTasksParams): Promise<ReviewRunResult> {
   const { tasks, judgeTaskName, groupName, groupInput, gateway, timeoutMs } = params;
+  const activeModels = params.activeModels ?? [];
   const outputs = new Map<string, unknown>(); // task name → its parsed `.output`
-  const participants: RoundParticipant[] = [];
+  const participants: RoundParticipant[] = []; // seats that PRODUCED output — the quorum count
+  const droppedNotes: RoundParticipant[] = []; // informational only — appended AFTER the quorum gate, never counted toward it
+  const dropped = new Set<string>(); // non-judge task names dropped after exhausting all fallback candidates
+  // Part B: each seat's CURRENT model slug — starts as its assigned `modelSlug`,
+  // rotates on a rate limit. Doubles as the "claimed this run" registry so two seats
+  // never fall back onto the SAME model.
+  const seatModel = new Map<string, string>(tasks.map((t) => [t.name, t.modelSlug ?? ""]));
   try {
     const pending = [...tasks];
     while (pending.length > 0) {
-      const ready = pending.filter((t) => (t.dependsOn ?? []).every((d) => outputs.has(d)));
+      // Cascade-drop: a NON-judge task depending on an already-dropped task can
+      // never meaningfully run (its dep's output never lands in `outputs`) — drop it
+      // too (repeat for multi-level deps, e.g. a rebuttal rebutting a dropped
+      // primary). The JUDGE is EXEMPT — it must still run on whatever survived, so a
+      // dropped dep just resolves as "missing" for it (see the ready-filter below),
+      // never cascades the judge itself.
+      let cascaded = true;
+      while (cascaded) {
+        cascaded = false;
+        for (const t of [...pending]) {
+          const deps = t.dependsOn ?? [];
+          if (t.name !== judgeTaskName && !dropped.has(t.name) && deps.some((d) => dropped.has(d))) {
+            dropped.add(t.name);
+            pending.splice(pending.indexOf(t), 1);
+            cascaded = true;
+          }
+        }
+      }
+      if (pending.length === 0) break;
+      // A dropped dep counts as "resolved" (no data, never arrives) so the judge (or
+      // any surviving dependent) can proceed without it instead of deadlocking.
+      const ready = pending.filter((t) => (t.dependsOn ?? []).every((d) => outputs.has(d) || dropped.has(d)));
       if (ready.length === 0) throw new Error("review DAG has an unsatisfiable dependency");
       await Promise.all(
         ready.map(async (t) => {
           const deps = t.dependsOn ?? [];
           const depOutputs: Record<string, unknown> = {};
-          for (const d of deps) depOutputs[d] = outputs.get(d);
+          for (const d of deps) if (outputs.has(d)) depOutputs[d] = outputs.get(d);
           // Reuse buildSystemPrompt VERBATIM (fidelity with executeDirectLlm) — it reads
           // only `.name`/`.description` off the task and `.input` off the iteration, so a
           // minimal cast is safe. objective+diff-context ride the SYSTEM prompt (as the
@@ -162,34 +223,90 @@ export async function runReviewTasks(params: RunReviewTasksParams): Promise<Revi
             depOutputs,
           );
           const userInput = t.input ? JSON.stringify(t.input) : "{}";
-          const res = await gateway.completeStreaming(
-            {
-              modelSlug: t.modelSlug ?? "",
-              messages: [
-                { role: "system", content: system },
-                { role: "user", content: userInput },
-              ],
-              temperature: REVIEW_TEMPERATURE,
-              maxTokens: REVIEW_MAX_TOKENS,
-            },
-            undefined,
-            undefined,
-            { overallTimeoutMs: timeoutMs },
-          );
+          const call = (modelSlug: string): Promise<{ content: string }> =>
+            gateway.completeStreaming(
+              {
+                modelSlug,
+                messages: [
+                  { role: "system", content: system },
+                  { role: "user", content: userInput },
+                ],
+                temperature: REVIEW_TEMPERATURE,
+                maxTokens: REVIEW_MAX_TOKENS,
+              },
+              undefined,
+              undefined,
+              { overallTimeoutMs: timeoutMs },
+            );
+
+          const originalSlug = t.modelSlug ?? "";
+          let res: { content: string };
+          let fallbackNote = "";
+          try {
+            res = await call(originalSlug);
+          } catch (err) {
+            const raw = err instanceof Error ? err.message : String(err);
+            if (!isRateLimitError(raw)) throw err; // NON-rate-limit: rethrow — whole run degrades exactly as before.
+
+            // Part B (throttled v2, per-seat fallback): rate-limited — auto-rotate
+            // through candidate models (different provider, not already claimed by
+            // another seat this run) before giving up on this seat.
+            const isJudge = t.name === judgeTaskName;
+            const claimed = new Set(seatModel.values());
+            const candidates = pickFallbackCandidates(originalSlug, activeModels, claimed);
+            let rotated: { content: string } | null = null;
+            let lastErr: unknown = err;
+            for (const candidate of candidates) {
+              try {
+                rotated = await call(candidate.slug);
+                seatModel.set(t.name, candidate.slug);
+                fallbackNote = `[fell back ${originalSlug}→${candidate.slug}] `;
+                break;
+              } catch (err2) {
+                const raw2 = err2 instanceof Error ? err2.message : String(err2);
+                if (!isRateLimitError(raw2)) throw err2; // non-rate-limit mid-fallback — propagate, degrade whole run.
+                lastErr = err2;
+              }
+            }
+            if (!rotated) {
+              // All candidates (or none available) are ALSO rate-limited.
+              if (isJudge) throw lastErr; // judge can't be dropped — throttles the WHOLE run (outer catch).
+              dropped.add(t.name);
+              droppedNotes.push({
+                name: t.name,
+                model: seatModel.get(t.name) ?? originalSlug,
+                role: deps.length > 0 ? "rebuttal" : "primary",
+                text: `[dropped: usage limit exhausted on ${originalSlug} and all fallback candidates]`,
+              });
+              return;
+            }
+            res = rotated;
+          }
           const parsed = parseDirectLlmResponse(res.content);
           outputs.set(t.name, parsed.output);
           if (t.name !== judgeTaskName) {
             participants.push({
               name: t.name,
-              model: t.modelSlug ?? "",
+              model: seatModel.get(t.name) ?? originalSlug,
               role: deps.length > 0 ? "rebuttal" : "primary",
-              text: formatParticipantText(parsed),
+              text: fallbackNote + formatParticipantText(parsed),
             });
           }
         }),
       );
       for (const t of ready) pending.splice(pending.indexOf(t), 1);
     }
+
+    // Part B quorum gate: only engaged when a usage-limit seat drop actually
+    // happened — a fully-successful cross-review panel and an intentional
+    // single-verifier round (0 non-judge seats BY DESIGN) are UNCHANGED.
+    if (dropped.size > 0 && participants.length < MIN_REVIEWERS) {
+      return {
+        ...degraded("insufficient reviewer quorum after usage-limit seat drops"),
+        rateLimited: true,
+      };
+    }
+
     const judgeOutput = outputs.get(judgeTaskName);
     const convergence = readConvergence(judgeOutput);
     return {
@@ -197,7 +314,7 @@ export async function runReviewTasks(params: RunReviewTasksParams): Promise<Revi
       openP0: convergence.openP0,
       openActionPoints: convergence.openActionPoints,
       verdict: readJudgeVerdict(judgeOutput),
-      participants: boundParticipants(participants),
+      participants: boundParticipants([...participants, ...droppedNotes]),
     };
   } catch (err) {
     const raw = err instanceof Error ? err.message : String(err);

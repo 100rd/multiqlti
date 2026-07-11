@@ -1460,6 +1460,10 @@ export class MemStorage implements IStorage {
       // Agent-limit throttling (migration 0060): which phase to resume when
       // `state === "throttled"`; null for every non-throttled loop.
       throttledPhase: data.throttledPhase ?? null,
+      // "throttled v2" Part A (migration 0061): auto-resume deadline + bounded attempt
+      // counter; null/0 for every loop that has never been throttled.
+      throttledUntil: data.throttledUntil ?? null,
+      resumeAttempts: data.resumeAttempts ?? 0,
       createdBy: data.createdBy ?? null,
       createdAt: now,
       updatedAt: now,

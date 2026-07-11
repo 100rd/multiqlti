@@ -250,6 +250,7 @@ function makeRunnerController(systems: string[]) {
   const storage = {
     getLoopRounds: vi.fn(async () => []),
     getTaskGroup: vi.fn(async () => ({ id: "grp1", name: "[consilium-review:sdlc-cross-review] x", input: "the objective" })),
+    getActiveModels: vi.fn(async () => []),
   };
   const gateway = {
     completeStreaming: vi.fn(async (req: { messages: Array<{ role: string; content: string }> }) => {

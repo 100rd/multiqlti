@@ -1049,14 +1049,63 @@ const THROTTLED_PHASE_LABEL: Record<"review" | "develop", string> = {
   develop: "paused during development",
 };
 
+/** 1s tick for the auto-resume countdown — deadlines are shown to the second. */
+const THROTTLED_COUNTDOWN_TICK_MS = 1000;
+
 /**
- * Agent-limit throttling (MVP): the loop hit an agent usage/rate limit and
- * PAUSED (non-terminal) instead of failing outright. `loop.error` carries the
- * server's generic "quota reached" message; the optional phase note comes from
- * `loop.throttledPhase`. Retry (`POST /:id/retry`, owner/admin) resumes the
- * loop from where it paused — a 409 (no longer `throttled`, e.g. another
- * operator already retried it) surfaces the server's error text verbatim via
- * the toast, exactly like the other loop-action handlers below.
+ * Formats the remaining time until `deadlineMs` as "~Xm Ys" (or "~Ns" once
+ * under a minute). Returns null once the deadline is at/past `nowMs` — callers
+ * fall back to the "Auto-resuming…" copy in that case.
+ */
+function formatThrottledCountdown(deadlineMs: number, nowMs: number): string | null {
+  const remainingMs = deadlineMs - nowMs;
+  if (remainingMs <= 0) return null;
+  const totalSeconds = Math.ceil(remainingMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `~${minutes}m ${seconds}s` : `~${seconds}s`;
+}
+
+/**
+ * Auto-resume status line for the throttled callout:
+ * - `throttledUntil` missing/invalid → null (caller falls back to static copy).
+ * - `throttledUntil` in the future → live "Auto-resuming in ~Xm Ys" countdown.
+ * - `throttledUntil` at/past now (still throttled) → "Auto-resuming…".
+ * Ticks every second via `setInterval`, cleared on unmount/prop change.
+ */
+function useThrottledAutoResumeStatus(throttledUntil: string | null | undefined): string | null {
+  const [now, setNow] = useState(() => Date.now());
+
+  const deadlineMs = (() => {
+    if (!throttledUntil) return null;
+    const parsed = new Date(throttledUntil).getTime();
+    return Number.isNaN(parsed) ? null : parsed;
+  })();
+
+  useEffect(() => {
+    if (deadlineMs === null) return;
+    setNow(Date.now());
+    const intervalId = setInterval(() => setNow(Date.now()), THROTTLED_COUNTDOWN_TICK_MS);
+    return () => clearInterval(intervalId);
+  }, [deadlineMs]);
+
+  if (deadlineMs === null) return null;
+  const countdown = formatThrottledCountdown(deadlineMs, now);
+  return countdown ? `Auto-resuming in ${countdown}` : "Auto-resuming…";
+}
+
+/**
+ * Agent-limit throttling (v2, auto-resume): the loop hit an agent usage/rate
+ * limit and PAUSED (non-terminal) instead of failing outright. `loop.error`
+ * carries the server's generic "quota reached" message; the optional phase
+ * note comes from `loop.throttledPhase`. When the server schedules an
+ * auto-resume (`loop.throttledUntil`), a live countdown replaces the static
+ * message and `loop.resumeAttempts` (when > 0) surfaces how many auto-resume
+ * attempts have already run. Retry (`POST /:id/retry`, owner/admin) still
+ * works as a manual override — a 409 (no longer `throttled`, e.g. another
+ * operator/the auto-resume already retried it) surfaces the server's error
+ * text verbatim via the toast, exactly like the other loop-action handlers
+ * below.
  *
  * SECURITY: `loop.error` is a fixed, server-authored template (never model
  * prose) — rendered as INERT React text, same treatment as every other state's
@@ -1067,6 +1116,8 @@ function ThrottledCallout({ loop }: { loop: ConsiliumLoopDetailRow }) {
   const retryLoop = useRetryThrottledLoop();
   const s = STATUS_TONE_STYLE.warning;
   const phaseLabel = loop.throttledPhase ? THROTTLED_PHASE_LABEL[loop.throttledPhase] : null;
+  const autoResumeStatus = useThrottledAutoResumeStatus(loop.throttledUntil);
+  const resumeAttempts = loop.resumeAttempts ?? 0;
 
   async function handleRetry() {
     try {
@@ -1096,6 +1147,15 @@ function ThrottledCallout({ loop }: { loop: ConsiliumLoopDetailRow }) {
           {loop.error ??
             "Agent usage/rate limit reached — paused; retry when your quota resets."}
         </p>
+        {/* Auto-resume v2: live countdown when the server scheduled one; falls
+            back to nothing (operator-only Retry) when `throttledUntil` is
+            missing/invalid, same as pre-v2 behavior. */}
+        {autoResumeStatus && (
+          <p className={`break-words ${s.body}`} data-testid="loop-throttled-auto-resume">
+            {autoResumeStatus}
+            {resumeAttempts > 0 ? ` (auto-resume attempt ${resumeAttempts})` : ""}
+          </p>
+        )}
       </div>
       <Button
         size="sm"

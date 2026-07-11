@@ -1957,6 +1957,15 @@ export const consiliumLoops = pgTable(
     // cleared (null) on `retryThrottled`'s resume. Null whenever the loop is not
     // (and has never been) throttled.
     throttledPhase: text("throttled_phase").$type<"review" | "develop">(),
+    // "throttled v2" Part A (additive, migration 0061): bounded AUTO-RESUME bookkeeping
+    // for a loop resting in `throttled`. `throttledUntil` is the deadline stamped at the
+    // throttling transition (now + parsed Retry-After, else the configured cooldown);
+    // cleared (null) on ANY resume (auto or operator). `resumeAttempts` counts bounded
+    // auto-resume attempts for the CURRENT pause (reset to 0 on every resume) — an
+    // operator's manual Retry resets it exactly like an auto-resume would, since both
+    // clear the pause. Null/0 for every loop that has never been throttled.
+    throttledUntil: timestamp("throttled_until"),
+    resumeAttempts: integer("resume_attempts").notNull().default(0),
     createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),

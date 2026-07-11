@@ -303,6 +303,19 @@ export type ConsiliumLoopDetail = ConsiliumLoopListItem & {
    * `ConsiliumLoopRow` once that lands.
    */
   throttledPhase?: "review" | "develop" | null;
+  /**
+   * Agent-limit throttling v2 (auto-resume): ISO timestamp of when the loop's
+   * worker is expected to auto-retry, or null when no auto-resume is scheduled
+   * (or on a pre-v2 backend) — consumers fall back to the static Retry-only
+   * message. Client-local mirror of the backend's loop-GET field.
+   */
+  throttledUntil?: string | null;
+  /**
+   * Agent-limit throttling v2 (auto-resume): how many auto-resume attempts the
+   * server has already made for the current throttle. Absent/0 when no
+   * auto-resume attempt has happened yet.
+   */
+  resumeAttempts?: number;
 };
 
 export type { ConsiliumLoopState, ConsiliumLoopRow, ConsiliumLoopRoundRow };
