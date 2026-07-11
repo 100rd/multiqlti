@@ -76,7 +76,7 @@ import { buildBranchName } from "./pr-wrapper.js";
 import { assertRepoIsProjectWorkspace, backtickFence, stripControlMultiline, buildSingleVerifierTask, VERIFIER_TASK_NAME, buildCrossReviewTasks, PRESET_PANELS, JUDGE_TASK_NAME } from "./review-factory.js";
 import { parseConsiliumPreset } from "./composition.js";
 import { runReviewTasks } from "./review-runner.js";
-import { isRateLimitError } from "../../gateway/rate-limit.js";
+import { isRateLimitError, parseRetryAfterSeconds } from "../../gateway/rate-limit.js";
 
 // ─── FSM events (design §3 "Event / guard" column) ──────────────────────────
 
@@ -636,13 +636,18 @@ export function composeCancelExplanation(at: Date, actor?: string, reason?: stri
 export function reduce(
   state: ConsiliumLoopState,
   event: LoopEvent,
-  opts?: { verifyBeforeMerge?: boolean; reviewGate?: boolean },
+  opts?: { verifyBeforeMerge?: boolean; reviewGate?: boolean; throttleCooldownSeconds?: number },
 ): LoopTransition | null {
   // §3E verify-before-merge (kill-switched, default OFF ⇒ every branch below is
   // byte-identical to today). When ON it (a) routes the CONFIRMATION review BEFORE the
   // human ship gate, (b) lands a converged confirmation at awaiting_merge, and (c) makes
   // the human `merge_approved` the FINAL ship (terminal, NO second review).
   const vbm = opts?.verifyBeforeMerge ?? false;
+  // "throttled v2" Part A: the fallback cooldown (seconds) used to stamp
+  // `throttledUntil` when the throttled event carries no parseable Retry-After hint.
+  // Mirrors the config default (`throttle.cooldownSeconds`) so a caller that omits
+  // this opt (e.g. an existing unit test) still gets a sane, bounded deadline.
+  const throttleCooldownSeconds = opts?.throttleCooldownSeconds ?? 300;
   // `cancel` from any non-terminal state → CANCELLED (design §3 last row). Same
   // target/extra shape as before (NO FSM state-table change) plus the `error`
   // column reused as a terminal explanation so the UI never shows a bare
@@ -699,7 +704,16 @@ export function reduce(
   if (event.kind === "retry_requested") {
     if (state !== "throttled") return null;
     const to = event.throttledPhase === "develop" ? "developing" : "building_context";
-    return { from: "throttled", to, extra: { throttledPhase: null, error: null } };
+    // "throttled v2" Part A: ANY resume (operator retry OR the auto-resume guard in
+    // `tickInner`, both funnel through `retryThrottled` → this SAME branch) clears the
+    // auto-resume deadline and resets the bounded attempt counter — the resumed loop
+    // reads as fully active again, and a LATER throttled pause starts its own fresh
+    // budget rather than inheriting a stale count from a prior pause.
+    return {
+      from: "throttled",
+      to,
+      extra: { throttledPhase: null, error: null, throttledUntil: null, resumeAttempts: 0 },
+    };
   }
 
   switch (state) {
@@ -720,10 +734,18 @@ export function reduce(
       // loop in `throttled` (NON-terminal, resting) INSTEAD OF the review_failed→failed
       // path above. Every non-limit review error still takes review_failed unchanged.
       if (event.kind === "review_throttled") {
+        // "throttled v2" Part A: stamp the auto-resume deadline. `review_throttled`
+        // carries no raw error text (L1 — the review-runner's raw detail is LOGGED
+        // only, never threaded onto the event), so this always uses the configured
+        // cooldown default (no Retry-After to parse).
         return {
           from: "reviewing",
           to: "throttled",
-          extra: { throttledPhase: "review", error: THROTTLED_ERROR_MESSAGE },
+          extra: {
+            throttledPhase: "review",
+            error: THROTTLED_ERROR_MESSAGE,
+            throttledUntil: new Date(Date.now() + 1000 * throttleCooldownSeconds),
+          },
         };
       }
       return null;
@@ -738,10 +760,21 @@ export function reduce(
         // close-out pauses the loop in `throttled` INSTEAD OF the awaiting_merge(error)
         // path below. Every non-limit close-out error is unaffected (byte-identical).
         if (event.rateLimited) {
+          // "throttled v2" Part A: stamp the auto-resume deadline. `event.error` (the
+          // coder close-out's raw text) is parsed ONLY for a Retry-After/"retry after
+          // Ns" hint — never persisted onto `extra.error` (which stays the FIXED
+          // generic `THROTTLED_ERROR_MESSAGE`, L1) — falling back to the configured
+          // cooldown when unparseable/absent.
           return {
             from: "developing",
             to: "throttled",
-            extra: { throttledPhase: "develop", error: THROTTLED_ERROR_MESSAGE },
+            extra: {
+              throttledPhase: "develop",
+              error: THROTTLED_ERROR_MESSAGE,
+              throttledUntil: new Date(
+                Date.now() + 1000 * (parseRetryAfterSeconds(event.error ?? "") ?? throttleCooldownSeconds),
+              ),
+            },
           };
         }
         // H-2: the SDLC close-out ran in the BACKGROUND while the loop sat in
@@ -1772,6 +1805,47 @@ export class ConsiliumLoopController {
     const redriven = await this.redriveStranded(loop);
     if (redriven) return redriven;
 
+    // "throttled v2" Part A: bounded AUTO-RESUME. A loop resting in `throttled` past
+    // its stamped `throttledUntil` deadline resumes ITSELF via the EXISTING
+    // operator-only `retryThrottled` command — no new resume logic, no new FSM event.
+    // `throttled` stays a RESTING state for `deriveEvent`/the poller (only the
+    // `retry_requested` event, injected exclusively by `retryThrottled`, ever advances
+    // it) — this guard just decides WHEN to call that same command autonomously.
+    // Bounded by `maxAutoResumeAttempts` so a persistently-limited loop still falls
+    // back to requiring an operator (never retries forever). The bump below is a
+    // same-state CAS (`throttled`→`throttled`) guarded on the row still being
+    // `throttled` — a loser (e.g. an operator won a concurrent manual Retry) simply
+    // no-ops and is reassessed on the next tick.
+    // Optional chaining below: `throttle` is defaulted by the Zod schema in every REAL
+    // config load, but hand-rolled test `fakeConfig` fixtures predating this feature
+    // omit the key entirely — `?.` keeps every such existing test byte-identical
+    // (auto-resume simply never fires without an explicit `throttle` block) instead of
+    // throwing on `tick()` for an unrelated (non-throttled) loop.
+    const throttleCfg = this.loopConfig().throttle;
+    if (
+      loop.state === "throttled" &&
+      throttleCfg?.autoResume &&
+      loop.throttledUntil &&
+      Date.now() >= loop.throttledUntil.getTime() &&
+      loop.resumeAttempts < throttleCfg.maxAutoResumeAttempts
+    ) {
+      const bumped = await this.storage.casLoopState(loop.id, "throttled", "throttled", {
+        resumeAttempts: loop.resumeAttempts + 1,
+      });
+      if (!bumped) return null; // lost the bump race — reassessed next tick.
+      this.log(
+        loopId,
+        `throttled auto-resume: attempt ${bumped.resumeAttempts}/${throttleCfg.maxAutoResumeAttempts}`,
+      );
+      // `retryThrottled`'s private branches re-check the SAME in-process reentrancy
+      // guard `tick()` already set for this loopId — release it here so the resume
+      // proceeds exactly like the operator path; `tick()`'s outer `finally` re-deletes
+      // it (harmless no-op on an already-absent id) once this returns.
+      this.inFlight.delete(loopId);
+      const result = await this.retryThrottled(loopId);
+      return result.ok ? result.loop : null;
+    }
+
     const event = await this.deriveEvent(loop);
     if (!event) {
       // Bug #7: no event means the review iteration is genuinely still `running`
@@ -1806,6 +1880,7 @@ export class ConsiliumLoopController {
 
     const transition = reduce(loop.state, event, {
       verifyBeforeMerge: this.verifyBeforeMergeEnabled(),
+      throttleCooldownSeconds: throttleCfg?.cooldownSeconds,
     });
     if (!transition) return null;
 
@@ -3113,6 +3188,13 @@ export class ConsiliumLoopController {
       ? [buildSingleVerifierTask({ model: cfg.verifyReview?.model ?? "claude-opus", priorFindings })]
       : buildCrossReviewTasks(panel);
     const judgeTaskName = singleVerifier ? VERIFIER_TASK_NAME : JUDGE_TASK_NAME;
+    // Part B (throttled v2, per-seat fallback): the VISIBLE active-model catalog
+    // lets a rate-limited seat auto-rotate to a different-provider model instead of
+    // failing the whole panel (see review-runner.ts's fallback/drop/quorum gate).
+    const activeModels = (await this.storage.getActiveModels()).map((m) => ({
+      slug: m.slug,
+      provider: m.provider,
+    }));
     return runReviewTasks({
       tasks,
       judgeTaskName,
@@ -3120,6 +3202,7 @@ export class ConsiliumLoopController {
       groupInput: ctx.input,
       gateway,
       timeoutMs: this.deps.config().pipeline.taskGroups.taskTimeoutMs,
+      activeModels,
     });
   }
 

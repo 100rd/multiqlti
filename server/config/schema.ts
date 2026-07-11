@@ -440,6 +440,39 @@ export const ConfigSchema = z.object({
         fallbackModel: z.string().min(1).optional(),
       }).default({}),
       /**
+       * "throttled v2" Part A — bounded AUTO-RESUME for a loop paused in `throttled`
+       * by a CLEAR usage/rate-limit signature (rate-limit.ts / the throttled MVP).
+       * Today the ONLY way out of `throttled` is an operator's manual Retry
+       * (`controller.retryThrottled`); this adds a self-resume once the loop's
+       * `throttledUntil` deadline has passed, bounded so a persistently-limited
+       * loop still falls back to requiring an operator (never retries forever).
+       */
+      throttle: z.object({
+        /** Kill-switch: false → auto-resume is inert; only operator Retry resumes
+         *  a throttled loop (today's behavior, byte-identical). */
+        autoResume: z.boolean().default(true),
+        /**
+         * Default cooldown (seconds) before a throttled loop is eligible for
+         * auto-resume, used when the provider's error text carries no parseable
+         * `Retry-After`/"retry after Ns" hint (see `parseRetryAfterSeconds`).
+         * 30s..24h; default 5min.
+         */
+        cooldownSeconds: z.coerce.number().int().min(30).max(86_400).default(300),
+        /**
+         * Bounded auto-resume attempts per throttled pause before giving up and
+         * resting for the operator's manual Retry (never retries forever). 0
+         * ⇒ auto-resume never fires (operator-only, though `autoResume` is the
+         * primary kill-switch). 0..20; default 3.
+         */
+        maxAutoResumeAttempts: z.coerce.number().int().min(0).max(20).default(3),
+        /**
+         * Optional model slug override for the CODER on an auto-resumed develop-phase
+         * resume (e.g. a fallback model when the primary is the one hitting the usage
+         * limit). Omitted ⇒ the resume re-uses the task's own model, unchanged.
+         */
+        coderFallbackModel: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/).optional(),
+      }).default({}),
+      /**
        * Stage 1 (design §6): the intent→archetype PLANNER — a single OUT-OF-BAND
        * lightweight model call (NOT a DAG task, NOT an FSM state) that proposes one
        * of a fixed enum of archetypes for a verdict-terminal loop. The whole planner

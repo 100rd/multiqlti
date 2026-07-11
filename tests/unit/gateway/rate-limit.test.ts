@@ -6,7 +6,7 @@
  * worse than false negative — see rate-limit.ts's header).
  */
 import { describe, it, expect } from "vitest";
-import { isRateLimitError } from "../../../server/gateway/rate-limit.js";
+import { isRateLimitError, parseRetryAfterSeconds } from "../../../server/gateway/rate-limit.js";
 
 describe("isRateLimitError — positive (CLEAR signatures)", () => {
   const positives = [
@@ -52,4 +52,41 @@ describe("isRateLimitError — negative (ambiguous / unrelated — keeps existin
       expect(isRateLimitError(text)).toBe(false);
     });
   }
+});
+
+describe("parseRetryAfterSeconds — best-effort cooldown parse (throttled v2 auto-resume)", () => {
+  const positives: Array<[string, number]> = [
+    ["retry after 42s", 42],
+    ["Retry-After: 120", 120],
+    ["retry-after 90 seconds", 90],
+    ["try again in 5m", 300],
+    ["try again in 2 minutes", 120],
+    ["retry after 1h", 3600],
+    ["please retry-after 3 hours", 10800],
+    ["Retry-After:120", 120], // no space after colon
+    ["RATE LIMITED. Retry-After: 30", 30],
+  ];
+  for (const [text, seconds] of positives) {
+    it(`parses ${JSON.stringify(text)} -> ${seconds}s`, () => {
+      expect(parseRetryAfterSeconds(text)).toBe(seconds);
+    });
+  }
+
+  const negatives = [
+    "",
+    "429 Too Many Requests",
+    "rate limit exceeded, please slow down",
+    "CLI timed out after 1429ms",
+    "connection reset by peer",
+    "quota exceeded for this project",
+  ];
+  for (const text of negatives) {
+    it(`returns null for ${JSON.stringify(text.slice(0, 60))}`, () => {
+      expect(parseRetryAfterSeconds(text)).toBeNull();
+    });
+  }
+
+  it("never throws on garbage input", () => {
+    expect(() => parseRetryAfterSeconds("retry after " + "9".repeat(400) + "s")).not.toThrow();
+  });
 });

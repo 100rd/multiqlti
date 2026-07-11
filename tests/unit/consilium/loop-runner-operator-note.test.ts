@@ -116,6 +116,7 @@ describe("#18 — runner-mode carries the operator's steering note into round > 
     const storage = {
       getLoopRounds: vi.fn(async () => [round1]),
       getTaskGroup: vi.fn(async () => ({ id: "grp1", name: "[consilium-review:sdlc-cross-review] x", input: "objective" })),
+      getActiveModels: vi.fn(async () => []),
     };
     const controller = new ConsiliumLoopController({
       storage: storage as never,
@@ -139,6 +140,7 @@ describe("#18 — runner-mode carries the operator's steering note into round > 
     const storage = {
       getLoopRounds: vi.fn(async () => [round1]),
       getTaskGroup: vi.fn(async () => ({ id: "grp1", name: "[consilium-review:sdlc-cross-review] x", input: "objective" })),
+      getActiveModels: vi.fn(async () => []),
     };
     const controller = new ConsiliumLoopController({
       storage: storage as never,
@@ -160,6 +162,7 @@ describe("#18 — runner-mode carries the operator's steering note into round > 
     const storage = {
       getLoopRounds: vi.fn(async () => [round1, round2]),
       getTaskGroup: vi.fn(async () => ({ id: "grp1", name: "[consilium-review:sdlc-cross-review] x", input: "objective" })),
+      getActiveModels: vi.fn(async () => []),
     };
     const controller = new ConsiliumLoopController({
       storage: storage as never,
@@ -179,6 +182,7 @@ describe("#18 — runner-mode carries the operator's steering note into round > 
     const storage = {
       getLoopRounds: vi.fn(async () => []),
       getTaskGroup: vi.fn(async () => ({ id: "grp1", name: "[consilium-review:sdlc-cross-review] x", input: "objective" })),
+      getActiveModels: vi.fn(async () => []),
     };
     const controller = new ConsiliumLoopController({
       storage: storage as never,
@@ -200,6 +204,7 @@ describe("#18 — runner-mode carries the operator's steering note into round > 
         throw new Error("transient storage blip");
       }),
       getTaskGroup: vi.fn(async () => ({ id: "grp1", name: "[consilium-review:sdlc-cross-review] x", input: "objective" })),
+      getActiveModels: vi.fn(async () => []),
     };
     const controller = new ConsiliumLoopController({
       storage: storage as never,
@@ -288,6 +293,7 @@ describe("Large Research gate — buildOperatorNote folds the latest round's Res
     const storage = {
       getLoopRounds: vi.fn(async () => [round1]),
       getTaskGroup: vi.fn(async () => ({ id: "grp1", name: "[consilium-review:large-research] x", input: "objective" })),
+      getActiveModels: vi.fn(async () => []),
     };
     const controller = new ConsiliumLoopController({
       storage: storage as never,
@@ -322,6 +328,7 @@ describe("Large Research gate — buildOperatorNote folds the latest round's Res
     const storage = {
       getLoopRounds: vi.fn(async () => [round1]),
       getTaskGroup: vi.fn(async () => ({ id: "grp1", name: "[consilium-review:large-research] x", input: "objective" })),
+      getActiveModels: vi.fn(async () => []),
     };
     const controller = new ConsiliumLoopController({
       storage: storage as never,
@@ -347,6 +354,7 @@ describe("Large Research gate — buildOperatorNote folds the latest round's Res
     const storage = {
       getLoopRounds: vi.fn(async () => [round1]),
       getTaskGroup: vi.fn(async () => ({ id: "grp1", name: "[consilium-review:sdlc-cross-review] x", input: "objective" })),
+      getActiveModels: vi.fn(async () => []),
     };
     const controller = new ConsiliumLoopController({
       storage: storage as never,
@@ -372,6 +380,7 @@ describe("Large Research gate — buildOperatorNote folds the latest round's Res
     const storage = {
       getLoopRounds: vi.fn(async () => [round1]),
       getTaskGroup: vi.fn(async () => ({ id: "grp1", name: "[consilium-review:large-research] x", input: "objective" })),
+      getActiveModels: vi.fn(async () => []),
     };
     const controller = new ConsiliumLoopController({
       storage: storage as never,
