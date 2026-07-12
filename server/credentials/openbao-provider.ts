@@ -176,7 +176,19 @@ export class OpenBaoCredentialProvider implements CredentialProvider {
     return this.metadataStore.accessSecret(params);
   }
 
-  // ── EXEC-TIME lease ops (delegate — unchanged) ──────────────────────────────
+  // ── EXEC-TIME lease ops (delegate — leases are Postgres-backed either way) ───
+
+  issueLease(p: {
+    projectId: string;
+    credentialId: string;
+    loopId: string;
+    phase: string;
+    requestedBy: string;
+    ttlSeconds?: number;
+    justification?: string;
+  }): Promise<{ leaseId: string; expiresAt: Date }> {
+    return this.metadataStore.issueLease(p);
+  }
 
   revokeLease(leaseId: string): Promise<void> {
     return this.metadataStore.revokeLease(leaseId);

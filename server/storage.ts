@@ -23,6 +23,7 @@ import {
   type InsertTaskGroup,
   type ConsiliumLoopRow,
   type InsertConsiliumLoop,
+  type ConsiliumLoopSecret,
   type ConsiliumLoopRoundRow,
   type InsertConsiliumLoopRound,
   type ConsiliumLoopState,
@@ -444,6 +445,14 @@ export interface IStorage {
    *  group (Security H-3) — surfaces as a unique-violation the route maps to 409. */
   createLoop(data: InsertConsiliumLoop): Promise<ConsiliumLoopRow>;
   getLoop(id: string): Promise<ConsiliumLoopRow | undefined>;
+  /** ADR-003 §D2 — the secrets a loop is authorized to lease (its bound set). */
+  getLoopSecrets(loopId: string): Promise<ConsiliumLoopSecret[]>;
+  /** ADR-003 §D2 — bind credentials to a loop at create (idempotent per pair). */
+  bindLoopSecrets(p: {
+    loopId: string;
+    credentialIds: string[];
+    createdBy: string;
+  }): Promise<void>;
   /** Loops created by `ownerId`, newest first (owner-scoped list, mirror task-groups). */
   getLoopsByOwner(ownerId: string): Promise<ConsiliumLoopRow[]>;
   /** All loops (admin list / poller backstop sweep). */
@@ -1400,6 +1409,8 @@ export class MemStorage implements IStorage {
 
   private consiliumLoopsMap: Map<string, ConsiliumLoopRow> = new Map();
   private consiliumLoopRoundsMap: Map<string, ConsiliumLoopRoundRow> = new Map();
+  // ADR-003 §D2 — loop→secret bindings (the bound set consulted by issueLease).
+  private consiliumLoopSecretRows: ConsiliumLoopSecret[] = [];
 
   /** Mirror the DB partial-unique index: at most one non-terminal loop/group. */
   private isLoopActive(row: ConsiliumLoopRow): boolean {
@@ -1475,6 +1486,30 @@ export class MemStorage implements IStorage {
 
   async getLoop(id: string): Promise<ConsiliumLoopRow | undefined> {
     return this.consiliumLoopsMap.get(id);
+  }
+
+  async getLoopSecrets(loopId: string): Promise<ConsiliumLoopSecret[]> {
+    return this.consiliumLoopSecretRows.filter((r) => r.loopId === loopId);
+  }
+
+  async bindLoopSecrets(p: {
+    loopId: string;
+    credentialIds: string[];
+    createdBy: string;
+  }): Promise<void> {
+    const now = new Date();
+    for (const credentialId of p.credentialIds) {
+      const exists = this.consiliumLoopSecretRows.some(
+        (r) => r.loopId === p.loopId && r.credentialId === credentialId,
+      );
+      if (exists) continue;
+      this.consiliumLoopSecretRows.push({
+        loopId: p.loopId,
+        credentialId,
+        createdBy: p.createdBy,
+        createdAt: now,
+      });
+    }
   }
 
   async getLoopsByOwner(ownerId: string): Promise<ConsiliumLoopRow[]> {

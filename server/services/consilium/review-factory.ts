@@ -67,6 +67,7 @@ import { readdirSync, readFileSync, statSync, type Dirent } from "fs";
 import { basename, join } from "path";
 import simpleGit from "simple-git";
 import type { IStorage } from "../../storage.js";
+import { credentialProvider } from "../../credentials/db-crypto-provider.js";
 import type { InsertConsiliumLoop, ConsiliumLoopRow, Skill, AppliedSkillRef } from "@shared/schema";
 import type { ConsiliumReviewPreset, TriggerProvenance, ReviewMode } from "@shared/types";
 import type { TaskOrchestrator, CreateTaskParam } from "../task-orchestrator.js";
@@ -1290,6 +1291,15 @@ export interface CreateConsiliumReviewParams {
    */
   skillIds?: string[];
   /**
+   * ADR-003 §D2 (binding-at-create = approval): OPTIONAL operator-selected secret
+   * NAMES this loop is authorized to lease at exec time. Resolved PROJECT-SCOPED to
+   * credentialIds (metadata only — never a value) and bound to the loop; an unknown
+   * or malformed name THROWS (→ 400) with nothing persisted. Absent/empty ⇒ the loop
+   * has no bound secrets and `issueLease` can lease nothing for it (byte-identical to
+   * today). Names are NOT secret material — they are safe to echo in errors/logs.
+   */
+  secretNames?: string[];
+  /**
    * BRANCH-targeted review: an optional git ref (branch name / revision) the
    * review targets. STRICT-validated here (ref-validator.ts) before it reaches
    * git; persisted as the loop's `reviewRef`. Absent/null ⇒ working-tree HEAD
@@ -1387,6 +1397,53 @@ export async function assertRepoIsProjectWorkspace(
  * (S1), the repoPath is not a workspace of the current project (S5), the preset
  * is unknown, or a non-hex baselineCommit is supplied (S3).
  */
+// ─── ADR-003 §D2: bind operator-authorized secrets to the loop ────────────────
+const SECRET_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const MAX_BOUND_SECRETS = 20;
+
+/**
+ * Resolve operator-selected secret NAMES to their credentialIds, PROJECT-SCOPED
+ * (listCredentials returns metadata only — never a value). Validates shape and
+ * caps the count; an unknown or malformed name THROWS a tagged error that the
+ * create routes map to 400. Absent/empty ⇒ [] (the loop binds nothing, so
+ * issueLease can lease nothing for it — byte-identical to a no-secrets loop).
+ */
+async function resolveBoundSecretIds(
+  secretNames: string[] | undefined,
+  projectId: string,
+): Promise<string[]> {
+  if (!secretNames || secretNames.length === 0) return [];
+  const deduped = Array.from(new Set(secretNames));
+  if (deduped.length > MAX_BOUND_SECRETS) {
+    throw new Error(
+      `[secret-invalid] at most ${MAX_BOUND_SECRETS} secrets may be bound to a loop`,
+    );
+  }
+  for (const name of deduped) {
+    if (!SECRET_NAME_RE.test(name)) {
+      throw new Error(
+        `[secret-invalid] secret name "${name}" is not a valid identifier`,
+      );
+    }
+  }
+  const metadata = await credentialProvider.listCredentials(projectId);
+  const idByName = new Map<string, string>();
+  for (const m of metadata) {
+    if (m.name) idByName.set(m.name, m.id);
+  }
+  const ids: string[] = [];
+  for (const name of deduped) {
+    const id = idByName.get(name);
+    if (!id) {
+      throw new Error(
+        `[secret-not-found] secret "${name}" was not found in this project`,
+      );
+    }
+    ids.push(id);
+  }
+  return ids;
+}
+
 export async function createConsiliumReview(
   deps: CreateConsiliumReviewDeps,
   params: CreateConsiliumReviewParams,
@@ -1405,6 +1462,14 @@ export async function createConsiliumReview(
   // boundary). A repo must pass BOTH. Fail-closed: no matching workspace ⇒ reject.
   // Runs before createTaskGroup/createLoop ⇒ nothing persisted on rejection.
   await assertRepoIsProjectWorkspace(resolvedRepo, storage);
+
+  // ADR-003 §D2: resolve + validate operator-authorized secret NAMES to
+  // credentialIds BEFORE anything is persisted — an unknown/malformed name throws
+  // here (→ 400) with nothing created. Bound after createLoop (needs loop.id).
+  const boundSecretIds = await resolveBoundSecretIds(
+    params.secretNames,
+    params.projectId,
+  );
 
   const panel = PRESET_PANELS[params.preset];
   if (!panel) throw new Error(`unknown consilium review preset: ${String(params.preset)}`);
@@ -1509,6 +1574,16 @@ export async function createConsiliumReview(
     // Draft-PR capable) ⇒ A; review-only ⇒ R0.
     class: cfg.implement?.enabled ? "A" : "R0",
   } as InsertConsiliumLoop);
+
+  // ADR-003 §D2: persist the loop→secret bindings (the bound set issueLease
+  // consults). Idempotent per (loop, credential). Empty ⇒ no-op.
+  if (boundSecretIds.length > 0) {
+    await storage.bindLoopSecrets({
+      loopId: loop.id,
+      credentialIds: boundSecretIds,
+      createdBy: params.createdBy,
+    });
+  }
 
   // 3) Start it (PENDING → BUILDING_CONTEXT). The poller advances it from there;
   //    `controller.start` returns the ticked row (or null if it could not start,

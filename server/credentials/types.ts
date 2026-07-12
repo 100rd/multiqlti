@@ -125,11 +125,17 @@ export interface AccessSecretParams {
  *   enforcing project assertion only in project context and skipping it in system
  *   context (while still auditing the access).
  *
- *   [R3-SEC-2] issueLease reads stage_executions.approvalStatus === 'approved' AND
- *   pipeline_runs.status === 'running' from the DB and throws ForbiddenError
- *   otherwise.  The approval gate is a broker invariant, not a caller convention.
+ *   [R3-SEC-2 / ADR-003 §D1] issueLease gates on the consilium-loop execution
+ *   model (the pipeline_runs / stage_executions tables were removed in PR #525):
+ *   the referenced loop must exist, match the project, and be in a
+ *   secret-consuming state (state ∈ {reviewing, developing}); otherwise
+ *   ForbiddenError.  The gate is a broker invariant, not a caller convention.
  *
- *   [R3-SEC-10] issueLease is rate-limited per (projectId, runId).
+ *   [ADR-003 §D2] issueLease additionally requires the credentialId to be in the
+ *   loop's bound set (consilium_loop_secrets) — the operator's binding-at-create
+ *   IS the approval.  A credential not bound to the loop can never be leased.
+ *
+ *   [R3-SEC-10] issueLease is rate-limited per (projectId, loopId).
  */
 export interface CredentialProvider {
   // ── PLAN-TIME ─────────────────────────────────────────────────────────────
@@ -178,6 +184,29 @@ export interface CredentialProvider {
   }): Promise<string>;
 
   // ── EXEC-TIME ─────────────────────────────────────────────────────────────
+
+  /**
+   * Issue a short-TTL, scoped, audited lease for a credential a consilium loop is
+   * authorized to use (ADR-003 §D1/§D2, supersedes ADR-001 [R3-SEC-2]).
+   *
+   * Fail-closed; audited on failure too (action='lease_issued', success=false):
+   *   [R3-SEC-3]  projectId === getProjectId() (system context throws structurally).
+   *   D1          loop exists, its projectId matches, state ∈ {reviewing, developing}.
+   *   D2          credentialId is in the loop's bound set (consilium_loop_secrets).
+   *   [R3-SEC-10] rate-limited per (projectId, loopId).
+   *
+   * On success writes credential_leases(active, runId=loopId, stageId=phase) and
+   * audits action='lease_issued' with ttlSeconds. TTL is clamped to a safe range.
+   */
+  issueLease(p: {
+    projectId: string;
+    credentialId: string;
+    loopId: string;
+    phase: string;
+    requestedBy: string;
+    ttlSeconds?: number;
+    justification?: string;
+  }): Promise<{ leaseId: string; expiresAt: Date }>;
 
   /** Mark a lease revoked.  No-op if already revoked (idempotent). */
   revokeLease(leaseId: string): Promise<void>;
