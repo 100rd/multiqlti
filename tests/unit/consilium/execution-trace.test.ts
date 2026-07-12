@@ -141,6 +141,57 @@ describe("execution-trace — buildSdlcTrace (coder path)", () => {
   });
 });
 
+describe("execution-trace — §3a.C leased-value scrub", () => {
+  const secret = "leaked-secret-value-abc123";
+  const outcomes = [
+    {
+      index: 1,
+      priority: "P0",
+      title: "t",
+      status: "completed" as const,
+      verification: {
+        method: "test-run" as const,
+        ran: true,
+        passed: true,
+        summary: `token ${secret} in output`,
+        fixIterations: 1,
+        criterion: "c",
+      },
+    },
+  ];
+
+  it("redacts a leased value from the criterion summary when secretValues is provided", () => {
+    const t = buildSdlcTrace(
+      "repo-assessment",
+      outcomes,
+      { prRef: "x" },
+      undefined,
+      undefined,
+      [secret],
+    );
+    const crit = t.controller.workers[0].criteria[0];
+    expect(crit.summary).not.toContain(secret);
+    expect(crit.summary).toContain("[REDACTED]");
+  });
+
+  it("redacts a leased value from the controller error note", () => {
+    const t = buildSdlcTrace(
+      "repo-assessment",
+      outcomes,
+      { prRef: null, error: `boom ${secret}` },
+      undefined,
+      undefined,
+      [secret],
+    );
+    expect(t.controller.note ?? "").not.toContain(secret);
+  });
+
+  it("is byte-identical (leased value NOT redacted) when secretValues is omitted", () => {
+    const t = buildSdlcTrace("repo-assessment", outcomes, { prRef: "x" });
+    expect(t.controller.workers[0].criteria[0].summary).toContain(secret);
+  });
+});
+
 describe("execution-trace — buildResearchTrace (research path)", () => {
   it("builds a research-runner controller with research→synthesize→verify + web-evidence criteria", () => {
     const t = buildResearchTrace(
