@@ -60,6 +60,34 @@ describe("scrubSecrets", () => {
   });
 });
 
+describe("scrubSecrets — per-run leased value set (ADR-003 §D dynamic scrubber)", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("redacts a leased value that never sat in process.env", () => {
+    const leased = "leased-aws-secret-value-abcdef";
+    const out = scrubSecrets(`AWS_SECRET_ACCESS_KEY=${leased} in output`, [leased]);
+    expect(out).not.toContain(leased);
+    expect(out).toContain("[REDACTED]");
+  });
+
+  it("is byte-identical when no extra values are passed (leased value NOT redacted)", () => {
+    const leased = "leased-only-value-xyz123";
+    // Not in process.env and no extraValues ⇒ unchanged (proves opt-in default).
+    expect(scrubSecrets(`echo ${leased}`)).toBe(`echo ${leased}`);
+  });
+
+  it("drops short extra values to avoid mass false-positive redaction", () => {
+    const out = scrubSecrets("the id ab12 appears in prose", ["ab12"]);
+    expect(out).toBe("the id ab12 appears in prose");
+  });
+
+  it("scrubAndTruncate threads the leased value set", () => {
+    const leased = "leased-kubeconfig-token-998877";
+    const out = scrubAndTruncate(`KUBECONFIG token ${leased}`, [leased]);
+    expect(out).not.toContain(leased);
+  });
+});
+
 describe("scrubAndTruncate", () => {
   beforeEach(() => vi.stubEnv("OMNISCIENCE_TOKEN", "tok-secret-9999"));
   afterEach(() => vi.unstubAllEnvs());
