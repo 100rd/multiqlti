@@ -68,6 +68,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { apiRequest } from "@/hooks/use-api";
+import type { CredentialMetadata } from "@/hooks/use-credentials";
 import { useSkills } from "@/hooks/use-skills";
 import { useToast } from "@/hooks/use-toast";
 import { parseBranchFromUrl } from "@/components/consilium/parse-branch-url";
@@ -123,6 +124,9 @@ const MAX_INSTRUCTION_LEN = 8000;
 
 /** Max skills that may extend one review's instruction (mirrors the server bound). */
 const MAX_REVIEW_SKILLS = 5;
+// Mirrors the server-side cap on `secretNames` (ADR-003 §D2: ≤20, deduped). Each
+// bound secret authorizes the loop to lease that credential at exec time.
+const MAX_REVIEW_SECRETS = 20;
 
 /** The first line of a skill's description — a compact one-line hint in the picker. */
 function firstLine(text: string | null | undefined): string {
@@ -239,6 +243,9 @@ export function NewConsiliumReviewDialog({
   // Optional operator-selected skills whose directives extend the instruction. Sent
   // as `skillIds` (order = priority) only when non-empty; capped at MAX_REVIEW_SKILLS.
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
+  // Operator-authorized secrets (ADR-003 §D2 binding-at-create) → `secretNames`
+  // (credential names) only when non-empty; capped at MAX_REVIEW_SECRETS.
+  const [selectedSecretNames, setSelectedSecretNames] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [, navigate] = useLocation();
   const qc = useQueryClient();
@@ -258,6 +265,29 @@ export function NewConsiliumReviewDialog({
       if (cur.includes(id)) return cur.filter((s) => s !== id);
       if (cur.length >= MAX_REVIEW_SKILLS) return cur;
       return [...cur, id];
+    });
+  };
+
+  // The active project's named secrets (project-scoped via apiRequest's
+  // x-project-id). Metadata only — the secret VALUE is never sent to the client.
+  // Powers the optional multi-select below; absent/empty ⇒ the section is hidden
+  // entirely (never a dead control). Binding is by NAME, so nameless legacy
+  // connection-backed credentials are excluded.
+  const secretsQuery = useQuery<CredentialMetadata[]>({
+    queryKey: ["/api/credentials"],
+    queryFn: () => apiRequest("GET", "/api/credentials"),
+  });
+  const availableSecrets = (secretsQuery.data ?? []).filter(
+    (c): c is CredentialMetadata & { name: string } => Boolean(c.name),
+  );
+  const atSecretCap = selectedSecretNames.length >= MAX_REVIEW_SECRETS;
+
+  // Toggle a secret name in/out of the authorized set, enforcing the cap on add.
+  const toggleSecret = (name: string) => {
+    setSelectedSecretNames((cur) => {
+      if (cur.includes(name)) return cur.filter((s) => s !== name);
+      if (cur.length >= MAX_REVIEW_SECRETS) return cur;
+      return [...cur, name];
     });
   };
 
@@ -423,6 +453,7 @@ export function NewConsiliumReviewDialog({
       ref?: string;
       engineerInstruction?: string;
       skillIds?: string[];
+      secretNames?: string[];
       reviewMode?: "full-dispute" | "single-verifier";
       commitPrefix?: string;
     } = { repoPath: path, preset };
@@ -454,6 +485,12 @@ export function NewConsiliumReviewDialog({
     // server resolves them project-scoped and appends their directives to the
     // instruction under a byte budget (dropping whole skills if it must).
     if (selectedSkillIds.length > 0) body.skillIds = selectedSkillIds;
+    // Secrets → `secretNames` (ADR-003 §D2 binding-at-create = the operator's
+    // approval). Send only when some are selected; absent ⇒ byte-identical to
+    // today. The server resolves each name to a credentialId (metadata only) and
+    // binds it as the loop's authorized set; an unknown name is a 400. No secret
+    // VALUE is ever sent from the client.
+    if (selectedSecretNames.length > 0) body.secretNames = selectedSecretNames;
     // Review mode → `reviewMode` only when an EXPLICIT choice is made; "" leaves it
     // to the server's operator default (verifyReview.enabled), preserving today's flow.
     if (reviewMode) body.reviewMode = reviewMode;
@@ -935,6 +972,70 @@ export function NewConsiliumReviewDialog({
               <p className="text-xs text-muted-foreground">
                 Each selected skill's directive is appended to the instruction above,
                 in the order picked. At most {MAX_REVIEW_SKILLS}.
+              </p>
+            </div>
+          )}
+          {/* Secrets the loop may use (ADR-003 §D2). Selecting a secret binds it as
+              the loop's authorized set — at exec time the loop can lease a short-TTL,
+              audited, revocable handle to that credential; nothing is granted by
+              default. Only credential NAMES are shown; the value never reaches the
+              client. Hidden when the project has no named secrets, so it is never an
+              empty dead control. */}
+          {availableSecrets.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-baseline justify-between gap-2">
+                <Label>
+                  Secrets{" "}
+                  <span className="text-muted-foreground">(this loop may use)</span>
+                </Label>
+                <span
+                  className="text-xs tabular-nums text-muted-foreground"
+                  data-testid="new-review-secrets-counter"
+                >
+                  {selectedSecretNames.length}/{MAX_REVIEW_SECRETS}
+                </span>
+              </div>
+              <div
+                className="max-h-40 space-y-1 overflow-y-auto rounded border p-2"
+                data-testid="new-review-secrets"
+              >
+                {availableSecrets.map((secret) => {
+                  const checked = selectedSecretNames.includes(secret.name);
+                  const disabled = !checked && atSecretCap;
+                  const hint = firstLine(secret.description) || secret.provider;
+                  return (
+                    <label
+                      key={secret.id}
+                      className={
+                        "flex items-start gap-2 rounded p-1.5 text-sm " +
+                        (disabled
+                          ? "cursor-not-allowed opacity-50"
+                          : "cursor-pointer hover:bg-muted/50")
+                      }
+                    >
+                      <Checkbox
+                        checked={checked}
+                        disabled={disabled}
+                        onCheckedChange={() => toggleSecret(secret.name)}
+                        data-testid={`new-review-secret-${secret.name}`}
+                        className="mt-0.5"
+                      />
+                      <span className="min-w-0">
+                        <span className="font-medium">{secret.name}</span>
+                        {hint && (
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {hint}
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Each selected secret grants the loop short-lived, audited, revocable
+                access at exec time — never placed in a reviewer's prompt. At most{" "}
+                {MAX_REVIEW_SECRETS}.
               </p>
             </div>
           )}

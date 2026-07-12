@@ -55,6 +55,8 @@ import {
   taskExecutions,
   consiliumLoops,
   consiliumLoopRounds,
+  consiliumLoopSecrets,
+  type ConsiliumLoopSecret,
   experienceItems,
   type ExperienceItemRow,
   type InsertExperienceItem,
@@ -779,6 +781,31 @@ export class PgStorage implements IStorage {
   async getLoop(id: string): Promise<ConsiliumLoopRow | undefined> {
     const [row] = await db.select().from(consiliumLoops).where(withProject(consiliumLoops, eq(consiliumLoops.id, id)));
     return row;
+  }
+
+  async getLoopSecrets(loopId: string): Promise<ConsiliumLoopSecret[]> {
+    return db
+      .select()
+      .from(consiliumLoopSecrets)
+      .where(eq(consiliumLoopSecrets.loopId, loopId));
+  }
+
+  async bindLoopSecrets(p: {
+    loopId: string;
+    credentialIds: string[];
+    createdBy: string;
+  }): Promise<void> {
+    if (p.credentialIds.length === 0) return;
+    await db
+      .insert(consiliumLoopSecrets)
+      .values(
+        p.credentialIds.map((credentialId) => ({
+          loopId: p.loopId,
+          credentialId,
+          createdBy: p.createdBy,
+        })),
+      )
+      .onConflictDoNothing();
   }
 
   async getLoopsByOwner(ownerId: string): Promise<ConsiliumLoopRow[]> {

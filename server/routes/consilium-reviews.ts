@@ -52,6 +52,9 @@ const CreateReviewSchema = z.object({
   // clean 400 here) and each id length-clamped. The factory resolves them
   // PROJECT-SCOPED — a foreign/unknown id is a 400 naming the offending id.
   skillIds: z.array(z.string().min(1).max(200)).max(5).optional(),
+  // ADR-003 §D2: operator-authorized secret NAMES (resolved + bound by the
+  // factory, which enforces the identifier shape and 400s an unknown name).
+  secretNames: z.array(z.string().min(1).max(64)).max(20).optional(),
   // Single-verifier re-review: OPTIONAL per-loop review mode. Absent ⇒ null ⇒ the
   // server resolves it from the operator default (verifyReview.enabled). A server
   // enum (z.enum) so only the two known values pass; anything else is a clean 400.
@@ -141,6 +144,8 @@ export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliu
           engineerInstruction: body.engineerInstruction,
           // Stage 2: operator skill ids — resolved + appended by the factory.
           skillIds: body.skillIds,
+          // ADR-003 §D2: operator-authorized secrets — resolved + bound by factory.
+          secretNames: body.secretNames,
           // Single-verifier re-review: OPTIONAL per-loop mode (persisted on the loop).
           reviewMode: body.reviewMode,
           // OPTIONAL per-loop commit-message/MR-title prefix (sanitized here, same
@@ -162,6 +167,14 @@ export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliu
         // actionable ("skill \"<id>\" was not found in this project").
         if (message.includes("[skill-not-found]")) {
           return res.status(400).json({ error: message.replace("[skill-not-found] ", "") });
+        }
+        // ADR-003 §D2: an unknown project secret name, or a malformed/oversized
+        // secretNames set. The factory names the offender (the caller's own input,
+        // a credential NAME — not secret material and not an fs leak).
+        if (message.includes("[secret-not-found]") || message.includes("[secret-invalid]")) {
+          return res.status(400).json({
+            error: message.replace(/\[secret-(?:not-found|invalid)\] /, ""),
+          });
         }
         // The factory STRICT-validates the optional branch/ref (ref-validator.ts)
         // and throws INVALID_REF_MESSAGE on a bad one — surface a clear 400 (the

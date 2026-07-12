@@ -22,13 +22,60 @@ import {
   credentialLeases,
   credentialAccessLog,
   secrets,
+  consiliumLoops,
+  consiliumLoopSecrets,
 } from "../../shared/schema.js";
+import type { ConsiliumLoopState } from "../../shared/schema.js";
 import type {
   CredentialMetadata,
   CredentialProvider,
   AccessSecretParams,
 } from "./types.js";
 import { ForbiddenError } from "./types.js";
+
+// ─── issueLease policy (ADR-003 §D) ─────────────────────────────────────────────
+
+/** Loop states in which a secret may be leased (§D1). Everything else fails closed. */
+const LEASE_ELIGIBLE_STATES: readonly ConsiliumLoopState[] = [
+  "reviewing",
+  "developing",
+];
+
+/** TTL clamp (§D — short-TTL leases). */
+const DEFAULT_LEASE_TTL_S = 300;
+const MAX_LEASE_TTL_S = 900;
+
+function clampTtl(ttlSeconds?: number): number {
+  if (
+    ttlSeconds === undefined ||
+    !Number.isFinite(ttlSeconds) ||
+    ttlSeconds <= 0
+  ) {
+    return DEFAULT_LEASE_TTL_S;
+  }
+  return Math.min(Math.floor(ttlSeconds), MAX_LEASE_TTL_S);
+}
+
+// [R3-SEC-10] Per-(projectId, loopId) in-memory sliding-window rate limit. Bounds a
+// compromised loop's burst; best-effort per-process throttle, not a distributed quota.
+const RATE_WINDOW_MS = 60_000;
+const MAX_LEASES_PER_WINDOW = 30;
+const leaseRateWindows = new Map<string, number[]>();
+
+function rateLimitOrThrow(projectId: string, loopId: string): void {
+  const key = `${projectId}:${loopId}`;
+  const now = Date.now();
+  const cutoff = now - RATE_WINDOW_MS;
+  const recent = (leaseRateWindows.get(key) ?? []).filter((t) => t > cutoff);
+  if (recent.length >= MAX_LEASES_PER_WINDOW) {
+    throw new ForbiddenError(
+      `issueLease rate limit exceeded for loop ${loopId} ` +
+        `(${MAX_LEASES_PER_WINDOW} per ${RATE_WINDOW_MS / 1000}s).`,
+    );
+  }
+  recent.push(now);
+  leaseRateWindows.set(key, recent);
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -593,6 +640,122 @@ export class DbCryptoCredentialProvider implements CredentialProvider {
     });
 
     return plaintext;
+  }
+
+  /**
+   * ADR-003 §D1/§D2 — issue a short-TTL, scoped, audited, revocable lease for a
+   * credential a consilium loop is authorized to use. Supersedes ADR-001
+   * [R3-SEC-2]'s pipeline-anchored gate. Every denial is audited
+   * (action='lease_issued', success=false) before the ForbiddenError propagates.
+   */
+  async issueLease(p: {
+    projectId: string;
+    credentialId: string;
+    loopId: string;
+    phase: string;
+    requestedBy: string;
+    ttlSeconds?: number;
+    justification?: string;
+  }): Promise<{ leaseId: string; expiresAt: Date }> {
+    // [R3-SEC-3] project-scope; throws structurally in system context.
+    assertProject(p.projectId);
+
+    const auditDenied = async (errorMessage: string): Promise<void> => {
+      await writeAccessLog({
+        credentialId: p.credentialId,
+        projectId: p.projectId,
+        runId: p.loopId,
+        stageId: p.phase,
+        action: "lease_issued",
+        requestedBy: p.requestedBy,
+        justification: p.justification ?? null,
+        success: false,
+        errorMessage,
+      }).catch((auditErr: unknown) => {
+        console.warn("[credential-broker] audit write failed:", auditErr);
+      });
+    };
+
+    // D1 — run-state gate: loop exists, same project, secret-consuming state.
+    const [loop] = await db
+      .select({
+        state: consiliumLoops.state,
+        projectId: consiliumLoops.projectId,
+      })
+      .from(consiliumLoops)
+      .where(eq(consiliumLoops.id, p.loopId));
+    if (
+      !loop ||
+      loop.projectId !== p.projectId ||
+      !LEASE_ELIGIBLE_STATES.includes(loop.state)
+    ) {
+      const reason = !loop
+        ? `loop ${p.loopId} not found`
+        : loop.projectId !== p.projectId
+          ? `loop ${p.loopId} belongs to a different project`
+          : `loop ${p.loopId} state '${loop.state}' is not lease-eligible`;
+      await auditDenied(reason);
+      throw new ForbiddenError(`issueLease denied: ${reason}.`);
+    }
+
+    // D2 — binding-at-create gate: credential must be in the loop's bound set.
+    const [bound] = await db
+      .select({ credentialId: consiliumLoopSecrets.credentialId })
+      .from(consiliumLoopSecrets)
+      .where(
+        and(
+          eq(consiliumLoopSecrets.loopId, p.loopId),
+          eq(consiliumLoopSecrets.credentialId, p.credentialId),
+        ),
+      );
+    if (!bound) {
+      const reason = `credential ${p.credentialId} is not bound to loop ${p.loopId}`;
+      await auditDenied(reason);
+      throw new ForbiddenError(`issueLease denied: ${reason}.`);
+    }
+
+    // [R3-SEC-10] rate limit — audit the breach before propagating.
+    try {
+      rateLimitOrThrow(p.projectId, p.loopId);
+    } catch (rateErr: unknown) {
+      const reason =
+        rateErr instanceof Error ? rateErr.message : "rate limit exceeded";
+      await auditDenied(reason);
+      throw rateErr;
+    }
+
+    const ttlSeconds = clampTtl(p.ttlSeconds);
+    const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
+
+    const [lease] = await db
+      .insert(credentialLeases)
+      .values({
+        credentialId: p.credentialId,
+        projectId: p.projectId,
+        runId: p.loopId,
+        stageId: p.phase,
+        requestedBy: p.requestedBy,
+        expiresAt,
+        status: "active",
+      })
+      .returning({ id: credentialLeases.id });
+
+    await writeAccessLog({
+      leaseId: lease.id,
+      credentialId: p.credentialId,
+      projectId: p.projectId,
+      runId: p.loopId,
+      stageId: p.phase,
+      action: "lease_issued",
+      requestedBy: p.requestedBy,
+      justification: p.justification ?? null,
+      success: true,
+      ttlSeconds,
+    }).catch((auditErr: unknown) => {
+      console.warn("[credential-broker] audit write failed:", auditErr);
+    });
+
+    return { leaseId: lease.id, expiresAt };
   }
 }
 
