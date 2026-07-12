@@ -68,14 +68,36 @@ function collectSecretValues(): string[] {
 }
 
 /**
+ * Merge the process.env secret values with a caller-supplied per-run value set,
+ * longest-first. `extraValues` (ADR-003 §D dynamic scrubber) carries values that
+ * were LEASED into a subprocess env but never sat in this server's process.env —
+ * e.g. a freshly issued credential delivered to a consilium dev coder — so they
+ * are still redacted from that run's stdout/stderr/trace. Short values (< 6
+ * chars) are dropped to avoid mass false-positive redaction, same as env values.
+ */
+function scrubValueSet(extraValues: readonly string[]): string[] {
+  if (extraValues.length === 0) return collectSecretValues();
+  const extra = extraValues.filter(
+    (v) => typeof v === "string" && v.length >= MIN_SECRET_LENGTH,
+  );
+  return [...collectSecretValues(), ...extra].sort((a, b) => b.length - a.length);
+}
+
+/**
  * Replace every occurrence of a known secret env value in `input` with
  * [REDACTED]. Non-string input coerces to "" (never throws).
+ *
+ * `extraValues` (default empty ⇒ byte-identical to the env-only behavior) adds a
+ * per-run leased value set to the scrub (ADR-003 §D dynamic scrubber).
  */
-export function scrubSecrets(input: string): string {
+export function scrubSecrets(
+  input: string,
+  extraValues: readonly string[] = [],
+): string {
   if (typeof input !== "string") return "";
   if (input.length === 0) return input;
   let out = input;
-  for (const secret of collectSecretValues()) {
+  for (const secret of scrubValueSet(extraValues)) {
     if (!out.includes(secret)) continue;
     out = out.replace(new RegExp(escapeRegExp(secret), "g"), REDACTION);
   }
@@ -85,9 +107,15 @@ export function scrubSecrets(input: string): string {
 /**
  * Scrub secrets, then truncate to MAX_PREVIEW_CHARS. Use for any partial-output
  * preview / stderr fragment that enters an error, WS payload, log, or trace.
+ *
+ * `extraValues` (default empty ⇒ byte-identical) threads a per-run leased value
+ * set into the scrub (ADR-003 §D dynamic scrubber).
  */
-export function scrubAndTruncate(input: string): string {
-  const scrubbed = scrubSecrets(input);
+export function scrubAndTruncate(
+  input: string,
+  extraValues: readonly string[] = [],
+): string {
+  const scrubbed = scrubSecrets(input, extraValues);
   return scrubbed.length > MAX_PREVIEW_CHARS
     ? scrubbed.slice(0, MAX_PREVIEW_CHARS)
     : scrubbed;

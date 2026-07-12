@@ -61,6 +61,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - name: decrypt-confinement (ADR-003 §D3)
+        run: bash scripts/check-decrypt-confined.sh
 
   unit-integration:
     needs: guard
