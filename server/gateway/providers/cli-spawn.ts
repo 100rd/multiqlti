@@ -139,6 +139,13 @@ export interface CliSpawnRequest {
    * (`{...process.env, ...env}`) applies for the short LLM callers.
    */
   envOverride?: NodeJS.ProcessEnv;
+  /**
+   * ADR-003 §D dynamic scrubber: per-run leased secret VALUES to redact from this
+   * child's stderr in error messages — values delivered via `envOverride` that
+   * never sat in the server's process.env (so the env-only scrubber cannot see
+   * them). Default undefined ⇒ env-only scrubbing, byte-identical to today.
+   */
+  scrubValues?: readonly string[];
 }
 
 export interface CliSpawnResult {
@@ -228,6 +235,7 @@ function settleClose(
   stderr: string,
   resolve: (r: CliSpawnResult) => void,
   reject: (e: Error) => void,
+  scrubValues: readonly string[] = [],
 ): void {
   if (code === 0) {
     resolve({ stdout, stderr, exitCode: 0 });
@@ -235,7 +243,7 @@ function settleClose(
   }
   reject(
     new CliExecutionError(
-      `CLI exited with code ${code ?? "null"}${stderr ? `: ${scrubSecrets(stderr.trim())}` : ""}`,
+      `CLI exited with code ${code ?? "null"}${stderr ? `: ${scrubSecrets(stderr.trim(), scrubValues)}` : ""}`,
       code,
       stderr,
     ),
@@ -289,7 +297,9 @@ export function spawnCli(request: CliSpawnRequest): Promise<CliSpawnResult> {
     child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
     child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
     child.on("close", (code) =>
-      finish(() => settleClose(code, stdout, stderr, resolve, reject)),
+      finish(() =>
+        settleClose(code, stdout, stderr, resolve, reject, request.scrubValues ?? []),
+      ),
     );
 
     child.stdin.end(request.stdin);
@@ -366,7 +376,7 @@ export async function* streamCliLines(
     const err =
       code !== 0 && code !== null
         ? new CliExecutionError(
-            `CLI exited with code ${code}${stderr ? `: ${scrubSecrets(stderr.trim())}` : ""}`,
+            `CLI exited with code ${code}${stderr ? `: ${scrubSecrets(stderr.trim(), request.scrubValues ?? [])}` : ""}`,
             code,
             stderr,
           )

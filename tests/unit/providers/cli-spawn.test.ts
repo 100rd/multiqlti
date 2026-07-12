@@ -113,6 +113,27 @@ describe("spawnCli", () => {
     await expect(spawnCli({ ...REQ })).rejects.toThrow(/bad input|code 2/);
   });
 
+  it("redacts scrubValues from the CliExecutionError message on non-zero exit (ADR-003 §3a.C)", async () => {
+    const secret = "leased-secret-value-xyz";
+    const child = makeChild();
+    spawnMock.mockImplementation(() => {
+      setImmediate(() => {
+        child.stderr.emit("data", Buffer.from(`auth failed for token ${secret}`));
+        child.emit("close", 1);
+      });
+      return child;
+    });
+
+    let msg = "";
+    try {
+      await spawnCli({ ...REQ, scrubValues: [secret] });
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toContain("[REDACTED]");
+    expect(msg).not.toContain(secret);
+  });
+
   it("kills the child and rejects on timeout", async () => {
     vi.useFakeTimers();
     const child = makeChild();

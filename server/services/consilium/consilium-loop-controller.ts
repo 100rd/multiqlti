@@ -48,7 +48,12 @@
  */
 import { z } from "zod";
 import type { IStorage } from "../../storage.js";
-import { runAsSystem, runAsProject } from "../../context.js";
+import { runAsSystem, runAsProject, getProjectId } from "../../context.js";
+import {
+  credentialProvider,
+  markLeaseUsed,
+} from "../../credentials/db-crypto-provider.js";
+import { deliverLeasedEnv } from "../../credentials/deliver-leased-env.js";
 import type { ConsiliumLoopRow, ConsiliumLoopRoundRow, ConsiliumLoopState, TaskGroupIterationRow, InsertTask } from "@shared/schema";
 import { ARCHETYPES } from "@shared/types";
 import type { Archetype } from "@shared/types";
@@ -2561,7 +2566,42 @@ export class ConsiliumLoopController {
     // commits + opens a Draft PR. baseRef defaults to the repo's default-branch
     // HEAD (resolved inside the executor) so the PR diffs cleanly against it.
     // Never throws (degrades to a no-PR result), so the loop is never failed here.
-    return run({
+    // §3a.C: deliver the loop's bound secrets as env for THIS develop round's coder
+    // runs. FAIL-SOFT — a delivery error must NEVER fail the develop path (preserves
+    // the "never throws / degrades to a no-PR result" invariant of this call site);
+    // we then develop WITHOUT secrets. Lease lifecycle is owned here: markUsed before
+    // the run, revoke every lease in the `finally` below. Absent bound secrets ⇒
+    // empty delivery ⇒ byte-identical to today.
+    const secretRequestedBy = loop.createdBy ?? "system";
+    let leased: {
+      env: Record<string, string>;
+      values: string[];
+      leaseIds: string[];
+    } = { env: {}, values: [], leaseIds: [] };
+    try {
+      leased = await deliverLeasedEnv({
+        provider: credentialProvider,
+        storage: this.storage,
+        projectId: getProjectId(),
+        loopId: loop.id,
+        phase: "developing",
+        requestedBy: secretRequestedBy,
+      });
+      for (const id of leased.leaseIds) {
+        await markLeaseUsed(id, secretRequestedBy).catch((e: unknown) =>
+          console.warn("[consilium-loop] markLeaseUsed failed:", e),
+        );
+      }
+    } catch (e: unknown) {
+      // Broker errors carry IDs/names, never secret values — safe to log.
+      console.warn(
+        "[consilium-loop] leased-secret delivery failed; developing WITHOUT secrets:",
+        e instanceof Error ? e.message : e,
+      );
+      leased = { env: {}, values: [], leaseIds: [] };
+    }
+    try {
+      return await run({
       repoPath: loop.repoPath,
       loopId: loop.id,
       round: loop.round,
@@ -2625,12 +2665,27 @@ export class ConsiliumLoopController {
       repoConventions: cfg.repoConventions?.enabled
         ? { enabled: true, maxConventionsBytes: cfg.repoConventions.maxConventionsBytes }
         : null,
+      // §3a.C: leased secret env + scrub value-set for this round's coder runs.
+      // Empty ⇒ omitted ⇒ byte-identical (executor takes the sanitized-env path).
+      leasedEnv: Object.keys(leased.env).length > 0 ? leased.env : undefined,
+      scrubValues: leased.values.length > 0 ? leased.values : undefined,
     }, {
       getSkills: () => this.storage.getSkills(),
       // Stage B: the judge-method verifier seam (wired to the gateway) — provided ONLY when
       // method routing is on AND a gateway is available. Absent ⇒ judge APs degrade safe.
       judgeVerify: perCriterionOn ? this.buildJudgeVerifier() : undefined,
-    }, onProgress);
+      }, onProgress);
+    } finally {
+      // §3a.C: revoke every lease issued for this round, whatever the outcome
+      // (success, no-PR, or throw). Best-effort; the expiry sweeper is the backstop.
+      for (const id of leased.leaseIds) {
+        await credentialProvider
+          .revokeLease(id)
+          .catch((e: unknown) =>
+            console.warn("[consilium-loop] revokeLease failed:", e),
+          );
+      }
+    }
   }
 
   /**

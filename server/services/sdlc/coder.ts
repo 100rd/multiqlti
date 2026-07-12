@@ -163,6 +163,12 @@ export interface CoderOptions {
   /** Override the spawned env (tests). Defaults to `sanitizedCoderEnv()` (H-1). */
   env?: NodeJS.ProcessEnv;
   /**
+   * ADR-003 §3a.C dynamic scrubber: per-run leased secret VALUES to redact from
+   * this coder's stderr (delivered via `env`, never in process.env). Absent ⇒
+   * env-only scrubbing (byte-identical).
+   */
+  scrubValues?: readonly string[];
+  /**
    * Stage 2a: the capability-scoped tool allowlist for THIS run (a SkilledStep's
    * `read-only` ⇒ ["Read"], `worktree-write` ⇒ the baseline). Defaults to the
    * baseline {@link ALLOWED_TOOLS}. Hard-filtered to the baseline ceiling in
@@ -315,6 +321,7 @@ export class SdlcCoder {
         stdin: prompt, // UNTRUSTED text — stdin only, never argv/shell.
         cwd: worktreeDir, // confine the agent's working dir to the worktree.
         envOverride: options.env ?? sanitizedCoderEnv(), // H-1: no inherited secrets.
+        scrubValues: options.scrubValues, // §3a.C: redact leased values from stderr.
         timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         signal: options.signal,
       }),
