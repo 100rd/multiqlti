@@ -75,7 +75,12 @@ import {
   type GitRunner,
   type CreateWorktreeResult,
 } from "./worktree.js";
-import { SdlcCoder, type CoderResult, type CoderOptions } from "./coder.js";
+import {
+  SdlcCoder,
+  sanitizedCoderEnv,
+  type CoderResult,
+  type CoderOptions,
+} from "./coder.js";
 import { verifyInWorktree, type TestRunResult } from "./test-runner.js";
 import { stripControlMultiline, backtickFence } from "../consilium/review-factory.js";
 import { readConventionsFile } from "../consilium/repo-conventions.js";
@@ -338,6 +343,15 @@ export interface SdlcHandoffRequest {
    * can never inject a flag.
    */
   coderModel?: string;
+  /**
+   * ADR-003 §3a.C: env of the loop's leased secrets (name→value) to layer OVER the
+   * coder's sanitized allowlist, plus the matching value set for the dynamic stderr
+   * scrubber. Set by the consilium controller ONLY for a `developing` loop with
+   * bound secrets; absent/empty ⇒ byte-identical (sanitized env, env-only scrub).
+   * The lease lifecycle (issue → markUsed → revoke) is owned by the controller.
+   */
+  leasedEnv?: Record<string, string>;
+  scrubValues?: readonly string[];
   /**
    * Stage 2a: the loop's Stage-1 archetype. Drives the SKILLED step selection
    * (`selectSkillSet`). null/absent ⇒ NO steps ⇒ today's single unskilled coder
@@ -1006,8 +1020,25 @@ export async function runSdlcHandoff(
   // passed through UNTOUCHED ⇒ no `model` key ⇒ no `--model` flag ⇒ byte-for-byte
   // today's invocation (no regression).
   const baseCoder = deps.runCoder ?? ((dir, aps, opts) => sharedCoder.run(dir, aps, opts));
-  const runCoder: NonNullable<SdlcExecutorDeps["runCoder"]> = (dir, aps, opts) =>
-    baseCoder(dir, aps, req.coderModel ? { ...opts, model: req.coderModel } : opts);
+  // §3a.C: fold the loop's leased secret env + scrub value-set into EVERY coder run
+  // of this round (all coder call sites go through this single seam, same as the
+  // coderModel threading). Absent leasedEnv ⇒ opts untouched ⇒ byte-identical
+  // (sanitizedCoderEnv default, env-only scrub).
+  const hasLeasedEnv =
+    req.leasedEnv !== undefined && Object.keys(req.leasedEnv).length > 0;
+  const runCoder: NonNullable<SdlcExecutorDeps["runCoder"]> = (dir, aps, opts) => {
+    let next: CoderOptions | undefined = req.coderModel
+      ? { ...opts, model: req.coderModel }
+      : opts;
+    if (hasLeasedEnv) {
+      next = {
+        ...next,
+        env: { ...(next?.env ?? sanitizedCoderEnv()), ...req.leasedEnv },
+        scrubValues: req.scrubValues,
+      };
+    }
+    return baseCoder(dir, aps, next);
+  };
   const push = deps.push ?? pushBranch;
   const openPr = deps.openPr ?? openDraftPr;
   const progress = makeProgressTracker(onProgress, req.actionPoints);
