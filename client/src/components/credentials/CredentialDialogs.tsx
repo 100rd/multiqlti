@@ -13,6 +13,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -61,6 +68,7 @@ export function CreateCredentialDialog({
   const [description, setDescription] = useState("");
   const [provider, setProvider] = useState("");
   const [scope, setScope] = useState("");
+  const [type, setType] = useState<"static" | "aws" | "kubernetes">("static");
 
   function reset() {
     setName("");
@@ -68,6 +76,7 @@ export function CreateCredentialDialog({
     setDescription("");
     setProvider("");
     setScope("");
+    setType("static");
   }
 
   function handleOpenChange(v: boolean) {
@@ -84,6 +93,7 @@ export function CreateCredentialDialog({
       const created = await createCredential.mutateAsync({
         name: name.trim(),
         value,
+        type,
         description: description.trim() || undefined,
         provider: provider.trim() || undefined,
         scope: scope.trim() || undefined,
@@ -126,12 +136,44 @@ export function CreateCredentialDialog({
             />
           </div>
 
+          <div className="space-y-1.5">
+            <Label htmlFor="cred-type" className="text-xs font-medium">
+              Type
+            </Label>
+            <Select
+              value={type}
+              onValueChange={(v) => setType(v as typeof type)}
+            >
+              <SelectTrigger id="cred-type" className="text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="static">Static (raw value)</SelectItem>
+                <SelectItem value="aws">AWS (JSON credentials)</SelectItem>
+                <SelectItem value="kubernetes">Kubernetes (kubeconfig)</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground">
+              {type === "aws"
+                ? 'JSON {"accessKeyId","secretAccessKey","sessionToken?","region?"} → AWS_* env at exec time.'
+                : type === "kubernetes"
+                  ? "Paste a kubeconfig; delivered as a per-run KUBECONFIG file."
+                  : "Delivered as an env var keyed by the secret name."}
+            </p>
+          </div>
+
           <SecretInput
             id="cred-value"
             label="Value"
             value={value}
             onChange={setValue}
-            placeholder="Paste secret value"
+            placeholder={
+              type === "aws"
+                ? '{"accessKeyId":"…","secretAccessKey":"…","region":"…"}'
+                : type === "kubernetes"
+                  ? "Paste kubeconfig (YAML)"
+                  : "Paste secret value"
+            }
           />
 
           <div className="space-y-1.5">
