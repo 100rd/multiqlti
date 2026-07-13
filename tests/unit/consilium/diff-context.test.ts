@@ -61,6 +61,17 @@ describe("buildDiffContext — assembly & rounds", () => {
     expect(res.input).toContain("12 passed, 0 failed");
   });
 
+  it("includes the infra-drift section (ADR-003 §3c) when infraDrift is provided", async () => {
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, infraDrift: "~ aws_instance.web will be updated in-place", gitClient: fakeGit() });
+    expect(res.input).toContain("## Live infrastructure drift (read-only reconcile)");
+    expect(res.input).toContain("aws_instance.web will be updated in-place");
+  });
+
+  it("omits the infra-drift section when infraDrift is absent (byte-identical)", async () => {
+    const res = await buildDiffContext({ repoPath: REPO, baselineCommit: BASE_SHA, objective: "Obj", allowedRepoPaths: ALLOW, maxDiffBytes: 10_000, gitClient: fakeGit() });
+    expect(res.input).not.toContain("## Live infrastructure drift");
+  });
+
   it("byte-bounds the diff and sets truncated", async () => {
     const big = "x".repeat(5000);
     const git = fakeGit({ diff: vi.fn(async (args: string[]) => (args.includes("--stat") ? "stat" : big)) });
