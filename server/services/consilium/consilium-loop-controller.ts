@@ -54,6 +54,8 @@ import {
   markLeaseUsed,
 } from "../../credentials/db-crypto-provider.js";
 import { deliverLeasedEnv } from "../../credentials/deliver-leased-env.js";
+import { runInfraRefresh } from "./infra-refresh.js";
+import { sanitizedCoderEnv } from "../sdlc/coder.js";
 import type { ConsiliumLoopRow, ConsiliumLoopRoundRow, ConsiliumLoopState, TaskGroupIterationRow, InsertTask } from "@shared/schema";
 import { ARCHETYPES } from "@shared/types";
 import type { Archetype } from "@shared/types";
@@ -3175,6 +3177,62 @@ export class ConsiliumLoopController {
    * for developing), so the null-ref stranded check (Round-2 B4) still recognises an
    * in-flight runner review and the client never mounts a broken iteration view.
    */
+  /**
+   * Phase 3c (ADR-003 §D1/§D4): read-only infra reconcile for a `reviewing` loop.
+   * Leases the loop's bound secrets for the REVIEWING phase, runs a read/plan-only
+   * command (delivered over the H-1 sanitized env), and returns the SCRUBBED drift
+   * summary (or undefined). FAIL-SOFT — never throws; a failure reviews without a
+   * drift summary. Leases are revoked as soon as the summary is captured, so the raw
+   * secret lives only inside the subprocess, never a reviewer LLM prompt/env. Caller
+   * gates on `cfg.infraRefresh.enabled`.
+   */
+  private async maybeInfraDrift(
+    loop: ConsiliumLoopRow,
+  ): Promise<string | undefined> {
+    const requestedBy = loop.createdBy ?? "system";
+    let delivered: {
+      env: Record<string, string>;
+      values: string[];
+      leaseIds: string[];
+    } = { env: {}, values: [], leaseIds: [] };
+    try {
+      delivered = await deliverLeasedEnv({
+        provider: credentialProvider,
+        storage: this.storage,
+        projectId: getProjectId(),
+        loopId: loop.id,
+        phase: "reviewing",
+        requestedBy,
+      });
+      if (delivered.leaseIds.length === 0) return undefined;
+      for (const id of delivered.leaseIds) {
+        await markLeaseUsed(id, requestedBy).catch((e: unknown) =>
+          console.warn("[consilium-loop] markLeaseUsed failed:", e),
+        );
+      }
+      const refresh = await runInfraRefresh({
+        repoDir: loop.repoPath,
+        env: { ...sanitizedCoderEnv(), ...delivered.env },
+        scrubValues: delivered.values,
+      });
+      return refresh.ran && refresh.summary ? refresh.summary : undefined;
+    } catch (e: unknown) {
+      console.warn(
+        "[consilium-loop] infra-refresh failed; reviewing WITHOUT drift:",
+        e instanceof Error ? e.message : e,
+      );
+      return undefined;
+    } finally {
+      for (const id of delivered.leaseIds) {
+        await credentialProvider
+          .revokeLease(id)
+          .catch((e: unknown) =>
+            console.warn("[consilium-loop] revokeLease failed:", e),
+          );
+      }
+    }
+  }
+
   private dispatchReview(loop: ConsiliumLoopRow): void {
     const run: ReviewRun = { round: loop.round, done: false };
     this.reviewRuns.set(loop.id, run);
@@ -3273,6 +3331,12 @@ export class ConsiliumLoopController {
       testSummary,
       repoMap,
       repoConventions,
+      // Phase 3c (ADR-003 §D1/§D4): opt-in read-only infra reconcile. Only the
+      // SCRUBBED drift summary enters the dispute — the raw secret reaches ONLY the
+      // subprocess, never a reviewer LLM. FAIL-SOFT; absent ⇒ no section.
+      infraDrift: cfg.infraRefresh?.enabled
+        ? await this.maybeInfraDrift(loop)
+        : undefined,
     });
     if (!ctx.ok) return degradedReviewResult(ctx.message);
     // Panel from the group's preset (recovered from the group NAME — the SAME source

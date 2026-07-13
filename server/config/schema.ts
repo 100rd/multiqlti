@@ -343,6 +343,18 @@ export const ConfigSchema = z.object({
        */
       allowedRepoPaths: z.array(z.string()).default([]),
       /**
+       * Phase 3c (ADR-003 §D1/§D4): OPT-IN read-only infra reconcile at the
+       * `reviewing` stage. When enabled AND a loop has bound secrets, a read/plan-only
+       * command (terraform plan -refresh-only / kubectl diff) runs with secrets LEASED
+       * for the reviewing phase; only the SCRUBBED drift summary enters the dispute
+       * context — the raw secret reaches ONLY the subprocess, never a reviewer LLM.
+       * Default OFF ⇒ byte-identical (no delivery, no refresh). Gated under
+       * `consiliumLoop.enabled`.
+       */
+      infraRefresh: z
+        .object({ enabled: z.boolean().default(false) })
+        .default({}),
+      /**
        * OPTION A (codegraph research): a scoped, READ-ONLY "repository map" preamble
        * injected into the REVIEW input. For the files each round's diff TOUCHES, a
        * compact `file → exported symbols + 1-hop importers` map is built from the

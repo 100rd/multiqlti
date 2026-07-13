@@ -102,6 +102,13 @@ export interface DiffContextRequest {
    * (byte-identical to today). Never executed, never logged.
    */
   repoConventions?: string;
+  /**
+   * Phase 3c (ADR-003 §D4): a SCRUBBED read-only infra-reconcile drift summary
+   * (terraform plan -refresh-only / kubectl diff), produced by `infra-refresh.ts`
+   * for opt-in loops. Placed with the other preambles. Already leased-value-scrubbed
+   * by the runner; assembly re-redacts (env parity) + clamps. Absent ⇒ no section.
+   */
+  infraDrift?: string;
   /** Injected git client (tests pass a fake); defaults to simple-git(repoPath). */
   gitClient?: GitDiffClient;
 }
@@ -325,6 +332,7 @@ function assembleInput(
   maxDiffBytes: number,
   repoMap: string | undefined,
   repoConventions: string | undefined,
+  infraDrift: string | undefined,
 ): { input: string; truncated: boolean } {
   const obj = objective.trim();
   const sections = [obj.length > 0 ? obj : "_No objective supplied; review the changes below._"];
@@ -359,6 +367,18 @@ function assembleInput(
       ? Buffer.from(redacted, "utf8").subarray(0, maxDiffBytes).toString("utf8")
       : redacted;
     sections.push(`## Repository map (files touched by this diff + their importers)\n\n${text}`);
+  }
+  // Phase 3c (ADR-003 §D4): the SCRUBBED read-only infra-reconcile drift summary,
+  // placed with the other preambles so debaters weigh remembered-vs-actual infra
+  // before the diff. Already leased-value-scrubbed by the runner; re-run redactSecrets
+  // (env parity) + defensive clamp. Absent/blank ⇒ no section (byte-identical).
+  if (infraDrift && infraDrift.trim().length > 0) {
+    const redacted = redactSecrets(infraDrift.trim());
+    const overflow = Buffer.byteLength(redacted, "utf8") > maxDiffBytes;
+    const text = overflow
+      ? Buffer.from(redacted, "utf8").subarray(0, maxDiffBytes).toString("utf8")
+      : redacted;
+    sections.push(`## Live infrastructure drift (read-only reconcile)\n\n${text}`);
   }
   if (parts) {
     const note = parts.truncated ? "\n\n_(diff truncated to the configured byte limit)_" : "";
@@ -454,7 +474,7 @@ export async function buildDiffContext(
       return fail("unknown", "objective is empty and there is no diff (round 1); refusing to emit a blank review input");
     }
     // Round 1 has no diff, so there are no "touched files" to map ⇒ no repoMap.
-    const built = assembleInput(req.objective, null, req.testSummary, undefined, req.maxDiffBytes, undefined, undefined);
+    const built = assembleInput(req.objective, null, req.testSummary, undefined, req.maxDiffBytes, undefined, undefined, undefined);
     return { ok: true, input: built.input, headCommit: head, baselineCommit: null, truncated: built.truncated };
   }
 
@@ -464,7 +484,7 @@ export async function buildDiffContext(
   const parts = await collectDiff(git, baseline, head, req.maxDiffBytes);
   if (!("stat" in parts)) return parts;
 
-  const built = assembleInput(req.objective, parts, req.testSummary, req.priorFindings, req.maxDiffBytes, req.repoMap, req.repoConventions);
+  const built = assembleInput(req.objective, parts, req.testSummary, req.priorFindings, req.maxDiffBytes, req.repoMap, req.repoConventions, req.infraDrift);
   return {
     ok: true,
     input: built.input,
