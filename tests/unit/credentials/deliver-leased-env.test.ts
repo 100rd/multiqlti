@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import { deliverLeasedEnv } from "../../../server/credentials/deliver-leased-env.js";
+import { readFile, stat } from "node:fs/promises";
 import type { CredentialProvider } from "../../../server/credentials/types.js";
 
 type BoundRow = {
@@ -56,6 +57,64 @@ const base = {
   requestedBy: "user-1",
 };
 
+describe("deliverLeasedEnv — typed delivery (ADR-003 §3b)", () => {
+  const one = { loopId: "loop-a", credentialId: "cred-1", createdBy: "u", createdAt: new Date(0) };
+
+  it("shapes an aws secret into the AWS_* env vars", async () => {
+    const provider = fakeProvider({
+      listCredentials: vi.fn(async () => [{ id: "cred-1", name: "aws-prod", type: "aws" }]),
+      getSecretValue: vi.fn(async () =>
+        JSON.stringify({ accessKeyId: "AKIA", secretAccessKey: "secretval", region: "eu-central-1" }),
+      ),
+    });
+    const out = await deliverLeasedEnv({ provider, storage: fakeStorage([one]), ...base });
+    expect(out.env).toMatchObject({
+      AWS_ACCESS_KEY_ID: "AKIA",
+      AWS_SECRET_ACCESS_KEY: "secretval",
+      AWS_DEFAULT_REGION: "eu-central-1",
+    });
+    expect(out.values).toContain("secretval");
+    await out.cleanup();
+  });
+
+  it("writes a kubernetes secret to a 0600 temp file + KUBECONFIG, removed by cleanup()", async () => {
+    const kubeconfig = "apiVersion: v1\nkind: Config";
+    const provider = fakeProvider({
+      listCredentials: vi.fn(async () => [{ id: "cred-1", name: "kube", type: "kubernetes" }]),
+      getSecretValue: vi.fn(async () => kubeconfig),
+    });
+    const out = await deliverLeasedEnv({ provider, storage: fakeStorage([one]), ...base });
+    const path = out.env.KUBECONFIG;
+    expect(path).toBeTruthy();
+    expect(await readFile(path, "utf8")).toBe(kubeconfig);
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect(out.values).toContain(kubeconfig);
+    await out.cleanup();
+    await expect(stat(path)).rejects.toThrow(); // removed
+  });
+
+  it("fail-soft: drops a malformed aws secret (empty env), lease still issued", async () => {
+    const provider = fakeProvider({
+      listCredentials: vi.fn(async () => [{ id: "cred-1", name: "aws", type: "aws" }]),
+      getSecretValue: vi.fn(async () => "not json"),
+    });
+    const out = await deliverLeasedEnv({ provider, storage: fakeStorage([one]), ...base });
+    expect(out.env).toEqual({});
+    expect(out.leaseIds).toHaveLength(1);
+    await out.cleanup();
+  });
+
+  it("static (no type) is byte-identical — env keyed by name", async () => {
+    const provider = fakeProvider({
+      listCredentials: vi.fn(async () => [{ id: "cred-1", name: "TOK" }]),
+      getSecretValue: vi.fn(async () => "rawtoken"),
+    });
+    const out = await deliverLeasedEnv({ provider, storage: fakeStorage([one]), ...base });
+    expect(out.env).toEqual({ TOK: "rawtoken" });
+    await out.cleanup();
+  });
+});
+
 describe("deliverLeasedEnv (ADR-003 §3a.C)", () => {
   it("returns empty and issues no lease when the loop has no bound secrets", async () => {
     const provider = fakeProvider();
@@ -63,7 +122,9 @@ describe("deliverLeasedEnv (ADR-003 §3a.C)", () => {
 
     const out = await deliverLeasedEnv({ provider, storage, ...base });
 
-    expect(out).toEqual({ env: {}, values: [], leaseIds: [] });
+    expect(out.env).toEqual({});
+    expect(out.values).toEqual([]);
+    expect(out.leaseIds).toEqual([]);
     expect(provider.issueLease).not.toHaveBeenCalled();
     expect(provider.getSecretValue).not.toHaveBeenCalled();
   });

@@ -23,6 +23,7 @@ import {
   secrets,
 } from "../../shared/schema.js";
 import { credentialProvider } from "../credentials/db-crypto-provider.js";
+import { SECRET_TYPES, shapeTypedSecret } from "../credentials/typed-secret.js";
 import { getProjectId } from "../context.js";
 import { requireRole } from "../auth/middleware.js";
 import { desc, eq, and } from "drizzle-orm";
@@ -39,6 +40,9 @@ const MAX_META_LEN = 256;
 const CreateSecretBodySchema = z.object({
   name: z.string().regex(SECRET_NAME_RE, "invalid secret name"),
   value: z.string().min(1).max(8192),
+  // ADR-003 §D3: typed delivery — "static" (default), "aws" (JSON creds), or
+  // "kubernetes" (kubeconfig). The value shape is validated in the handler.
+  type: z.enum(SECRET_TYPES).default("static"),
   description: z.string().max(MAX_META_LEN).optional(),
   scope: z.string().max(MAX_META_LEN).optional(),
   provider: z.string().max(MAX_META_LEN).optional(),
@@ -230,6 +234,25 @@ export function registerCredentialRoutes(app: Express): void {
         return;
       }
 
+      // §3b: shape-validate the typed value (aws JSON / kubeconfig) before storing —
+      // reuse the exact delivery shaper so a malformed payload is a 400, not a
+      // runtime delivery failure. Never echoes the value (shaper errors carry name/type).
+      try {
+        shapeTypedSecret({
+          name: body.data.name,
+          type: body.data.type,
+          value: body.data.value,
+        });
+      } catch (shapeErr: unknown) {
+        res.status(400).json({
+          error:
+            shapeErr instanceof Error
+              ? shapeErr.message
+              : "invalid typed secret value",
+        });
+        return;
+      }
+
       const metadata = await credentialProvider.putCredential({
         projectId,
         name: body.data.name,
@@ -237,6 +260,7 @@ export function registerCredentialRoutes(app: Express): void {
         description: sanitizeMeta(body.data.description) ?? "",
         scope: sanitizeMeta(body.data.scope) ?? "",
         provider: sanitizeMeta(body.data.provider) ?? "",
+        type: body.data.type,
       });
 
       const [row] = await db

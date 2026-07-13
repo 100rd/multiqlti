@@ -32,6 +32,7 @@ import type {
   AccessSecretParams,
 } from "./types.js";
 import { ForbiddenError } from "./types.js";
+import type { SecretType } from "./typed-secret.js";
 
 // ─── issueLease policy (ADR-003 §D) ─────────────────────────────────────────────
 
@@ -195,6 +196,7 @@ export function toSecretMetadata(
     lastRotatedAt: row.rotatedAt ?? row.createdAt,
     name: row.name,
     version: row.version,
+    type: row.type,
   };
 }
 
@@ -491,6 +493,7 @@ export class DbCryptoCredentialProvider implements CredentialProvider {
     description: string;
     secret: string;
     name?: string;
+    type?: SecretType;
   }): Promise<CredentialMetadata> {
     assertProject(p.projectId);
 
@@ -516,6 +519,7 @@ export class DbCryptoCredentialProvider implements CredentialProvider {
             provider: p.provider,
             scope: p.scope,
             description: p.description,
+            ...(p.type !== undefined ? { type: p.type } : {}),
             valueEncrypted: ciphertext,
             version: existing.version + 1,
             rotatedAt: now,
@@ -530,6 +534,7 @@ export class DbCryptoCredentialProvider implements CredentialProvider {
             provider: p.provider,
             scope: p.scope,
             description: p.description,
+            type: p.type ?? "static",
             valueEncrypted: ciphertext,
             version: 1,
             createdBy: p.projectId,
