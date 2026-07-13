@@ -239,6 +239,8 @@ export interface CredentialProvider {
     description: string;
     secret: string;
     name?: string;
+    /** ADR-003 §D3 (Phase 3b): typed-delivery discriminator; default "static". */
+    type?: SecretType;
   }): Promise<CredentialMetadata>;
 
   /** Delete a credential for the project (project-scoped write). */

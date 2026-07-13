@@ -2579,7 +2579,8 @@ export class ConsiliumLoopController {
       env: Record<string, string>;
       values: string[];
       leaseIds: string[];
-    } = { env: {}, values: [], leaseIds: [] };
+      cleanup: () => Promise<void>;
+    } = { env: {}, values: [], leaseIds: [], cleanup: async () => undefined };
     try {
       leased = await deliverLeasedEnv({
         provider: credentialProvider,
@@ -2600,7 +2601,8 @@ export class ConsiliumLoopController {
         "[consilium-loop] leased-secret delivery failed; developing WITHOUT secrets:",
         e instanceof Error ? e.message : e,
       );
-      leased = { env: {}, values: [], leaseIds: [] };
+      // deliverLeasedEnv already revoked + cleaned up any partial delivery on throw.
+      leased = { env: {}, values: [], leaseIds: [], cleanup: async () => undefined };
     }
     try {
       return await run({
@@ -2687,6 +2689,8 @@ export class ConsiliumLoopController {
             console.warn("[consilium-loop] revokeLease failed:", e),
           );
       }
+      // §3b: remove any per-run typed-secret temp files (e.g. kubeconfig).
+      await leased.cleanup();
     }
   }
 
@@ -3194,7 +3198,8 @@ export class ConsiliumLoopController {
       env: Record<string, string>;
       values: string[];
       leaseIds: string[];
-    } = { env: {}, values: [], leaseIds: [] };
+      cleanup: () => Promise<void>;
+    } = { env: {}, values: [], leaseIds: [], cleanup: async () => undefined };
     try {
       delivered = await deliverLeasedEnv({
         provider: credentialProvider,
@@ -3230,6 +3235,8 @@ export class ConsiliumLoopController {
             console.warn("[consilium-loop] revokeLease failed:", e),
           );
       }
+      // §3b: remove any per-run typed-secret temp files (e.g. kubeconfig).
+      await delivered.cleanup();
     }
   }
 
