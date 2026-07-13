@@ -2206,6 +2206,15 @@ export const secrets = pgTable(
     description: text("description"),
     scope: text("scope"),
     provider: text("provider"),
+    /**
+     * ADR-003 §D3: how `valueEncrypted` is interpreted at exec-time delivery —
+     * "static" (a raw string keyed by name; default / today), "aws" (JSON creds →
+     * AWS_* env), "kubernetes" (kubeconfig → per-run 0600 temp file + KUBECONFIG).
+     */
+    type: text("type")
+      .notNull()
+      .default("static")
+      .$type<"static" | "aws" | "kubernetes">(),
     /** AES-256-GCM ciphertext (crypto.ts `v2:` format). Null until first rotate. */
     valueEncrypted: text("value_encrypted"),
     version: integer("version").notNull().default(1),

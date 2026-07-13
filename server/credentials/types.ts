@@ -15,6 +15,8 @@
  * `aws-sts` and `github-app-token` variants are reserved for Wave 2 (Vault backend).
  */
 
+import type { SecretType } from "./typed-secret.js";
+
 // ─── Error types ─────────────────────────────────────────────────────────────
 
 /** Thrown when an operation is denied due to project context mismatch,
@@ -54,6 +56,12 @@ export interface CredentialMetadata {
   name?: string;
   /** Vault secret version, bumped on every rotate. Undefined for connection-backed credentials. */
   version?: number;
+  /**
+   * ADR-003 §D3 (Phase 3b): typed-delivery discriminator — how the secret value is
+   * shaped at exec time ("static" | "aws" | "kubernetes"). Metadata only (never the
+   * value). Absent ⇒ treat as "static" (byte-identical to pre-3b).
+   */
+  type?: SecretType;
 }
 
 // ─── Exec-time shapes ────────────────────────────────────────────────────────
