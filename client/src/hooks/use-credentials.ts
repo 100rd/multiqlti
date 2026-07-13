@@ -31,6 +31,8 @@ export interface CredentialMetadata {
 export interface CreateCredentialInput {
   name: string;
   value: string;
+  /** ADR-003 §D3 typed delivery. Absent ⇒ "static" (server default). */
+  type?: "static" | "aws" | "kubernetes";
   description?: string;
   scope?: string;
   provider?: string;
