@@ -27,6 +27,7 @@ import type {
   ExecutionSkill,
   ExecutionCriterion,
 } from "@shared/types";
+import { scrubSecrets } from "../../gateway/secret-scrub.js";
 
 // ─── Bounds (counts) ─────────────────────────────────────────────────────────
 const MAX_WORKERS = 200; // one per action point / research step — generously bounded
@@ -66,8 +67,21 @@ function sanitizeLine(value: string, max: number): string {
  * replace path-like runs with `<path>`, collapse whitespace, clamp. Mirrors the
  * executor's `scrub` (defense-in-depth over the single-line sanitize).
  */
-function scrub(value: string, max: number): string {
-  return (value ?? "")
+/**
+ * Value-scrub with the per-run LEASED secret set (ADR-003 §D dynamic scrubber).
+ * Empty set ⇒ unchanged (byte-identical). Applied to the trace's free text so a
+ * leased value echoed in test output never persists to `_trace`.
+ */
+function leasedScrub(value: string, secretValues: readonly string[]): string {
+  return secretValues.length ? scrubSecrets(value, secretValues) : value;
+}
+
+function scrub(
+  value: string,
+  max: number,
+  secretValues: readonly string[] = [],
+): string {
+  return leasedScrub(value ?? "", secretValues)
     .replace(/\/[^\s'"]+/g, "<path>")
     .replace(/\s+/g, " ")
     .trim()
@@ -84,7 +98,10 @@ function clampSkill(s: ExecutionSkill): ExecutionSkill {
   };
 }
 
-function clampCriterion(c: ExecutionCriterion): ExecutionCriterion {
+function clampCriterion(
+  c: ExecutionCriterion,
+  secretValues: readonly string[] = [],
+): ExecutionCriterion {
   const out: ExecutionCriterion = {
     criterion: sanitizeLine(c.criterion, CRITERION_MAX),
     method: c.method, // fixed union (test-run | web-evidence | judge | none)
@@ -94,7 +111,9 @@ function clampCriterion(c: ExecutionCriterion): ExecutionCriterion {
   if (typeof c.fixIterations === "number" && Number.isFinite(c.fixIterations)) {
     out.fixIterations = Math.max(0, Math.trunc(c.fixIterations));
   }
-  if (c.summary !== undefined) out.summary = scrub(c.summary, SUMMARY_MAX);
+  if (c.summary !== undefined) {
+    out.summary = scrub(c.summary, SUMMARY_MAX, secretValues);
+  }
   // Stage A: additive final-state flag — carried through the clamp verbatim (boolean).
   if (typeof c.passedAtFinal === "boolean") out.passedAtFinal = c.passedAtFinal;
   // Timeout policy: additive NOT-ADJUDICATED flag — carried verbatim (boolean).
@@ -104,16 +123,23 @@ function clampCriterion(c: ExecutionCriterion): ExecutionCriterion {
   return out;
 }
 
-function clampWorker(w: ExecutionWorker): ExecutionWorker {
+function clampWorker(
+  w: ExecutionWorker,
+  secretValues: readonly string[] = [],
+): ExecutionWorker {
   const out: ExecutionWorker = {
     index: Number.isFinite(w.index) ? Math.trunc(w.index) : 0,
     priority: sanitizeLine(w.priority, PRIORITY_MAX),
     title: sanitizeLine(w.title, TITLE_MAX),
     status: w.status, // fixed union (completed | partial | failed)
     skills: w.skills.slice(0, MAX_SKILLS_PER_WORKER).map(clampSkill),
-    criteria: w.criteria.slice(0, MAX_CRITERIA_PER_WORKER).map(clampCriterion),
+    criteria: w.criteria
+      .slice(0, MAX_CRITERIA_PER_WORKER)
+      .map((c) => clampCriterion(c, secretValues)),
   };
-  if (w.note !== undefined) out.note = sanitizeLine(w.note, NOTE_MAX);
+  if (w.note !== undefined) {
+    out.note = sanitizeLine(leasedScrub(w.note, secretValues), NOTE_MAX);
+  }
   return out;
 }
 
@@ -123,15 +149,22 @@ function clampWorker(w: ExecutionWorker): ExecutionWorker {
  * excess whitespace. Idempotent. The builders (executor / research-runner) call this
  * as the LAST step so the persisted jsonb is provably inert + size-bounded.
  */
-export function clampTrace(trace: ExecutionTrace): ExecutionTrace {
+export function clampTrace(
+  trace: ExecutionTrace,
+  secretValues: readonly string[] = [],
+): ExecutionTrace {
   const c: ExecutionController = trace.controller;
   const controller: ExecutionController = {
     kind: c.kind, // fixed union (sdlc-executor | research-runner)
     label: sanitizeLine(c.label, LABEL_MAX),
     green: c.green === true,
-    workers: c.workers.slice(0, MAX_WORKERS).map(clampWorker),
+    workers: c.workers
+      .slice(0, MAX_WORKERS)
+      .map((w) => clampWorker(w, secretValues)),
   };
-  if (c.note !== undefined) controller.note = sanitizeLine(c.note, NOTE_MAX);
+  if (c.note !== undefined) {
+    controller.note = sanitizeLine(leasedScrub(c.note, secretValues), NOTE_MAX);
+  }
   return {
     schemaVersion: 1,
     archetype: trace.archetype ?? null,
@@ -210,6 +243,7 @@ export function buildSdlcTrace(
   result: { prRef: string | null; error?: string },
   finalPassed?: boolean,
   finalTimedOut?: boolean,
+  secretValues: readonly string[] = [],
 ): ExecutionTrace {
   const unmetP0 = outcomes.some(
     (o) => o.priority.toUpperCase().startsWith("P0") && o.verification !== undefined && !o.verification.passed,
@@ -258,7 +292,7 @@ export function buildSdlcTrace(
     workers,
   };
   if (result.error !== undefined) controller.note = result.error;
-  return clampTrace({ schemaVersion: 1, archetype, controller });
+  return clampTrace({ schemaVersion: 1, archetype, controller }, secretValues);
 }
 
 /** The subset of a research P0-criterion evidence the research trace needs. */

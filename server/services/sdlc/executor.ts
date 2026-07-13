@@ -58,6 +58,7 @@ import type { ActionPoint, Archetype, ExecutionTrace } from "@shared/types";
 import type { Skill } from "@shared/schema";
 import { selectSkillSet, bindSkillStep, type BoundSkillStep } from "../consilium/skills/catalog.js";
 import { buildSdlcTrace } from "../consilium/execution-trace.js";
+import { scrubSecrets } from "../../gateway/secret-scrub.js";
 import {
   buildBranchName,
   buildApBranchName,
@@ -1212,7 +1213,14 @@ export async function runSdlcHandoff(
       // its whole-suite result into the SAME summary (so the next review sees regressions).
       if (verifyCtx) {
         const summary = aggregateTestSummary(outcomes, finalVerification);
-        if (summary) result.testSummary = summary;
+        if (summary) {
+          // §3a.C: value-scrub the aggregated test-output tail with the round's
+          // leased secrets before it reaches the PR body / persisted testSummary /
+          // next judge. Empty leased set ⇒ unchanged (byte-identical).
+          result.testSummary = req.scrubValues?.length
+            ? scrubSecrets(summary, req.scrubValues)
+            : summary;
+        }
       }
       // Stage A: surface the structured final-verification outcome (observability/tests).
       if (finalVerification) result.finalVerification = finalVerification;
@@ -1226,6 +1234,7 @@ export async function runSdlcHandoff(
         result,
         finalVerification?.passed,
         finalVerification?.timedOut,
+        req.scrubValues ?? [],
       );
       // Terminal beat — the executor finished its work for this round (the SERVICE
       // separately classifies done/failed from the result; this is phase-only).
