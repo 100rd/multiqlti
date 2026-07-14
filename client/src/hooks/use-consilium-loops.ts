@@ -327,6 +327,7 @@ const TERMINAL_STATES: ReadonlySet<ConsiliumLoopState> = new Set<ConsiliumLoopSt
   "escalated",
   "failed",
   "cancelled",
+  "stopped",
 ]);
 
 /**
@@ -422,6 +423,18 @@ export function useCancelLoop() {
   const qc = useQueryClient();
   return useMutation<ConsiliumLoopRow, Error, string>({
     mutationFn: (id) => apiRequest("POST", `${LIST_KEY}/${id}/cancel`),
+    onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: [LIST_KEY, id] });
+      qc.invalidateQueries({ queryKey: [LIST_KEY] });
+    },
+  });
+}
+
+/** Graceful FINISH — end the loop (state `stopped`), distinct from cancel. */
+export function useStopLoop() {
+  const qc = useQueryClient();
+  return useMutation<ConsiliumLoopRow, Error, string>({
+    mutationFn: (id) => apiRequest("POST", `${LIST_KEY}/${id}/stop`),
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: [LIST_KEY, id] });
       qc.invalidateQueries({ queryKey: [LIST_KEY] });

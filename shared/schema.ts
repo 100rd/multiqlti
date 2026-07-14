@@ -1782,6 +1782,12 @@ export const CONSILIUM_LOOP_STATES = [
   "escalated",
   "failed",
   "cancelled",
+  // Operator-initiated graceful stop — "I'm satisfied / I don't want to
+  // continue". A TERMINAL, NON-abort finish distinct from `cancelled`: it keeps
+  // whatever the loop produced and simply ends it (no success side-effects like
+  // `converged`, no abort framing like `cancelled`). Reachable from any
+  // non-terminal state via the `finish` event.
+  "stopped",
 ] as const;
 export type ConsiliumLoopState = typeof CONSILIUM_LOOP_STATES[number];
 
@@ -1792,6 +1798,7 @@ export const CONSILIUM_LOOP_TERMINAL_STATES = [
   "escalated",
   "failed",
   "cancelled",
+  "stopped",
 ] as const satisfies readonly ConsiliumLoopState[];
 
 // ADR-0003 I1 (re-scoped, GH #445 P1): the loop's autonomy CLASS — additive

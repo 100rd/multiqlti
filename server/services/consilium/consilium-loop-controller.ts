@@ -136,7 +136,13 @@ export type LoopEvent =
   // (both already clamped + control-stripped at the route — untrusted). Absent on
   // an auto-cancel (an API POST with no body); the reducer still records a
   // never-blank terminal explanation. See `composeCancelExplanation`.
-  | { kind: "cancel"; reason?: string; actor?: string };
+  | { kind: "cancel"; reason?: string; actor?: string }
+  // Operator graceful FINISH ("satisfied / don't want to continue") — a TERMINAL,
+  // NON-abort stop from any non-terminal state. Same untrusted `reason`/`actor`
+  // shape as `cancel`; the reducer records a never-blank explanation. Distinct
+  // target (`stopped`) so it is neither an abort (`cancelled`) nor a success
+  // (`converged`). See `composeFinishExplanation`.
+  | { kind: "finish"; reason?: string; actor?: string };
 
 /** A single FSM transition: CAS `from → to`, plus optional column updates. */
 export interface LoopTransition {
@@ -636,6 +642,14 @@ export function composeCancelExplanation(at: Date, actor?: string, reason?: stri
   return r ? `${base} — ${r}` : base;
 }
 
+/** The terminal note recorded on a graceful operator FINISH (see `finish` event). */
+export function composeFinishExplanation(at: Date, actor?: string, reason?: string): string {
+  const who = actor && actor.trim() ? actor.trim() : "system";
+  const base = `Finished by ${who} at ${at.toISOString()}`;
+  const r = reason?.trim();
+  return r ? `${base} — ${r}` : base;
+}
+
 /**
  * PURE reducer (design §3 table). Given the current persisted `state` and an
  * `event`, return the single transition to commit, or `null` for a no-op.
@@ -668,6 +682,19 @@ export function reduce(
       from: state,
       to: "cancelled",
       extra: { completedAt: at, error: composeCancelExplanation(at, event.actor, event.reason) },
+    };
+  }
+
+  // Graceful operator FINISH — symmetric to cancel, but terminates to `stopped`
+  // (a NON-abort, NON-success end). The `error` column carries the note only;
+  // no counter/filter keys off `error != null` — they gate on `state`.
+  if (event.kind === "finish") {
+    if (isTerminal(state)) return null;
+    const at = new Date();
+    return {
+      from: state,
+      to: "stopped",
+      extra: { completedAt: at, error: composeFinishExplanation(at, event.actor, event.reason) },
     };
   }
 
@@ -859,7 +886,8 @@ function isTerminal(state: ConsiliumLoopState): boolean {
     state === "stopped_cap" ||
     state === "escalated" ||
     state === "failed" ||
-    state === "cancelled"
+    state === "cancelled" ||
+    state === "stopped"
   );
 }
 
@@ -1773,6 +1801,29 @@ export class ConsiliumLoopController {
     if (!transition) return null;
     await this.deps.taskOrchestrator.cancelGroup(loop.groupId).catch(() => undefined);
     this.sdlcRuns.delete(loopId); // H-2: drop any in-flight SDLC handle (terminal).
+    return this.commit(loop, transition);
+  }
+
+  /**
+   * Graceful operator FINISH — the "I'm satisfied / don't want to continue"
+   * terminal. Mirrors `cancel()` (stops the child group + drops the SDLC handle,
+   * since `stopped` is terminal) but records a NON-abort explanation and lands in
+   * `stopped`. Returns null if the loop is missing or already terminal.
+   */
+  async stop(
+    loopId: string,
+    opts?: { reason?: string; actor?: string },
+  ): Promise<ConsiliumLoopRow | null> {
+    const loop = await this.storage.getLoop(loopId);
+    if (!loop || isTerminal(loop.state)) return null;
+    const transition = reduce(loop.state, {
+      kind: "finish",
+      reason: opts?.reason,
+      actor: opts?.actor,
+    });
+    if (!transition) return null;
+    await this.deps.taskOrchestrator.cancelGroup(loop.groupId).catch(() => undefined);
+    this.sdlcRuns.delete(loopId); // drop any in-flight SDLC handle (terminal).
     return this.commit(loop, transition);
   }
 
