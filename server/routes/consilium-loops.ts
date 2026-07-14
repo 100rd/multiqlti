@@ -641,6 +641,27 @@ export function registerConsiliumLoopRoutes(
     if (!loop) return res.status(409).json({ error: "loop is already terminal" });
     res.json(loop);
   });
+
+  // ── Stop / Finish (any non-terminal → STOPPED) ──────────────────────────────
+  // Graceful operator finish — "I'm satisfied" / "I don't want to continue".
+  // Same body + auth + actor resolution as cancel, but a NON-abort terminal
+  // (`stopped`), so the loop keeps whatever it produced and simply ends.
+  app.post("/api/consilium-loops/:id/stop", async (req: Request, res: Response) => {
+    const auth = await authorizeConsiliumLoop(req, res, storage, String(req.params.id));
+    if (!auth) return;
+    const parsed = CancelLoopSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Validation failed",
+        issues: parsed.error.issues.map((i) => ({ path: i.path, message: i.message })),
+      });
+    }
+    const reason = sanitizeReason(parsed.data.reason);
+    const actor = req.user?.name?.trim() || req.user?.email || req.user?.id || undefined;
+    const loop = await controller.stop(auth.loop.id, { reason, actor });
+    if (!loop) return res.status(409).json({ error: "loop is already terminal" });
+    res.json(loop);
+  });
 }
 
 /**

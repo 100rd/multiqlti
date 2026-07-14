@@ -33,6 +33,7 @@ import {
   Clock,
   Play,
   Ban,
+  Flag,
   GitMerge,
   Hammer,
   Tag,
@@ -60,6 +61,7 @@ import {
   useConsiliumLoop,
   useStartLoop,
   useCancelLoop,
+  useStopLoop,
   useApproveMerge,
   useDevelopLoop,
   useRequestReReview,
@@ -2732,6 +2734,7 @@ export default function ConsiliumLoopDetail() {
 
   const startLoop = useStartLoop();
   const cancelLoop = useCancelLoop();
+  const stopLoop = useStopLoop();
   const approveMerge = useApproveMerge();
   const developLoop = useDevelopLoop();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -2806,6 +2809,19 @@ export default function ConsiliumLoopDetail() {
       toast({
         variant: "destructive",
         title: "Could not cancel loop",
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  async function handleFinish() {
+    try {
+      await stopLoop.mutateAsync(id);
+      toast({ title: "Loop finished" });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Could not finish loop",
         description: err instanceof Error ? err.message : String(err),
       });
     }
@@ -2918,6 +2934,22 @@ export default function ConsiliumLoopDetail() {
                   <Hammer className="mr-2 h-4 w-4" />
                 )}
                 Hand off to SDLC
+              </Button>
+            )}
+            {canCancel && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={handleFinish}
+                disabled={stopLoop.isPending}
+                title="End the loop and keep what it produced (not an abort)"
+              >
+                {stopLoop.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Flag className="mr-2 h-4 w-4" />
+                )}
+                Finish
               </Button>
             )}
             {canCancel && (

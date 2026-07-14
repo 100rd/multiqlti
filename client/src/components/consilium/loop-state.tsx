@@ -63,6 +63,7 @@ export const LOOP_STATE_STYLE: Record<ClientLoopState, StateStyle> = {
   escalated: { label: "Escalated", badge: "bg-orange-500 text-white", dot: "bg-orange-500" },
   failed: { label: "Failed", badge: "bg-red-600 text-white", dot: "bg-red-500" },
   cancelled: { label: "Cancelled", badge: "bg-slate-400 text-white", dot: "bg-slate-400" },
+  stopped: { label: "Finished", badge: "bg-slate-600 text-white", dot: "bg-slate-500" },
   // Agent-limit throttling (MVP): a deliberate, non-terminal PAUSE (agent usage/
   // rate limit hit) — amber like `awaiting_merge`, but the dot doesn't pulse
   // (nothing is actively running while paused) so it reads distinctly from the

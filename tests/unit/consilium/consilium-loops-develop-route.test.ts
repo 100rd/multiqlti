@@ -67,6 +67,13 @@ function makeApp(opts: {
       state: "cancelled",
       error: "recorded",
     })),
+    // Graceful finish → a `stopped` loop; tests assert route wiring + the
+    // session-resolved actor, not controller internals.
+    stop: vi.fn(async (_id: string, _opts?: { reason?: string; actor?: string }) => ({
+      ...DEVELOPING_LOOP,
+      state: "stopped",
+      error: "Finished by user-1 at 2026-01-01T00:00:00.000Z",
+    })),
   } as unknown as ConsiliumLoopController;
 
   const storage = {
@@ -279,6 +286,44 @@ describe("POST /api/consilium-loops/:id/cancel — reason + actor threading", ()
     const { app, controller } = makeApp();
     (controller.cancel as CancelFn).mockResolvedValueOnce(null);
     const res = await request(app).post(`/api/consilium-loops/${LOOP_ID}/cancel`).send();
+    expect(res.status).toBe(409);
+  });
+});
+
+describe("POST /api/consilium-loops/:id/stop (graceful finish)", () => {
+  type StopFn = ReturnType<typeof vi.fn>;
+  beforeEach(() => vi.clearAllMocks());
+
+  it("owner finishes a non-terminal loop → 200 + stopped loop, session-resolved actor", async () => {
+    const { app, controller } = makeApp({ user: { id: OWNER, name: "Ada" } });
+    const res = await request(app)
+      .post(`/api/consilium-loops/${LOOP_ID}/stop`)
+      .send({ reason: "good enough" });
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe("stopped");
+    const arg = (controller.stop as StopFn).mock.calls[0][1] as { reason?: string; actor?: string };
+    expect(arg.reason).toBe("good enough");
+    expect(arg.actor).toBe("Ada"); // name preferred over id/email
+  });
+
+  it("a non-string reason → 400, controller.stop NOT called", async () => {
+    const { app, controller } = makeApp();
+    const res = await request(app).post(`/api/consilium-loops/${LOOP_ID}/stop`).send({ reason: 123 });
+    expect(res.status).toBe(400);
+    expect(controller.stop as StopFn).not.toHaveBeenCalled();
+  });
+
+  it("a foreign loop → 404, controller.stop NOT called (no existence oracle)", async () => {
+    const { app, controller } = makeApp({ user: { id: "intruder" } });
+    const res = await request(app).post(`/api/consilium-loops/${LOOP_ID}/stop`).send();
+    expect(res.status).toBe(404);
+    expect(controller.stop as StopFn).not.toHaveBeenCalled();
+  });
+
+  it("controller reports already-terminal (null) → 409", async () => {
+    const { app, controller } = makeApp();
+    (controller.stop as StopFn).mockResolvedValueOnce(null);
+    const res = await request(app).post(`/api/consilium-loops/${LOOP_ID}/stop`).send();
     expect(res.status).toBe(409);
   });
 });

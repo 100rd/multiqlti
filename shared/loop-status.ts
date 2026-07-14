@@ -291,6 +291,18 @@ export function explainLoopState(loop: LoopStatusInput): LoopStatusExplanation {
           : "This loop was cancelled by an operator. No reason was recorded.",
       };
 
+    case "stopped":
+      return {
+        title: "Finished",
+        // A graceful operator finish ("satisfied / didn't want to continue"):
+        // NOT an abort and NOT a failure — the loop kept whatever it produced.
+        tone: "good",
+        // The composed "Finished by <actor> at <ISO> — <reason>".
+        detail: loop.error
+          ? loop.error
+          : "An operator finished this loop and kept what it produced.",
+      };
+
     case "throttled":
       // Agent usage/rate limit hit during review/develop → NON-terminal RESTING
       // pause (not a failure). The operator retries when their quota resets.

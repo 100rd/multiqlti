@@ -49,6 +49,15 @@ describe("reduce — design §3 transition table", () => {
     { name: "no-op: PENDING + context_built", from: "pending", event: { kind: "context_built" }, to: null },
     { name: "no-op: terminal CONVERGED + cancel", from: "converged", event: { kind: "cancel" }, to: null },
     { name: "no-op: terminal CANCELLED + start", from: "cancelled", event: { kind: "start" }, to: null },
+    // Graceful FINISH → STOPPED from any non-terminal state; no-op once terminal.
+    { name: "DECIDING + finish → STOPPED", from: "deciding", event: { kind: "finish" }, to: "stopped" },
+    { name: "REVIEWING + finish → STOPPED (any non-terminal)", from: "reviewing", event: { kind: "finish" }, to: "stopped" },
+    { name: "DEVELOPING + finish → STOPPED", from: "developing", event: { kind: "finish" }, to: "stopped" },
+    { name: "AWAITING_MERGE + finish → STOPPED", from: "awaiting_merge", event: { kind: "finish" }, to: "stopped" },
+    { name: "no-op: terminal CONVERGED + finish", from: "converged", event: { kind: "finish" }, to: null },
+    { name: "no-op: terminal CANCELLED + finish", from: "cancelled", event: { kind: "finish" }, to: null },
+    { name: "no-op: terminal STOPPED + finish (idempotent terminal)", from: "stopped", event: { kind: "finish" }, to: null },
+    { name: "no-op: terminal STOPPED + cancel", from: "stopped", event: { kind: "cancel" }, to: null },
   ];
 
   for (const row of rows) {
@@ -117,6 +126,27 @@ describe("reduce — cancel carries reason + actor into error", () => {
     const t = reduce("reviewing", { kind: "cancel", actor: "   ", reason: "   " });
     const err = t?.extra?.error as string;
     expect(err).toMatch(/^Cancelled by system at /);
+    expect(err).not.toContain("—");
+  });
+});
+
+// ─── Finish explanation: symmetric to cancel, but a NON-abort `stopped` end ───
+
+describe("reduce — finish carries reason + actor into error", () => {
+  it("finish with reason + actor → 'Finished by <who> at <ISO> — <reason>' + completedAt", () => {
+    const t = reduce("deciding", { kind: "finish", actor: "Ada Lovelace", reason: "good enough" });
+    expect(t?.to).toBe("stopped");
+    const err = t?.extra?.error as string;
+    expect(err).toMatch(/^Finished by Ada Lovelace at \d{4}-\d{2}-\d{2}T[\d:.]+Z/);
+    expect(err).toContain(" — good enough");
+    expect(t?.extra?.completedAt).toBeInstanceOf(Date);
+    expect(err).toContain((t?.extra?.completedAt as Date).toISOString());
+  });
+
+  it("finish without reason/actor → 'Finished by system at <ISO>' (never blank, no dash)", () => {
+    const t = reduce("reviewing", { kind: "finish" });
+    const err = t?.extra?.error as string;
+    expect(err).toMatch(/^Finished by system at /);
     expect(err).not.toContain("—");
   });
 });
