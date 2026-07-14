@@ -24,6 +24,11 @@ import {
   type ConsiliumLoopRow,
   type InsertConsiliumLoop,
   type ConsiliumLoopSecret,
+  type ConsultSession,
+  type InsertConsultSession,
+  type ConsultAnswer,
+  type InsertConsultAnswer,
+  type ConsultStatus,
   type ConsiliumLoopRoundRow,
   type InsertConsiliumLoopRound,
   type ConsiliumLoopState,
@@ -453,6 +458,18 @@ export interface IStorage {
     credentialIds: string[];
     createdBy: string;
   }): Promise<void>;
+  // ─── Consult — standalone multi-model Q&A (workspace-independent) ───────────
+  createConsultSession(data: InsertConsultSession): Promise<ConsultSession>;
+  getConsultSession(id: string): Promise<ConsultSession | undefined>;
+  listConsultSessions(projectId: string): Promise<ConsultSession[]>;
+  getConsultAnswers(sessionId: string): Promise<ConsultAnswer[]>;
+  addConsultAnswers(rows: InsertConsultAnswer[]): Promise<ConsultAnswer[]>;
+  updateConsultStatus(id: string, status: ConsultStatus): Promise<void>;
+  /** Step 3 handoff — record the loop + workspace this session became. */
+  setConsultHandoff(
+    id: string,
+    p: { loopId: string; workspaceId: string },
+  ): Promise<void>;
   /** Loops created by `ownerId`, newest first (owner-scoped list, mirror task-groups). */
   getLoopsByOwner(ownerId: string): Promise<ConsiliumLoopRow[]>;
   /** All loops (admin list / poller backstop sweep). */
@@ -1411,6 +1428,9 @@ export class MemStorage implements IStorage {
   private consiliumLoopRoundsMap: Map<string, ConsiliumLoopRoundRow> = new Map();
   // ADR-003 §D2 — loop→secret bindings (the bound set consulted by issueLease).
   private consiliumLoopSecretRows: ConsiliumLoopSecret[] = [];
+  // Consult — standalone multi-model Q&A sessions + their per-round answers.
+  private consultSessionsRows: ConsultSession[] = [];
+  private consultAnswersRows: ConsultAnswer[] = [];
 
   /** Mirror the DB partial-unique index: at most one non-terminal loop/group. */
   private isLoopActive(row: ConsiliumLoopRow): boolean {
@@ -1509,6 +1529,74 @@ export class MemStorage implements IStorage {
         createdBy: p.createdBy,
         createdAt: now,
       });
+    }
+  }
+
+  async createConsultSession(
+    data: InsertConsultSession,
+  ): Promise<ConsultSession> {
+    const row: ConsultSession = {
+      id: data.id ?? randomUUID(),
+      projectId: data.projectId,
+      question: data.question,
+      modelSlugs: data.modelSlugs ?? [],
+      status: data.status ?? "created",
+      createdBy: data.createdBy,
+      createdAt: data.createdAt ?? new Date(),
+      loopId: data.loopId ?? null,
+      workspaceId: data.workspaceId ?? null,
+    };
+    this.consultSessionsRows.push(row);
+    return row;
+  }
+
+  async getConsultSession(id: string): Promise<ConsultSession | undefined> {
+    return this.consultSessionsRows.find((r) => r.id === id);
+  }
+
+  async listConsultSessions(projectId: string): Promise<ConsultSession[]> {
+    return this.consultSessionsRows
+      .filter((r) => r.projectId === projectId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  async getConsultAnswers(sessionId: string): Promise<ConsultAnswer[]> {
+    return this.consultAnswersRows
+      .filter((r) => r.sessionId === sessionId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  }
+
+  async addConsultAnswers(
+    rows: InsertConsultAnswer[],
+  ): Promise<ConsultAnswer[]> {
+    const now = new Date();
+    const created: ConsultAnswer[] = rows.map((r) => ({
+      id: r.id ?? randomUUID(),
+      sessionId: r.sessionId,
+      modelSlug: r.modelSlug,
+      round: r.round ?? 0,
+      content: r.content ?? null,
+      errorMessage: r.errorMessage ?? null,
+      createdAt: r.createdAt ?? now,
+    }));
+    this.consultAnswersRows.push(...created);
+    return created;
+  }
+
+  async updateConsultStatus(id: string, status: ConsultStatus): Promise<void> {
+    const row = this.consultSessionsRows.find((r) => r.id === id);
+    if (row) row.status = status;
+  }
+
+  async setConsultHandoff(
+    id: string,
+    p: { loopId: string; workspaceId: string },
+  ): Promise<void> {
+    const row = this.consultSessionsRows.find((r) => r.id === id);
+    if (row) {
+      row.loopId = p.loopId;
+      row.workspaceId = p.workspaceId;
+      row.status = "handed_off";
     }
   }
 

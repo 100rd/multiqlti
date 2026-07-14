@@ -32,6 +32,7 @@ import Roles from "@/pages/Roles";
 import PrReviewQueue from "@/pages/PrReviewQueue";
 import TrustTelemetry from "@/pages/TrustTelemetry";
 import CredentialAccess from "@/pages/CredentialAccess";
+import Consult from "@/pages/Consult";
 
 function ProtectedRouter() {
   const { user, isLoading } = useAuth();
@@ -65,6 +66,12 @@ function ProtectedRouter() {
         )} />
         <Route path="/consilium-loops" component={() => (
           <ErrorBoundary><ConsiliumLoopList /></ErrorBoundary>
+        )} />
+        <Route path="/consult/:id" component={() => (
+          <ErrorBoundary><Consult /></ErrorBoundary>
+        )} />
+        <Route path="/consult" component={() => (
+          <ErrorBoundary><Consult /></ErrorBoundary>
         )} />
         <Route path="/trust" component={() => (
           <ErrorBoundary><TrustTelemetry /></ErrorBoundary>

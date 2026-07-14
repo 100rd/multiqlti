@@ -57,6 +57,13 @@ import {
   consiliumLoopRounds,
   consiliumLoopSecrets,
   type ConsiliumLoopSecret,
+  consultSessions,
+  consultAnswers,
+  type ConsultSession,
+  type InsertConsultSession,
+  type ConsultAnswer,
+  type InsertConsultAnswer,
+  type ConsultStatus,
   experienceItems,
   type ExperienceItemRow,
   type InsertExperienceItem,
@@ -806,6 +813,65 @@ export class PgStorage implements IStorage {
         })),
       )
       .onConflictDoNothing();
+  }
+
+  async createConsultSession(
+    data: InsertConsultSession,
+  ): Promise<ConsultSession> {
+    const [row] = await db.insert(consultSessions).values(data).returning();
+    return row;
+  }
+
+  async getConsultSession(id: string): Promise<ConsultSession | undefined> {
+    const [row] = await db
+      .select()
+      .from(consultSessions)
+      .where(eq(consultSessions.id, id));
+    return row;
+  }
+
+  async listConsultSessions(projectId: string): Promise<ConsultSession[]> {
+    return db
+      .select()
+      .from(consultSessions)
+      .where(eq(consultSessions.projectId, projectId))
+      .orderBy(desc(consultSessions.createdAt));
+  }
+
+  async getConsultAnswers(sessionId: string): Promise<ConsultAnswer[]> {
+    return db
+      .select()
+      .from(consultAnswers)
+      .where(eq(consultAnswers.sessionId, sessionId))
+      .orderBy(asc(consultAnswers.createdAt));
+  }
+
+  async addConsultAnswers(
+    rows: InsertConsultAnswer[],
+  ): Promise<ConsultAnswer[]> {
+    if (rows.length === 0) return [];
+    return db.insert(consultAnswers).values(rows).returning();
+  }
+
+  async updateConsultStatus(id: string, status: ConsultStatus): Promise<void> {
+    await db
+      .update(consultSessions)
+      .set({ status })
+      .where(eq(consultSessions.id, id));
+  }
+
+  async setConsultHandoff(
+    id: string,
+    p: { loopId: string; workspaceId: string },
+  ): Promise<void> {
+    await db
+      .update(consultSessions)
+      .set({
+        loopId: p.loopId,
+        workspaceId: p.workspaceId,
+        status: "handed_off",
+      })
+      .where(eq(consultSessions.id, id));
   }
 
   async getLoopsByOwner(ownerId: string): Promise<ConsiliumLoopRow[]> {
