@@ -55,6 +55,8 @@ import { registerTaskGroupRoutes } from "./routes/task-groups";
 import { registerTaskGroupResolveRoute } from "./routes/task-group-resolve";
 import { registerConsiliumLoopRoutes } from "./routes/consilium-loops";
 import { registerConsiliumReviewRoutes } from "./routes/consilium-reviews";
+import { registerConsultRoutes } from "./routes/consult";
+import { WorkspaceManager } from "./workspace/manager";
 import { registerStandingRoleRoutes } from "./routes/standing-roles";
 import { createConsiliumReview } from "./services/consilium/review-factory";
 import { maybeLaunchConsiliumReview, maybeLaunchGitHubReview, maybeLaunchGitLabReview, maybeLaunchRoleWake, resolveSpecWatchConfig, deriveRepoRoot } from "./services/consilium/trigger-dispatch";
@@ -151,6 +153,7 @@ export async function registerRoutes(
   // route is unauthenticated (the /api/pr-queue class of bug). Do not drop it.
   app.use("/api/telemetry", requireAuth, requireProject);
   app.use("/api/consilium-reviews", requireAuth, requireProject);
+  app.use("/api/consult", requireAuth, requireProject);
   // DREAM-4 (experience-plane-dream §5/§9): Experience → SKILL.md feedback proposals review
   // surface. Project-scoped — the mount carries auth (the /api/pr-queue 401 lesson); the
   // routes register inside the experiencePlane.skillFeedback.enabled kill-switch. The PATCH
@@ -324,6 +327,23 @@ export async function registerRoutes(
       // "Magic mode" reformulate endpoint uses the SAME gateway path (completeStreaming)
       // direct_llm/planner use. Gated by consiliumLoop.reformulate.enabled in the route.
       gateway,
+    });
+    // Consult — standalone multi-model Q&A. Registered inside the SAME kill-switch
+    // (its step-3 handoff reuses the `createConsiliumReview` factory), given the same
+    // review deps + the gateway (answer/debate) + wsManager (repo → workspace).
+    const consultWorkspaceManager = new WorkspaceManager();
+    registerConsultRoutes(app, {
+      storage,
+      gateway,
+      reviewDeps: {
+        storage,
+        orchestrator: taskOrchestrator,
+        controller: consiliumLoopController,
+        config: () => appConfigLoader.get(),
+        gateway,
+      },
+      connectWorkspace: (repoPath: string) =>
+        consultWorkspaceManager.connectLocal(repoPath),
     });
     // ROLE-1 — StandingRole CRUD + manual wake. Registered inside the SAME kill-switch
     // (inert otherwise) and given the SAME deps as the review routes: wake reuses the

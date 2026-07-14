@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   KeyRound,
   UserCog,
+  MessagesSquare,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
@@ -58,6 +59,7 @@ export default function MainLayout({ children }: MainLayoutProps) {
     { icon: Zap, label: "Triggers", href: "/triggers" },
     { icon: UserCog, label: "Roles", href: "/roles" },
     { icon: Repeat, label: "Consilium Loops", href: "/consilium-loops" },
+    { icon: MessagesSquare, label: "Consult", href: "/consult" },
     { icon: GitPullRequest, label: "PR Queue", href: "/pr-queue" },
     { icon: ShieldCheck, label: "Trust", href: "/trust" },
     { icon: FolderGit2, label: "Workspace", href: "/workspaces" },

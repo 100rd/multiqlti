@@ -2441,3 +2441,61 @@ export const insertSkillProposalSchema = createInsertSchema(skillProposals).omit
 });
 export type InsertSkillProposal = typeof skillProposals.$inferInsert;
 export type SkillProposalRow = typeof skillProposals.$inferSelect;
+
+// ─── Consult — standalone multi-model Q&A (workspace-independent) ──────────────
+// A lightweight "ask several models a strategic question, compare answers, then
+// optionally hand off into a standard consilium loop" flow. Not repo-bound.
+export const CONSULT_STATUSES = [
+  "created",
+  "answered",
+  "debated",
+  "handed_off",
+] as const;
+export type ConsultStatus = (typeof CONSULT_STATUSES)[number];
+
+export const consultSessions = pgTable("consult_sessions", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  projectId: text("project_id")
+    .references(() => projects.id, { onDelete: "cascade" })
+    .notNull(),
+  question: text("question").notNull(),
+  /** The operator-selected model slugs for this session. */
+  modelSlugs: jsonb("model_slugs")
+    .notNull()
+    .default(sql`'[]'::jsonb`)
+    .$type<string[]>(),
+  status: text("status").notNull().default("created").$type<ConsultStatus>(),
+  createdBy: text("created_by").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  /** Set on handoff (step 3) — the consilium loop + workspace this became. */
+  loopId: text("loop_id"),
+  workspaceId: text("workspace_id"),
+});
+export type ConsultSession = typeof consultSessions.$inferSelect;
+export type InsertConsultSession = typeof consultSessions.$inferInsert;
+
+export const consultAnswers = pgTable(
+  "consult_answers",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    sessionId: text("session_id")
+      .references(() => consultSessions.id, { onDelete: "cascade" })
+      .notNull(),
+    modelSlug: text("model_slug").notNull(),
+    /** 0 = independent answer; 1+ = debate rounds. */
+    round: integer("round").notNull().default(0),
+    /** Model output; null when this model failed (see errorMessage). */
+    content: text("content"),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    sessionIdx: index("consult_answers_session_id_idx").on(table.sessionId),
+  }),
+);
+export type ConsultAnswer = typeof consultAnswers.$inferSelect;
+export type InsertConsultAnswer = typeof consultAnswers.$inferInsert;
