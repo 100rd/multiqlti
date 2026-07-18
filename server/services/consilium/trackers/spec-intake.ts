@@ -23,6 +23,8 @@
 import type { ExecFileFn } from "../../github-status.js";
 import { renderSpecMarkdown, type TicketSource } from "./issue-spec.js";
 import { writeSpecPr } from "./spec-writer.js";
+import { writeSpecMr } from "./spec-writer-gitlab.js";
+import type { GitlabHttpFn, GitlabAuth } from "./gitlab-exec.js";
 
 /** The two write-back actions the crystallise step needs, supplied per connector. */
 export interface CrystallizeWriteback {
@@ -41,6 +43,10 @@ export interface CrystallizeDeps {
   writeback: CrystallizeWriteback;
   /** Structured logger. */
   log: (message: string) => void;
+  /** Injectable GitLab transport/auth for a gitlab-origin target (tests pass fakes;
+   *  prod reads GITLAB_TOKEN from env at call time). Unused for github origins. */
+  gitlabHttp?: GitlabHttpFn;
+  gitlabAuth?: GitlabAuth | null;
 }
 
 export interface CrystallizeTicketInput {
@@ -102,19 +108,34 @@ export async function crystallizeTicket(
     skills: input.skills,
   });
 
-  // 3) Open the spec PR remotely (SHARED writer; never touches the working tree).
-  const res = await writeSpecPr(
-    { runGh: deps.runGh, gitRemoteUrl: deps.gitRemoteUrl, log: deps.log },
-    {
-      targetRepoPath: input.targetRepoPath,
-      branch: input.branch,
-      filePath: input.filePath,
-      fileContent: markdown,
-      commitMessage: input.commitMessage,
-      prTitle: input.prTitle,
-      prBody: input.prBody,
-    },
-  );
+  // 3) Open the spec PR/MR remotely (SHARED writers; never touch the working tree).
+  //    FORGE SNIFF (mirrors pr-wrapper's detectForge): a gitlab-hosted origin takes
+  //    the GitLab MR dialect; everything else (incl. missing origin) stays on the
+  //    pre-existing gh path — byte-identical for every github target.
+  const writeParams = {
+    targetRepoPath: input.targetRepoPath,
+    branch: input.branch,
+    filePath: input.filePath,
+    fileContent: markdown,
+    commitMessage: input.commitMessage,
+    prTitle: input.prTitle,
+    prBody: input.prBody,
+  };
+  const originUrl = await deps.gitRemoteUrl(input.targetRepoPath).catch(() => null);
+  const res = /gitlab/i.test(originUrl ?? "")
+    ? await writeSpecMr(
+        {
+          gitlabHttp: deps.gitlabHttp,
+          gitlabAuth: deps.gitlabAuth,
+          gitRemoteUrl: deps.gitRemoteUrl,
+          log: deps.log,
+        },
+        writeParams,
+      )
+    : await writeSpecPr(
+        { runGh: deps.runGh, gitRemoteUrl: deps.gitRemoteUrl, log: deps.log },
+        writeParams,
+      );
   if (!res.ok) {
     return { outcome: "failed", reason: res.reason };
   }

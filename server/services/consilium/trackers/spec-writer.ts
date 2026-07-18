@@ -88,8 +88,9 @@ export type WriteSpecPrResult =
   | { ok: true; prUrl: string; reused: boolean }
   | { ok: false; reason: string };
 
-/** Single-line control-strip + clamp for the PR title (sanitizeEventLabel discipline). */
-function sanitizeTitle(value: string, max = 200): string {
+/** Single-line control-strip + clamp for the PR/MR title (sanitizeEventLabel
+ *  discipline). Exported so the GitLab dialect (`spec-writer-gitlab.ts`) shares it. */
+export function sanitizeSpecTitle(value: string, max = 200): string {
   return value
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f]+/g, " ")
@@ -142,7 +143,7 @@ export async function writeSpecPr(
       log("spec-writer: rejected leading-dash PR title (flag injection)");
       return { ok: false, reason: "bad-title" };
     }
-    const title = sanitizeTitle(prTitle);
+    const title = sanitizeSpecTitle(prTitle);
     if (title.length === 0 || title.startsWith("-")) {
       return { ok: false, reason: "bad-title" };
     }
