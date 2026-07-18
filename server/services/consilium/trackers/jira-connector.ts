@@ -149,6 +149,14 @@ export interface JiraConnectorConfig {
   extraJql?: string;
   /** Optional transition name/id to move the ticket to on pickup (best-effort). */
   transitionTo?: string;
+  /**
+   * Jira REST dialect: `"3"` (Cloud, default — ADF comment bodies) or `"2"`
+   * (Server/Data Center — only `/rest/api/2` exists there and comment bodies are
+   * PLAIN STRINGS, not ADF). Reads are dialect-agnostic (`adfToText` passes a v2
+   * string description/comment through unchanged); only the request paths and the
+   * comment POST body change. Absent ⇒ `"3"` (byte-identical for existing configs).
+   */
+  apiVersion?: "2" | "3";
 }
 
 /** Map a Jira REST issue → the normalised `Ticket` (description flattened from ADF). */
@@ -172,12 +180,16 @@ export class JiraTrackerConnector implements TrackerConnector {
   private readonly cfg: JiraConnectorConfig;
   private readonly exec: JiraExecDeps;
   private readonly browseBase: string;
+  /** `rest/api/2` or `rest/api/3` — every request path is built off this. */
+  private readonly api: string;
 
   constructor(cfg: JiraConnectorConfig, exec: JiraExecDeps) {
     this.cfg = cfg;
     this.exec = exec;
     // Human browse links live at the site origin (strip any trailing slash).
     this.browseBase = cfg.baseUrl.replace(/\/+$/, "");
+    // Anything but an explicit "2" stays on the Cloud dialect (fail-safe default).
+    this.api = cfg.apiVersion === "2" ? "rest/api/2" : "rest/api/3";
     this.writeback = {
       comment: (ticketId, body, marker) => this.postComment(ticketId, body, marker),
       transition: (ticketId, state) => this.doTransition(ticketId, state),
@@ -201,7 +213,7 @@ export class JiraTrackerConnector implements TrackerConnector {
    * watermark (one spec per ticket), exactly as the GitHub path does.
    */
   async pollTickets(_sinceWatermark?: string): Promise<Ticket[] | null> {
-    const result = await jiraGetJson<JiraSearchResult>(this.exec, this.cfg.baseUrl, "rest/api/3/search", {
+    const result = await jiraGetJson<JiraSearchResult>(this.exec, this.cfg.baseUrl, `${this.api}/search`, {
       jql: this.buildJql(),
       fields: "summary,description,labels,updated",
       maxResults: "100",
@@ -222,7 +234,7 @@ export class JiraTrackerConnector implements TrackerConnector {
     const issue = await jiraGetJson<JiraIssue>(
       this.exec,
       this.cfg.baseUrl,
-      `rest/api/3/issue/${encodeURIComponent(key)}`,
+      `${this.api}/issue/${encodeURIComponent(key)}`,
       { fields: "summary,description,labels,updated" },
     );
     if (!issue) return null;
@@ -251,7 +263,7 @@ export class JiraTrackerConnector implements TrackerConnector {
     const existing = await jiraGetJson<JiraCommentsResult>(
       this.exec,
       this.cfg.baseUrl,
-      `rest/api/3/issue/${encodeURIComponent(key)}/comment`,
+      `${this.api}/issue/${encodeURIComponent(key)}/comment`,
       { maxResults: "200" },
     );
     if (!existing || !Array.isArray(existing.comments)) {
@@ -260,11 +272,14 @@ export class JiraTrackerConnector implements TrackerConnector {
     const already = existing.comments.some((c) => adfToText(c.body).includes(marker));
     if (already) return { posted: false, reason: "already-commented" };
 
+    // v2 (Server/DC) takes a PLAIN STRING body; v3 (Cloud) takes an ADF doc.
+    const commentBody =
+      this.cfg.apiVersion === "2" ? [marker, body].join("\n") : textToAdf([marker, body]);
     const res = await jiraPostJson(
       this.exec,
       this.cfg.baseUrl,
-      `rest/api/3/issue/${encodeURIComponent(key)}/comment`,
-      { body: textToAdf([marker, body]) },
+      `${this.api}/issue/${encodeURIComponent(key)}/comment`,
+      { body: commentBody },
     );
     return res.ok ? { posted: true } : { posted: false, reason: res.reason };
   }
@@ -281,7 +296,7 @@ export class JiraTrackerConnector implements TrackerConnector {
     const avail = await jiraGetJson<JiraTransitionsResult>(
       this.exec,
       this.cfg.baseUrl,
-      `rest/api/3/issue/${encodeURIComponent(key)}/transitions`,
+      `${this.api}/issue/${encodeURIComponent(key)}/transitions`,
     );
     if (!avail || !Array.isArray(avail.transitions)) return { posted: false, reason: "transitions-unreadable" };
     const match = avail.transitions.find(
@@ -291,7 +306,7 @@ export class JiraTrackerConnector implements TrackerConnector {
     const res = await jiraPostJson(
       this.exec,
       this.cfg.baseUrl,
-      `rest/api/3/issue/${encodeURIComponent(key)}/transitions`,
+      `${this.api}/issue/${encodeURIComponent(key)}/transitions`,
       { transition: { id: match.id } },
     );
     return res.ok ? { posted: true } : { posted: false, reason: res.reason };

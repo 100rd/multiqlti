@@ -234,3 +234,65 @@ describe("write-back — comment idempotency + transition", () => {
     expect(miss.reason).toBe("no-such-transition");
   });
 });
+
+describe('apiVersion "2" — Jira Server / Data Center dialect', () => {
+  const V2 = { apiVersion: "2" as const, baseUrl: "https://jira.example.co" };
+
+  it("routes every request through /rest/api/2 (search, issue, comment, transitions)", async () => {
+    const { conn, calls } = connector(V2, (c) => {
+      if (c.url.includes("/search")) return json({ issues: [] });
+      if (c.method === "GET" && c.url.includes("/comment")) return json({ comments: [] });
+      if (c.method === "POST" && c.url.includes("/comment")) return { status: 201, body: "{}" };
+      if (c.method === "GET" && c.url.includes("/transitions")) return json({ transitions: [] });
+      return json({ key: "ACME-7", fields: {} });
+    });
+    await conn.pollTickets();
+    await conn.readTicket("ACME-7");
+    await conn.writeback.comment("ACME-7", "x", "<!-- m -->");
+    await conn.writeback.transition!("ACME-7", "Done");
+    expect(calls.length).toBeGreaterThan(0);
+    for (const c of calls) expect(c.url).toContain("/rest/api/2/");
+    expect(calls.some((c) => c.url.includes("/rest/api/3/"))).toBe(false);
+  });
+
+  it("posts the comment body as a PLAIN STRING (marker + text), not ADF", async () => {
+    const { conn, calls } = connector(V2, (c) => {
+      if (c.method === "GET" && c.url.includes("/comment")) return json({ comments: [] });
+      if (c.method === "POST" && c.url.includes("/comment")) return { status: 201, body: "{}" };
+      return json({});
+    });
+    const res = await conn.writeback.comment("ACME-7", "picked up", "<!-- marker -->");
+    expect(res.posted).toBe(true);
+    const post = calls.find((c) => c.method === "POST" && c.url.includes("/comment"));
+    const parsed = JSON.parse(post!.body!) as { body: unknown };
+    expect(typeof parsed.body).toBe("string");
+    expect(parsed.body).toBe("<!-- marker -->\npicked up");
+  });
+
+  it("marker dedup reads v2 plain-string comment bodies (no double-post)", async () => {
+    const existing = { body: "<!-- marker -->\npicked up earlier" };
+    const { conn, calls } = connector(V2, (c) => {
+      if (c.method === "GET" && c.url.includes("/comment")) return json({ comments: [existing] });
+      return json({});
+    });
+    const res = await conn.writeback.comment("ACME-7", "picked up", "<!-- marker -->");
+    expect(res.posted).toBe(false);
+    expect(calls.some((c) => c.method === "POST")).toBe(false);
+  });
+
+  it("maps a v2 string description straight through to the ticket body", async () => {
+    const issue = {
+      key: "PDO-850",
+      fields: { summary: "Enable caching", description: "plain v2 text", labels: ["automation"] },
+    };
+    const { conn } = connector(V2, (c) =>
+      c.url.includes("/search") ? json({ issues: [issue] }) : json({}),
+    );
+    const tickets = await conn.pollTickets();
+    expect(tickets![0]).toMatchObject({
+      id: "PDO-850",
+      body: "plain v2 text",
+      url: "https://jira.example.co/browse/PDO-850",
+    });
+  });
+});

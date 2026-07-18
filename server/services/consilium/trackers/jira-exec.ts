@@ -40,23 +40,29 @@ export type JiraHttpFn = (req: {
   timeoutMs: number;
 }) => Promise<JiraHttpResult>;
 
-/** Resolved auth material (basic email:token). `null` ⇒ fail-closed (not configured). */
+/**
+ * Resolved auth material. `null` ⇒ fail-closed (not configured).
+ * Two dialects share this shape:
+ *   - Atlassian Cloud: `email` + API token ⇒ `Basic base64(email:token)`
+ *   - Jira Data Center/Server PAT: `email` EMPTY ⇒ `Bearer <token>`
+ */
 export interface JiraAuth {
   email: string;
   token: string;
 }
 
 /**
- * Read the Jira auth from ENV (fail-closed). Returns `null` when either var is absent
- * or blank so the caller degrades WITHOUT attempting an unauthenticated call. The
- * token value is returned but NEVER logged by this module.
+ * Read the Jira auth from ENV (fail-closed). Returns `null` when the token is absent
+ * or blank so the caller degrades WITHOUT attempting an unauthenticated call. An
+ * absent `JIRA_EMAIL` selects the Bearer (Data Center PAT) dialect. The token value
+ * is returned but NEVER logged by this module.
  */
 export function readJiraAuthFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): JiraAuth | null {
   const email = (env[JIRA_EMAIL_ENV] ?? "").trim();
   const token = (env[JIRA_TOKEN_ENV] ?? "").trim();
-  if (email.length === 0 || token.length === 0) return null;
+  if (token.length === 0) return null;
   return { email, token };
 }
 
@@ -83,8 +89,12 @@ const defaultHttp: JiraHttpFn = async (req) => {
   }
 };
 
-/** Build the `Authorization: Basic <base64(email:token)>` header value. */
-function basicAuthHeader(auth: JiraAuth): string {
+/**
+ * Build the `Authorization` header value. With an email: Cloud-style
+ * `Basic base64(email:token)`; without one: Data Center PAT `Bearer <token>`.
+ */
+function authHeader(auth: JiraAuth): string {
+  if (auth.email.length === 0) return `Bearer ${auth.token}`;
   return "Basic " + Buffer.from(`${auth.email}:${auth.token}`, "utf8").toString("base64");
 }
 
@@ -147,7 +157,7 @@ export async function jiraGetJson<T>(
 ): Promise<T | null> {
   const auth = deps.auth ?? readJiraAuthFromEnv();
   if (!auth) {
-    deps.log("jira-exec: no JIRA_EMAIL/JIRA_API_TOKEN configured — skipping (fail-closed)");
+    deps.log("jira-exec: no JIRA_API_TOKEN configured — skipping (fail-closed)");
     return null;
   }
   const url = buildUrl(baseUrl, path, query);
@@ -160,7 +170,7 @@ export async function jiraGetJson<T>(
     const res = await http({
       method: "GET",
       url,
-      headers: { Authorization: basicAuthHeader(auth), Accept: "application/json" },
+      headers: { Authorization: authHeader(auth), Accept: "application/json" },
       timeoutMs: JIRA_TIMEOUT_MS,
     });
     if (res.status < 200 || res.status >= 300) {
@@ -187,7 +197,7 @@ export async function jiraPostJson(
 ): Promise<{ ok: true; body: string } | { ok: false; status?: number; reason: string }> {
   const auth = deps.auth ?? readJiraAuthFromEnv();
   if (!auth) {
-    deps.log("jira-exec: no JIRA_EMAIL/JIRA_API_TOKEN configured — skipping (fail-closed)");
+    deps.log("jira-exec: no JIRA_API_TOKEN configured — skipping (fail-closed)");
     return { ok: false, reason: "no-auth" };
   }
   const url = buildUrl(baseUrl, path);
@@ -201,7 +211,7 @@ export async function jiraPostJson(
       method: "POST",
       url,
       headers: {
-        Authorization: basicAuthHeader(auth),
+        Authorization: authHeader(auth),
         Accept: "application/json",
         "Content-Type": "application/json",
       },
