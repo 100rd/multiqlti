@@ -1885,6 +1885,16 @@ export interface TrackerEventTriggerConfig {
    */
   jiraApiVersion?: "2" | "3";
   /**
+   * ADR-004 (one MR per task): how a matched ticket becomes work.
+   *   - `"spec-pr"` (default) — the historical Track-3/5 path: crystallise the ticket
+   *     into a committed-spec PR/MR; merging that spec fires the loop.
+   *   - `"direct"` — the ticket IS the task: launch the review loop immediately
+   *     (per-ticket dedup, review-only per T6), no spec-PR intermediary; the ONLY MR
+   *     for the task is the implementation MR the loop later produces.
+   * Absent ⇒ `"spec-pr"` (existing triggers byte-identical). Jira-only for now.
+   */
+  intakeMode?: "spec-pr" | "direct";
+  /**
    * Optional pickup "transition", interpreted per connector (best-effort): Jira → a
    * workflow transition name/id; GitLab → a LABEL to add (no arbitrary states);
    * Bitbucket → an issue STATE; Linear → a workflow-state name; Azure → `System.State`;

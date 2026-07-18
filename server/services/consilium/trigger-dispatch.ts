@@ -589,6 +589,76 @@ export async function maybeLaunchSpecReview(
   return result;
 }
 
+// ─── ADR-004 Block A: direct ticket intake (ticket → loop, no spec-PR) ─────────
+
+/** The normalised ticket-task a tracker poller hands to the direct-intake launch. */
+export interface TicketLaunchArgs {
+  projectId: string;
+  repoPath: string;
+  /** Loop preset; absent ⇒ the spec default (`sdlc-cross-review`). */
+  preset?: ConsiliumReviewPreset;
+  /** Connector-normalised ticket identity (key already connector-sanitised). */
+  ticket: { kind: string; key: string; title: string; url?: string };
+  /** The extracted/synthesised task definition (criteria = condition of done). */
+  spec: { problem?: string; scope?: string; outOfScope?: string; criteria: string[] };
+}
+
+/**
+ * ADR-004 Block A: launch a review loop DIRECTLY from a tracker ticket — the ticket
+ * IS the task; there is no committed-spec-PR intermediary. Reuses the SAME
+ * `launchReviewWithDedup` core (owner FK, T4 catch, T6 review-only) with:
+ *   - a per-ticket dedup anchor `ticket:<kind>:<key>` riding the spec-dedup seam
+ *     (one active loop per ticket, not per repo);
+ *   - provenance `spec.source = {kind, ref, url}` so write-back can join later;
+ *   - the instruction built by the SAME `buildSpecInstruction` (DoD-first, clamped)
+ *     the spec-watch path uses — the criteria always reach the reviewers.
+ * The caller (poller) owns the consent gate, allowlist check, and watermark.
+ */
+export async function launchTicketReview(
+  deps: ConsiliumTriggerDispatchDeps,
+  trigger: TriggerRow,
+  args: TicketLaunchArgs,
+): Promise<ConsiliumDispatchResult> {
+  if (!deps.reviewDeps) {
+    deps.log(`ticket intake skipped for ${args.ticket.key} — consilium loop disabled`);
+    return "skipped";
+  }
+  const bodyParts = [`## Problem\n${args.spec.problem ?? args.ticket.title}`];
+  if (args.spec.scope) bodyParts.push(`## Scope\n${args.spec.scope}`);
+  if (args.spec.outOfScope) bodyParts.push(`## Out of scope\n${args.spec.outOfScope}`);
+  if (args.ticket.url) bodyParts.push(`Ticket: ${args.ticket.url}`);
+  const engineerInstruction = buildSpecInstruction(bodyParts.join("\n\n"), args.spec.criteria);
+
+  // UNTRUSTED title → single-line control-strip + clamp for the inert passport label.
+  const titleLabel = args.ticket.title
+    // eslint-disable-next-line no-control-regex
+    .replace(/[ -]+/g, " ")
+    .trim()
+    .slice(0, 120);
+  const anchor = `ticket:${args.ticket.kind}:${args.ticket.key}`;
+
+  return launchReviewWithDedup(deps, trigger, {
+    projectId: args.projectId,
+    repoPath: args.repoPath,
+    preset: args.preset ?? SPEC_DEFAULT_PRESET,
+    engineerInstruction,
+    // Per-ticket dedup: the synthetic anchor rides the spec-dedup seam, so two
+    // tickets targeting one repo each fire their own loop (mirrors per-spec dedup).
+    specDedupKey: anchor,
+    specProvenance: {
+      specPath: anchor,
+      status: "ready",
+      source: {
+        kind: args.ticket.kind,
+        ref: args.ticket.key,
+        ...(args.ticket.url ? { url: args.ticket.url } : {}),
+      },
+    },
+    eventSummary: `ticket picked: ${args.ticket.key}${titleLabel ? ` ${titleLabel}` : ""}`,
+    payload: { ticket: args.ticket.key },
+  });
+}
+
 /**
  * The launch plan the shared core turns into a factory call. `preset`/`repoPath`
  * are already chosen by the caller (the action's for file_change/schedule; the
