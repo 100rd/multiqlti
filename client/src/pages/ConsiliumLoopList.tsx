@@ -88,11 +88,37 @@ function OpenP0({ openP0 }: { openP0: number | null | undefined }) {
   );
 }
 
-type LoopGroup = {
-  name: string;
+type DayGroup = {
+  /** Local-date key `YYYY-MM-DD` — zero-padded so a lexicographic sort IS a date sort. */
+  key: string;
+  label: string;
+  /** Running (non-terminal) loops first, settled below — both most-recent-first. */
   loops: ConsiliumLoopListItem[];
-  recency: number;
+  activeCount: number;
 };
+
+/** Local-date key (`YYYY-MM-DD`) of a loop's last activity — its day bucket. */
+function dayKeyOf(loop: ConsiliumLoopListItem): string {
+  const d = new Date(loop.updatedAt ?? loop.createdAt);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Day header: Today / Yesterday / a locale date (year shown only when it differs). */
+function dayLabelOf(key: string): string {
+  const [y, m, d] = key.split("-").map(Number);
+  const that = new Date(y, m - 1, d);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diffDays = Math.round((today.getTime() - that.getTime()) / 86_400_000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  return that.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "long",
+    ...(that.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}),
+  });
+}
 
 // ─── Per-round leaf (the inherited re-review signal) ──────────────────────────
 
@@ -150,7 +176,14 @@ function RoundLine({
 
 // ─── Loop parent node (collapsible; rounds fetched on expand) ──────────────────
 
-function LoopNode({ loop }: { loop: ConsiliumLoopListItem }) {
+function LoopNode({
+  loop,
+  workspaceLabel,
+}: {
+  loop: ConsiliumLoopListItem;
+  /** Shown on the row because day groups mix workspaces (tooltip = full repoPath). */
+  workspaceLabel?: string;
+}) {
   const [, navigate] = useLocation();
   const terminal = isTerminalLoopState(loop.state);
   // CHEVRON GATING — the loop's own `round` field is the cheap signal we already
@@ -211,6 +244,15 @@ function LoopNode({ loop }: { loop: ConsiliumLoopListItem }) {
         >
           {loop.id.slice(0, 8)}
         </span>
+
+        {workspaceLabel ? (
+          <span
+            className="text-[11px] text-muted-foreground truncate max-w-[10rem] shrink"
+            title={loop.repoPath}
+          >
+            {workspaceLabel}
+          </span>
+        ) : null}
 
         <div className="ml-auto flex items-center gap-4 text-xs">
           <span className="text-muted-foreground">
@@ -334,30 +376,47 @@ export default function ConsiliumLoopList() {
   // (dropdown) instead of free-typing a possibly-unallowlisted path.
   const workspaceOptions = Array.isArray(workspaceData) ? workspaceData : [];
 
-  // Group loops by resolved workspace name. Within a group: most-recent first.
-  // Group order: the workspace with the most recently active loop floats up.
-  const byWorkspace = new Map<string, ConsiliumLoopListItem[]>();
+  // Filter-bar chips are keyed by workspace name (most-recently-active first);
+  // the day tree below narrows to the active chip. If the active workspace
+  // vanished (e.g. its last loop settled away), fall back to All.
+  const wsRecency = new Map<string, number>();
   for (const loop of loops) {
     const name = workspaceName(loop.repoPath);
-    const arr = byWorkspace.get(name);
-    if (arr) arr.push(loop);
-    else byWorkspace.set(name, [loop]);
+    wsRecency.set(name, Math.max(wsRecency.get(name) ?? 0, recencyOf(loop)));
   }
-  const allGroups: LoopGroup[] = Array.from(byWorkspace.entries())
-    .map(([name, ls]) => {
-      const sorted = [...ls].sort((a, b) => recencyOf(b) - recencyOf(a));
-      return { name, loops: sorted, recency: sorted.length ? recencyOf(sorted[0]) : 0 };
-    })
-    .sort((a, b) => b.recency - a.recency);
-
-  // Filter-bar chips reflect the full set; the rendered tree is narrowed. If the
-  // active workspace vanished (e.g. its last loop settled away), fall back to All.
-  const workspaceNames = allGroups.map((g) => g.name);
+  const workspaceNames = Array.from(wsRecency.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([name]) => name);
   const filterActive =
     activeWorkspace && workspaceNames.includes(activeWorkspace) ? activeWorkspace : null;
-  const groups = filterActive
-    ? allGroups.filter((g) => g.name === filterActive)
-    : allGroups;
+  const visibleLoops = filterActive
+    ? loops.filter((l) => workspaceName(l.repoPath) === filterActive)
+    : loops;
+
+  // Group by DAY of last activity, newest day first. Within a day the RUNNING
+  // (non-terminal) loops sit on top and the settled ones below — both
+  // most-recent-first. Past days follow the same shape.
+  const byDay = new Map<string, ConsiliumLoopListItem[]>();
+  for (const loop of visibleLoops) {
+    const key = dayKeyOf(loop);
+    const arr = byDay.get(key);
+    if (arr) arr.push(loop);
+    else byDay.set(key, [loop]);
+  }
+  const byRecency = (a: ConsiliumLoopListItem, b: ConsiliumLoopListItem) =>
+    recencyOf(b) - recencyOf(a);
+  const groups: DayGroup[] = Array.from(byDay.entries())
+    .map(([key, ls]) => {
+      const running = ls.filter((l) => !isTerminalLoopState(l.state)).sort(byRecency);
+      const settled = ls.filter((l) => isTerminalLoopState(l.state)).sort(byRecency);
+      return {
+        key,
+        label: dayLabelOf(key),
+        loops: [...running, ...settled],
+        activeCount: running.length,
+      };
+    })
+    .sort((a, b) => b.key.localeCompare(a.key));
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -392,7 +451,7 @@ export default function ConsiliumLoopList() {
           </div>
         )}
 
-        {!isLoading && allGroups.length > 0 && (
+        {!isLoading && groups.length > 0 && (
           <>
             <WorkspaceFilterBar
               names={workspaceNames}
@@ -401,23 +460,23 @@ export default function ConsiliumLoopList() {
             />
             <div className="space-y-6">
               {groups.map((group) => (
-                <section key={group.name} data-testid="consilium-loop-group">
-                  {/* Workspace header — groups many same-target loops so focus
-                      isn't lost. Full repoPath of the freshest loop in tooltip. */}
+                <section key={group.key} data-testid="consilium-loop-group">
+                  {/* Day header — running count surfaced so an active day reads
+                      at a glance; rows carry their own workspace label. */}
                   <div className="flex items-baseline gap-2 mb-2 px-1">
-                    <h2
-                      className="text-sm font-semibold truncate"
-                      title={group.loops[0]?.repoPath}
-                    >
-                      {group.name}
-                    </h2>
+                    <h2 className="text-sm font-semibold truncate">{group.label}</h2>
                     <span className="text-[11px] text-muted-foreground shrink-0">
                       {group.loops.length} {group.loops.length === 1 ? "loop" : "loops"}
+                      {group.activeCount > 0 ? ` · ${group.activeCount} running` : ""}
                     </span>
                   </div>
                   <div className="space-y-2">
                     {group.loops.map((loop) => (
-                      <LoopNode key={loop.id} loop={loop} />
+                      <LoopNode
+                        key={loop.id}
+                        loop={loop}
+                        workspaceLabel={workspaceName(loop.repoPath)}
+                      />
                     ))}
                   </div>
                 </section>
