@@ -59,7 +59,7 @@ import { registerConsultRoutes } from "./routes/consult";
 import { WorkspaceManager } from "./workspace/manager";
 import { registerStandingRoleRoutes } from "./routes/standing-roles";
 import { createConsiliumReview } from "./services/consilium/review-factory";
-import { maybeLaunchConsiliumReview, maybeLaunchGitHubReview, maybeLaunchGitLabReview, maybeLaunchRoleWake, resolveSpecWatchConfig, deriveRepoRoot } from "./services/consilium/trigger-dispatch";
+import { maybeLaunchConsiliumReview, maybeLaunchGitHubReview, maybeLaunchGitLabReview, maybeLaunchRoleWake, resolveSpecWatchConfig, deriveRepoRoot, launchTicketReview } from "./services/consilium/trigger-dispatch";
 import { ConsiliumLoopController, ConsiliumLoopPoller } from "./services/consilium/consilium-loop-controller";
 import {
   writeSpecStatusRemote,
@@ -769,6 +769,38 @@ export async function registerRoutes(
             }
           },
         },
+        // ADR-004 Block A: direct intake — the ticket IS the task. Launch through the
+        // SAME dedup/owner/T6 core every trigger path uses (launchTicketReview →
+        // launchReviewWithDedup): per-ticket dedup anchor, provenance source={jira,key},
+        // review-only (maxRounds=1). Only fires for `intakeMode: "direct"` triggers.
+        launchDirect: (trigger, args) =>
+          launchTicketReview(
+            {
+              reviewDeps: consiliumLoopController
+                ? {
+                    storage,
+                    orchestrator: taskOrchestrator,
+                    controller: consiliumLoopController,
+                    config: () => appConfigLoader.get(),
+                  }
+                : null,
+              createReview: createConsiliumReview,
+              runInProject: runAsProject,
+              resolveOwnerId: (projectId: string) =>
+                runAsSystem("resolve-trigger-owner", async () => {
+                  const [row] = await db
+                    .select({ ownerId: projects.ownerId })
+                    .from(projects)
+                    .where(eq(projects.id, projectId));
+                  return row?.ownerId ?? null;
+                }),
+              recordFire: (triggerId: string, firedAt: Date) =>
+                storage.incrementTriggerFired(triggerId, firedAt),
+              log: (m: string) => log(m, "jira-tracker-poller"),
+            },
+            trigger,
+            args,
+          ),
         log: (m: string) => log(m, "jira-tracker-poller"),
       });
       jiraIssuesPoller.start();

@@ -45,6 +45,7 @@ import { crystallizeTicket } from "./spec-intake.js";
 import { JiraTrackerConnector, type JiraConnectorConfig } from "./jira-connector.js";
 import { readJiraAuthFromEnv, type JiraAuth, type JiraHttpFn } from "./jira-exec.js";
 import type { GitlabAuth, GitlabHttpFn } from "./gitlab-exec.js";
+import type { TicketLaunchArgs, ConsiliumDispatchResult } from "../trigger-dispatch.js";
 
 /** `owner/repo` (GitHub) or `group/subgroup/project` (GitLab nested groups) —
  *  conservative charset (no leading dash / no flag), 2+ segments. */
@@ -92,6 +93,16 @@ export interface JiraIssuesPollerDeps {
   gitlabAuth?: GitlabAuth | null;
   /** Injectable git-remote reader for the owner/repo derivation (default: real `git`). */
   gitRemoteUrl?: (repoPath: string) => Promise<string | null>;
+  /**
+   * ADR-004 Block A: the direct-intake seam — launch a review loop straight from the
+   * ticket (no spec-PR). Wired by the route to `launchTicketReview` (the shared
+   * dedup/owner/T6 core); absent ⇒ `intakeMode: "direct"` triggers are skipped with
+   * a log (fail-closed) and the default spec-PR path is byte-identical.
+   */
+  launchDirect?: (
+    trigger: TriggerRow,
+    args: TicketLaunchArgs,
+  ) => Promise<ConsiliumDispatchResult>;
   log: (message: string) => void;
   now?: () => number;
 }
@@ -307,6 +318,57 @@ export class JiraIssuesPoller {
           } catch (e) {
             this.deps.log(`jira tracker poll: synthesizer error for ${key}: ${(e as Error).message}`);
           }
+        }
+
+        // ── ADR-004 Block A: direct intake — the ticket IS the task ─────────────
+        // No spec-PR intermediary: launch the review loop now (per-ticket dedup,
+        // review-only per T6). The ONLY MR for the task will be the implementation
+        // MR the loop later produces. Absent seam/config ⇒ the spec-PR path below
+        // is byte-identical.
+        if (config.intakeMode === "direct") {
+          if (!this.deps.launchDirect) {
+            this.deps.log(`jira tracker poll: direct intake for ${key} skipped — launchDirect not wired`);
+            continue;
+          }
+          if (criteria.length === 0) {
+            await connector.writeback.comment(
+              key,
+              `🤖 I can pick this up but need testable acceptance criteria — please add an "Acceptance Criteria" section or checklist items.`,
+              JIRA_NEED_CRITERIA_MARKER,
+            );
+            continue; // no watermark — an edit that adds criteria retries next cycle.
+          }
+          let launch: ConsiliumDispatchResult;
+          try {
+            launch = await this.deps.launchDirect(trigger, {
+              projectId,
+              repoPath: targetRepoPath,
+              ticket: { kind: "jira", key, title: ticket.title, url: ticket.url },
+              spec: { problem, scope, outOfScope, criteria },
+            });
+          } catch (e) {
+            this.deps.log(`jira tracker poll: direct launch threw for ${key}: ${(e as Error).message}`);
+            launch = "failed";
+          }
+          if (launch === "launched") {
+            await connector.writeback.comment(
+              key,
+              `🤖 taken into work by the factory — review loop started for ${key}`,
+              JIRA_PICKUP_MARKER,
+            );
+            if (config.transitionTo && connector.writeback.transition) {
+              await connector.writeback.transition(key, config.transitionTo);
+            }
+            state.intake![key] = { at: new Date(this.now()).toISOString() };
+            intaken++;
+          } else if (launch === "skipped-dedup") {
+            // A loop for this ticket is already active — watermark so we stop retrying.
+            state.intake![key] = { at: new Date(this.now()).toISOString() };
+          } else {
+            // skipped / failed → NO watermark: the next cycle retries (fail-open poll).
+            this.deps.log(`jira tracker poll: direct launch ${launch} for ${key}`);
+          }
+          continue;
         }
 
         const specStatus = config.specStatus ?? "ready";

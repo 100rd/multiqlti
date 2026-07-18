@@ -20,6 +20,7 @@ import type { JiraHttpFn, JiraHttpResult } from "../../../../server/services/con
 import type { ExecFileFn } from "../../../../server/services/github-status.js";
 import type { TriggerRow } from "../../../../shared/schema.js";
 import type { AppConfig, TrackerEventTriggerConfig } from "../../../../shared/types.js";
+import type { TicketLaunchArgs, ConsiliumDispatchResult } from "../../../../server/services/consilium/trigger-dispatch.js";
 
 // ─── fakes ───────────────────────────────────────────────────────────────────
 
@@ -105,6 +106,7 @@ interface HarnessOpts {
   trackerOn?: boolean;
   allowedRepoPaths?: () => string[];
   synthesizer?: TicketSynthesizer;
+  launchDirect?: (trigger: TriggerRow, args: TicketLaunchArgs) => Promise<ConsiliumDispatchResult>;
   logs?: string[];
 }
 
@@ -123,6 +125,7 @@ function harness(opts: HarnessOpts) {
     config: cfg(opts.masterOn ?? true, opts.trackerOn ?? true),
     allowedRepoPaths: opts.allowedRepoPaths ?? (() => ["/repo/widget"]),
     synthesizer: opts.synthesizer,
+    launchDirect: opts.launchDirect,
     runGh: opts.gh,
     jiraHttp: opts.jira,
     jiraAuth: { email: "a@b.co", token: "secret" },
@@ -290,5 +293,115 @@ describe("JiraIssuesPoller.start gating", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("direct intake (ADR-004 Block A)", () => {
+  const directTrigger = () => jiraTrigger({ intakeMode: "direct" });
+
+  it("shaped issue → launchDirect with the normalised task + ONE pickup comment + watermark, NO spec PR", async () => {
+    const { http, calls } = fakeJira({ issues: [SHAPED_ISSUE] });
+    const { run, argv } = fakeGh();
+    const seen: TicketLaunchArgs[] = [];
+    const { poller, updates } = harness({
+      trigger: directTrigger(),
+      jira: http,
+      gh: run,
+      launchDirect: async (_t, args) => {
+        seen.push(args);
+        return "launched";
+      },
+    });
+    await poller.pollAll();
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      projectId: "proj-1",
+      repoPath: "/repo/widget",
+      ticket: { kind: "jira", key: "ACME-1", title: "Add rate limiting" },
+    });
+    expect(seen[0].spec.criteria).toEqual(["returns 429 over 100 rpm", "resets after window"]);
+
+    // NO spec-PR machinery at all — gh is never touched.
+    expect(argv.length).toBe(0);
+    // Exactly one pickup comment ("taken into work").
+    expect(jiraPosts(calls, "/comment")).toBe(1);
+    // Watermarked WITHOUT a specPrUrl (there is no spec PR).
+    const last = updates[updates.length - 1].config as TrackerEventTriggerConfig;
+    expect(last.pollState?.intake?.["ACME-1"]).toBeTruthy();
+    expect(last.pollState?.intake?.["ACME-1"]?.specPrUrl).toBeUndefined();
+  });
+
+  it("re-poll → launchDirect NOT called again (watermark dedup)", async () => {
+    const { http } = fakeJira({ issues: [SHAPED_ISSUE] });
+    const { run } = fakeGh();
+    const launchDirect = vi.fn(async () => "launched" as const);
+    const { poller } = harness({ trigger: directTrigger(), jira: http, gh: run, launchDirect });
+    await poller.pollAll();
+    await poller.pollAll();
+    expect(launchDirect).toHaveBeenCalledTimes(1);
+  });
+
+  it("skipped-dedup (active loop) → watermark set, NO comment", async () => {
+    const { http, calls } = fakeJira({ issues: [SHAPED_ISSUE] });
+    const { run } = fakeGh();
+    const { poller, updates } = harness({
+      trigger: directTrigger(),
+      jira: http,
+      gh: run,
+      launchDirect: async () => "skipped-dedup",
+    });
+    await poller.pollAll();
+    expect(jiraPosts(calls, "/comment")).toBe(0);
+    const last = updates[updates.length - 1].config as TrackerEventTriggerConfig;
+    expect(last.pollState?.intake?.["ACME-1"]).toBeTruthy();
+  });
+
+  it("failed launch → NO watermark (next cycle retries), NO comment", async () => {
+    const { http, calls } = fakeJira({ issues: [SHAPED_ISSUE] });
+    const { run } = fakeGh();
+    const { poller, updates } = harness({
+      trigger: directTrigger(),
+      jira: http,
+      gh: run,
+      launchDirect: async () => "failed",
+    });
+    await poller.pollAll();
+    expect(jiraPosts(calls, "/comment")).toBe(0);
+    const last = updates[updates.length - 1].config as TrackerEventTriggerConfig;
+    expect(last.pollState?.intake?.["ACME-1"]).toBeUndefined();
+  });
+
+  it("free-form issue + synth empty → need-criteria comment, launchDirect NOT called, no watermark", async () => {
+    const freeform = {
+      ...SHAPED_ISSUE,
+      key: "ACME-9",
+      fields: { ...SHAPED_ISSUE.fields, description: "just do the thing please" },
+    };
+    const { http, calls } = fakeJira({ issues: [freeform] });
+    const { run } = fakeGh();
+    const launchDirect = vi.fn(async () => "launched" as const);
+    const { poller, updates } = harness({
+      trigger: directTrigger(),
+      jira: http,
+      gh: run,
+      launchDirect,
+      synthesizer: { synthesize: async () => ({ criteria: [] }) },
+    });
+    await poller.pollAll();
+    expect(launchDirect).not.toHaveBeenCalled();
+    expect(jiraPosts(calls, "/comment")).toBe(1); // the need-criteria ask
+    const last = updates[updates.length - 1].config as TrackerEventTriggerConfig;
+    expect(last.pollState?.intake?.["ACME-9"]).toBeUndefined();
+  });
+
+  it("default mode (no intakeMode) → launchDirect never called, spec-PR path byte-identical", async () => {
+    const { http } = fakeJira({ issues: [SHAPED_ISSUE] });
+    const { run, argv } = fakeGh();
+    const launchDirect = vi.fn(async () => "launched" as const);
+    const { poller } = harness({ trigger: jiraTrigger(), jira: http, gh: run, launchDirect });
+    await poller.pollAll();
+    expect(launchDirect).not.toHaveBeenCalled();
+    expect(count(argv, isPrCreate)).toBe(1);
   });
 });
