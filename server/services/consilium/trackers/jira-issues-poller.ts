@@ -44,9 +44,11 @@ import { extractSpecFromIssue } from "./issue-spec.js";
 import { crystallizeTicket } from "./spec-intake.js";
 import { JiraTrackerConnector, type JiraConnectorConfig } from "./jira-connector.js";
 import { readJiraAuthFromEnv, type JiraAuth, type JiraHttpFn } from "./jira-exec.js";
+import type { GitlabAuth, GitlabHttpFn } from "./gitlab-exec.js";
 
-/** `owner/repo` — conservative charset (no leading dash / no flag). */
-const OWNER_REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+/** `owner/repo` (GitHub) or `group/subgroup/project` (GitLab nested groups) —
+ *  conservative charset (no leading dash / no flag), 2+ segments. */
+const OWNER_REPO_RE = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)+$/;
 /** Max NEW intakes opened per poll cycle (bounds blast radius). */
 const MAX_PER_CYCLE = 20;
 /** Cap on tracked intakes per trigger (bounds the watermark jsonb). */
@@ -84,6 +86,10 @@ export interface JiraIssuesPollerDeps {
   jiraHttp?: JiraHttpFn;
   /** Injectable Jira auth (tests pass a fake; prod reads env at call time). */
   jiraAuth?: JiraAuth | null;
+  /** Injectable GitLab transport/auth for a gitlab-origin `targetRepoPath` (the
+   *  spec lands as a GitLab MR). Prod reads GITLAB_TOKEN from env at call time. */
+  gitlabHttp?: GitlabHttpFn;
+  gitlabAuth?: GitlabAuth | null;
   /** Injectable git-remote reader for the owner/repo derivation (default: real `git`). */
   gitRemoteUrl?: (repoPath: string) => Promise<string | null>;
   log: (message: string) => void;
@@ -255,6 +261,7 @@ export class JiraIssuesPoller {
       label,
       extraJql: config.jql,
       transitionTo: config.transitionTo,
+      apiVersion: config.jiraApiVersion,
     };
     const connector = new JiraTrackerConnector(connectorCfg, {
       http: this.deps.jiraHttp,
@@ -319,6 +326,8 @@ export class JiraIssuesPoller {
         const result = await crystallizeTicket(
           {
             runGh: this.deps.runGh, // spec PR uses the shared gh writer (injectable).
+            gitlabHttp: this.deps.gitlabHttp, // gitlab-origin target ⇒ spec lands as an MR.
+            gitlabAuth: this.deps.gitlabAuth,
             gitRemoteUrl: this.gitRemoteUrl,
             log: this.deps.log,
             writeback: {

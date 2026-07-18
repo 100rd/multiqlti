@@ -1879,6 +1879,12 @@ export interface TrackerEventTriggerConfig {
   /** Optional operator JQL predicate (trusted config) ANDed into the label search. */
   jql?: string;
   /**
+   * Jira REST dialect: `"3"` (Cloud, default) or `"2"` (self-hosted Server/Data
+   * Center — those installs serve only `/rest/api/2` and take plain-string comment
+   * bodies instead of ADF). Absent ⇒ `"3"` (existing configs byte-identical).
+   */
+  jiraApiVersion?: "2" | "3";
+  /**
    * Optional pickup "transition", interpreted per connector (best-effort): Jira → a
    * workflow transition name/id; GitLab → a LABEL to add (no arbitrary states);
    * Bitbucket → an issue STATE; Linear → a workflow-state name; Azure → `System.State`;
