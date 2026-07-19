@@ -107,6 +107,7 @@ interface HarnessOpts {
   allowedRepoPaths?: () => string[];
   synthesizer?: TicketSynthesizer;
   launchDirect?: (trigger: TriggerRow, args: TicketLaunchArgs) => Promise<ConsiliumDispatchResult>;
+  resolveFreshRef?: (repoPath: string) => Promise<string | null>;
   logs?: string[];
 }
 
@@ -126,6 +127,8 @@ function harness(opts: HarnessOpts) {
     allowedRepoPaths: opts.allowedRepoPaths ?? (() => ["/repo/widget"]),
     synthesizer: opts.synthesizer,
     launchDirect: opts.launchDirect,
+    // Test default: never run real `git` — direct-intake tests inject their own.
+    resolveFreshRef: opts.resolveFreshRef ?? (async () => "origin/main"),
     runGh: opts.gh,
     jiraHttp: opts.jira,
     jiraAuth: { email: "a@b.co", token: "secret" },
@@ -321,6 +324,8 @@ describe("direct intake (ADR-004 Block A)", () => {
       ticket: { kind: "jira", key: "ACME-1", title: "Add rate limiting" },
     });
     expect(seen[0].spec.criteria).toEqual(["returns 429 over 100 rpm", "resets after window"]);
+    // Fresh target: the poller-resolved remote default rides into the launch args.
+    expect(seen[0].ref).toBe("origin/main");
 
     // NO spec-PR machinery at all — gh is never touched.
     expect(argv.length).toBe(0);
@@ -403,5 +408,29 @@ describe("direct intake (ADR-004 Block A)", () => {
     await poller.pollAll();
     expect(launchDirect).not.toHaveBeenCalled();
     expect(count(argv, isPrCreate)).toBe(1);
+  });
+});
+
+describe("direct intake — fresh review ref (fetch + origin default)", () => {
+  it("no resolvable origin default → ref null (working-tree fallback) + log", async () => {
+    const { http } = fakeJira({ issues: [SHAPED_ISSUE] });
+    const { run } = fakeGh();
+    const seen: TicketLaunchArgs[] = [];
+    const logs: string[] = [];
+    const { poller } = harness({
+      trigger: jiraTrigger({ intakeMode: "direct" }),
+      jira: http,
+      gh: run,
+      launchDirect: async (_t, args) => {
+        seen.push(args);
+        return "launched";
+      },
+      resolveFreshRef: async () => null,
+      logs,
+    });
+    await poller.pollAll();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].ref).toBeNull();
+    expect(logs.some((l) => l.includes("no origin default ref"))).toBe(true);
   });
 });

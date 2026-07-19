@@ -103,6 +103,14 @@ export interface JiraIssuesPollerDeps {
     trigger: TriggerRow,
     args: TicketLaunchArgs,
   ) => Promise<ConsiliumDispatchResult>;
+  /**
+   * ADR-004: resolve the FRESH review target for a direct intake — fetch origin
+   * (best-effort) and return `origin/<default-branch>` so the review reads the
+   * remote default via git, never the operator's working tree / current branch.
+   * Injectable for tests; default runs real `git`. `null` ⇒ working-tree HEAD
+   * (the pre-existing behaviour, e.g. a clone with no usable origin).
+   */
+  resolveFreshRef?: (repoPath: string) => Promise<string | null>;
   log: (message: string) => void;
   now?: () => number;
 }
@@ -120,6 +128,46 @@ async function defaultGitRemoteUrl(repoPath: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * ADR-004 default `resolveFreshRef`: `git fetch origin` (best-effort — stale remote
+ * refs still beat the working tree), then `origin/<default>` via the origin/HEAD
+ * symref, falling back to probing `origin/main` / `origin/master`. NEVER throws;
+ * `null` ⇒ the caller launches against the working-tree HEAD as before.
+ */
+async function defaultResolveFreshRef(repoPath: string): Promise<string | null> {
+  try {
+    await execFileAsync("git", ["-C", repoPath, "fetch", "origin", "--quiet"], {
+      timeout: 60_000,
+    });
+  } catch {
+    /* offline / no origin — keep resolving against whatever refs exist */
+  }
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["-C", repoPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+      { timeout: 10_000 },
+    );
+    const ref = (stdout ?? "").trim(); // e.g. `origin/main`
+    if (ref.length > 0) return ref;
+  } catch {
+    /* symref unset in some clones — probe the common defaults */
+  }
+  for (const cand of ["origin/main", "origin/master"]) {
+    try {
+      await execFileAsync(
+        "git",
+        ["-C", repoPath, "rev-parse", "--verify", "--quiet", `${cand}^{commit}`],
+        { timeout: 10_000 },
+      );
+      return cand;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  return null;
 }
 
 /** Best-effort realpath (collapses symlinks/`..`), else lexical resolve. */
@@ -338,6 +386,16 @@ export class JiraIssuesPoller {
             );
             continue; // no watermark — an edit that adds criteria retries next cycle.
           }
+          // Fresh target: fetch origin + resolve `origin/<default>` so the review
+          // reads the remote default via git — never the operator's working tree.
+          const ref = await (this.deps.resolveFreshRef ?? defaultResolveFreshRef)(
+            targetRepoPath,
+          );
+          if (ref === null) {
+            this.deps.log(
+              `jira tracker poll: no origin default ref for ${key} — reviewing working-tree HEAD`,
+            );
+          }
           let launch: ConsiliumDispatchResult;
           try {
             launch = await this.deps.launchDirect(trigger, {
@@ -345,6 +403,7 @@ export class JiraIssuesPoller {
               repoPath: targetRepoPath,
               ticket: { kind: "jira", key, title: ticket.title, url: ticket.url },
               spec: { problem, scope, outOfScope, criteria },
+              ref,
             });
           } catch (e) {
             this.deps.log(`jira tracker poll: direct launch threw for ${key}: ${(e as Error).message}`);

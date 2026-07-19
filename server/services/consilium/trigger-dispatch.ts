@@ -601,6 +601,14 @@ export interface TicketLaunchArgs {
   ticket: { kind: string; key: string; title: string; url?: string };
   /** The extracted/synthesised task definition (criteria = condition of done). */
   spec: { problem?: string; scope?: string; outOfScope?: string; criteria: string[] };
+  /**
+   * ADR-004: the review target ref (e.g. `origin/main`, resolved by the poller
+   * after a fetch) so the loop reads the FRESH remote default via git instead of
+   * the operator's working tree. Absent/null ⇒ working-tree HEAD. Validated
+   * strictly by the factory (`validateReviewRef`) — an invalid ref fails the
+   * launch (T4) rather than being persisted.
+   */
+  ref?: string | null;
 }
 
 /**
@@ -641,6 +649,8 @@ export async function launchTicketReview(
     projectId: args.projectId,
     repoPath: args.repoPath,
     preset: args.preset ?? SPEC_DEFAULT_PRESET,
+    // ADR-004: review the fresh remote default (poller-resolved), not the tree.
+    ref: args.ref ?? null,
     engineerInstruction,
     // Per-ticket dedup: the synthetic anchor rides the spec-dedup seam, so two
     // tickets targeting one repo each fire their own loop (mirrors per-spec dedup).

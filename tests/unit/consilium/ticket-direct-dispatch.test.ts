@@ -77,6 +77,8 @@ describe("launchTicketReview (ADR-004 Block A)", () => {
     // T6: an unattended launch NEVER reaches the coder — review-only.
     expect(plan.maxRounds).toBe(1);
     expect(plan.preset).toBe("sdlc-cross-review");
+    // No poller-resolved ref ⇒ working-tree HEAD (null), the pre-existing default.
+    expect(plan.ref).toBeNull();
 
     // DoD-first: criteria reach the objective BEFORE the body (H1 clamp discipline).
     const instruction = plan.engineerInstruction as string;
@@ -85,6 +87,16 @@ describe("launchTicketReview (ADR-004 Block A)", () => {
       instruction.indexOf("Pipelines are slow"),
     );
     expect(recordFire).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the poller-resolved fresh ref through to the launch plan", async () => {
+    const { deps, created } = makeDeps();
+    const res = await launchTicketReview(deps as never, trigger(), {
+      ...ARGS,
+      ref: "origin/main",
+    });
+    expect(res).toBe("launched");
+    expect(created[0].ref).toBe("origin/main");
   });
 
   it("dedup-suppresses when an ACTIVE loop already carries the same ticket anchor", async () => {
