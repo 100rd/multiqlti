@@ -2064,6 +2064,14 @@ const DEV_STEP_LABELS: Record<NonNullable<DevProgress["step"]>, string> = {
  * SECURITY: every `title` is model-authored verdict text, server-sanitized and
  * rendered as INERT React text (never HTML, never a link/attribute).
  */
+/** Compact human duration for a task chip: `42s`, `4m 12s`, `1h 07m`. */
+function fmtDuration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  if (m >= 60) return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
+  return m > 0 ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+}
+
 function DevTaskList({ progress }: { progress: DevProgress }) {
   const aps = progress.aps ?? [];
   if (aps.length === 0) return null;
@@ -2071,6 +2079,12 @@ function DevTaskList({ progress }: { progress: DevProgress }) {
     <ul className="space-y-1">
       {aps.map((ap) => {
         const isActive = ap.status === "active";
+        // Per-task wall clock: settled → start..end; active → start..now (refreshes
+        // with the poll cycle). Absent stamps (old snapshot) render nothing.
+        const runMs =
+          ap.startedAt !== undefined
+            ? (ap.endedAt ?? Date.now()) - ap.startedAt
+            : undefined;
         return (
           <li key={ap.i} className="flex items-start gap-2 text-xs leading-relaxed">
             <span className="mt-0.5">
@@ -2090,6 +2104,11 @@ function DevTaskList({ progress }: { progress: DevProgress }) {
                     </span>
                   )}
                 </Badge>
+              )}
+              {runMs !== undefined && runMs >= 1000 && (
+                <span className="ml-1.5 tabular-nums text-[10px] text-muted-foreground align-middle">
+                  {isActive ? `⏱ ${fmtDuration(runMs)}` : fmtDuration(runMs)}
+                </span>
               )}
             </span>
           </li>
