@@ -484,6 +484,17 @@ const SDLC_DEV_MAX_ACTION_POINTS = 24;
 export const SDLC_DEV_REDRIVE_GRACE_MS = SDLC_DEV_GRACE_MS * SDLC_DEV_MAX_ACTION_POINTS;
 
 /**
+ * Liveness heartbeat: minimum interval between `updated_at` touches of the loop
+ * row from the dispatchSdlc progress sink. A LIVE multi-AP round beats at every
+ * coder phase/AP boundary, so its row never ages past one coder call — which
+ * lets the registry-empty (cross-restart) developing re-drive fallback shrink
+ * from the whole-round worst case ({@link SDLC_DEV_REDRIVE_GRACE_MS}, ~4.4h) to
+ * ONE coder timeout + {@link SDLC_DEV_GRACE_MS}. A dead process stops beating
+ * and is re-driven automatically within that window — no operator babysitting.
+ */
+export const DEV_HEARTBEAT_MIN_INTERVAL_MS = 60_000;
+
+/**
  * M-1 (Security MEDIUM): the number of SEQUENTIAL waves a runner review executes — the
  * cross-review DAG runs primaries∥ → rebuttals∥ → judge, each wave bounded by the per-call
  * `taskTimeoutMs`. The reviewing redrive grace is sized to a WHOLE runner review
@@ -967,7 +978,11 @@ export interface ConsiliumLoopControllerDeps {
    * assert the prRef/headCommit flow with a fake (no real repo / claude / gh).
    * The default runs the REAL SDLC executor (`runSdlc` below).
    */
-  runCloseout?: (loop: ConsiliumLoopRow, verdict: ConvergenceVerdict) => Promise<DevCloseoutResult>;
+  runCloseout?: (
+    loop: ConsiliumLoopRow,
+    verdict: ConvergenceVerdict,
+    onProgress?: (p: SdlcProgress) => void,
+  ) => Promise<DevCloseoutResult>;
   /**
    * The SDLC handoff: cut an ISOLATED worktree, run the agentic coder for REAL
    * edits, commit + open a Draft PR. Defaults to the real `runSdlcHandoff`.
@@ -1132,11 +1147,18 @@ export class ConsiliumLoopController {
    */
   private redriveGraceMs(state?: ConsiliumLoopState): number {
     const base = Math.max(2 * this.loopConfig().pollIntervalMs, 30_000);
-    // H-2 / BUG-1: developing waits on a BACKGROUND multi-AP coder round (N
-    // sequential coders). Its TIME fallback is sized to a WHOLE round and only
-    // governs the registry-empty (cross-restart) case; the authoritative
-    // in-process guard is the `sdlcRuns` registry consulted in redriveStranded.
-    if (state === "developing") return Math.max(base, SDLC_DEV_REDRIVE_GRACE_MS);
+    // H-2 / BUG-1: developing waits on a BACKGROUND multi-AP coder round; the
+    // authoritative in-process guard is the `sdlcRuns` registry consulted in
+    // redriveStranded — this TIME fallback governs only the registry-empty
+    // (cross-restart) case. Since the dispatchSdlc progress sink now HEARTBEATS
+    // the row (DEV_HEARTBEAT_MIN_INTERVAL_MS), a LIVE round's updated_at never
+    // ages past ONE silent stretch — a single coder call — so the fallback is
+    // sized to coder-timeout + grace instead of the whole-round worst case
+    // (SDLC_DEV_REDRIVE_GRACE_MS): an orphaned develop recovers in ~minutes.
+    if (state === "developing") {
+      const coderMs = this.deps.config().pipeline.taskGroups?.taskTimeoutMs ?? 600_000;
+      return Math.max(base, coderMs + SDLC_DEV_GRACE_MS);
+    }
     // M-1: a RUNNER review keeps currentIterationNumber NULL (⇒ nullRef true), so — like
     // developing — its TIME fallback must cover a WHOLE multi-wave review, not the bare base,
     // or a cross-instance poller (no local reviewRuns entry) redrives a LIVE review (duplicate
@@ -2505,7 +2527,7 @@ export class ConsiliumLoopController {
     verdict: ConvergenceVerdict,
     onProgress?: (p: SdlcProgress) => void,
   ): Promise<DevCloseoutResult> {
-    if (this.deps.runCloseout) return this.deps.runCloseout(loop, verdict);
+    if (this.deps.runCloseout) return this.deps.runCloseout(loop, verdict, onProgress);
     const cfg = this.loopConfig();
     // Stage 3 (R1 ANTI-FOOTGUN — TOP PRIORITY): a `research` loop MUST hard-branch to
     // the research runner. It must NEVER fall through to the coder/worktree path below:
@@ -3139,9 +3161,19 @@ export class ConsiliumLoopController {
     // Display-only progress sink: capture the LATEST per-AP beat onto the run row
     // so `getDevProgress` (and the loop GET) can show WHAT the coder is doing.
     // GUARD on `!run.done`: a late beat must NEVER mutate a settled run.
+    // Liveness heartbeat: refresh the loop row's updated_at on (throttled) beats
+    // so the cross-restart redrive fallback stays one-coder-sized — a LIVE round
+    // never looks stranded; a dead process goes silent and is re-driven within
+    // ~coder-timeout + grace. Best-effort: a failed touch never breaks the run.
+    let lastBeatTouch = 0;
     const onProgress = (p: SdlcProgress): void => {
       if (run.done) return;
       run.progress = p;
+      const nowMs = Date.now();
+      if (nowMs - lastBeatTouch >= DEV_HEARTBEAT_MIN_INTERVAL_MS) {
+        lastBeatTouch = nowMs;
+        void Promise.resolve(this.storage.updateLoop(loop.id, {})).catch(() => undefined);
+      }
     };
     void this.closeout(loop, verdict, onProgress)
       .then((result) => {

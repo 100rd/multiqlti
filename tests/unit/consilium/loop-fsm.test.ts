@@ -1384,3 +1384,67 @@ describe("controller.cancel — records terminal explanation", () => {
     expect(cas).not.toHaveBeenCalled();
   });
 });
+
+describe("developing liveness heartbeat — one-coder-sized redrive (no babysitting)", () => {
+  it("SILENT developing past coder-timeout+grace (registry empty) → re-dispatched WITHOUT waiting the whole-round 4.4h", async () => {
+    // Heartbeats stop when the owning process dies; with the fallback now sized to
+    // ONE coder call (default 600s) + SDLC_DEV_GRACE_MS (660s), an orphaned round
+    // recovers in ~21min. This age is far under the old whole-round grace, so the
+    // pre-heartbeat formula would have left it stranded for hours.
+    const ONE_CODER_STALE = new Date(Date.now() - (600_000 + 660_000 + 60_000));
+    const loop = makeLoop({ state: "developing", round: 2, devGroupId: null, currentIterationNumber: 2, updatedAt: ONE_CODER_STALE });
+    const { storage } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
+    const runCloseout = vi.fn(async () => ({ prRef: "https://github.com/x/y/pull/9", headCommit: "beef1234" }));
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+      readIterationVerdict: async () => verdict(false, 2),
+      readRepoHead: async () => "beef1234",
+      runCloseout,
+    });
+    const res = await controller.tick(loop.id);
+    expect(runCloseout).toHaveBeenCalledTimes(1); // recovered automatically
+    expect(res?.state).toBe("developing");
+  });
+
+  it("LIVE round's progress beats TOUCH the loop row (throttled to one per interval)", async () => {
+    const loop = makeLoop({ state: "deciding", round: 2, currentIterationNumber: 2 });
+    const { storage } = makeFakeStorage(loop, [{ round: 1, openP0: 3 }]);
+    let progressFn: ((p: unknown) => void) | undefined;
+    let release: (r: { prRef: string | null; headCommit: string }) => void = () => {};
+    const runCloseout = vi.fn(
+      (_params: unknown, _deps: unknown, onProgress?: (p: unknown) => void) => {
+        progressFn = onProgress;
+        return new Promise<{ prRef: string | null; headCommit: string }>((res) => {
+          release = res;
+        });
+      },
+    );
+    const touchSpy = vi.spyOn(storage, "updateLoop");
+    const controller = new ConsiliumLoopController({
+      storage: storage as never,
+      taskOrchestrator: { startGroup: vi.fn(), startGroupAsync: vi.fn(), createTaskGroup: vi.fn(), cancelGroup: vi.fn() } as never,
+      config: fakeConfig,
+      readIterationVerdict: async () => verdict(false, 2),
+      readRepoHead: async () => "abc",
+      runCloseout,
+    });
+    const t1 = await controller.tick(loop.id); // deciding → developing (dispatch)
+    expect(t1?.state).toBe("developing");
+    await flush(); // the close-out dispatch is fire-and-forget — let it reach runCloseout
+    expect(progressFn).toBeTypeOf("function");
+
+    const emptyTouches = () =>
+      touchSpy.mock.calls.filter(([, u]) => Object.keys(u as object).length === 0).length;
+    const before = emptyTouches();
+    // Two beats inside ONE throttle window → exactly ONE updated_at touch.
+    progressFn!({ step: "coder" });
+    progressFn!({ step: "coder" });
+    await flush();
+    expect(emptyTouches() - before).toBe(1);
+
+    release({ prRef: "https://github.com/x/y/pull/10", headCommit: "abc" });
+    await flush();
+  });
+});
