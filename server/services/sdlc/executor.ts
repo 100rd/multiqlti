@@ -299,7 +299,15 @@ export interface SdlcProgress {
    * working and a new consumer degrades to the single-line rendering when it is
    * absent. Display only.
    */
-  aps?: Array<{ i: number; title: string; status: ApProgressStatus }>;
+  aps?: Array<{
+    i: number;
+    title: string;
+    status: ApProgressStatus;
+    /** Epoch-ms when the AP first flipped to `active`. Display only. */
+    startedAt?: number;
+    /** Epoch-ms when the AP settled (completed/partial/failed). Display only. */
+    endedAt?: number;
+  }>;
 }
 
 /** Optional progress sink threaded through the per-AP loop + push/PR phases. */
@@ -964,7 +972,13 @@ function makeProgressTracker(
   if (!onProgress) return { beat: () => {}, setStatus: () => {} };
   // Build the live task list ONCE. Titles are UNTRUSTED → sanitized + clamped EXACTLY
   // like actionPointTitle (same scrub + PROGRESS_TITLE_MAX). Capped defensively.
-  const aps: Array<{ i: number; title: string; status: ApProgressStatus }> = actionPoints
+  const aps: Array<{
+    i: number;
+    title: string;
+    status: ApProgressStatus;
+    startedAt?: number;
+    endedAt?: number;
+  }> = actionPoints
     .slice(0, PROGRESS_APS_MAX)
     .map((ap, i) => ({
       i: i + 1,
@@ -982,7 +996,14 @@ function makeProgressTracker(
     },
     setStatus(index, status) {
       const a = aps[index - 1];
-      if (a) a.status = status;
+      if (!a) return;
+      a.status = status;
+      // Wall-clock stamps for the UI's per-task duration (display only): first
+      // `active` marks the start; any settled status marks the end.
+      if (status === "active" && a.startedAt === undefined) a.startedAt = Date.now();
+      if (status === "completed" || status === "partial" || status === "failed") {
+        a.endedAt = Date.now();
+      }
     },
   };
 }

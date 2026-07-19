@@ -85,6 +85,9 @@ export interface DevProgress {
     i: number;
     title: string;
     status: "pending" | "active" | "completed" | "partial" | "failed";
+    /** Epoch-ms stamps for the per-task duration chip (absent on old snapshots). */
+    startedAt?: number;
+    endedAt?: number;
   }>;
 }
 
