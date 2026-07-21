@@ -204,6 +204,22 @@ describe("consilium-loop routes", () => {
     expect(res.status).toBe(403);
   });
 
+  it("PUBLISH-FAILED: awaiting_merge with an error and NO prRef → 409 on merge-approved (nothing to merge)", async () => {
+    const created = await post("/api/consilium-loops", { groupId: ctx.group.id, repoPath: REPO_ROOT });
+    const id = created.body.id;
+    // A dev close-out whose push was rejected: error persisted, no PR produced.
+    await ctx.storage.updateLoop(id, {
+      state: "awaiting_merge",
+      headCommitAtReview: "abc1234",
+      prRef: null,
+      error: "push failed: remote rejected (pre-receive hook declined)",
+    });
+    ctx.setUser(MAINTAINER_USER); // pass the role gate — the publish gate must still 409
+    const res = await post(`/api/consilium-loops/${id}/merge-approved`);
+    expect(res.status).toBe(409);
+    expect(String(res.body.error)).toContain("failed to publish");
+  });
+
   it("B-2: maintainer (same identity) WITH visibility → 200 on merge-approved", async () => {
     const created = await post("/api/consilium-loops", { groupId: ctx.group.id, repoPath: REPO_ROOT });
     const id = created.body.id;
