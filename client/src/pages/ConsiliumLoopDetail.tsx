@@ -2784,7 +2784,13 @@ export default function ConsiliumLoopDetail() {
   const terminal = isTerminalLoopState(loop.state);
   const canStart = loop.state === "pending";
   const canCancel = !terminal;
-  const canApprove = loop.state === "awaiting_merge";
+  // PUBLISH-FAILED: a dev round that errored WITHOUT producing a PR (push rejected,
+  // MR open failed) parks in awaiting_merge so the error is visible — but there is
+  // NOTHING to merge, so the approve gate must not render. Research loops (prRef
+  // null, NO error) keep their legitimate approve-and-continue gate.
+  const publishFailed =
+    loop.state === "awaiting_merge" && !loop.prRef && Boolean(loop.error);
+  const canApprove = loop.state === "awaiting_merge" && !publishFailed;
 
   // Develop hand-off (design §9): a verdict-terminal loop whose latest verdict
   // still carries action points may be promoted into a VISIBLE `developing`
@@ -3008,6 +3014,25 @@ export default function ConsiliumLoopDetail() {
             developing={developLoop.isPending}
             onDevelop={handleDevelop}
           />
+        )}
+
+        {/* PUBLISH-FAILED callout: the dev round finished but its push/MR was
+            rejected — nothing reached the forge, so there is no merge to approve
+            (the approve button is suppressed above). The round branch with the
+            commits is intact in the local repo. */}
+        {publishFailed && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">
+            <div className="flex items-center gap-2 font-medium text-destructive">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              Publish failed — nothing to merge
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              The develop round completed its commits, but pushing the branch / opening
+              the MR was rejected (see the round error below). The round branch is
+              intact in the repo — fix the push blocker and re-run develop, or Finish
+              the loop.
+            </p>
+          </div>
         )}
 
         {/* Research report (Stage 3) — the researched outcome of a `research`

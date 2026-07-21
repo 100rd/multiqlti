@@ -374,6 +374,16 @@ export function registerConsiliumLoopRoutes(
       if (auth.loop.state !== "awaiting_merge") {
         return res.status(409).json({ error: "loop is not AWAITING_MERGE" });
       }
+      // PUBLISH-FAILED gate: a dev close-out that ERRORED without producing a PR
+      // (e.g. the push was rejected by a server-side policy) parks in awaiting_merge
+      // so the human sees the error — but there is NOTHING to merge, and approving
+      // would re-enter the loop as if the round had shipped. Research loops
+      // (prRef null, NO error) keep their legitimate approve-and-continue gate.
+      if (!auth.loop.prRef && auth.loop.error) {
+        return res
+          .status(409)
+          .json({ error: "nothing to merge — the develop round failed to publish (no PR)" });
+      }
       // M-3: the merged HEAD is read SERVER-side (never a client-supplied sha).
       const merged = await controller.onMergeApproved(auth.loop.id, "");
       if (!merged) return res.status(409).json({ error: "merge approval could not be applied" });
