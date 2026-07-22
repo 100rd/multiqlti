@@ -640,10 +640,15 @@ export async function launchTicketReview(
   // UNTRUSTED title → single-line control-strip + clamp for the inert passport label.
   const titleLabel = args.ticket.title
     // eslint-disable-next-line no-control-regex
-    .replace(/[ -]+/g, " ")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
     .trim()
     .slice(0, 120);
   const anchor = `ticket:${args.ticket.kind}:${args.ticket.key}`;
+  // Ticket-first commits: the ticket KEY becomes the loop's commitPrefix so every
+  // coder commit subject and the Draft-PR/MR title carry it — a push to a repo
+  // whose pre-receive hook requires an issue key can land. The key is already
+  // connector-sanitised; the extra filter is defence-in-depth (option-safe charset).
+  const safeKey = args.ticket.key.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40);
 
   return launchReviewWithDedup(deps, trigger, {
     projectId: args.projectId,
@@ -651,6 +656,7 @@ export async function launchTicketReview(
     preset: args.preset ?? SPEC_DEFAULT_PRESET,
     // ADR-004: review the fresh remote default (poller-resolved), not the tree.
     ref: args.ref ?? null,
+    ...(safeKey.length > 0 ? { commitPrefix: `${safeKey}: ` } : {}),
     engineerInstruction,
     // Per-ticket dedup: the synthetic anchor rides the spec-dedup seam, so two
     // tickets targeting one repo each fire their own loop (mirrors per-spec dedup).
@@ -687,6 +693,13 @@ export interface ReviewLaunchPlan {
   engineerInstruction?: string;
   objectiveExtra?: string;
   eventSummary?: string;
+  /**
+   * Ticket-first commits (ADR-004): per-loop commit-message/MR-title prefix
+   * (e.g. `"PDO-922: "`), persisted on the loop and applied by the SDLC executor
+   * to every commit subject + the Draft-PR/MR title. Absent ⇒ no prefix
+   * (byte-identical for every non-ticket path). Caller-sanitised.
+   */
+  commitPrefix?: string;
   /**
    * SPEC-1: operator/spec-selected skill ids, resolved PROJECT-SCOPED inside the
    * factory (a foreign id throws → "failed", caught by T4). Absent for every
@@ -848,6 +861,8 @@ export async function launchReviewWithDedup(
         // Exactly one of these is set (engineerInstruction wins in the factory).
         engineerInstruction: plan.engineerInstruction,
         objectiveExtra: plan.objectiveExtra,
+        // Ticket-first commits: the caller-sanitised ticket prefix (absent ⇒ none).
+        commitPrefix: plan.commitPrefix,
         // §6: record which trigger + event (+ role) started the loop.
         triggerProvenance: provenance,
       });

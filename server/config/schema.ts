@@ -337,6 +337,14 @@ export const ConfigSchema = z.object({
       /** Hard byte cap on the per-round unified diff (A2 bound). 1KiB..2MB. */
       maxDiffBytes: z.coerce.number().int().min(1_024).max(2_000_000).default(200_000),
       /**
+       * Ticket-first policy: when true, a MANUAL review launch (POST
+       * /api/consilium-reviews) must carry a ticket key (`commitPrefix`) — repos
+       * whose pre-receive hooks require an issue key in every commit would reject
+       * the publish of an unkeyed loop anyway. Ticket-intake loops always carry
+       * one automatically. Default false ⇒ byte-identical behaviour.
+       */
+      requireTicketRef: z.boolean().default(false),
+      /**
        * Fail-closed repo allowlist. Empty ⇒ no repo path is permitted (the
        * diff-context builder throws). config.yaml only — arrays are not
        * env-mapped (matches the federation.peers / omniscience.args pattern).

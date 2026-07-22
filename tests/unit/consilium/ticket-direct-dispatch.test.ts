@@ -79,6 +79,9 @@ describe("launchTicketReview (ADR-004 Block A)", () => {
     expect(plan.preset).toBe("sdlc-cross-review");
     // No poller-resolved ref ⇒ working-tree HEAD (null), the pre-existing default.
     expect(plan.ref).toBeNull();
+    // Ticket-first commits: the ticket key rides as the loop's commit prefix so
+    // coder commits/MR titles pass issue-key push policies.
+    expect(plan.commitPrefix).toBe("PDO-850: ");
 
     // DoD-first: criteria reach the objective BEFORE the body (H1 clamp discipline).
     const instruction = plan.engineerInstruction as string;

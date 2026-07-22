@@ -329,6 +329,12 @@ export interface SdlcHandoffRequest {
    * the create route; re-sanitized defensively at each call site below.
    */
   commitPrefix?: string;
+  /**
+   * The intake ticket this loop implements (from the loop's launch provenance),
+   * surfaced in the Draft-PR/MR BODY so the reviewer lands on the requirement in
+   * one click. Display-only inert text/link; absent ⇒ no ticket line.
+   */
+  ticketRef?: { key: string; url?: string };
   /** The round's open action points to implement (one coder run EACH). */
   actionPoints: readonly ActionPoint[];
   /** Fail-closed repo allowlist (H-5). */
@@ -757,6 +763,8 @@ export interface PrStatusBodyInput {
    * pre-Stage-A body).
    */
   finalVerification?: FinalVerification;
+  /** The intake ticket (key + optional URL) — one provenance line in the header. */
+  ticketRef?: { key: string; url?: string };
 }
 
 /**
@@ -781,6 +789,17 @@ export function buildPrStatusBody(input: PrStatusBodyInput): string {
     `- Loop: \`${sanitizeLine(loopId, 80)}\``,
     `- Round: ${round}`,
     `- Repo: \`${sanitizeLine(repoName, 120)}\``,
+    // Ticket-first provenance: the requirement this round implements, when known.
+    // Key sanitized single-line; the URL only renders for a well-formed http(s) link.
+    ...(input.ticketRef?.key
+      ? [
+          `- Ticket: ${sanitizeLine(input.ticketRef.key, 60)}${
+            input.ticketRef.url && /^https?:\/\//.test(input.ticketRef.url)
+              ? ` — ${sanitizeLine(input.ticketRef.url, 300)}`
+              : ""
+          }`,
+        ]
+      : []),
   ];
 
   // Action points addressed — from the verdict (UNTRUSTED -> sanitize + clamp).
@@ -2427,6 +2446,7 @@ async function pushAndOpenPr(
       actionPoints: req.actionPoints,
       outcomes,
       finalVerification,
+      ticketRef: req.ticketRef,
     }),
   });
   if (!pr.ok) {
