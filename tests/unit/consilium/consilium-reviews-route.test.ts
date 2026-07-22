@@ -25,7 +25,7 @@ import { createConsiliumReview } from "../../../server/services/consilium/review
 
 const mockedCreate = vi.mocked(createConsiliumReview);
 
-function makeApp() {
+function makeApp(deps: unknown = {}) {
   const app = express();
   app.use(express.json());
   // Stand in for requireAuth + requireProject (applied at mount in routes.ts).
@@ -34,10 +34,15 @@ function makeApp() {
     (req as unknown as { projectId: string }).projectId = "project-1";
     next();
   });
-  // deps are unused — the factory is fully mocked.
-  registerConsiliumReviewRoutes(app, {} as never);
+  // deps default {} — the factory is fully mocked; ticket-first tests pass a config.
+  registerConsiliumReviewRoutes(app, deps as never);
   return app;
 }
+
+/** Deps carrying ONLY the ticket-first flag (everything else mocked/unused). */
+const ticketFirstDeps = {
+  config: () => ({ pipeline: { consiliumLoop: { requireTicketRef: true } } }),
+};
 
 const VALID_BODY = { repoPath: "/repos/widget", preset: "sdlc-cross-review" as const };
 
@@ -80,6 +85,24 @@ describe("POST /api/consilium-reviews — distinct 400s for the two confinement 
     const workspaceRes = await request(makeApp()).post("/api/consilium-reviews").send(VALID_BODY);
 
     expect(allowlistRes.body.error).not.toBe(workspaceRes.body.error);
+  });
+
+  it("TICKET-FIRST: requireTicketRef + no commitPrefix → 400 with the ticket message, factory never called", async () => {
+    const res = await request(makeApp(ticketFirstDeps))
+      .post("/api/consilium-reviews")
+      .send(VALID_BODY);
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toContain("ticket key required");
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  it("TICKET-FIRST: requireTicketRef + a commitPrefix → passes the gate to the factory", async () => {
+    mockedCreate.mockResolvedValueOnce({ id: "loop-1" } as never);
+    const res = await request(makeApp(ticketFirstDeps))
+      .post("/api/consilium-reviews")
+      .send({ ...VALID_BODY, commitPrefix: "PDO-922: " });
+    expect(res.status).toBe(201);
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
   });
 
   it("a successful create returns 201 with the loop row", async () => {

@@ -2685,6 +2685,16 @@ export class ConsiliumLoopController {
       // OPTIONAL per-loop prefix (e.g. a Jira key), threaded to every SDLC-coder
       // git subject line + the Merge-Request title.
       commitPrefix: loop.commitPrefix ?? undefined,
+      // Ticket-first provenance for the Draft-PR/MR body (inert display): the
+      // intake ticket recorded at launch, when the loop came from one.
+      ticketRef: (() => {
+        const src = loop.triggerProvenance?.spec?.source;
+        if (!src || typeof src.ref !== "string" || src.ref.length === 0) return undefined;
+        return {
+          key: src.ref,
+          ...(typeof src.url === "string" ? { url: src.url } : {}),
+        };
+      })(),
       actionPoints: routedActionPoints,
       allowedRepoPaths: cfg.allowedRepoPaths,
       ownerId: loop.createdBy ?? "",

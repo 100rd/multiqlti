@@ -131,6 +131,19 @@ export function registerConsiliumReviewRoutes(app: Express, deps: CreateConsiliu
       if (!req.projectId) return res.status(400).json({ error: "x-project-id header is required" });
       const body = req.body as z.infer<typeof CreateReviewSchema>;
 
+      // Ticket-first policy (requireTicketRef): refuse an unkeyed manual launch —
+      // the team's forge rejects commits without an issue key, so an unkeyed loop
+      // could never publish its work anyway. Fail fast with an actionable 400.
+      if (
+        deps.config?.().pipeline?.consiliumLoop?.requireTicketRef &&
+        !sanitizeCommitPrefix(body.commitPrefix)
+      ) {
+        return res.status(400).json({
+          error:
+            'ticket key required: fill the Jira issue field (e.g. "PDO-123") — this project requires ticket-linked commits',
+        });
+      }
+
       try {
         const loop = await createConsiliumReview(deps, {
           projectId: req.projectId,
