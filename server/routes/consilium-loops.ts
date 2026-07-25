@@ -400,7 +400,16 @@ export function registerConsiliumLoopRoutes(
   app.post("/api/consilium-loops/:id/develop", async (req: Request, res: Response) => {
     const auth = await authorizeConsiliumLoop(req, res, storage, String(req.params.id));
     if (!auth) return;
-    const result = await controller.develop(auth.loop.id);
+    // MR-size control: optional `scope` narrows the round to the P0s — the operator
+    // ships a small reviewable MR and lets the next round carry the remainder.
+    const rawScope = (req.body as { scope?: unknown } | undefined)?.scope;
+    if (rawScope !== undefined && rawScope !== "p0" && rawScope !== "all") {
+      return res.status(400).json({ error: 'scope must be "p0" or "all"' });
+    }
+    const result =
+      rawScope !== undefined
+        ? await controller.develop(auth.loop.id, { scope: rawScope })
+        : await controller.develop(auth.loop.id);
     if (result.ok) {
       const isAdmin = req.user?.role === "admin";
       // 200 + the masked loop row (state is now "developing"); the client polls

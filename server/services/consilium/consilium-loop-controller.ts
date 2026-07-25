@@ -1255,14 +1255,25 @@ export class ConsiliumLoopController {
    * developing phase runs, via a synthetic verdict carrying the FULL action-point
    * list (the close-out reads only `verdict.openActionPoints`).
    */
-  async develop(loopId: string): Promise<DevelopResult> {
+  async develop(
+    loopId: string,
+    opts?: { scope?: "p0" | "all" },
+  ): Promise<DevelopResult> {
     const loop = await this.storage.getLoop(loopId);
     if (!loop) return { ok: false, code: "NOT_FOUND" };
     if (!isDevelopPromotable(loop.state, loop.reviewGate)) return { ok: false, code: "WRONG_STATE" };
 
     // FULL action points (ALL priorities) — SERVER-READ from the verdict; the
     // close-out reads only `openActionPoints`, but openP0 feeds the round audit.
-    const actionPoints = await this.resolveDevActionPoints(loop);
+    const allActionPoints = await this.resolveDevActionPoints(loop);
+    // MR-SIZE CONTROL: `scope: "p0"` develops ONLY the P0s — one small, reviewable
+    // MR per round; after its merge the loop's next review round re-derives the
+    // remainder and the operator ships it as the NEXT round's MR. Default "all"
+    // (absent opts) is byte-identical to the historical full-list handoff.
+    const actionPoints =
+      opts?.scope === "p0"
+        ? allActionPoints.filter((ap) => ap.priority === P0_PRIORITY)
+        : allActionPoints;
     if (actionPoints.length === 0) return { ok: false, code: "NO_ACTION_POINTS" };
 
     // Re-validate the persisted repoPath: global allowlist THEN project workspace.

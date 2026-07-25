@@ -103,6 +103,27 @@ describe("POST /api/consilium-loops/:id/develop", () => {
     expect((controller.develop as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(LOOP_ID);
   });
 
+  it('MR-size control: scope:"p0" is validated and passed through to the controller', async () => {
+    const { app, controller } = makeApp();
+    const res = await request(app)
+      .post(`/api/consilium-loops/${LOOP_ID}/develop`)
+      .send({ scope: "p0" });
+    expect(res.status).toBe(200);
+    expect(controller.develop as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(LOOP_ID, {
+      scope: "p0",
+    });
+  });
+
+  it("MR-size control: an unknown scope → 400, develop NOT called", async () => {
+    const { app, controller } = makeApp();
+    const res = await request(app)
+      .post(`/api/consilium-loops/${LOOP_ID}/develop`)
+      .send({ scope: "everything" });
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toContain("scope");
+    expect(controller.develop).not.toHaveBeenCalled();
+  });
+
   it("admin keeps createdBy in the masked row", async () => {
     const { app } = makeApp({ user: { id: "admin-x", role: "admin" } });
     const res = await request(app).post(`/api/consilium-loops/${LOOP_ID}/develop`).send();

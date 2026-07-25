@@ -1586,7 +1586,7 @@ function ReviewGateActions({
 
   async function handleDevelop() {
     try {
-      await developLoop.mutateAsync(loopId);
+      await developLoop.mutateAsync({ id: loopId });
       toast({
         title: "Handed off to SDLC",
         description: "The developing round has started — follow the progress below.",
@@ -2757,6 +2757,8 @@ export default function ConsiliumLoopDetail() {
   const approveMerge = useApproveMerge();
   const developLoop = useDevelopLoop();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // MR-size control: the develop-scope chooser (Only P0s vs all action points).
+  const [developScopeOpen, setDevelopScopeOpen] = useState(false);
 
   if (isLoading) {
     return (
@@ -2803,6 +2805,11 @@ export default function ConsiliumLoopDetail() {
   const latestRound = sortedRounds[0];
   const latestActionPointCount = Array.isArray(latestRound?.openActionPoints)
     ? latestRound!.openActionPoints.length
+    : 0;
+  // MR-size control: P0 slice of the latest verdict — offered as a smaller round.
+  const latestP0Count = Array.isArray(latestRound?.openActionPoints)
+    ? (latestRound!.openActionPoints as ActionPoint[]).filter((ap) => ap.priority === "P0")
+        .length
     : 0;
   const canDevelop =
     isVerdictTerminalLoopState(loop.state) && latestActionPointCount > 0;
@@ -2877,12 +2884,19 @@ export default function ConsiliumLoopDetail() {
     }
   }
 
-  async function handleDevelop() {
+  async function handleDevelop(scopeArg?: unknown) {
+    // Normalize: plain onClick callers pass a click event — only the two literal
+    // scopes ride to the server; anything else means "all" (historical behaviour).
+    const scope = scopeArg === "p0" || scopeArg === "all" ? scopeArg : undefined;
+    setDevelopScopeOpen(false);
     try {
-      await developLoop.mutateAsync(id);
+      await developLoop.mutateAsync({ id, scope });
       toast({
         title: "Handed off to SDLC",
-        description: "The developing round has started — follow the progress below.",
+        description:
+          scope === "p0"
+            ? `Developing only the P0 action points — merge that MR and the next round carries the rest.`
+            : "The developing round has started — follow the progress below.",
       });
     } catch (err) {
       // 400 (NO_ACTION_POINTS / REPO_NOT_*) | 409 (WRONG_STATE /
@@ -2950,7 +2964,13 @@ export default function ConsiliumLoopDetail() {
             {canDevelop && (
               <Button
                 size="sm"
-                onClick={handleDevelop}
+                onClick={() =>
+                  // A meaningful scope choice exists only when the verdict has BOTH
+                  // P0s and non-P0s — otherwise hand off the full list directly.
+                  latestP0Count > 0 && latestP0Count < latestActionPointCount
+                    ? setDevelopScopeOpen(true)
+                    : handleDevelop()
+                }
                 disabled={developLoop.isPending}
               >
                 {developLoop.isPending ? (
@@ -3181,6 +3201,34 @@ export default function ConsiliumLoopDetail() {
       </div>
 
       {/* Approve-merge confirm — the autonomy→production HITL gate */}
+      {/* MR-size control: choose the develop round's scope. One MR per round —
+          shipping only the P0s keeps it reviewable; the loop's NEXT round
+          re-derives and carries the remainder after the merge. */}
+      <AlertDialog open={developScopeOpen} onOpenChange={setDevelopScopeOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Hammer className="h-5 w-5 text-primary" />
+              How much of the verdict should this round implement?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Each develop round produces ONE merge request. A smaller round is easier
+              to review — after you merge it, the next review round picks up the
+              remaining action points automatically.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void handleDevelop("p0")}>
+              Only P0s ({latestP0Count}) — small MR
+            </AlertDialogAction>
+            <AlertDialogAction onClick={() => void handleDevelop("all")}>
+              All action points ({latestActionPointCount})
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
