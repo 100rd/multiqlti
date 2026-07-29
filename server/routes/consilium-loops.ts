@@ -403,8 +403,8 @@ export function registerConsiliumLoopRoutes(
     // MR-size control: optional `scope` narrows the round to the P0s — the operator
     // ships a small reviewable MR and lets the next round carry the remainder.
     const rawScope = (req.body as { scope?: unknown } | undefined)?.scope;
-    if (rawScope !== undefined && rawScope !== "p0" && rawScope !== "all") {
-      return res.status(400).json({ error: 'scope must be "p0" or "all"' });
+    if (rawScope !== undefined && rawScope !== "p0" && rawScope !== "top" && rawScope !== "all") {
+      return res.status(400).json({ error: 'scope must be "p0", "top" or "all"' });
     }
     const result =
       rawScope !== undefined

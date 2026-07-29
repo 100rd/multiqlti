@@ -518,9 +518,9 @@ export function useApproveMerge() {
  */
 export function useDevelopLoop() {
   const qc = useQueryClient();
-  return useMutation<ConsiliumLoopRow, Error, { id: string; scope?: "p0" | "all" }>({
-    // MR-size control: `scope: "p0"` develops only the P0s (small reviewable MR);
-    // omitted/"all" keeps the historical full-verdict round.
+  return useMutation<ConsiliumLoopRow, Error, { id: string; scope?: "p0" | "top" | "all" }>({
+    // MR-size control: `scope: "top"` develops only the highest remaining priority
+    // tier (small reviewable MR); omitted/"all" keeps the historical full round.
     mutationFn: ({ id, scope }) =>
       apiRequest("POST", `${LIST_KEY}/${id}/develop`, scope ? { scope } : undefined),
     onSuccess: (_data, { id }) => {
