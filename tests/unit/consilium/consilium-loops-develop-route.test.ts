@@ -114,6 +114,17 @@ describe("POST /api/consilium-loops/:id/develop", () => {
     });
   });
 
+  it('MR-size control: scope:"top" passes through (highest remaining tier)', async () => {
+    const { app, controller } = makeApp();
+    const res = await request(app)
+      .post(`/api/consilium-loops/${LOOP_ID}/develop`)
+      .send({ scope: "top" });
+    expect(res.status).toBe(200);
+    expect(controller.develop as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(LOOP_ID, {
+      scope: "top",
+    });
+  });
+
   it("MR-size control: an unknown scope → 400, develop NOT called", async () => {
     const { app, controller } = makeApp();
     const res = await request(app)

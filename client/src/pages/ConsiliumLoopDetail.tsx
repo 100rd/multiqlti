@@ -2806,11 +2806,18 @@ export default function ConsiliumLoopDetail() {
   const latestActionPointCount = Array.isArray(latestRound?.openActionPoints)
     ? latestRound!.openActionPoints.length
     : 0;
-  // MR-size control: P0 slice of the latest verdict — offered as a smaller round.
-  const latestP0Count = Array.isArray(latestRound?.openActionPoints)
-    ? (latestRound!.openActionPoints as ActionPoint[]).filter((ap) => ap.priority === "P0")
-        .length
-    : 0;
+  // MR-size control (ADR-005 Phase 1): the HIGHEST priority tier still present in
+  // the latest verdict — offered as a smaller round (mirrors server filterDevScope).
+  const latestAps: ActionPoint[] = Array.isArray(latestRound?.openActionPoints)
+    ? (latestRound!.openActionPoints as ActionPoint[])
+    : [];
+  const tierRankOf = (p?: string): number =>
+    ({ P0: 0, P1: 1, P2: 2, P3: 3 } as Record<string, number>)[p ?? ""] ?? 4;
+  const topTierRank = latestAps.length
+    ? Math.min(...latestAps.map((ap) => tierRankOf(ap.priority)))
+    : 4;
+  const topTierLabel = ["P0", "P1", "P2", "P3", "unprioritized"][topTierRank];
+  const topTierCount = latestAps.filter((ap) => tierRankOf(ap.priority) === topTierRank).length;
   const canDevelop =
     isVerdictTerminalLoopState(loop.state) && latestActionPointCount > 0;
 
@@ -2887,7 +2894,8 @@ export default function ConsiliumLoopDetail() {
   async function handleDevelop(scopeArg?: unknown) {
     // Normalize: plain onClick callers pass a click event — only the two literal
     // scopes ride to the server; anything else means "all" (historical behaviour).
-    const scope = scopeArg === "p0" || scopeArg === "all" ? scopeArg : undefined;
+    const scope =
+      scopeArg === "p0" || scopeArg === "top" || scopeArg === "all" ? scopeArg : undefined;
     setDevelopScopeOpen(false);
     try {
       await developLoop.mutateAsync({ id, scope });
@@ -2965,9 +2973,9 @@ export default function ConsiliumLoopDetail() {
               <Button
                 size="sm"
                 onClick={() =>
-                  // A meaningful scope choice exists only when the verdict has BOTH
-                  // P0s and non-P0s — otherwise hand off the full list directly.
-                  latestP0Count > 0 && latestP0Count < latestActionPointCount
+                  // A meaningful scope choice exists only when the top tier is a
+                  // strict subset of the verdict — otherwise hand off directly.
+                  topTierCount > 0 && topTierCount < latestActionPointCount
                     ? setDevelopScopeOpen(true)
                     : handleDevelop()
                 }
@@ -3219,8 +3227,8 @@ export default function ConsiliumLoopDetail() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => void handleDevelop("p0")}>
-              Only P0s ({latestP0Count}) — small MR
+            <AlertDialogAction onClick={() => void handleDevelop("top")}>
+              Only {topTierLabel} tier ({topTierCount}) — small MR
             </AlertDialogAction>
             <AlertDialogAction onClick={() => void handleDevelop("all")}>
               All action points ({latestActionPointCount})

@@ -12,6 +12,7 @@ import {
   pickJudgeOutput,
   composeCancelExplanation,
   ConsiliumLoopController,
+  filterDevScope,
   MAX_CONCURRENT_DEV_HANDOFFS,
   SDLC_DEV_REDRIVE_GRACE_MS,
   type LoopEvent,
@@ -1446,5 +1447,25 @@ describe("developing liveness heartbeat — one-coder-sized redrive (no babysitt
 
     release({ prRef: "https://github.com/x/y/pull/10", headCommit: "abc" });
     await flush();
+  });
+});
+
+describe("filterDevScope (ADR-005 Phase 1 — MR-size control)", () => {
+  const aps = [
+    { title: "a", priority: "P1" },
+    { title: "b", priority: "P2" },
+    { title: "c", priority: "P1" },
+    { title: "d" }, // unprioritized
+  ];
+  it('"top" keeps only the highest tier still present (P1 here — the P0s are merged)', () => {
+    expect(filterDevScope(aps, "top").map((ap) => ap.title)).toEqual(["a", "c"]);
+  });
+  it('"top" falls through to the unprioritized bucket when nothing carries a tier', () => {
+    expect(filterDevScope([{ title: "x" }, { title: "y" }], "top")).toHaveLength(2);
+  });
+  it('"p0" / "all" / absent keep their historical shapes', () => {
+    expect(filterDevScope(aps, "p0")).toHaveLength(0);
+    expect(filterDevScope(aps, "all")).toHaveLength(4);
+    expect(filterDevScope(aps)).toHaveLength(4);
   });
 });

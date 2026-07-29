@@ -484,6 +484,28 @@ const SDLC_DEV_MAX_ACTION_POINTS = 24;
 export const SDLC_DEV_REDRIVE_GRACE_MS = SDLC_DEV_GRACE_MS * SDLC_DEV_MAX_ACTION_POINTS;
 
 /**
+ * MR-size control (ADR-005 Phase 1): the develop-scope filter. `"top"` keeps ONLY
+ * the highest-priority tier still present in the verdict (P0 → P1 → P2 → P3 →
+ * unprioritized), so each round ships one small, reviewable MR and the loop's next
+ * round naturally carries the following tier. `"p0"` is the narrower historical
+ * scope (empty once the P0s are merged); `"all"`/absent is the full verdict.
+ * Pure + exported for direct unit-testing.
+ */
+export function filterDevScope(
+  actionPoints: readonly ActionPoint[],
+  scope?: "p0" | "top" | "all",
+): ActionPoint[] {
+  if (scope === "p0") return actionPoints.filter((ap) => ap.priority === P0_PRIORITY);
+  if (scope === "top") {
+    const TIER_RANK: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
+    const rank = (ap: ActionPoint): number => TIER_RANK[ap.priority ?? ""] ?? 4;
+    const best = Math.min(...actionPoints.map(rank));
+    return actionPoints.filter((ap) => rank(ap) === best);
+  }
+  return [...actionPoints];
+}
+
+/**
  * Liveness heartbeat: minimum interval between `updated_at` touches of the loop
  * row from the dispatchSdlc progress sink. A LIVE multi-AP round beats at every
  * coder phase/AP boundary, so its row never ages past one coder call — which
@@ -1257,7 +1279,7 @@ export class ConsiliumLoopController {
    */
   async develop(
     loopId: string,
-    opts?: { scope?: "p0" | "all" },
+    opts?: { scope?: "p0" | "top" | "all" },
   ): Promise<DevelopResult> {
     const loop = await this.storage.getLoop(loopId);
     if (!loop) return { ok: false, code: "NOT_FOUND" };
@@ -1266,14 +1288,11 @@ export class ConsiliumLoopController {
     // FULL action points (ALL priorities) — SERVER-READ from the verdict; the
     // close-out reads only `openActionPoints`, but openP0 feeds the round audit.
     const allActionPoints = await this.resolveDevActionPoints(loop);
-    // MR-SIZE CONTROL: `scope: "p0"` develops ONLY the P0s — one small, reviewable
-    // MR per round; after its merge the loop's next review round re-derives the
-    // remainder and the operator ships it as the NEXT round's MR. Default "all"
-    // (absent opts) is byte-identical to the historical full-list handoff.
-    const actionPoints =
-      opts?.scope === "p0"
-        ? allActionPoints.filter((ap) => ap.priority === P0_PRIORITY)
-        : allActionPoints;
+    // MR-SIZE CONTROL (ADR-005 Phase 1): scope the round — `"top"` ships only the
+    // highest remaining priority tier as one small MR; after its merge the next
+    // review round re-derives the remainder (next tier). Default "all" (absent
+    // opts) is byte-identical to the historical full-list handoff.
+    const actionPoints = filterDevScope(allActionPoints, opts?.scope);
     if (actionPoints.length === 0) return { ok: false, code: "NO_ACTION_POINTS" };
 
     // Re-validate the persisted repoPath: global allowlist THEN project workspace.
